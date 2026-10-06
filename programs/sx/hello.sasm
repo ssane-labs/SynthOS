@@ -1,0 +1,17 @@
+; hello.sasm - the classic first program for SynthOS
+.include "synth.inc"
+
+main:
+    mov  r1, ROLE_ACCENT
+    sys  role
+    mov  r1, greeting
+    sys  puts
+    mov  r1, ROLE_TEXT
+    sys  role
+    mov  r1, info
+    sys  puts
+    mov  r1, 0
+    sys  exit
+
+greeting: .asciz "Hello from SynthOS!\n"
+info:     .asciz "This program runs on the SX virtual machine - try 'dis /bin/hello.sx'.\n"

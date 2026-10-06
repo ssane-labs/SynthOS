@@ -1,0 +1,33 @@
+; args.sasm - print command line arguments (r1 = argc, r2 = argv)
+.include "synth.inc"
+
+main:
+    mov  r5, r1              ; argc
+    mov  r6, r2              ; argv
+    mov  r7, 0               ; index
+.loop:
+    cmp  r7, r5
+    jge  .done
+    mov  r1, ROLE_MUTED
+    sys  role
+    mov  r1, r7
+    sys  printi
+    mov  r1, ':'
+    sys  putc
+    mov  r1, ' '
+    sys  putc
+    mov  r1, ROLE_ACCENT2
+    sys  role
+    shl  r8, r7, 2
+    add  r8, r6, r8
+    ld   r1, [r8]
+    sys  puts
+    mov  r1, '\n'
+    sys  putc
+    add  r7, r7, 1
+    jmp  .loop
+.done:
+    mov  r1, ROLE_TEXT
+    sys  role
+    mov  r1, 0
+    sys  exit

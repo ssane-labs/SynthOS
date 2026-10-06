@@ -1,0 +1,91 @@
+; primes.sasm - sieve of Eratosthenes, limit from the first argument (default 1000)
+.include "synth.inc"
+
+main:
+    mov  r9, 1000
+    cmp  r1, 2
+    jl   .alloc
+    ld   r1, [r2 + 4]
+    sys  atoi
+    mov  r9, r0
+.alloc:
+    cmp  r9, 2
+    jl   .none
+    add  r1, r9, 1
+    sys  sbrk                ; zeroed bytes: 0 = prime candidate
+    cmp  r0, 0
+    jz   .nomem
+    mov  r10, r0             ; sieve base
+    sys  ticks
+    mov  r11, r0             ; start time
+    mov  r5, 2
+.outer:
+    mul  r6, r5, r5
+    cmp  r6, r9
+    jg   .count
+    add  r7, r10, r5
+    ldb  r8, [r7]
+    cmp  r8, 0
+    jnz  .next
+.mark:
+    cmp  r6, r9
+    jg   .next
+    add  r7, r10, r6
+    mov  r8, 1
+    stb  [r7], r8
+    add  r6, r6, r5
+    jmp  .mark
+.next:
+    add  r5, r5, 1
+    jmp  .outer
+.count:
+    mov  r5, 2
+    mov  r12, 0
+.scan:
+    cmp  r5, r9
+    jg   .report
+    add  r7, r10, r5
+    ldb  r8, [r7]
+    cmp  r8, 0
+    jnz  .skip
+    add  r12, r12, 1
+.skip:
+    add  r5, r5, 1
+    jmp  .scan
+.report:
+    sys  ticks
+    sub  r11, r0, r11
+    mov  r1, ROLE_ACCENT
+    sys  role
+    mov  r1, r12
+    sys  printi
+    mov  r1, ROLE_TEXT
+    sys  role
+    mov  r1, msg_found
+    sys  puts
+    mov  r1, r9
+    sys  printi
+    mov  r1, msg_in
+    sys  puts
+    mov  r1, r11
+    sys  printi
+    mov  r1, msg_ms
+    sys  puts
+    mov  r1, 0
+    sys  exit
+.none:
+    mov  r1, msg_small
+    sys  puts
+    mov  r1, 1
+    sys  exit
+.nomem:
+    mov  r1, msg_nomem
+    sys  puts
+    mov  r1, 1
+    sys  exit
+
+msg_found: .asciz " primes up to "
+msg_in:    .asciz " found in "
+msg_ms:    .asciz " ms\n"
+msg_small: .asciz "limit must be at least 2\n"
+msg_nomem: .asciz "not enough memory - try a smaller limit\n"

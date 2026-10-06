@@ -85,12 +85,14 @@ $(OUT)/obj/ramdisk.o: arch/x86/ramdisk.asm $(BUILD)/ramdisk.bin
 	@echo "  NASM    $<"
 	@$(NASM) -f elf32 -DRAMDISK_FILE='"$(BUILD)/ramdisk.bin"' -o $@ $<
 
-$(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN)
+$(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(wildcard programs/sx/*)
 	@mkdir -p $(BUILD)/rootfs
 	@cp -r rootfs/. $(BUILD)/rootfs/
+	@mkdir -p $(BUILD)/rootfs/home/src
+	@cp programs/sx/*.sasm programs/sx/*.inc $(BUILD)/rootfs/home/src/
 	@$(BUILD)/tools/mkrd $(BUILD)/rootfs $@
 
-$(BUILD)/rootfs/bin/%.sx: programs/sx/%.sasm $(BUILD)/tools/sasm
+$(BUILD)/rootfs/bin/%.sx: programs/sx/%.sasm programs/sx/synth.inc $(BUILD)/tools/sasm
 	@mkdir -p $(@D)
 	@echo "  SASM    $<"
 	@$(BUILD)/tools/sasm -o $@ $<

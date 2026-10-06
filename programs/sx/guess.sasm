@@ -1,0 +1,68 @@
+; guess.sasm - guess the secret number between 1 and 100
+.include "synth.inc"
+
+main:
+    sys  rand
+    modu r9, r0, 100
+    add  r9, r9, 1           ; secret
+    mov  r10, 0              ; attempts
+    mov  r1, ROLE_ACCENT
+    sys  role
+    mov  r1, title
+    sys  puts
+    mov  r1, ROLE_TEXT
+    sys  role
+.ask:
+    mov  r1, prompt
+    sys  puts
+    mov  r1, line
+    mov  r2, 32
+    sys  readline
+    cmp  r0, 0
+    jl   .quit
+    jz   .ask
+    mov  r1, line
+    sys  atoi
+    mov  r5, r0
+    add  r10, r10, 1
+    cmp  r5, r9
+    jz   .win
+    jl   .low
+    mov  r1, ROLE_WARN
+    sys  role
+    mov  r1, too_high
+    sys  puts
+    jmp  .again
+.low:
+    mov  r1, ROLE_WARN
+    sys  role
+    mov  r1, too_low
+    sys  puts
+.again:
+    mov  r1, ROLE_TEXT
+    sys  role
+    jmp  .ask
+.win:
+    mov  r1, ROLE_OK
+    sys  role
+    mov  r1, correct
+    sys  puts
+    mov  r1, r10
+    sys  printi
+    mov  r1, tries
+    sys  puts
+    mov  r1, ROLE_TEXT
+    sys  role
+    mov  r1, 0
+    sys  exit
+.quit:
+    mov  r1, 1
+    sys  exit
+
+title:    .asciz "I am thinking of a number between 1 and 100.\n"
+prompt:   .asciz "Your guess: "
+too_high: .asciz "Too high!\n"
+too_low:  .asciz "Too low!\n"
+correct:  .asciz "Correct! You needed "
+tries:    .asciz " tries.\n"
+line:     .space 32
