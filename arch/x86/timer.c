@@ -80,3 +80,11 @@ void hal_rtc(struct rtc_time *t)
     if (pm)
         t->hour = (uint8_t)((t->hour + 12) % 24);
 }
+
+uint16_t pit_counter(void)
+{
+    outb(0x43, 0x00);
+    uint8_t lo = inb(0x40);
+    uint8_t hi = inb(0x40);
+    return (uint16_t)(lo | hi << 8);
+}

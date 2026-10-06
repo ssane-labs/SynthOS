@@ -15,7 +15,7 @@
 
 #define ARENA_BASE 0x20000000u
 #define ARENA_MAX (512u * 1024 * 1024)
-#define ARENA_MIN (4u * 1024 * 1024)
+#define ARENA_MIN (1024u * 1024)
 #define STACK_SIZE (1024u * 1024)
 #define HANDLE_BASE 0x100u
 
@@ -493,14 +493,18 @@ static void setup_tls(struct w32_image *img)
     }
 }
 
+static size_t image_reserve;
+
 static size_t choose_arena(void)
 {
     struct heap_stats hs;
     heap_get_stats(&hs);
     size_t size = hs.largest_free / 4 * 3;
+    if (hs.largest_free > image_reserve && hs.largest_free - image_reserve < size)
+        size = hs.largest_free - image_reserve;
     if (size > ARENA_MAX)
         size = ARENA_MAX;
-    return size & ~(size_t)0xfffff;
+    return size & ~(size_t)0xffff;
 }
 
 static void cleanup(void)
@@ -533,8 +537,8 @@ static int run(struct exec_ctx *ctx)
         return E_NOMEM;
     heap_create(&w32->heap, (void *)ARENA_BASE, w32->arena_size, false);
 
-    w32->stack_size = STACK_SIZE;
-    w32->stack = heap_alloc_aligned(&w32->heap, STACK_SIZE, 4096);
+    w32->stack_size = MIN(STACK_SIZE, w32->arena_size / 4 & ~0xffffu);
+    w32->stack = heap_alloc_aligned(&w32->heap, w32->stack_size, 4096);
     for (int i = 0; i < 3; i++) {
         w32->handles[i].type = (enum w32_object_type)(WH_STDIN + i);
         w32->handles[i].refs = 1 << 20;
@@ -661,9 +665,9 @@ static int run_nested(struct exec_ctx *ctx)
 static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
 {
     UNUSED(image);
-    UNUSED(size);
     if (!vmm_available())
         return E_NOSYS;
+    image_reserve = size * 3 + 256 * 1024;
     return w32 ? run_nested(ctx) : run_process(ctx);
 }
 

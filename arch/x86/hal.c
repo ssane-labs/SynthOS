@@ -47,12 +47,13 @@ int hal_key_read(int timeout_ms)
 uint32_t hal_entropy(void)
 {
     static uint64_t state;
+    uint64_t noise = cpu_info()->tsc ? cpu_rdtsc() : hal_ticks_ms() * 2654435761u + pit_counter();
     if (!state)
-        state = cpu_rdtsc() ^ 0x9e3779b97f4a7c15ull;
+        state = noise ^ 0x9e3779b97f4a7c15ull;
     state ^= state << 13;
     state ^= state >> 7;
     state ^= state << 17;
-    state += cpu_rdtsc();
+    state += noise;
     return (uint32_t)(state >> 16);
 }
 
@@ -94,7 +95,8 @@ void hal_fs_init(void)
 
 const char *hal_arch(void)
 {
-    return "x86 (i686)";
+    uint32_t family = cpu_info()->family;
+    return family >= 6 ? "x86 (i686)" : family == 5 ? "x86 (i586)" : "x86 (i486)";
 }
 
 static void cpuid(uint32_t leaf, uint32_t out[4])
@@ -104,6 +106,8 @@ static void cpuid(uint32_t leaf, uint32_t out[4])
 
 const char *hal_machine(void)
 {
+    if (!machine[0] && !cpu_info()->cpuid)
+        str_copy(machine, "IBM PC compatible (486)", sizeof(machine));
     if (!machine[0]) {
         uint32_t r[4];
         cpuid(0x80000000u, r);

@@ -79,7 +79,17 @@ struct e820_entry {
 
 typedef void (*irq_handler)(struct regs *r);
 
+struct cpu_info {
+    bool cpuid;
+    bool tsc;
+    bool fpu;
+    bool sse;
+    uint32_t family;
+};
+
 void cpu_init(void);
+const struct cpu_info *cpu_info(void);
+uint16_t pit_counter(void);
 void irq_install(int irq, irq_handler handler);
 void pit_init(uint32_t hz);
 void keyboard_init(void);

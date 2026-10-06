@@ -33,6 +33,7 @@ static struct gdt_entry gdt[4];
 static arch_fault_fn fault_handler;
 static void (*tick_hook)(uint32_t eip);
 static bool sse;
+static struct cpu_info info;
 
 static void fpu_init(void);
 static struct idt_entry idt[256];
@@ -124,24 +125,48 @@ static bool has_cpuid(void)
     return (a ^ b) & 0x200000;
 }
 
-static void fpu_init(void)
+static void detect_cpu(void)
 {
-    uint32_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 &= ~(1u << 2);
-    cr0 |= (1u << 1) | (1u << 5);
-    __asm__ volatile("mov %0, %%cr0; fninit" : : "r"(cr0));
+    info.family = 4;
     if (!has_cpuid())
         return;
+    info.cpuid = true;
     uint32_t eax = 1, ebx, ecx, edx;
     __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
-    if (edx & (1u << 25)) {
+    info.family = (eax >> 8) & 0xf;
+    if (info.family == 0xf)
+        info.family += (eax >> 20) & 0xff;
+    info.tsc = edx & (1u << 4);
+    info.sse = (edx & (1u << 25)) && (edx & (1u << 24));
+}
+
+static void fpu_init(void)
+{
+    detect_cpu();
+    uint32_t cr0;
+    uint16_t status = 0xffff;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~((1u << 2) | (1u << 3));
+    cr0 |= (1u << 1) | (1u << 5);
+    __asm__ volatile("mov %0, %%cr0; fninit; fnstsw %1" : : "r"(cr0), "m"(status) : "memory");
+    info.fpu = status == 0;
+    if (!info.fpu) {
+        cr0 = (cr0 | (1u << 2)) & ~(1u << 1);
+        __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
+        return;
+    }
+    if (info.sse) {
         uint32_t cr4;
         __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
         cr4 |= (1u << 9) | (1u << 10);
         __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
         sse = true;
     }
+}
+
+const struct cpu_info *cpu_info(void)
+{
+    return &info;
 }
 
 bool arch_has_sse(void)

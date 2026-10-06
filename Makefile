@@ -22,7 +22,7 @@ NASM     ?= nasm
 HOSTCC   ?= cc
 QEMU     ?= qemu-system-i386
 
-ARCH_FLAGS := $(if $(CROSS),,-m32) -march=i686 -mno-sse -mno-mmx -mno-80387
+ARCH_FLAGS := $(if $(CROSS),,-m32) -march=i486 -mtune=i686 -mno-sse -mno-mmx -mno-80387
 CFLAGS := $(ARCH_FLAGS) -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
           -fno-pic -fno-pie -fno-strict-aliasing -fno-tree-loop-distribute-patterns \
           -fno-asynchronous-unwind-tables -fno-omit-frame-pointer \
