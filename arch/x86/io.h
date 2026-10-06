@@ -94,5 +94,6 @@ struct display *serial_display(void);
 int serial_key(void);
 const struct x86_bootinfo *x86_boot_info(void);
 void ata_init(void);
+void *paging_init(uint32_t start, uint32_t end, size_t *size);
 
 #endif

@@ -38,10 +38,13 @@ endif
 ifeq ($(CONFIG_SXVM),0)
 KERNEL_SRC := $(filter-out kernel/vm/%,$(KERNEL_SRC))
 endif
+ifeq ($(CONFIG_WIN32),0)
+KERNEL_SRC := $(filter-out kernel/win32/%,$(KERNEL_SRC))
+endif
 ifeq ($(CONFIG_EDITOR),0)
 KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
-KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm
+KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm
 KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/ramdisk.o
 
 SX_SRC   := $(wildcard programs/sx/*.sasm)
@@ -79,6 +82,8 @@ $(OUT)/kernel.bin: $(OUT)/kernel.elf
 $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/linker.ld
 	@echo "  LD      $@"
 	@$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
+
+$(OUT)/obj/%_fp.o: CFLAGS += -m80387 -mfpmath=387
 
 $(OUT)/obj/%.o: %.c
 	@mkdir -p $(@D)

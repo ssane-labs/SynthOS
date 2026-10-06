@@ -1,3 +1,4 @@
+#include <synth/config.h>
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
@@ -690,9 +691,15 @@ static int dos_run(struct exec_ctx *ctx)
     return code;
 }
 
+bool w32_is_pe(const uint8_t *file, size_t size);
+
 static bool mz_probe(const char *path, const uint8_t *head, size_t n)
 {
     UNUSED(path);
+#if CONFIG_WIN32
+    if (w32_is_pe(head, n))
+        return false;
+#endif
     return is_mz(head, n);
 }
 

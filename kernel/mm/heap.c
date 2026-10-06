@@ -17,31 +17,25 @@ struct block {
 #define HEADER_SIZE ALIGN_UP(sizeof(struct block), HEAP_ALIGN)
 #define MIN_SPLIT (HEADER_SIZE + 32)
 
-static uint8_t *heap_start;
-static uint8_t *heap_end;
-#define BIN_COUNT 28
+static struct heap kernel_heap;
 
-static struct block *bins[BIN_COUNT];
-static size_t used_bytes;
-static size_t peak_bytes;
-
-static struct block *next_phys(struct block *b)
+static struct block *next_phys(struct heap *h, struct block *b)
 {
     uint8_t *n = (uint8_t *)b + HEADER_SIZE + b->size;
-    return n < heap_end ? (struct block *)n : NULL;
+    return n < h->end ? (struct block *)n : NULL;
 }
 
 static int bin_of(size_t size)
 {
     int bin = 0;
-    for (size >>= 5; size && bin < BIN_COUNT - 1; size >>= 1)
+    for (size >>= 5; size && bin < HEAP_BINS - 1; size >>= 1)
         bin++;
     return bin;
 }
 
-static void free_insert(struct block *b)
+static void free_insert(struct heap *h, struct block *b)
 {
-    struct block **head = &bins[bin_of(b->size)];
+    struct block **head = (struct block **)&h->bins[bin_of(b->size)];
     b->prev_free = NULL;
     b->next_free = *head;
     if (*head)
@@ -49,32 +43,38 @@ static void free_insert(struct block *b)
     *head = b;
 }
 
-static void free_remove(struct block *b)
+static void free_remove(struct heap *h, struct block *b)
 {
     if (b->prev_free)
         b->prev_free->next_free = b->next_free;
     else
-        bins[bin_of(b->size)] = b->next_free;
+        h->bins[bin_of(b->size)] = b->next_free;
     if (b->next_free)
         b->next_free->prev_free = b->prev_free;
 }
 
-void heap_init(void *base, size_t size)
+void heap_create(struct heap *h, void *base, size_t size, bool strict)
 {
+    memset(h, 0, sizeof(*h));
     uintptr_t start = ALIGN_UP((uintptr_t)base, HEAP_ALIGN);
     uintptr_t end = ((uintptr_t)base + size) & ~(uintptr_t)(HEAP_ALIGN - 1);
-    heap_start = (uint8_t *)start;
-    heap_end = (uint8_t *)end;
-    struct block *b = (struct block *)heap_start;
+    h->start = (uint8_t *)start;
+    h->end = (uint8_t *)end;
+    h->strict = strict;
+    struct block *b = (struct block *)h->start;
     b->size = (size_t)(end - start) - HEADER_SIZE;
     b->prev_phys = NULL;
     b->magic = HEAP_MAGIC;
     b->used = 0;
-    memset(bins, 0, sizeof(bins));
-    free_insert(b);
+    free_insert(h, b);
 }
 
-static void split(struct block *b, size_t size)
+void heap_init(void *base, size_t size)
+{
+    heap_create(&kernel_heap, base, size, true);
+}
+
+static void split(struct heap *h, struct block *b, size_t size)
 {
     if (b->size < size + MIN_SPLIT)
         return;
@@ -84,33 +84,153 @@ static void split(struct block *b, size_t size)
     rest->magic = HEAP_MAGIC;
     rest->used = 0;
     b->size = size;
-    struct block *after = next_phys(rest);
+    struct block *after = next_phys(h, rest);
     if (after)
         after->prev_phys = rest;
-    free_insert(rest);
+    free_insert(h, rest);
+}
+
+void *heap_alloc(struct heap *h, size_t size)
+{
+    if (size == 0)
+        size = 1;
+    if (size > (size_t)(h->end - h->start))
+        return NULL;
+    size = ALIGN_UP(size, HEAP_ALIGN);
+    struct block *best = NULL;
+    int bin = bin_of(size);
+    for (struct block *b = h->bins[bin]; b && !best; b = b->next_free)
+        if (b->size >= size)
+            best = b;
+    while (!best && ++bin < HEAP_BINS)
+        best = h->bins[bin];
+    if (!best)
+        return NULL;
+    free_remove(h, best);
+    split(h, best, size);
+    best->used = 1;
+    h->used += best->size + HEADER_SIZE;
+    if (h->used > h->peak)
+        h->peak = h->used;
+    return (uint8_t *)best + HEADER_SIZE;
+}
+
+static struct block *header_of(struct heap *h, void *ptr)
+{
+    struct block *b = (struct block *)((uint8_t *)ptr - HEADER_SIZE);
+    if ((uint8_t *)b < h->start || (uint8_t *)b >= h->end || b->magic != HEAP_MAGIC || !b->used) {
+        if (h->strict)
+            panic("heap: invalid pointer %p", ptr);
+        return NULL;
+    }
+    return b;
+}
+
+static struct block *merge(struct heap *h, struct block *a, struct block *b)
+{
+    a->size += HEADER_SIZE + b->size;
+    b->magic = 0;
+    struct block *after = next_phys(h, a);
+    if (after)
+        after->prev_phys = a;
+    return a;
+}
+
+void heap_free(struct heap *h, void *ptr)
+{
+    if (!ptr)
+        return;
+    struct block *b = header_of(h, ptr);
+    if (!b)
+        return;
+    h->used -= b->size + HEADER_SIZE;
+    b->used = 0;
+    struct block *n = next_phys(h, b);
+    if (n && !n->used) {
+        free_remove(h, n);
+        merge(h, b, n);
+    }
+    struct block *p = b->prev_phys;
+    if (p && !p->used) {
+        free_remove(h, p);
+        b = merge(h, p, b);
+    }
+    free_insert(h, b);
+}
+
+size_t heap_size_of(struct heap *h, void *ptr)
+{
+    struct block *b = ptr ? header_of(h, ptr) : NULL;
+    return b ? b->size : 0;
+}
+
+void *heap_realloc(struct heap *h, void *ptr, size_t size)
+{
+    if (!ptr)
+        return heap_alloc(h, size);
+    if (size == 0) {
+        heap_free(h, ptr);
+        return NULL;
+    }
+    struct block *b = header_of(h, ptr);
+    if (!b)
+        return NULL;
+    size_t want = ALIGN_UP(size, HEAP_ALIGN);
+    if (b->size >= want)
+        return ptr;
+    struct block *n = next_phys(h, b);
+    if (n && !n->used && b->size + HEADER_SIZE + n->size >= want) {
+        h->used -= b->size;
+        free_remove(h, n);
+        merge(h, b, n);
+        split(h, b, want);
+        h->used += b->size;
+        if (h->used > h->peak)
+            h->peak = h->used;
+        return ptr;
+    }
+    void *fresh = heap_alloc(h, size);
+    if (!fresh)
+        return NULL;
+    memcpy(fresh, ptr, b->size);
+    heap_free(h, ptr);
+    return fresh;
+}
+
+void *heap_alloc_aligned(struct heap *h, size_t size, size_t align)
+{
+    uint8_t *raw = heap_alloc(h, size + align + sizeof(void *));
+    if (!raw)
+        return NULL;
+    uint8_t *aligned = (uint8_t *)ALIGN_UP((uintptr_t)raw + sizeof(void *), (uintptr_t)align);
+    ((void **)aligned)[-1] = raw;
+    memset(aligned, 0, size);
+    return aligned;
+}
+
+void heap_free_aligned(struct heap *h, void *ptr)
+{
+    if (ptr)
+        heap_free(h, ((void **)ptr)[-1]);
+}
+
+void heap_stats_of(struct heap *h, struct heap_stats *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->total = (size_t)(h->end - h->start);
+    out->used = h->used;
+    out->free = out->total - h->used;
+    out->peak = h->peak;
+    for (struct block *b = (struct block *)h->start; b; b = next_phys(h, b)) {
+        out->blocks++;
+        if (!b->used && b->size > out->largest_free)
+            out->largest_free = b->size;
+    }
 }
 
 void *kmalloc(size_t size)
 {
-    if (size == 0)
-        size = 1;
-    size = ALIGN_UP(size, HEAP_ALIGN);
-    struct block *best = NULL;
-    int bin = bin_of(size);
-    for (struct block *b = bins[bin]; b && !best; b = b->next_free)
-        if (b->size >= size)
-            best = b;
-    while (!best && ++bin < BIN_COUNT)
-        best = bins[bin];
-    if (!best)
-        return NULL;
-    free_remove(best);
-    split(best, size);
-    best->used = 1;
-    used_bytes += best->size + HEADER_SIZE;
-    if (used_bytes > peak_bytes)
-        peak_bytes = used_bytes;
-    return (uint8_t *)best + HEADER_SIZE;
+    return heap_alloc(&kernel_heap, size);
 }
 
 void *kzalloc(size_t size)
@@ -121,73 +241,14 @@ void *kzalloc(size_t size)
     return p;
 }
 
-static struct block *header_of(void *ptr)
-{
-    struct block *b = (struct block *)((uint8_t *)ptr - HEADER_SIZE);
-    if ((uint8_t *)b < heap_start || (uint8_t *)b >= heap_end || b->magic != HEAP_MAGIC || !b->used)
-        panic("heap: invalid pointer %p", ptr);
-    return b;
-}
-
-static struct block *merge(struct block *a, struct block *b)
-{
-    a->size += HEADER_SIZE + b->size;
-    b->magic = 0;
-    struct block *after = next_phys(a);
-    if (after)
-        after->prev_phys = a;
-    return a;
-}
-
 void kfree(void *ptr)
 {
-    if (!ptr)
-        return;
-    struct block *b = header_of(ptr);
-    used_bytes -= b->size + HEADER_SIZE;
-    b->used = 0;
-    struct block *n = next_phys(b);
-    if (n && !n->used) {
-        free_remove(n);
-        merge(b, n);
-    }
-    struct block *p = b->prev_phys;
-    if (p && !p->used) {
-        free_remove(p);
-        b = merge(p, b);
-    }
-    free_insert(b);
+    heap_free(&kernel_heap, ptr);
 }
 
 void *krealloc(void *ptr, size_t size)
 {
-    if (!ptr)
-        return kmalloc(size);
-    if (size == 0) {
-        kfree(ptr);
-        return NULL;
-    }
-    struct block *b = header_of(ptr);
-    size_t want = ALIGN_UP(size, HEAP_ALIGN);
-    if (b->size >= want)
-        return ptr;
-    struct block *n = next_phys(b);
-    if (n && !n->used && b->size + HEADER_SIZE + n->size >= want) {
-        used_bytes -= b->size;
-        free_remove(n);
-        merge(b, n);
-        split(b, want);
-        used_bytes += b->size;
-        if (used_bytes > peak_bytes)
-            peak_bytes = used_bytes;
-        return ptr;
-    }
-    void *fresh = kmalloc(size);
-    if (!fresh)
-        return NULL;
-    memcpy(fresh, ptr, b->size);
-    kfree(ptr);
-    return fresh;
+    return heap_realloc(&kernel_heap, ptr, size);
 }
 
 char *kstrndup(const char *s, size_t n)
@@ -208,14 +269,15 @@ char *kstrdup(const char *s)
 
 void heap_get_stats(struct heap_stats *out)
 {
-    memset(out, 0, sizeof(*out));
-    out->total = (size_t)(heap_end - heap_start);
-    out->used = used_bytes;
-    out->free = out->total - used_bytes;
-    out->peak = peak_bytes;
-    for (struct block *b = (struct block *)heap_start; b; b = next_phys(b)) {
-        out->blocks++;
-        if (!b->used && b->size > out->largest_free)
-            out->largest_free = b->size;
-    }
+    heap_stats_of(&kernel_heap, out);
+}
+
+void *kmalloc_pages(size_t size)
+{
+    return heap_alloc_aligned(&kernel_heap, size, 4096);
+}
+
+void kfree_pages(void *ptr)
+{
+    heap_free_aligned(&kernel_heap, ptr);
 }

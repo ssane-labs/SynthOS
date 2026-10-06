@@ -26,6 +26,9 @@ SECTIONS
         __start_synth_binfmts = .;
         KEEP(*(synth_binfmts))
         __stop_synth_binfmts = .;
+        __start_synth_win32 = .;
+        KEEP(*(synth_win32))
+        __stop_synth_win32 = .;
         __start_synth_fs = .;
         KEEP(*(synth_fs))
         __stop_synth_fs = .;
@@ -43,6 +46,7 @@ SECTIONS
 
     kernel_end = .;
     kernel_sectors = (image_end - 0x100000 + 511) / 512;
+    ASSERT(kernel_end < 0x300000, "kernel image must stay below 3 MiB")
 
     /DISCARD/ : {
         *(.comment)

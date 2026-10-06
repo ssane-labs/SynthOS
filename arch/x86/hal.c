@@ -171,8 +171,11 @@ static void setup_heap(struct boot_info *bi)
         best_end = start + (16u << 20);
     if (best_end > 0xf0000000ull)
         best_end = 0xf0000000ull;
-    bi->heap = (void *)start;
-    bi->heap_size = (size_t)(best_end - start);
+    bi->heap = paging_init((uint32_t)start, (uint32_t)best_end, &bi->heap_size);
+    if (!bi->heap) {
+        bi->heap = (void *)start;
+        bi->heap_size = (size_t)(best_end - start);
+    }
     bi->mem_total = (size_t)MIN(total, 0xffffffffull);
 }
 
