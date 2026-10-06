@@ -29,7 +29,7 @@ struct table_ptr {
 extern const uint32_t isr_table[48];
 void gdt_flush(const struct table_ptr *ptr);
 
-static struct gdt_entry gdt[4];
+static struct gdt_entry gdt[6];
 static arch_fault_fn fault_handler;
 static void (*tick_hook)(uint32_t eip);
 static bool sse;
@@ -59,16 +59,15 @@ static void gdt_set(int i, uint32_t base, uint32_t limit, uint8_t access, uint8_
     };
 }
 
-static void pic_remap(void)
+void pic_program(uint8_t master, uint8_t slave)
 {
-    uint8_t m1 = inb(0x21), m2 = inb(0xa1);
     outb(0x20, 0x11);
     io_wait();
     outb(0xa0, 0x11);
     io_wait();
-    outb(0x21, 0x20);
+    outb(0x21, master);
     io_wait();
-    outb(0xa1, 0x28);
+    outb(0xa1, slave);
     io_wait();
     outb(0x21, 0x04);
     io_wait();
@@ -78,8 +77,11 @@ static void pic_remap(void)
     io_wait();
     outb(0xa1, 0x01);
     io_wait();
-    UNUSED(m1);
-    UNUSED(m2);
+}
+
+static void pic_remap(void)
+{
+    pic_program(0x20, 0x28);
     outb(0x21, 0xff);
     outb(0xa1, 0xff);
 }
@@ -104,6 +106,8 @@ void cpu_init(void)
     gdt_set(1, 0, 0xfffff, 0x9a, 0xcf);
     gdt_set(2, 0, 0xfffff, 0x92, 0xcf);
     gdt_set(3, 0, 0xfff, 0x92, 0x40);
+    gdt_set(4, 0, 0xffff, 0x9a, 0x00);
+    gdt_set(5, 0, 0xffff, 0x92, 0x00);
     struct table_ptr gp = {sizeof(gdt) - 1, (uint32_t)gdt};
     gdt_flush(&gp);
 

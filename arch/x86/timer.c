@@ -13,14 +13,28 @@ static void pit_tick(struct regs *r)
     ticks++;
 }
 
-void pit_init(uint32_t hz)
+static void pit_divisor(uint32_t divisor)
 {
-    tick_hz = hz;
-    uint32_t divisor = PIT_FREQUENCY / hz;
     outb(0x43, 0x36);
     outb(0x40, (uint8_t)(divisor & 0xff));
     outb(0x40, (uint8_t)(divisor >> 8));
+}
+
+void pit_init(uint32_t hz)
+{
+    tick_hz = hz;
+    pit_divisor(PIT_FREQUENCY / hz);
     irq_install(0, pit_tick);
+}
+
+void pit_bios_mode(bool bios)
+{
+    pit_divisor(bios ? 0 : PIT_FREQUENCY / tick_hz);
+}
+
+void pit_advance_ms(uint32_t ms)
+{
+    ticks += (uint64_t)ms * tick_hz / 1000u;
 }
 
 uint64_t hal_ticks_ms(void)

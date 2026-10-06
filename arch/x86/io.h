@@ -90,6 +90,26 @@ struct cpu_info {
 void cpu_init(void);
 const struct cpu_info *cpu_info(void);
 uint16_t pit_counter(void);
+void pit_bios_mode(bool bios);
+void pit_advance_ms(uint32_t ms);
+void pic_program(uint8_t master, uint8_t slave);
+
+struct bios_regs {
+    uint32_t eax, ebx, ecx, edx, esi, edi;
+    uint16_t ds, es;
+    uint32_t eflags;
+    uint32_t intno;
+    uint32_t ticks_before, ticks_after;
+};
+
+#define BIOS_SCRATCH 0x1f40u
+#define BIOS_BOUNCE 0x20000u
+#define BIOS_BOUNCE_SIZE 0x8000u
+
+void bios_init(void);
+bool bios_available(void);
+bool bios_call(uint8_t intno, struct bios_regs *r);
+void biosdisk_init(uint8_t drive);
 void irq_install(int irq, irq_handler handler);
 void pit_init(uint32_t hz);
 void keyboard_init(void);

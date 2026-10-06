@@ -77,20 +77,30 @@ static bool is_boot_disk(struct blockdev *dev)
     return magic == KERNEL_MAGIC;
 }
 
-void hal_fs_init(void)
+static bool attach_boot_disk(void)
 {
-    ata_init();
     for (struct blockdev *dev = block_list(); dev; dev = dev->next) {
         if (dev->parent || !bootinfo->kernel_lba || !is_boot_disk(dev))
             continue;
         if (bootinfo->kernel_lba + bootinfo->kernel_sectors > DISK_DATA_LBA) {
             klog("disk: kernel image overlaps the data area, persistence disabled");
-            break;
+            return true;
         }
         if (dev->sectors > DISK_DATA_LBA + 256)
             block_add_partition(dev, "data0", DISK_DATA_LBA, dev->sectors - DISK_DATA_LBA);
-        break;
+        return true;
     }
+    return false;
+}
+
+void hal_fs_init(void)
+{
+    ata_init();
+    if (attach_boot_disk() || !(bootinfo->drive & 0x80))
+        return;
+    bios_init();
+    biosdisk_init((uint8_t)bootinfo->drive);
+    attach_boot_disk();
 }
 
 const char *hal_arch(void)

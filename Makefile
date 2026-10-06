@@ -45,7 +45,7 @@ ifeq ($(CONFIG_EDITOR),0)
 KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm
-KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/ramdisk.o
+KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/ramdisk.o $(OUT)/obj/biosblob.o
 
 SX_SRC   := $(wildcard programs/sx/*.sasm)
 SX_BIN   := $(SX_SRC:programs/sx/%.sasm=$(BUILD)/rootfs/bin/%.sx)
@@ -99,6 +99,16 @@ $(OUT)/obj/%.o: %.asm
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
 	@$(NASM) -f elf32 -o $@ $<
+
+$(OUT)/biosthunk.bin: arch/x86/biosthunk.asm
+	@mkdir -p $(@D)
+	@echo "  NASM    $<"
+	@$(NASM) -f bin -o $@ $<
+
+$(OUT)/obj/biosblob.o: arch/x86/biosblob.asm $(OUT)/biosthunk.bin
+	@mkdir -p $(@D)
+	@echo "  NASM    $<"
+	@$(NASM) -f elf32 -DTHUNK_FILE='"$(OUT)/biosthunk.bin"' -o $@ $<
 
 $(OUT)/obj/ramdisk.o: arch/x86/ramdisk.asm $(BUILD)/ramdisk.bin
 	@mkdir -p $(@D)
