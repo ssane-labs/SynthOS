@@ -27,6 +27,18 @@ static inline uint16_t inw(uint16_t port)
     return v;
 }
 
+static inline void outl(uint16_t port, uint32_t v)
+{
+    __asm__ volatile("outl %0, %1" : : "a"(v), "Nd"(port));
+}
+
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t v;
+    __asm__ volatile("inl %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+
 static inline void io_wait(void)
 {
     outb(0x80, 0);
@@ -119,6 +131,19 @@ void bios_init(void);
 bool bios_available(void);
 bool bios_call(uint8_t intno, struct bios_regs *r);
 void biosdisk_init(uint8_t drive);
+
+struct pci_device {
+    uint8_t bus, dev, fn;
+    uint16_t vendor, device;
+    uint8_t class_code, subclass, prog_if;
+};
+
+uint32_t pci_read(const struct pci_device *d, uint8_t offset);
+void pci_write(const struct pci_device *d, uint8_t offset, uint32_t value);
+void pci_foreach(void (*fn)(const struct pci_device *d, void *ctx), void *ctx);
+bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *out);
+void ahci_init(void);
+void nvme_init(void);
 void irq_install(int irq, irq_handler handler);
 void pit_init(uint32_t hz);
 void keyboard_init(void);

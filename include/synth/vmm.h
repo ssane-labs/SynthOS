@@ -12,6 +12,7 @@ int vmm_map(uintptr_t vaddr, void *kernel_memory, size_t size);
 void vmm_unmap(uintptr_t vaddr, size_t size);
 bool vmm_range_free(uintptr_t vaddr, size_t size);
 void *vmm_map_phys(uint32_t phys, size_t size);
+uint32_t vmm_phys(const void *ptr);
 
 void *kmalloc_pages(size_t size);
 void kfree_pages(void *ptr);

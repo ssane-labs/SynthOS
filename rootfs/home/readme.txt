@@ -10,6 +10,7 @@ Moving around
 Running programs
   hello, fib 20, primes 50000, guess, snake    native SX programs in /bin
   hello.com, files.com, box.com, mzhello.exe   MS-DOS programs in /dos
+  winhello, wincpp, wincolor, windll           Windows programs in /apps
   asm /home/src/hello.sasm                     build your own SX program
   formats                                      list supported formats
 
@@ -28,4 +29,4 @@ Shell power
   let x = 6 * 7; echo $x                arithmetic
   Tab completes, Up/Down walk history, Right accepts a suggestion.
 
-Documentation lives in /docs - try: more /docs/shell.txt
+Documentation lives in /docs - try: more /docs/shell.txt or more /docs/windows.txt

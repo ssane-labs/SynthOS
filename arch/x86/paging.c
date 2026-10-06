@@ -27,6 +27,11 @@ static uint32_t phys_of(const void *ptr)
     return v;
 }
 
+uint32_t vmm_phys(const void *ptr)
+{
+    return phys_of(ptr);
+}
+
 static inline void invlpg(uint32_t vaddr)
 {
     __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");

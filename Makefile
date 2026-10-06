@@ -63,7 +63,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial test clean tools programs
+.PHONY: all run run-serial run-uefi test test-hw clean tools programs
 all: $(IMAGE)
 
 ESP_LBA     := 4096
@@ -229,6 +229,15 @@ run-serial:
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
 	@tests/run.sh $(BUILD)/serial/synthos.img
+
+test-hw:
+	@$(MAKE) --no-print-directory SERIAL=1
+	@tests/hw.sh $(BUILD)/serial/synthos.img
+
+OVMF ?= $(firstword $(wildcard /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/edk2/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd))
+
+run-uefi: $(IMAGE)
+	qemu-system-x86_64 -bios $(OVMF) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_FLAGS)
 
 clean:
 	rm -rf $(BUILD)

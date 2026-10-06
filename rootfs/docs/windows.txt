@@ -1,0 +1,46 @@
+WINDOWS PROGRAMS
+================
+
+SynthOS runs 32-bit Windows console programs (.exe and .dll, PE32) natively
+on the processor: no emulation, no Wine. Windows API calls are answered by
+built-in versions of kernel32, msvcrt, user32, advapi32, shell32 and ntdll.
+
+  winhello a b         samples live in C:\Program Files (= /apps)
+  wincalc, wincpp      C runtime, scanf/printf with floats, C++ with
+  winfiles, wincolor   exceptions and STL, file API, console colors
+  windll, wintest      DLL loading, crash and Ctrl+C handling, MessageBox
+  echo $?              exit code of the program
+
+Building your own (on any PC with MinGW):
+  i686-w64-mingw32-gcc -O2 -o app.exe app.c
+  i686-w64-mingw32-g++ -O2 -static -o app.exe app.cpp
+Put the file in programs/win32/ before 'make' or copy it to /home.
+
+Drives and folders
+  C:\                      /          (the SynthOS root)
+  C:\Windows               /system
+  C:\Windows\System32      /system/win32  (built-in DLLs are listed here)
+  C:\Program Files         /apps
+  C:\ProgramData           /system/data
+  C:\Users\<you>           /home
+  C:\Windows\Temp, C:\Temp /tmp
+  D: .. Y:                 /mnt/d .. /mnt/y
+  Names are matched without regard to case. 'winpath' converts paths,
+  'drives' lists them, and the shell accepts C:\... paths directly:
+  cd "C:\Program Files"
+
+What works
+  Files and folders, find first/next, current directory, temp files
+  Console: colors, cursor, screen buffer info, raw keyboard input,
+           code pages (SetConsoleOutputCP 65001 / 866 / 1251)
+  C runtime: stdio, printf/scanf with floating point, strings, math,
+             time, qsort, conio (_getch, _kbhit), system()
+  Memory: heaps, VirtualAlloc, TLS, structured exceptions (RaiseException)
+  DLLs: implicit imports, LoadLibrary/GetProcAddress, DllMain
+  Starting other programs: system(), CreateProcess, ShellExecute,
+           even another Windows program from a Windows program
+  MessageBox appears as a text-mode dialog; the registry is empty
+
+Not yet
+  64-bit programs, windows and graphics (GDI), threads, networking.
+  A missing function stops the program with the name of the function.

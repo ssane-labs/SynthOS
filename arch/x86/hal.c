@@ -130,7 +130,9 @@ static bool attach_boot_disk(void)
 void hal_fs_init(void)
 {
     ata_init();
-    if (attach_boot_disk() || !(bootinfo->drive & 0x80))
+    ahci_init();
+    nvme_init();
+    if (attach_boot_disk() || (bootinfo->flags & BOOT_UEFI) || !(bootinfo->drive & 0x80))
         return;
     bios_init();
     biosdisk_init((uint8_t)bootinfo->drive);
