@@ -295,51 +295,6 @@ COMMAND(rm, "del,erase", "files", "rm [-r] [-f] path...", "remove files (and dir
     return rc;
 }
 
-static int copy_file(const char *from, const char *to)
-{
-    struct file *src, *dst;
-    int err = vfs_open(from, VFS_READ, &src);
-    if (err)
-        return err;
-    err = vfs_open(to, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &dst);
-    if (err) {
-        vfs_close(src);
-        return err;
-    }
-    char *buf = kmalloc(4096);
-    long n = buf ? 0 : E_NOMEM;
-    while (buf && (n = vfs_read(src, buf, 4096)) > 0) {
-        long w = vfs_write(dst, buf, (size_t)n);
-        if (w != n) {
-            n = w < 0 ? w : E_NOSPC;
-            break;
-        }
-    }
-    kfree(buf);
-    vfs_close(src);
-    vfs_close(dst);
-    return n < 0 ? (int)n : 0;
-}
-
-static int copy_tree(const char *from, const char *to)
-{
-    if (!vfs_is_dir(from))
-        return copy_file(from, to);
-    int err = vfs_mkdir(to);
-    if (err && err != E_EXIST)
-        return err;
-    struct listing l = {0};
-    listing_load(from, true, &l);
-    for (size_t i = 0; i < l.count && !err; i++) {
-        char a[PATH_MAX_LEN], b[PATH_MAX_LEN];
-        if ((err = path_join(from, l.items[i].name, a, sizeof(a))) == 0 &&
-            (err = path_join(to, l.items[i].name, b, sizeof(b))) == 0)
-            err = copy_tree(a, b);
-    }
-    kfree(l.items);
-    return err;
-}
-
 static int transfer(struct shell *sh, int argc, char **argv, bool move)
 {
     const char *name = move ? "mv" : "cp";
@@ -373,10 +328,10 @@ static int transfer(struct shell *sh, int argc, char **argv, bool move)
         }
         if (!err && move) {
             err = vfs_rename(src, target);
-            if (err == E_XDEV && (err = copy_tree(src, target)) == 0)
+            if (err == E_XDEV && (err = vfs_copy(src, target)) == 0)
                 err = remove_tree(src);
         } else if (!err) {
-            err = copy_tree(src, target);
+            err = vfs_copy(src, target);
         }
         if (err)
             rc = sh_fs_error(sh, name, argv[i], err);

@@ -6,6 +6,8 @@
 #include <synth/string.h>
 #include <synth/vfs.h>
 
+#define SETTINGS_FILE "/home/.synth.conf"
+
 SYNTH_TABLE_DECLARE(synth_settings, struct setting);
 
 static void swatches(struct shell *sh, const struct theme *t)
@@ -247,16 +249,16 @@ COMMAND(config, "setup", "custom", "config [name [value] | save | reset]", "view
         return 0;
     }
     if (strcmp(argv[1], "save") == 0) {
-        int err = settings_save("/etc/synth.conf");
+        int err = settings_save(SETTINGS_FILE);
         if (err)
-            return sh_fs_error(sh, "config", "/etc/synth.conf", err);
+            return sh_fs_error(sh, "config", SETTINGS_FILE, err);
         sh_role(sh, ROLE_OK);
-        sh_printf(sh, "settings saved to /etc/synth.conf\n");
+        sh_printf(sh, "settings saved to %s\n", SETTINGS_FILE);
         sh_reset(sh);
         return 0;
     }
     if (strcmp(argv[1], "reset") == 0) {
-        vfs_unlink("/etc/synth.conf");
+        vfs_unlink(SETTINGS_FILE);
         theme_apply(theme_builtin(0));
         setting_apply(sh, "prompt", "neon");
         return 0;

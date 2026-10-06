@@ -492,3 +492,55 @@ int vfs_write_all(const char *path, const void *data, size_t size)
         return (int)n;
     return (size_t)n == size ? 0 : E_NOSPC;
 }
+
+static int copy_file(const char *from, const char *to)
+{
+    struct file *src, *dst;
+    int err = vfs_open(from, VFS_READ, &src);
+    if (err)
+        return err;
+    err = vfs_open(to, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &dst);
+    if (err) {
+        vfs_close(src);
+        return err;
+    }
+    char *buf = kmalloc(4096);
+    long n = buf ? 0 : E_NOMEM;
+    while (buf && (n = vfs_read(src, buf, 4096)) > 0) {
+        long w = vfs_write(dst, buf, (size_t)n);
+        if (w != n) {
+            n = w < 0 ? w : E_NOSPC;
+            break;
+        }
+    }
+    kfree(buf);
+    vfs_close(src);
+    vfs_close(dst);
+    return n < 0 ? (int)n : 0;
+}
+
+int vfs_copy(const char *from, const char *to)
+{
+    if (!vfs_is_dir(from))
+        return copy_file(from, to);
+    int err = vfs_mkdir(to);
+    if (err && err != E_EXIST)
+        return err;
+    struct vdir d;
+    if ((err = vfs_opendir(from, &d)) != 0)
+        return err;
+    struct vfs_dirent ent;
+    uint32_t index = 0;
+    for (;;) {
+        d.index = index++;
+        if (vfs_readdir(&d, &ent) != 0)
+            break;
+        char a[PATH_MAX_LEN], b[PATH_MAX_LEN];
+        if ((err = path_join(from, ent.name, a, sizeof(a))) != 0 || (err = path_join(to, ent.name, b, sizeof(b))) != 0)
+            break;
+        if ((err = vfs_copy(a, b)) != 0)
+            break;
+    }
+    vfs_closedir(&d);
+    return err;
+}

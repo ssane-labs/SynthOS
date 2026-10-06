@@ -1,3 +1,4 @@
+#include <synth/block.h>
 #include <synth/config.h>
 #include <synth/console.h>
 #include <synth/error.h>
@@ -60,6 +61,33 @@ static bool cmdline_flag(const char *cmdline, const char *flag)
     return false;
 }
 
+static void mount_storage(void)
+{
+    struct blockdev *data = block_find("data0");
+    if (!data) {
+        boot_step(true, "No persistent disk: /home lives in memory");
+        return;
+    }
+    bool fresh = !sfs_detect(data);
+    if (fresh) {
+        int err = sfs_format(data);
+        if (err) {
+            boot_step(false, "Cannot format %s: %s", data->name, err_str(err));
+            return;
+        }
+        vfs_mkdirs("/mnt/setup");
+        if (vfs_mount("sfs", data->name, "/mnt/setup") == 0) {
+            vfs_copy("/home", "/mnt/setup");
+            vfs_umount("/mnt/setup");
+        }
+        vfs_unlink("/mnt/setup");
+    }
+    int err = vfs_mount("sfs", data->name, "/home");
+    char size[16];
+    fmt_size(size, sizeof(size), (uint64_t)data->sectors * BLOCK_SIZE);
+    boot_step(err == 0, "Persistent disk: %s mounted at /home%s", size, fresh ? " (freshly formatted)" : "");
+}
+
 static void mount_filesystems(const struct boot_info *bi)
 {
     int err = vfs_mount("ramfs", NULL, "/");
@@ -78,14 +106,15 @@ static void mount_filesystems(const struct boot_info *bi)
     err = vfs_mount("devfs", NULL, "/dev");
     boot_step(err == 0, "Devices mounted at /dev");
     hal_fs_init();
+    mount_storage();
 }
 
 static void run_startup(struct shell *sh)
 {
-    if (vfs_exists("/etc/synth.conf"))
-        shell_source(sh, "/etc/synth.conf", 0, NULL);
-    if (vfs_exists("/etc/synthrc"))
-        shell_source(sh, "/etc/synthrc", 0, NULL);
+    static const char *const scripts[] = {"/etc/synthrc", "/etc/synth.conf", "/home/.synthrc", "/home/.synth.conf"};
+    for (size_t i = 0; i < ARRAY_SIZE(scripts); i++)
+        if (vfs_exists(scripts[i]))
+            shell_source(sh, scripts[i], 0, NULL);
 }
 
 static void show_welcome(struct shell *sh)

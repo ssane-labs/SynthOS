@@ -1,4 +1,6 @@
+#include <synth/block.h>
 #include <synth/console.h>
+#include <synth/log.h>
 #include <synth/hal.h>
 #include <synth/keys.h>
 #include <synth/string.h>
@@ -6,6 +8,8 @@
 #include "io.h"
 
 #define BOOT_MAGIC 0x5359424fu
+#define KERNEL_MAGIC 0x4b4e5953u
+#define DISK_DATA_LBA 8192u
 
 extern const char synth_ramdisk_start[];
 extern const char synth_ramdisk_end[];
@@ -57,8 +61,35 @@ void hal_set_codepage(int codepage)
     UNUSED(codepage);
 }
 
+static bool is_boot_disk(struct blockdev *dev)
+{
+    static uint8_t sector[512];
+    if (block_read(dev, 0, 1, sector) != 0 || sector[510] != 0x55 || sector[511] != 0xaa)
+        return false;
+    bool marker = false;
+    for (int i = 0; i + 8 <= 446 && !marker; i++)
+        marker = memcmp(sector + i, "SynthOS:", 8) == 0;
+    if (!marker || block_read(dev, bootinfo->kernel_lba, 1, sector) != 0)
+        return false;
+    uint32_t magic;
+    memcpy(&magic, sector + 8, 4);
+    return magic == KERNEL_MAGIC;
+}
+
 void hal_fs_init(void)
 {
+    ata_init();
+    for (struct blockdev *dev = block_list(); dev; dev = dev->next) {
+        if (dev->parent || !bootinfo->kernel_lba || !is_boot_disk(dev))
+            continue;
+        if (bootinfo->kernel_lba + bootinfo->kernel_sectors > DISK_DATA_LBA) {
+            klog("disk: kernel image overlaps the data area, persistence disabled");
+            break;
+        }
+        if (dev->sectors > DISK_DATA_LBA + 256)
+            block_add_partition(dev, "data0", DISK_DATA_LBA, dev->sectors - DISK_DATA_LBA);
+        break;
+    }
 }
 
 const char *hal_arch(void)

@@ -54,7 +54,7 @@ $(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin
 	@truncate -s $$(( $(IMAGE_SECTORS) * 512 )) $@
 	@echo "  ready   $@ ($$(( $$(stat -c %s $(OUT)/kernel.bin) / 1024 )) KB kernel)"
 
-$(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc
+$(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -Iarch/x86/boot/ -DIMAGE_SECTORS=$(IMAGE_SECTORS) -o $@ $<

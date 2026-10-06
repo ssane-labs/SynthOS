@@ -93,5 +93,6 @@ struct display *vga_display(void);
 struct display *serial_display(void);
 int serial_key(void);
 const struct x86_bootinfo *x86_boot_info(void);
+void ata_init(void);
 
 #endif
