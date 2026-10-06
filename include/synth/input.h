@@ -1,0 +1,14 @@
+#ifndef SYNTH_INPUT_H
+#define SYNTH_INPUT_H
+
+#include <synth/keys.h>
+#include <synth/types.h>
+
+int input_getkey(int timeout_ms);
+bool input_poll(void);
+void input_unget(int key);
+void input_set_break(bool enabled);
+bool input_break_pending(void);
+void input_clear_break(void);
+
+#endif
