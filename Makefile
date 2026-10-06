@@ -38,7 +38,8 @@ KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o
 SX_SRC   := $(wildcard programs/sx/*.sasm)
 SX_BIN   := $(SX_SRC:programs/sx/%.sasm=$(BUILD)/rootfs/bin/%.sx)
 DOS_SRC  := $(wildcard programs/dos/*.asm)
-DOS_BIN  := $(DOS_SRC:programs/dos/%.asm=$(BUILD)/rootfs/dos/%.com)
+EXE_SRC  := $(wildcard programs/dos/exe/*.asm)
+DOS_BIN  := $(DOS_SRC:programs/dos/%.asm=$(BUILD)/rootfs/dos/%.com) $(EXE_SRC:programs/dos/exe/%.asm=$(BUILD)/rootfs/dos/%.exe)
 ROOTFS_SRC := $(shell find rootfs -type f)
 
 TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
@@ -98,6 +99,11 @@ $(BUILD)/rootfs/bin/%.sx: programs/sx/%.sasm programs/sx/synth.inc $(BUILD)/tool
 	@$(BUILD)/tools/sasm -o $@ $<
 
 $(BUILD)/rootfs/dos/%.com: programs/dos/%.asm
+	@mkdir -p $(@D)
+	@echo "  NASM    $<"
+	@$(NASM) -f bin -o $@ $<
+
+$(BUILD)/rootfs/dos/%.exe: programs/dos/exe/%.asm
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -o $@ $<
