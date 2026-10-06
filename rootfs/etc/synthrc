@@ -1,0 +1,9 @@
+# /etc/synthrc - runs at every boot, before /home/.synthrc
+# Personal additions belong in /home/.synthrc (it survives reboots).
+
+alias ll='ls -l'
+alias la='ls -la'
+alias ..='cd ..'
+alias h='history'
+alias q='shutdown'
+alias docs='ls /docs'

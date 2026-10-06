@@ -95,10 +95,14 @@ static int theme_show(struct shell *sh, const struct theme *t)
     return 0;
 }
 
-COMMAND(theme, NULL, "custom", "theme [list | <name> | show [name] | save <name> | reset]", "color themes")
+COMMAND(theme, NULL, "custom", "theme [list | <name> | current | show [name] | save <name> | reset]", "color themes")
 {
     if (argc == 1 || strcmp(argv[1], "list") == 0)
         return theme_list(sh);
+    if (strcmp(argv[1], "current") == 0) {
+        sh_printf(sh, "%s\n", theme_current()->name);
+        return 0;
+    }
     if (strcmp(argv[1], "show") == 0) {
         struct theme t = *theme_current();
         if (argc > 2 && theme_find(argv[2], &t) != 0)

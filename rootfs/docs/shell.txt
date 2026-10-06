@@ -1,0 +1,58 @@
+SYNSH - THE SYNTHOS SHELL
+=========================
+
+Command lines
+  cmd arg1 "arg two" 'literal $x'   quoting: "..." expands $vars, '...' does not
+  cmd1 ; cmd2                       run one after another
+  cmd1 && cmd2   /   cmd1 || cmd2   run cmd2 only on success / failure
+  cmd1 | cmd2                       pipe output into the next command
+  cmd > file   cmd >> file          write / append output to a file
+  cmd < file                        read input from a file
+  cmd 2> errors.txt   cmd 2>&1      redirect error output
+  ! cmd                             invert the exit status
+  *.txt  file?.sx  [abc]*           wildcards are expanded to matching names
+  ~/notes.txt                       ~ is your home directory (/home)
+  # comment                         everything after # is ignored
+
+Variables
+  name=value   set name value       define a variable
+  echo $name ${name}                use it
+  $?  $#  $1..$9  $@                last status, argument count, arguments
+  $PWD $RANDOM $UPTIME $COLUMNS     built-in dynamic values
+  $(command)                        command substitution: insert its output
+  let n = n * 2 + 1                 integer arithmetic (calc prints results)
+  env / unset name                  list / remove variables
+
+Control flow (one statement per line, or separated by ';')
+  if test -f file.txt               test: -e -f -d -s -z -n = != -eq -ne
+      echo found                          -lt -le -gt -ge, ! and -a / -o
+  elif [ $x -gt 3 ]
+      echo big
+  else
+      echo nothing
+  end
+
+  while test $n -gt 0 ; let n = n - 1 ; end
+  for f in *.sasm ; asm $f ; end
+  break / continue / return [n] / exit [n]
+
+Functions
+  func greet
+      echo "Hello, $1"
+  end
+  greet World                       functions get their own $1..$9
+
+Scripts
+  Put commands in a file ending with .sh and run it by name, with
+  'source file.sh' (runs in the current shell) or 'run file.sh args'.
+  /etc/synthrc and /home/.synthrc run at every boot.
+
+Aliases
+  alias ll='ls -l'                  alias           unalias ll
+
+Line editing
+  Left/Right Home/End  move      Ctrl+Left/Right  jump words
+  Up/Down              history   Tab              complete (twice: list)
+  Right at line end    accept the grey suggestion from history
+  Ctrl+U / Ctrl+K      delete to start / end        Ctrl+W  delete word
+  Ctrl+L               clear screen                 Ctrl+C  cancel / stop

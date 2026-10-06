@@ -1,0 +1,32 @@
+MAKING SYNTHOS YOURS
+====================
+
+Themes
+  theme                 list themes with color swatches
+  theme nord            switch (12 included, plus files in /etc/themes)
+  theme show            preview the palette and every interface role
+  palette               the 16 colors of the current theme
+  color accent pink     change one role: color <role> <fg> [on <bg>]
+  color 13 #ff00aa      change a palette entry
+  theme save mine       write /etc/themes/mine.theme, edit it with 'edit'
+
+Prompt
+  prompt                show all presets rendered live
+  prompt twoline        pick one: neon minimal arrow classic dos
+                        twoline blocks clock
+  prompt tokens         build your own, e.g.
+                        prompt "%{accent}%u %{prompt.path}%W %{ok}%>%{/} "
+
+Settings
+  config                list everything
+  config statusbar on   bottom bar with path, theme, memory and clock
+  config cursor bar     block, underline or bar
+  config highlight off  turn off live syntax colors
+  config suggest off    turn off history suggestions
+  config codepage 866   Cyrillic character set
+  config banner off     no logo at startup
+  config hostname box   name in the prompt
+  config save           remember all of it (stored in /home/.synth.conf)
+
+Startup script
+  edit /home/.synthrc   commands that run at every boot (aliases, etc.)

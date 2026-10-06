@@ -60,6 +60,7 @@ void strvec_free(struct strvec *v);
 void strvec_sort(struct strvec *v);
 
 int expand_word(struct shell *sh, const char *raw, struct strvec *out);
+int expand_word_ex(struct shell *sh, const char *raw, struct strvec *out, bool glob);
 char *expand_single(struct shell *sh, const char *raw);
 
 size_t split_statements(const char *text, struct strvec *out);

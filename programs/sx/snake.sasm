@@ -1,0 +1,422 @@
+; snake.sasm - the classic game on the SX virtual machine
+; arrows steer, q or Esc quits
+.include "synth.inc"
+
+.equ BW, 38
+.equ BH, 18
+.equ OY, 3
+.equ MAXLEN, 700
+.equ HEAD_CH, 0x02
+.equ BODY_CH, 0xdb
+.equ FOOD_CH, 0x04
+.equ HEAD_ATTR, 0x0e
+.equ BODY_ATTR, 0x0a
+.equ FOOD_ATTR, 0x0c
+.equ FRAME_ATTR, 0x0d
+.equ EMPTY_ATTR, 0x00
+
+main:
+    sys  screen
+    cmp  r0, BW + 4
+    jl   too_small
+    cmp  r1, BH + OY + 3
+    jl   too_small
+    sub  r2, r0, BW + 2
+    shr  r2, r2, 1
+    st   [ox], r2
+    sys  clear
+    mov  r1, 0
+    sys  cursor
+    call draw_frame
+    call reset_snake
+    call place_food
+    call draw_score
+game_loop:
+    call input
+    ld   r1, [quit]
+    cmp  r1, 0
+    jnz  leave
+    call step
+    cmp  r0, 0
+    jnz  dead
+    sys  flush
+    ld   r1, [delay]
+    sys  sleep
+    jmp  game_loop
+
+too_small:
+    mov  r1, small_msg
+    sys  puts
+    mov  r1, 1
+    sys  exit
+
+; r1 = x, r2 = y, r3 = char, r4 = attribute (board coordinates); clobbers r1, r2, r5
+draw_cell:
+    ld   r5, [ox]
+    add  r1, r1, r5
+    add  r1, r1, 1
+    add  r2, r2, OY + 1
+    sys  putcell
+    ret
+
+draw_frame:
+    ld   r6, [ox]
+    add  r7, r6, BW + 1
+    mov  r8, OY
+    mov  r9, OY + BH + 1
+    mov  r4, FRAME_ATTR
+    add  r10, r6, 1
+.horizontal:
+    cmp  r10, r7
+    jge  .corners
+    mov  r1, r10
+    mov  r2, r8
+    mov  r3, 0xc4
+    sys  putcell
+    mov  r1, r10
+    mov  r2, r9
+    sys  putcell
+    add  r10, r10, 1
+    jmp  .horizontal
+.corners:
+    mov  r1, r6
+    mov  r2, r8
+    mov  r3, 0xda
+    sys  putcell
+    mov  r1, r7
+    mov  r3, 0xbf
+    sys  putcell
+    mov  r1, r6
+    mov  r2, r9
+    mov  r3, 0xc0
+    sys  putcell
+    mov  r1, r7
+    mov  r3, 0xd9
+    sys  putcell
+    add  r10, r8, 1
+.vertical:
+    cmp  r10, r9
+    jge  .title
+    mov  r1, r6
+    mov  r2, r10
+    mov  r3, 0xb3
+    sys  putcell
+    mov  r1, r7
+    sys  putcell
+    add  r10, r10, 1
+    jmp  .vertical
+.title:
+    mov  r1, r6
+    mov  r2, OY - 2
+    sys  gotoxy
+    mov  r1, ROLE_ACCENT
+    sys  role
+    mov  r1, title
+    sys  puts
+    mov  r1, ROLE_MUTED
+    sys  role
+    mov  r1, help
+    sys  puts
+    mov  r1, ROLE_TEXT
+    sys  role
+    ret
+
+reset_snake:
+    mov  r1, 4
+    st   [len], r1
+    mov  r1, 3
+    st   [head], r1
+    mov  r6, 0
+.loop:
+    cmp  r6, 4
+    jge  .done
+    add  r7, r6, 8
+    stb  [r6 + body_x], r7
+    mov  r7, BH / 2
+    stb  [r6 + body_y], r7
+    add  r1, r6, 8
+    mov  r2, BH / 2
+    mov  r3, BODY_CH
+    mov  r4, BODY_ATTR
+    call draw_cell
+    add  r6, r6, 1
+    jmp  .loop
+.done:
+    mov  r1, 1
+    st   [dx], r1
+    mov  r1, 0
+    st   [dy], r1
+    st   [score], r1
+    st   [quit], r1
+    mov  r1, 120
+    st   [delay], r1
+    ret
+
+input:
+    sys  pollkey
+    cmp  r0, 0
+    jz   .done
+    cmp  r0, KEY_UP
+    jnz  .down
+    ld   r1, [dy]
+    cmp  r1, 1
+    jz   .done
+    mov  r1, 0
+    st   [dx], r1
+    mov  r1, -1
+    st   [dy], r1
+    jmp  .done
+.down:
+    cmp  r0, KEY_DOWN
+    jnz  .left
+    ld   r1, [dy]
+    cmp  r1, -1
+    jz   .done
+    mov  r1, 0
+    st   [dx], r1
+    mov  r1, 1
+    st   [dy], r1
+    jmp  .done
+.left:
+    cmp  r0, KEY_LEFT
+    jnz  .right
+    ld   r1, [dx]
+    cmp  r1, 1
+    jz   .done
+    mov  r1, -1
+    st   [dx], r1
+    mov  r1, 0
+    st   [dy], r1
+    jmp  .done
+.right:
+    cmp  r0, KEY_RIGHT
+    jnz  .keys
+    ld   r1, [dx]
+    cmp  r1, -1
+    jz   .done
+    mov  r1, 1
+    st   [dx], r1
+    mov  r1, 0
+    st   [dy], r1
+    jmp  .done
+.keys:
+    cmp  r0, 'q'
+    jz   .quit
+    cmp  r0, KEY_ESC
+    jnz  .done
+.quit:
+    mov  r1, 1
+    st   [quit], r1
+.done:
+    ret
+
+; returns r0 = 0 while alive, 1 after a crash
+step:
+    ld   r6, [head]
+    ldb  r7, [r6 + body_x]
+    ldb  r8, [r6 + body_y]
+    ld   r1, [dx]
+    add  r7, r7, r1
+    ld   r1, [dy]
+    add  r8, r8, r1
+    cmp  r7, 0
+    jl   .dead
+    cmp  r7, BW
+    jge  .dead
+    cmp  r8, 0
+    jl   .dead
+    cmp  r8, BH
+    jge  .dead
+    ld   r9, [len]
+    mov  r10, 0
+.collide:
+    cmp  r10, r9
+    jge  .move
+    sub  r11, r6, r10
+    add  r11, r11, MAXLEN
+    modu r11, r11, MAXLEN
+    ldb  r12, [r11 + body_x]
+    cmp  r12, r7
+    jnz  .next
+    ldb  r12, [r11 + body_y]
+    cmp  r12, r8
+    jz   .dead
+.next:
+    add  r10, r10, 1
+    jmp  .collide
+.move:
+    ldb  r1, [r6 + body_x]
+    ldb  r2, [r6 + body_y]
+    mov  r3, BODY_CH
+    mov  r4, BODY_ATTR
+    call draw_cell
+    add  r6, r6, 1
+    modu r6, r6, MAXLEN
+    st   [head], r6
+    stb  [r6 + body_x], r7
+    stb  [r6 + body_y], r8
+    mov  r1, r7
+    mov  r2, r8
+    mov  r3, HEAD_CH
+    mov  r4, HEAD_ATTR
+    call draw_cell
+    ld   r1, [food_x]
+    cmp  r1, r7
+    jnz  .tail
+    ld   r1, [food_y]
+    cmp  r1, r8
+    jnz  .tail
+    ld   r1, [len]
+    cmp  r1, MAXLEN - 1
+    jge  .scored
+    add  r1, r1, 1
+    st   [len], r1
+.scored:
+    ld   r1, [score]
+    add  r1, r1, 10
+    st   [score], r1
+    ld   r1, [delay]
+    cmp  r1, 50
+    jle  .fast
+    sub  r1, r1, 4
+    st   [delay], r1
+.fast:
+    call place_food
+    call draw_score
+    mov  r0, 0
+    ret
+.tail:
+    ld   r9, [len]
+    sub  r11, r6, r9
+    add  r11, r11, MAXLEN
+    modu r11, r11, MAXLEN
+    ldb  r1, [r11 + body_x]
+    ldb  r2, [r11 + body_y]
+    mov  r3, ' '
+    mov  r4, EMPTY_ATTR
+    call draw_cell
+    mov  r0, 0
+    ret
+.dead:
+    mov  r0, 1
+    ret
+
+place_food:
+    sys  rand
+    modu r7, r0, BW
+    sys  rand
+    modu r8, r0, BH
+    ld   r6, [head]
+    ld   r9, [len]
+    mov  r10, 0
+.check:
+    cmp  r10, r9
+    jge  .free
+    sub  r11, r6, r10
+    add  r11, r11, MAXLEN
+    modu r11, r11, MAXLEN
+    ldb  r12, [r11 + body_x]
+    cmp  r12, r7
+    jnz  .next
+    ldb  r12, [r11 + body_y]
+    cmp  r12, r8
+    jz   place_food
+.next:
+    add  r10, r10, 1
+    jmp  .check
+.free:
+    st   [food_x], r7
+    st   [food_y], r8
+    mov  r1, r7
+    mov  r2, r8
+    mov  r3, FOOD_CH
+    mov  r4, FOOD_ATTR
+    call draw_cell
+    ret
+
+draw_score:
+    ld   r1, [ox]
+    mov  r2, OY + BH + 2
+    sys  gotoxy
+    mov  r1, ROLE_MUTED
+    sys  role
+    mov  r1, score_label
+    sys  puts
+    mov  r1, ROLE_HIGHLIGHT
+    sys  role
+    ld   r1, [score]
+    sys  printi
+    mov  r1, ROLE_MUTED
+    sys  role
+    mov  r1, length_label
+    sys  puts
+    mov  r1, ROLE_HIGHLIGHT
+    sys  role
+    ld   r1, [len]
+    sys  printi
+    mov  r1, ROLE_TEXT
+    sys  role
+    ret
+
+dead:
+    ld   r1, [ox]
+    add  r1, r1, BW / 2 - 4
+    mov  r2, OY + BH / 2
+    sys  gotoxy
+    mov  r1, ROLE_ERROR
+    sys  role
+    mov  r1, over_msg
+    sys  puts
+    ld   r1, [ox]
+    add  r1, r1, BW / 2 - 7
+    mov  r2, OY + BH / 2 + 1
+    sys  gotoxy
+    mov  r1, ROLE_MUTED
+    sys  role
+    mov  r1, any_key
+    sys  puts
+    sys  flush
+    mov  r1, 400
+    sys  sleep
+.drain:
+    sys  pollkey
+    cmp  r0, 0
+    jnz  .drain
+    sys  getkey
+leave:
+    mov  r1, ROLE_TEXT
+    sys  role
+    sys  clear
+    mov  r1, 1
+    sys  cursor
+    mov  r1, final_msg
+    sys  puts
+    ld   r1, [score]
+    sys  printi
+    mov  r1, '\n'
+    sys  putc
+    mov  r1, 0
+    sys  exit
+
+title:        .asciz "SNAKE"
+help:         .asciz "   arrows steer, q quits"
+score_label:  .asciz "Score "
+length_label: .asciz "   Length "
+over_msg:     .asciz "GAME OVER"
+any_key:      .asciz "press any key"
+final_msg:    .asciz "Thanks for playing! Final score: "
+small_msg:    .asciz "snake needs a screen of at least 42x24\n"
+
+.align 4
+ox:     .word 0
+head:   .word 0
+len:    .word 0
+dx:     .word 0
+dy:     .word 0
+food_x: .word 0
+food_y: .word 0
+score:  .word 0
+delay:  .word 0
+quit:   .word 0
+body_x: .space MAXLEN
+body_y: .space MAXLEN

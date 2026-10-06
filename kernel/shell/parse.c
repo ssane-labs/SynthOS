@@ -196,6 +196,7 @@ struct expander {
     size_t cap;
     bool present;
     bool glob;
+    bool noglob;
 };
 
 static void put(struct expander *e, const char *s, size_t n)
@@ -268,7 +269,7 @@ static void finish(struct expander *e)
 {
     if (e->present) {
         const char *s = e->buf ? e->buf : "";
-        if (e->glob && has_wildcard(s))
+        if (e->glob && !e->noglob && has_wildcard(s))
             glob_expand(e, s);
         else
             strvec_push(e->out, s);
@@ -354,7 +355,12 @@ static size_t expand_dollar(struct expander *e, const char *raw, size_t i, bool 
 
 int expand_word(struct shell *sh, const char *raw, struct strvec *out)
 {
-    struct expander e = {.sh = sh, .out = out};
+    return expand_word_ex(sh, raw, out, true);
+}
+
+int expand_word_ex(struct shell *sh, const char *raw, struct strvec *out, bool glob)
+{
+    struct expander e = {.sh = sh, .out = out, .noglob = !glob};
     size_t i = 0;
     if (raw[0] == '~' && (raw[1] == 0 || raw[1] == '/')) {
         const char *home = sh_get(sh, "HOME");

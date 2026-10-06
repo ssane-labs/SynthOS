@@ -10,6 +10,7 @@
 #include "internal.h"
 
 #define MAX_REDIRS 8
+#define NOGLOB_COMMANDS "calc,expr,let"
 
 struct redir {
     enum tok_type type;
@@ -209,9 +210,12 @@ static int run_pipeline(struct shell *sh, struct token *toks, size_t count)
         struct strvec args = {0};
         struct redir redirs[MAX_REDIRS];
         int nredirs = 0;
+        bool glob = true;
         for (size_t k = start; k < i; k++) {
             if (toks[k].type == TOK_WORD) {
-                expand_word(sh, toks[k].text, &args);
+                expand_word_ex(sh, toks[k].text, &args, glob);
+                if (args.count == 1 && k == start)
+                    glob = !str_in_list(args.items[0], NOGLOB_COMMANDS);
             } else if (toks[k].type == TOK_ERR_TO_OUT) {
                 if (nredirs < MAX_REDIRS)
                     redirs[nredirs++] = (struct redir){toks[k].type, NULL};

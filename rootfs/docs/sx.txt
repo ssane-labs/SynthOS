@@ -1,0 +1,42 @@
+SX - THE SYNTHOS VIRTUAL MACHINE
+================================
+
+Native SynthOS programs (.sx) are bytecode for a small 32-bit register
+machine. The same .sx file runs on every computer SynthOS supports.
+
+Build and run
+  asm hello.sasm              creates hello.sx next to the source
+  asm game.sasm -o /bin/game.sx
+  hello                       programs in PATH run by name
+  dis hello.sx                disassemble
+
+Machine
+  registers r0..r15 (32-bit), sp = r15, fp = r14
+  program loaded at 0x1000, stack at the top of memory
+  at start: r1 = argc, r2 = address of argv[] (array of string pointers)
+
+Instructions (last operand of most can be a register or a number)
+  mov  rd, rs|imm             li is an alias
+  add sub mul div divu mod modu and or xor shl shr sar  rd, ra, rb|imm
+  not neg sxb sxh             rd, rs
+  cmp  ra, rb|imm             then jz jnz je jne jl jge jg jle jb jae ja jbe
+  jmp  label|reg              call label|reg   ret
+  push reg|imm                pop reg
+  ld ldh ldb  rd, [rs+off]    load 32/16/8 bits   (also [label], [rs])
+  st sth stb  [rs+off], rv    store
+  sys  name|number            system call, arguments in r1..r4, result r0
+  halt                        stop with exit status r0
+
+Directives
+  label:   .local:            .local labels belong to the last label
+  .include "synth.inc"        .entry name (default: main)
+  .byte .half .word           values or "strings"
+  .ascii "x"  .asciz "x"      .space n [,fill]   .align n
+  .equ NAME, value            NAME = value       .mem bytes
+
+System calls
+  exit putc puts write read open close getkey pollkey printi printx
+  color role gotoxy clear screen ticks sleep rand sbrk readline putcell
+  flush cursor exec time getcwd chdir mkdir remove getenv beep memcpy
+  memset itoa atoi seek stat readdir
+  See /home/src/*.sasm for working examples (snake.sasm is a full game).

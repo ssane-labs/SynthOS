@@ -1,0 +1,27 @@
+# sunset.theme - example of a theme file
+# Load it with:  theme sunset      Make your own:  theme save mytheme
+name = sunset
+description = Warm dusk colors (example theme file in /etc/themes)
+base = synthwave
+
+color0 = #1d1022
+color1 = #3d1f4f
+color4 = #d1495b
+color5 = #8f3985
+color6 = #edae49
+color7 = #f4e3d7
+color8 = #6b4c7a
+color12 = #ff6f59
+color13 = #f78fb3
+color14 = #ffd166
+
+accent = yellow
+accent2 = lightred
+prompt.user = yellow
+prompt.host = brown
+prompt.path = pink
+prompt.symbol = lightred
+status = white on magenta
+logo1 = yellow
+logo2 = lightred
+logo3 = pink
