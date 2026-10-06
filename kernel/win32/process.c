@@ -192,8 +192,8 @@ void w32_console_write(int kind, const char *s, size_t n)
     }
 }
 
-static char line_buffer[1024];
-static size_t line_len, line_pos;
+static W32_STATE char line_buffer[1024];
+static W32_STATE size_t line_len, line_pos;
 
 long w32_console_read(char *buf, size_t n)
 {
@@ -277,9 +277,11 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
                   eip, address);
     else
         ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08x", fault_name(vector), eip);
+    uint32_t code = vector == 0 ? 0xc0000094u : vector == 6 ? 0xc000001du : vector == 3 ? 0x80000003u
+                  : vector == 16 || vector == 19 ? 0xc0000090u : STATUS_ACCESS_VIOLATION;
     w32->exiting = true;
-    w32->exit_code = STATUS_ACCESS_VIOLATION;
-    arch_w32_abort(&w32->jump, STATUS_ACCESS_VIOLATION);
+    w32->exit_code = code;
+    arch_w32_abort(&w32->jump, code);
 }
 
 static void on_tick(uint32_t eip)
@@ -573,14 +575,42 @@ static bool pe_probe(const char *path, const uint8_t *head, size_t n)
     return w32_is_pe(head, n);
 }
 
-static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
+extern uint8_t __start_w32state[], __stop_w32state[];
+
+#define KERNEL_STACK (64u * 1024)
+
+struct kernel_call {
+    uint32_t (*fn)(void *);
+    void *arg;
+};
+
+uint32_t w32_kernel_call(uint32_t (*fn)(void *), void *arg)
 {
-    UNUSED(image);
-    UNUSED(size);
-    if (!vmm_available())
-        return E_NOSYS;
-    if (w32)
-        return sh_error(ctx->sh, path_basename(ctx->path), "only one Windows program can run at a time");
+    uint8_t *stack = kmalloc(KERNEL_STACK);
+    if (!stack)
+        return (uint32_t)E_NOMEM;
+    uint32_t r = arch_call_on_stack(fn, arg, stack + KERNEL_STACK);
+    kfree(stack);
+    return r;
+}
+
+static void map_process(struct w32_process *p, bool on)
+{
+    for (struct w32_image *img = p->images; img; img = img->next)
+        if (img->memory) {
+            if (on)
+                vmm_map(img->base, img->memory, img->size);
+            else
+                vmm_unmap(img->base, img->size);
+        }
+    if (on)
+        vmm_map(p->arena_base, p->arena, p->arena_size);
+    else
+        vmm_unmap(p->arena_base, p->arena_size);
+}
+
+static int run_process(struct exec_ctx *ctx)
+{
     w32 = kzalloc(sizeof(*w32));
     if (!w32)
         return E_NOMEM;
@@ -592,8 +622,6 @@ static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
     con_flush();
     if (w32->message[0])
         sh_error(ctx->sh, path_basename(ctx->path), "%s", w32->message);
-    if (started && w32->exit_code == STATUS_CONTROL_C_EXIT)
-        kprintf("^C\n");
     cleanup();
     kfree(w32);
     w32 = NULL;
@@ -602,6 +630,41 @@ static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
         return rc;
     uint32_t code = (uint32_t)rc;
     return code <= 255 ? (int)code : (code & 0xff) ? (int)(code & 0xff) : 255;
+}
+
+static int run_nested(struct exec_ctx *ctx)
+{
+    uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+    if (sp >= VMM_USER_START && sp < VMM_USER_END)
+        return sh_error(ctx->sh, path_basename(ctx->path), "cannot start a Windows program from here");
+    struct w32_process *parent = w32;
+    size_t state_size = (size_t)(__stop_w32state - __start_w32state);
+    uint8_t *state = kmalloc(state_size);
+    if (!state)
+        return E_NOMEM;
+    memcpy(state, __start_w32state, state_size);
+    uint16_t fpu_cw;
+    __asm__ volatile("fnstcw %0" : "=m"(fpu_cw));
+    map_process(parent, false);
+    int rc = run_process(ctx);
+    map_process(parent, true);
+    memcpy(__start_w32state, state, state_size);
+    kfree(state);
+    __asm__ volatile("fldcw %0" : : "m"(fpu_cw));
+    w32 = parent;
+    arch_w32_set_teb((uint32_t)parent->teb);
+    arch_set_fault_handler(on_fault);
+    arch_set_tick_hook(on_tick);
+    return rc;
+}
+
+static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
+{
+    UNUSED(image);
+    UNUSED(size);
+    if (!vmm_available())
+        return E_NOSYS;
+    return w32 ? run_nested(ctx) : run_process(ctx);
 }
 
 static const struct binfmt pe_format = {

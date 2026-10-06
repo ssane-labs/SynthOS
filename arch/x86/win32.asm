@@ -64,3 +64,21 @@ leave_to_kernel:
     jmp [ecx + 20]
 
 section .note.GNU-stack noalloc noexec nowrite progbits
+
+section .text
+
+; uint32_t arch_call_on_stack(uint32_t (*fn)(void *), void *arg, void *stack_top)
+global arch_call_on_stack
+arch_call_on_stack:
+    push ebp
+    mov ebp, esp
+    mov eax, [ebp + 8]
+    mov ecx, [ebp + 12]
+    mov esp, [ebp + 16]
+    and esp, ~15
+    sub esp, 12
+    push ecx
+    call eax
+    mov esp, ebp
+    pop ebp
+    ret

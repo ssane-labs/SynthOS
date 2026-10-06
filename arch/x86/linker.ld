@@ -32,6 +32,10 @@ SECTIONS
         __start_synth_fs = .;
         KEEP(*(synth_fs))
         __stop_synth_fs = .;
+        . = ALIGN(16);
+        __start_w32state = .;
+        KEEP(*(w32state))
+        __stop_w32state = .;
     }
 
     image_end = .;

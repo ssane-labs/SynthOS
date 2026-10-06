@@ -46,6 +46,7 @@ void *paging_init(uint32_t start, uint32_t end, size_t *size)
     tables[0] = carve;
     for (uint32_t i = 0; i < 1024; i++)
         tables[0][i] = (i * 4096u) | PTE_PRESENT | PTE_WRITE;
+    tables[0][0] = 0;
     page_dir[0] = (uint32_t)tables[0] | PTE_PRESENT | PTE_WRITE;
 
     for (uint32_t off = 0; off < heap_bytes; off += 4096u) {

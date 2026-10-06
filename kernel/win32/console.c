@@ -17,7 +17,7 @@ struct coord {
     int16_t x, y;
 };
 
-static char title[128] = "SynthOS";
+static W32_STATE char title[128] = "SynthOS";
 
 static struct w32_object *console_object(HANDLE h, bool output)
 {
@@ -394,7 +394,7 @@ static DWORD WINAPI GetLargestConsoleWindowSize(HANDLE h)
     return (DWORD)con_cols() | (DWORD)con_rows() << 16;
 }
 
-static int pending_key = KEY_NONE;
+static W32_STATE int pending_key = KEY_NONE;
 
 int w32_console_getkey(bool wait)
 {
@@ -419,6 +419,11 @@ static bool peek_key(void)
     if (pending_key == KEY_NONE)
         pending_key = w32_console_getkey(false);
     return pending_key != KEY_NONE;
+}
+
+bool w32_console_peek(void)
+{
+    return peek_key();
 }
 
 bool w32_key_info(int key, WORD *vk, WORD *scan, WCHAR *ch, DWORD *state)

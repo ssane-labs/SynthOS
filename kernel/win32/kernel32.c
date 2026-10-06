@@ -9,6 +9,7 @@
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/time.h>
+#include <synth/vmm.h>
 
 #include "win32.h"
 
@@ -29,10 +30,10 @@ typedef struct {
     WORD year, month, weekday, day, hour, minute, second, ms;
 } SYSTEMTIME;
 
-static void *unhandled_filter;
-static uint32_t error_mode;
-static void *fls_values[W32_TLS_SLOTS];
-static bool fls_used[W32_TLS_SLOTS];
+static W32_STATE void *unhandled_filter;
+static W32_STATE uint32_t error_mode;
+static W32_STATE void *fls_values[W32_TLS_SLOTS];
+static W32_STATE bool fls_used[W32_TLS_SLOTS];
 
 static void WINAPI ExitProcess(UINT code)
 {
@@ -335,13 +336,155 @@ static LONG WINAPI UnhandledExceptionFilter(void *info)
     return 1;
 }
 
+#define EXCEPTION_NONCONTINUABLE 0x1
+#define EXCEPTION_UNWINDING 0x2
+#define EXCEPTION_EXIT_UNWIND 0x4
+#define SEH_END 0xffffffffu
+
+struct seh_frame {
+    struct seh_frame *prev;
+    void *handler;
+};
+
+typedef int (*seh_handler)(uint8_t *record, struct seh_frame *frame, uint8_t *context, void *dispatcher);
+
+static struct seh_frame **seh_head(void)
+{
+    return (struct seh_frame **)w32->teb;
+}
+
+static bool seh_valid(struct seh_frame *f)
+{
+    return (uintptr_t)f != SEH_END && f && (uintptr_t)f >= VMM_USER_START && (uintptr_t)f < VMM_USER_END;
+}
+
+static void build_record(uint8_t *rec, DWORD code, DWORD flags, DWORD argc, const ULONG_PTR *args, void *addr)
+{
+    memset(rec, 0, 80);
+    memcpy(rec, &code, 4);
+    memcpy(rec + 4, &flags, 4);
+    memcpy(rec + 12, &addr, 4);
+    argc = MIN(argc, 15u);
+    memcpy(rec + 16, &argc, 4);
+    if (args)
+        memcpy(rec + 20, args, argc * 4);
+}
+
+static NORETURN void unhandled(uint8_t *rec, uint8_t *ctx)
+{
+    DWORD code;
+    memcpy(&code, rec, 4);
+    if (unhandled_filter) {
+        uint32_t ptrs[2] = {(uint32_t)(uintptr_t)rec, (uint32_t)(uintptr_t)ctx};
+        uint32_t arg = (uint32_t)(uintptr_t)ptrs;
+        w32_call(unhandled_filter, 1, &arg);
+    }
+    if (!w32->message[0])
+        ksnprintf(w32->message, sizeof(w32->message), "unhandled exception 0x%08x", code);
+    w32_exit(code);
+}
+
+static void dispatch_exception(uint8_t *rec, uint8_t *ctx)
+{
+    for (struct seh_frame *f = *seh_head(); seh_valid(f); f = f->prev) {
+        int r = ((seh_handler)f->handler)(rec, f, ctx, NULL);
+        DWORD flags;
+        memcpy(&flags, rec + 4, 4);
+        if (r == 0 && !(flags & EXCEPTION_NONCONTINUABLE))
+            return;
+    }
+    unhandled(rec, ctx);
+}
+
 static void WINAPI RaiseException(DWORD code, DWORD flags, DWORD argc, const ULONG_PTR *args)
 {
-    UNUSED(flags);
-    UNUSED(argc);
-    UNUSED(args);
-    ksnprintf(w32->message, sizeof(w32->message), "unhandled exception 0x%08x", code);
-    w32_exit(code);
+    uint8_t rec[80];
+    uint8_t *ctx = w32_zalloc(716);
+    build_record(rec, code, flags & EXCEPTION_NONCONTINUABLE, argc, args, __builtin_return_address(0));
+    if (ctx)
+        memcpy(ctx, &(DWORD){0x1003f}, 4);
+    dispatch_exception(rec, ctx);
+    w32_free(ctx);
+}
+
+static void WINAPI RtlUnwind(struct seh_frame *target, void *ip, uint8_t *rec, void *retval)
+{
+    UNUSED(ip);
+    UNUSED(retval);
+    uint8_t local[80];
+    if (!rec) {
+        build_record(local, 0xc0000027u, 0, 0, NULL, __builtin_return_address(0));
+        rec = local;
+    }
+    DWORD flags;
+    memcpy(&flags, rec + 4, 4);
+    flags |= target ? EXCEPTION_UNWINDING : EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND;
+    memcpy(rec + 4, &flags, 4);
+    struct seh_frame **head = seh_head();
+    while (seh_valid(*head) && *head != target) {
+        struct seh_frame *f = *head;
+        ((seh_handler)f->handler)(rec, f, NULL, NULL);
+        *head = f->prev;
+    }
+}
+
+static void WINAPI RtlCaptureContext(uint8_t *ctx)
+{
+    memset(ctx, 0, 716);
+    memcpy(ctx, &(DWORD){0x1003f}, 4);
+}
+
+static DWORD WINAPI GetThreadId(HANDLE h)
+{
+    UNUSED(h);
+    return 0x104;
+}
+
+static DWORD WINAPI GetProcessId(HANDLE h)
+{
+    UNUSED(h);
+    return 0x100;
+}
+
+static void *WINAPI InterlockedPushEntrySList(uint32_t *head, uint32_t *entry)
+{
+    void *old = (void *)(uintptr_t)head[0];
+    entry[0] = head[0];
+    head[0] = (uint32_t)(uintptr_t)entry;
+    head[1]++;
+    return old;
+}
+
+static void *WINAPI InterlockedPopEntrySList(uint32_t *head)
+{
+    uint32_t *first = (uint32_t *)(uintptr_t)head[0];
+    if (first) {
+        head[0] = first[0];
+        head[1]--;
+    }
+    return first;
+}
+
+static void *WINAPI InterlockedFlushSList(uint32_t *head)
+{
+    void *first = (void *)(uintptr_t)head[0];
+    head[0] = 0;
+    head[1] &= 0xffff0000u;
+    return first;
+}
+
+static WORD WINAPI QueryDepthSList(uint32_t *head)
+{
+    return (WORD)head[1];
+}
+
+static void *WINAPI RtlPcToFileHeader(void *pc, void **base)
+{
+    *base = NULL;
+    for (struct w32_image *img = w32->images; img; img = img->next)
+        if ((uintptr_t)pc >= img->base && (uintptr_t)pc < img->base + img->size)
+            *base = (void *)(uintptr_t)img->base;
+    return *base;
 }
 
 static BOOL WINAPI IsDebuggerPresent(void)
@@ -1057,7 +1200,7 @@ static void build_cmdline(const char *app, const char *cmdline, char *out, size_
         str_copy(out, app, cap);
 }
 
-static int spawn(const char *app, const char *cmdline, DWORD *exit_code)
+static int spawn_now(const char *app, const char *cmdline, DWORD *exit_code)
 {
     char line[1024];
     build_cmdline(app, cmdline, line, sizeof(line));
@@ -1101,15 +1244,39 @@ static int spawn(const char *app, const char *cmdline, DWORD *exit_code)
     if (vfs_read_all(path, &image, &size) != 0)
         return ERROR_FILE_NOT_FOUND;
     const struct binfmt *fmt = exec_identify(path, (const uint8_t *)image, size);
-    bool is_pe = fmt && strcmp(fmt->name, "pe") == 0;
     kfree(image);
     if (!fmt)
         return 193;
-    if (is_pe)
-        return ERROR_NOT_SUPPORTED;
     int rc = exec_program(&ctx);
     *exit_code = rc < 0 ? 1 : (DWORD)rc;
     return 0;
+}
+
+struct spawn_args {
+    char *app;
+    char *cmdline;
+    DWORD exit_code;
+};
+
+static uint32_t spawn_thunk(void *arg)
+{
+    struct spawn_args *a = arg;
+    return (uint32_t)spawn_now(a->app, a->cmdline, &a->exit_code);
+}
+
+static int spawn(const char *app, const char *cmdline, DWORD *exit_code)
+{
+    struct spawn_args *a = kzalloc(sizeof(*a));
+    if (!a)
+        return ERROR_NOT_ENOUGH_MEMORY;
+    a->app = app ? kstrdup(app) : NULL;
+    a->cmdline = cmdline ? kstrdup(cmdline) : NULL;
+    int err = (int)w32_kernel_call(spawn_thunk, a);
+    *exit_code = a->exit_code;
+    kfree(a->app);
+    kfree(a->cmdline);
+    kfree(a);
+    return err;
 }
 
 static BOOL create_process(const char *app, const char *cmdline, uint32_t *info)
@@ -1279,7 +1446,9 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(GetCommandLineW), W32_FN(GetStartupInfoA), W32_FN(GetStartupInfoW), W32_FN(GetVersion),
     W32_FN(GetVersionExA), W32_FN(GetVersionExW), W32_FN(IsProcessorFeaturePresent), W32_FN(GetSystemInfo),
     W32_AS("GetNativeSystemInfo", GetSystemInfo), W32_FN(IsWow64Process), W32_FN(SetUnhandledExceptionFilter),
-    W32_FN(UnhandledExceptionFilter), W32_FN(RaiseException), W32_FN(IsDebuggerPresent),
+    W32_FN(UnhandledExceptionFilter), W32_FN(RaiseException), W32_FN(RtlUnwind), W32_FN(RtlCaptureContext),
+    W32_FN(GetThreadId), W32_FN(GetProcessId), W32_FN(InterlockedPushEntrySList), W32_FN(InterlockedPopEntrySList),
+    W32_FN(InterlockedFlushSList), W32_FN(QueryDepthSList), W32_FN(RtlPcToFileHeader), W32_FN(IsDebuggerPresent),
     W32_FN(OutputDebugStringA), W32_FN(OutputDebugStringW), W32_FN(DebugBreak), W32_FN(Sleep), W32_FN(SleepEx),
     W32_FN(GetTickCount), W32_FN(GetTickCount64), W32_FN(QueryPerformanceCounter),
     W32_FN(QueryPerformanceFrequency), W32_FN(GetSystemTimeAsFileTime), W32_FN(GetSystemTimePreciseAsFileTime),
@@ -1314,4 +1483,12 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(WinExec), W32_FN(FormatMessageA), W32_FN(FormatMessageW),
 };
 
-W32_EXPORTS(kernel32_core_module, "kernel32.dll", kernel32_core);
+static void kernel32_attach(void)
+{
+    unhandled_filter = NULL;
+    error_mode = 0;
+    memset(fls_values, 0, sizeof(fls_values));
+    memset(fls_used, 0, sizeof(fls_used));
+}
+
+W32_EXPORTS(kernel32_core_module, "kernel32.dll", kernel32_core, .attach = kernel32_attach);

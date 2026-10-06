@@ -84,6 +84,7 @@ struct w32_module_def {
 
 #define W32_FN(fn) {#fn, (void *)fn}
 #define W32_AS(name, fn) {name, (void *)fn}
+#define W32_STATE __attribute__((section("w32state")))
 #define W32_MODULE(object) SYNTH_REGISTER(synth_win32, struct w32_module_def, object)
 #define W32_EXPORTS(id, dll, table, ...)                                                                          \
     static const struct w32_module_def id = {.name = dll, .exports = table, .count = ARRAY_SIZE(table), __VA_ARGS__}; \
@@ -217,6 +218,7 @@ long w32_handle_write(HANDLE h, const void *buf, size_t n);
 void w32_console_write(int handle_kind, const char *s, size_t n);
 void w32_console_write_raw(int handle_kind, const char *s, size_t n);
 int w32_console_getkey(bool wait);
+bool w32_console_peek(void);
 bool w32_key_info(int key, WORD *vk, WORD *scan, WCHAR *ch, DWORD *state);
 const char *w32_getenv(const char *name);
 int w32_putenv(const char *name, const char *value);
@@ -234,5 +236,21 @@ NORETURN void w32_exit(uint32_t code);
 void w32_sleep(uint32_t ms);
 void w32_run_atexit(void);
 uint32_t w32_call(void *fn, int argc, const uint32_t *args);
+uint32_t w32_kernel_call(uint32_t (*fn)(void *), void *arg);
+
+uint32_t WINAPI w32_zero0(void);
+uint32_t WINAPI w32_zero1(uint32_t);
+uint32_t WINAPI w32_zero2(uint32_t, uint32_t);
+uint32_t WINAPI w32_zero3(uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_zero4(uint32_t, uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_zero5(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_zero6(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_one0(void);
+uint32_t WINAPI w32_one1(uint32_t);
+uint32_t WINAPI w32_one2(uint32_t, uint32_t);
+uint32_t WINAPI w32_one3(uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_one4(uint32_t, uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_one5(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_one6(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 
 #endif

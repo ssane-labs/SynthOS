@@ -44,10 +44,10 @@ struct user_file {
     struct cstream st;
 };
 
-CRT_FILE crt_iob[3];
-static struct cstream std_streams[3];
-static struct user_file *files[CRT_MAX_FILES];
-static struct crt_fd fds[CRT_MAX_FD];
+W32_STATE CRT_FILE crt_iob[3];
+static W32_STATE struct cstream std_streams[3];
+static W32_STATE struct user_file *files[CRT_MAX_FILES];
+static W32_STATE struct crt_fd fds[CRT_MAX_FD];
 
 static struct cstream *stream_of(CRT_FILE *f)
 {
@@ -1143,7 +1143,7 @@ static int crt_putw(int v, CRT_FILE *f)
     return crt_fwrite(&v, sizeof(v), 1, f) == 1 ? v : CRT_EOF;
 }
 
-static char tmp_counter;
+static W32_STATE char tmp_counter;
 
 static char *crt_tmpnam(char *buf)
 {

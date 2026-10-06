@@ -18,28 +18,28 @@
 #define SIG_IGN 1
 #define SIG_ERR ((uintptr_t)-1)
 
-int crt_errno_value;
-int crt_fmode;
-static unsigned long crt_doserrno;
-static int crt_commode;
-static int crt_app_type;
-static int crt_mb_cur_max = 1;
-static int crt_argc;
-static char **crt_argv;
-static WCHAR **crt_wargv;
-static char **crt_environ;
-static WCHAR **crt_wenviron;
-static char **crt_initenv;
-static WCHAR **crt_winitenv;
-static char *crt_acmdln;
-static WCHAR *crt_wcmdln;
-static char *crt_pgmptr;
-static WCHAR *crt_wpgmptr;
+W32_STATE int crt_errno_value;
+W32_STATE int crt_fmode;
+static W32_STATE unsigned long crt_doserrno;
+static W32_STATE int crt_commode;
+static W32_STATE int crt_app_type;
+static W32_STATE int crt_mb_cur_max = 1;
+static W32_STATE int crt_argc;
+static W32_STATE char **crt_argv;
+static W32_STATE WCHAR **crt_wargv;
+static W32_STATE char **crt_environ;
+static W32_STATE WCHAR **crt_wenviron;
+static W32_STATE char **crt_initenv;
+static W32_STATE WCHAR **crt_winitenv;
+static W32_STATE char *crt_acmdln;
+static W32_STATE WCHAR *crt_wcmdln;
+static W32_STATE char *crt_pgmptr;
+static W32_STATE WCHAR *crt_wpgmptr;
 static unsigned crt_osver = 19045, crt_winver = 0x0a00, crt_winmajor = 10, crt_winminor;
-static uintptr_t signals[32];
-static void *new_handler;
-static void *purecall_handler;
-static void *invalid_parameter_handler;
+static W32_STATE uintptr_t signals[32];
+static W32_STATE void *new_handler;
+static W32_STATE void *purecall_handler;
+static W32_STATE void *invalid_parameter_handler;
 
 void crt_set_errno(int e)
 {
@@ -380,7 +380,7 @@ static int crt_setusermatherr(void *fn)
 
 static unsigned crt_controlfp(unsigned value, unsigned mask)
 {
-    static unsigned cw = 0x9001f;
+    static W32_STATE unsigned cw = 0x9001f;
     cw = (cw & ~mask) | (value & mask);
     return cw;
 }
@@ -586,17 +586,27 @@ static int crt_putenv_s(const char *name, const char *value)
     return r ? CRT_EINVAL : 0;
 }
 
+static uint32_t system_thunk(void *arg)
+{
+    struct shell *sh = w32->ctx->sh;
+    char saved[PATH_MAX_LEN];
+    str_copy(saved, sh->cwd, sizeof(saved));
+    str_copy(sh->cwd, w32->cwd, sizeof(sh->cwd));
+    int rc = shell_exec(sh, arg);
+    str_copy(sh->cwd, saved, sizeof(sh->cwd));
+    return (uint32_t)rc;
+}
+
 static int crt_system(const char *cmd)
 {
     if (!cmd)
         return 1;
     crt_flush_all();
-    struct shell *sh = w32->ctx->sh;
-    char saved[PATH_MAX_LEN];
-    str_copy(saved, sh->cwd, sizeof(saved));
-    str_copy(sh->cwd, w32->cwd, sizeof(sh->cwd));
-    int rc = shell_exec(sh, cmd);
-    str_copy(sh->cwd, saved, sizeof(sh->cwd));
+    char *copy = kstrdup(cmd);
+    if (!copy)
+        return -1;
+    int rc = (int)w32_kernel_call(system_thunk, copy);
+    kfree(copy);
     return rc;
 }
 
@@ -626,7 +636,7 @@ static void crt_beep(unsigned freq, unsigned ms)
 static char *crt_setlocale(int category, const char *locale)
 {
     UNUSED(category);
-    static char name[32] = "C";
+    static W32_STATE char name[32] = "C";
     if (locale && *locale)
         str_copy(name, locale, sizeof(name));
     else if (locale)

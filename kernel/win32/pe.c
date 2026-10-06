@@ -30,8 +30,8 @@ struct pe_info {
     uint32_t dir_count;
 };
 
-static struct w32_image *init_order[64];
-static int init_count;
+static W32_STATE struct w32_image *init_order[64];
+static W32_STATE int init_count;
 
 static uint32_t rd32(const uint8_t *p)
 {

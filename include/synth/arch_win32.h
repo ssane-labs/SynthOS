@@ -21,5 +21,6 @@ void arch_w32_set_teb(uint32_t base);
 void arch_set_fault_handler(arch_fault_fn fn);
 void arch_set_tick_hook(void (*fn)(uint32_t eip));
 bool arch_has_sse(void);
+uint32_t arch_call_on_stack(uint32_t (*fn)(void *), void *arg, void *stack_top);
 
 #endif

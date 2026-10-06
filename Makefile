@@ -52,6 +52,11 @@ SX_BIN   := $(SX_SRC:programs/sx/%.sasm=$(BUILD)/rootfs/bin/%.sx)
 DOS_SRC  := $(wildcard programs/dos/*.asm)
 EXE_SRC  := $(wildcard programs/dos/exe/*.asm)
 DOS_BIN  := $(DOS_SRC:programs/dos/%.asm=$(BUILD)/rootfs/dos/%.com) $(EXE_SRC:programs/dos/exe/%.asm=$(BUILD)/rootfs/dos/%.exe)
+W32CC    ?= $(shell command -v i686-w64-mingw32-gcc 2>/dev/null)
+W32CXX   ?= $(if $(W32CC),$(W32CC:%gcc=%g++))
+W32_SRC  := $(wildcard programs/win32/*.c programs/win32/*.cpp)
+W32_DLL  := $(patsubst programs/win32/dll/%.c,$(BUILD)/rootfs/apps/%.dll,$(wildcard programs/win32/dll/*.c))
+W32_BIN  := $(patsubst programs/win32/%,$(BUILD)/rootfs/apps/%.exe,$(basename $(W32_SRC))) $(W32_DLL)
 ROOTFS_SRC := $(shell find rootfs -type f)
 
 TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
@@ -100,7 +105,7 @@ $(OUT)/obj/ramdisk.o: arch/x86/ramdisk.asm $(BUILD)/ramdisk.bin
 	@echo "  NASM    $<"
 	@$(NASM) -f elf32 -DRAMDISK_FILE='"$(BUILD)/ramdisk.bin"' -o $@ $<
 
-$(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(wildcard programs/sx/*)
+$(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(W32_BIN) $(wildcard programs/sx/*)
 	@mkdir -p $(BUILD)/rootfs
 	@cp -r rootfs/. $(BUILD)/rootfs/
 	@mkdir -p $(BUILD)/rootfs/home/src
@@ -122,6 +127,41 @@ $(BUILD)/rootfs/dos/%.exe: programs/dos/exe/%.asm
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -o $@ $<
 
+$(BUILD)/rootfs/apps/windll.exe: $(BUILD)/rootfs/apps/greet.dll
+
+$(BUILD)/rootfs/apps/%.dll: programs/win32/dll/%.c
+	@mkdir -p $(@D)
+ifneq ($(W32CC),)
+	@echo "  W32CC   $<"
+	@$(W32CC) -Os -s -shared -o $@ $<
+	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
+else
+	@echo "  COPY    programs/win32/prebuilt/$(@F)"
+	@cp programs/win32/prebuilt/$(@F) $@
+endif
+
+$(BUILD)/rootfs/apps/%.exe: programs/win32/%.c
+	@mkdir -p $(@D)
+ifneq ($(W32CC),)
+	@echo "  W32CC   $<"
+	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^)
+	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
+else
+	@echo "  COPY    programs/win32/prebuilt/$(@F)"
+	@cp programs/win32/prebuilt/$(@F) $@
+endif
+
+$(BUILD)/rootfs/apps/%.exe: programs/win32/%.cpp
+	@mkdir -p $(@D)
+ifneq ($(W32CC),)
+	@echo "  W32CXX  $<"
+	@$(W32CXX) -Os -s -static -o $@ $<
+	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
+else
+	@echo "  COPY    programs/win32/prebuilt/$(@F)"
+	@cp programs/win32/prebuilt/$(@F) $@
+endif
+
 $(BUILD)/tools/mkrd: tools/mkrd.c
 	@mkdir -p $(@D)
 	@echo "  HOSTCC  $<"
@@ -133,7 +173,7 @@ $(BUILD)/tools/sasm: $(SASM_SRC) $(wildcard include/synth/*.h)
 	@$(HOSTCC) $(HOSTCFLAGS) -o $@ $(SASM_SRC)
 
 tools: $(TOOLS)
-programs: $(SX_BIN) $(DOS_BIN)
+programs: $(SX_BIN) $(DOS_BIN) $(W32_BIN)
 
 run: $(IMAGE)
 	$(QEMU) -drive format=raw,file=$(IMAGE) -m 64 $(QEMU_FLAGS)

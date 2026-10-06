@@ -106,6 +106,32 @@ winpath /home/a.txt /tmp /apps/x
 C:\Users\root\a.txt
 winpath 'C:\HOME\SRC\HELLO.SASM'
 /home/src/hello.sasm
+winhello one 7; echo win=$?
+win=0
+winhello 9 > /tmp/w.txt; echo st=$?; grep -c arg /tmp/w.txt
+st=9
+winhello x | grep pi=
+pi=3.14159 e=2.71828 big=1.234568e+04
+winfiles | tail -n 2
+cwd=C:\Windows\Temp\wtest files=3
+wincpp | grep caught
+caught: boom
+wincpp | grep area | head -n 1
+square area 9.00
+echo 2 3.5 0 | wincalc | grep count
+count=2 sum=5.50 mean=2.750
+wincalc < /dev/null | grep sscanf
+sscanf: 12 30 name
+windll | head -n 1
+hello from greet.dll, 2+3=5, counter=42
+wintest crash; echo crash=$?
+crash=5
+wintest raise | grep filter
+filter saw 0xe0001234
+wintest system | grep -c Windows
+2
+wintest | grep build
+Windows 10.0 build 19045
 EOF
 
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"
