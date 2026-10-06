@@ -70,7 +70,6 @@ int run_statement(struct shell *sh, const char *stmt);
 int run_argv(struct shell *sh, int argc, char **argv);
 int script_run_text(struct shell *sh, const char *text);
 
-bool sh_interrupted(void);
 bool sh_is_command(struct shell *sh, const char *name);
 
 #endif

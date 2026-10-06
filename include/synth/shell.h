@@ -112,6 +112,7 @@ void prompt_render(struct shell *sh);
 const char *prompt_preset(const char *name);
 void prompt_presets(void (*fn)(const char *name, const char *format, void *ctx), void *ctx);
 
+bool sh_interrupted(void);
 int calc_eval(struct shell *sh, const char *expr, long *out, char *err, size_t errcap);
 void shell_banner(void);
 

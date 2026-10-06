@@ -16,13 +16,8 @@ void serial_init(void)
     outb(COM1 + 0, 0x01);
     outb(COM1 + 1, 0x00);
     outb(COM1 + 3, 0x03);
-    outb(COM1 + 2, 0xc7);
-    outb(COM1 + 4, 0x1e);
-    outb(COM1 + 0, 0xae);
-    if (inb(COM1 + 0) != 0xae)
-        return;
-    outb(COM1 + 4, 0x0f);
-    present = true;
+    outb(COM1 + 4, 0x0b);
+    present = inb(COM1 + 5) != 0xff;
 }
 
 bool serial_ready(void)
@@ -74,6 +69,11 @@ void serial_write(const char *s, size_t n)
                 put(utf[k]);
         } else if (ch >= 0x20 || ch == '\r' || ch == '\b' || ch == '\t') {
             put((char)ch);
+        } else if (ch != 0x1b && ch != '\a' && ch != 0) {
+            char utf[4];
+            size_t len = utf8_encode(codepage_to_unicode(ch), utf);
+            for (size_t k = 0; k < len; k++)
+                put(utf[k]);
         }
     }
 }

@@ -16,8 +16,9 @@ struct command {
 
 #define COMMAND(id, ...)                                                           \
     static int cmd_##id(struct shell *sh, int argc, char **argv);                  \
-    static const struct command command_##id = {__VA_ARGS__, cmd_##id};            \
-    SYNTH_REGISTER(synth_commands, struct command, command_##id)
+    static const struct command cmddef_##id = {#id, __VA_ARGS__, cmd_##id};        \
+    SYNTH_REGISTER(synth_commands, struct command, cmddef_##id);                  \
+    static int cmd_##id(struct shell *sh, int argc, char **argv)
 
 const struct command *command_find(const char *name);
 void command_foreach(void (*fn)(const struct command *cmd, void *ctx), void *ctx);
@@ -36,6 +37,6 @@ void getopt_init(struct getopt *g, int argc, char **argv);
 int getopt_next(struct getopt *g, const char *spec);
 int getopt_flags(struct shell *sh, int argc, char **argv, const char *spec, uint64_t *flags);
 
-#define OPT(c) (UINT64_C(1) << ((c) - 'A'))
+#define OPT(c) (UINT64_C(1) << ((c) & 63))
 
 #endif

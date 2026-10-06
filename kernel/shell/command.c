@@ -92,8 +92,7 @@ int getopt_flags(struct shell *sh, int argc, char **argv, const char *spec, uint
             sh_error(sh, argv[0], "invalid option -- '%c'", g.opt);
             return -1;
         }
-        if (c >= 'A' && c <= 'z')
-            *flags |= OPT(c);
+        *flags |= OPT(c);
     }
     return g.index;
 }
