@@ -473,3 +473,54 @@ COMMAND(formats, NULL, "dev", "formats", "list supported program formats")
     exec_foreach_format(print_format, sh);
     return 0;
 }
+
+COMMAND(whoami, NULL, "system", "whoami", "print the current user name")
+{
+    const char *user = sh_get(sh, "USER");
+    sh_printf(sh, "%s\n", user ? user : "root");
+    return 0;
+}
+
+COMMAND(random, "rand", "system", "random [max]", "print a random number (0..max-1)")
+{
+    long max = 0;
+    if (argc > 1 && (!str_parse_long(argv[1], &max) || max <= 0))
+        return command_usage(sh, command_find("random"));
+    uint32_t v = hal_entropy();
+    sh_printf(sh, "%u\n", max ? v % (uint32_t)max : v);
+    return 0;
+}
+
+COMMAND(cal, "calendar", "system", "cal [month [year]]", "show a calendar")
+{
+    struct rtc_time now;
+    hal_rtc(&now);
+    long month = now.month, year = now.year;
+    if ((argc > 1 && (!str_parse_long(argv[1], &month) || month < 1 || month > 12)) ||
+        (argc > 2 && (!str_parse_long(argv[2], &year) || year < 1970 || year > 2100)))
+        return command_usage(sh, command_find("cal"));
+    struct rtc_time first = {(uint16_t)year, (uint8_t)month, 1, 0, 0, 0};
+    int start = time_weekday(&first);
+    struct rtc_time next = first;
+    next.month = (uint8_t)(month % 12 + 1);
+    next.year = (uint16_t)(month == 12 ? year + 1 : year);
+    int days = (int)((time_from_rtc(&next) - time_from_rtc(&first)) / 86400);
+    sh_role(sh, ROLE_ACCENT);
+    sh_printf(sh, "      %s %ld\n", time_month_name((int)month), year);
+    sh_role(sh, ROLE_MUTED);
+    sh_printf(sh, " Su Mo Tu We Th Fr Sa\n");
+    sh_reset(sh);
+    for (int i = 0; i < start; i++)
+        sh_puts(sh, "   ");
+    for (int d = 1; d <= days; d++) {
+        bool today = d == now.day && month == now.month && year == now.year;
+        if (today)
+            sh_role(sh, ROLE_SELECTION);
+        sh_printf(sh, "%3d", d);
+        if (today)
+            sh_reset(sh);
+        if ((start + d) % 7 == 0 || d == days)
+            sh_puts(sh, "\n");
+    }
+    return 0;
+}

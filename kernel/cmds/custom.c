@@ -22,24 +22,34 @@ static void swatches(struct shell *sh, const struct theme *t)
     con_reset();
 }
 
-static void theme_row(struct shell *sh, const struct theme *t, bool current)
+static bool is_active(const struct theme *t)
 {
+    return memcmp(t->palette, theme_current()->palette, sizeof(t->palette)) == 0 &&
+           strcmp(t->name, theme_current()->name) == 0;
+}
+
+static void theme_row(struct shell *sh, const struct theme *t)
+{
+    bool current = is_active(t);
     sh_role(sh, current ? ROLE_ACCENT : ROLE_MUTED);
     sh_puts(sh, current ? " \x10 " : "   ");
     sh_role(sh, current ? ROLE_HIGHLIGHT : ROLE_TEXT);
     sh_printf(sh, "%-12s", t->name);
     sh_reset(sh);
-    swatches(sh, t);
+    int room = con_cols() - 16 - (current ? 18 : 0);
+    if (current) {
+        swatches(sh, t);
+        sh_puts(sh, "  ");
+    }
     sh_role(sh, ROLE_MUTED);
-    sh_printf(sh, "  %s\n", t->description);
+    sh_printf(sh, " %.*s\n", MAX(room, 0), t->description);
     sh_reset(sh);
 }
 
 static int theme_list(struct shell *sh)
 {
-    const char *active = theme_current()->name;
     for (size_t i = 0; i < theme_builtin_count(); i++)
-        theme_row(sh, theme_builtin(i), strcmp(active, theme_builtin(i)->name) == 0);
+        theme_row(sh, theme_builtin(i));
     struct vdir d;
     if (vfs_opendir("/etc/themes", &d) == 0) {
         struct vfs_dirent ent;
@@ -49,7 +59,7 @@ static int theme_list(struct shell *sh)
             ent.name[strlen(ent.name) - 6] = 0;
             struct theme t;
             if (theme_find(ent.name, &t) == 0)
-                theme_row(sh, &t, strcmp(active, t.name) == 0);
+                theme_row(sh, &t);
         }
         vfs_closedir(&d);
     }
@@ -65,7 +75,12 @@ static int theme_show(struct shell *sh, const struct theme *t)
     sh_printf(sh, "%s", t->name);
     sh_reset(sh);
     sh_printf(sh, " - %s\n\n", t->description);
-    if (!stream_is_console(sh->out)) {
+    if (!stream_is_console(sh->out) || !is_active(t)) {
+        if (stream_is_console(sh->out)) {
+            sh_role(sh, ROLE_MUTED);
+            sh_printf(sh, "(switch to it with 'theme %s' to see the colors)\n\n", t->name);
+            sh_reset(sh);
+        }
         char *buf = kmalloc(4096);
         if (buf) {
             theme_serialize(t, buf, 4096);

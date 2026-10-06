@@ -92,6 +92,14 @@ mem
 Memory
 date | wc -w
 5
+echo a:b:c:d | cut -d : -f 2,4
+b:d
+echo hello | tr a-z A-Z
+HELLO
+cal 2 2024 | tail -n 1
+ 25 26 27 28 29
+whoami
+root
 EOF
 
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"

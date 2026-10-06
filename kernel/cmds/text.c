@@ -539,3 +539,104 @@ COMMAND(write, NULL, "text", "write file text...", "write text into a file")
     stream_close(f);
     return 0;
 }
+
+static bool in_fields(long index, const char *spec)
+{
+    while (*spec) {
+        const char *end;
+        long lo = str_to_long(spec, &end, 10), hi = lo;
+        if (end == spec)
+            lo = 1;
+        if (*end == '-') {
+            const char *e2;
+            hi = str_to_long(end + 1, &e2, 10);
+            if (e2 == end + 1)
+                hi = 1L << 30;
+            end = e2;
+        }
+        if (index >= lo && index <= hi)
+            return true;
+        spec = *end == ',' ? end + 1 : end;
+        if (*end && *end != ',')
+            break;
+    }
+    return false;
+}
+
+COMMAND(cut, NULL, "text", "cut -f list [-d delim] [file...]", "print selected fields of each line (e.g. -f 1,3-4)")
+{
+    const char *fields = NULL;
+    char delim = '\t';
+    struct getopt g;
+    getopt_init(&g, argc, argv);
+    int c;
+    while ((c = getopt_next(&g, "f:d:")) != -1) {
+        if (c == 'f')
+            fields = g.arg;
+        else if (c == 'd' && g.arg[0])
+            delim = g.arg[0];
+        else
+            return command_usage(sh, command_find("cut"));
+    }
+    if (!fields)
+        return command_usage(sh, command_find("cut"));
+    struct lines l = {0};
+    int rc = read_lines(sh, "cut", argc, argv, g.index, &l);
+    for (size_t i = 0; i < l.count; i++) {
+        const char *p = l.items[i];
+        long index = 1;
+        bool first = true;
+        while (p) {
+            const char *next = strchr(p, delim);
+            size_t len = next ? (size_t)(next - p) : strlen(p);
+            if (in_fields(index, fields)) {
+                if (!first)
+                    stream_putc(sh->out, delim);
+                stream_write(sh->out, p, len);
+                first = false;
+            }
+            p = next ? next + 1 : NULL;
+            index++;
+        }
+        stream_putc(sh->out, '\n');
+    }
+    lines_free(&l);
+    return rc;
+}
+
+static size_t expand_set(const char *spec, char *out, size_t cap)
+{
+    size_t n = 0;
+    for (const char *p = spec; *p && n < cap; p++) {
+        if (p[1] == '-' && p[2]) {
+            for (int ch = (uint8_t)p[0]; ch <= (uint8_t)p[2] && n < cap; ch++)
+                out[n++] = (char)ch;
+            p += 2;
+        } else {
+            out[n++] = *p;
+        }
+    }
+    return n;
+}
+
+COMMAND(tr, NULL, "text", "tr [-d] set1 [set2]", "translate or delete characters (tr a-z A-Z)")
+{
+    bool del = argc > 1 && strcmp(argv[1], "-d") == 0;
+    int first = del ? 2 : 1;
+    if (argc - first < (del ? 1 : 2))
+        return command_usage(sh, command_find("tr"));
+    char from[256], to[256];
+    size_t nf = expand_set(argv[first], from, sizeof(from));
+    size_t nt = del ? 0 : expand_set(argv[first + 1], to, sizeof(to));
+    int ch;
+    while ((ch = stream_getc(sh->in)) >= 0) {
+        const char *hit = memchr(from, ch, nf);
+        if (!hit) {
+            stream_putc(sh->out, (char)ch);
+        } else if (!del && nt) {
+            size_t i = (size_t)(hit - from);
+            stream_putc(sh->out, to[i < nt ? i : nt - 1]);
+        }
+    }
+    return 0;
+}

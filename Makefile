@@ -32,6 +32,15 @@ LDFLAGS := $(if $(CROSS),,-m elf_i386) -nostdlib -T arch/x86/linker.ld $(shell $
 HOSTCFLAGS := -std=gnu11 -O2 -Wall -Wextra -Iinclude -DSYNTH_TOOL
 
 KERNEL_SRC := $(shell find kernel -name '*.c') $(wildcard arch/x86/*.c)
+ifeq ($(CONFIG_DOS),0)
+KERNEL_SRC := $(filter-out kernel/dos/%,$(KERNEL_SRC))
+endif
+ifeq ($(CONFIG_SXVM),0)
+KERNEL_SRC := $(filter-out kernel/vm/%,$(KERNEL_SRC))
+endif
+ifeq ($(CONFIG_EDITOR),0)
+KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
+endif
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm
 KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/ramdisk.o
 
@@ -51,8 +60,8 @@ all: $(IMAGE)
 $(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin
 	@echo "  IMAGE   $@"
 	@cat $^ > $@
-	@truncate -s $$(( $(IMAGE_SECTORS) * 512 )) $@
-	@echo "  ready   $@ ($$(( $$(stat -c %s $(OUT)/kernel.bin) / 1024 )) KB kernel)"
+	@dd if=/dev/zero of=$@ bs=512 count=0 seek=$(IMAGE_SECTORS) 2>/dev/null
+	@echo "  ready   $@ ($$(( $$(wc -c < $(OUT)/kernel.bin) / 1024 )) KB kernel)"
 
 $(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk
 	@mkdir -p $(@D)
