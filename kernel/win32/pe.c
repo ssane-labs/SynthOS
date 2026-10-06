@@ -465,12 +465,12 @@ struct w32_image *w32_load(const char *name, const char *search_dir, int *error)
     char norm[64];
     normalize(name, norm, sizeof(norm));
     char path[PATH_MAX_LEN];
-    if (strchr(name, '\\') || strchr(name, '/') || (name[0] && name[1] == ':')) {
+    const char *alias = builtin_alias(norm);
+    const struct w32_module_def *def = builtin_find(alias);
+    if (!def && (strchr(name, '\\') || strchr(name, '/') || (name[0] && name[1] == ':'))) {
         if (w32_path(name, path, sizeof(path)) == 0 && vfs_exists(path))
             return load_file(path, norm, error);
     }
-    const char *alias = builtin_alias(norm);
-    const struct w32_module_def *def = builtin_find(alias);
     if (def) {
         img = load_builtin(alias);
         if (img) {
@@ -485,6 +485,17 @@ struct w32_image *w32_load(const char *name, const char *search_dir, int *error)
         return load_file(path, norm, error);
     *error = ERROR_MOD_NOT_FOUND;
     return NULL;
+}
+
+void win32_install(void)
+{
+    static const char marker[] = "SynthOS built-in Windows module\n";
+    SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def) {
+        char path[PATH_MAX_LEN];
+        ksnprintf(path, sizeof(path), "/system/win32/%s", def->name);
+        if (!vfs_exists(path))
+            vfs_write_all(path, marker, sizeof(marker) - 1);
+    }
 }
 
 struct w32_image *w32_load_main(const char *path, int *error)

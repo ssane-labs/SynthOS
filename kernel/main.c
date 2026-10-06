@@ -61,6 +61,10 @@ static bool cmdline_flag(const char *cmdline, const char *flag)
     return false;
 }
 
+#if CONFIG_WIN32
+void win32_install(void);
+#endif
+
 static void mount_storage(void)
 {
     struct blockdev *data = block_find("data0");
@@ -107,6 +111,9 @@ static void mount_filesystems(const struct boot_info *bi)
     boot_step(err == 0, "Devices mounted at /dev");
     hal_fs_init();
     mount_storage();
+#if CONFIG_WIN32
+    win32_install();
+#endif
 }
 
 static void run_startup(struct shell *sh)

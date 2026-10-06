@@ -132,6 +132,10 @@ wintest system | grep -c Windows
 2
 wintest | grep build
 Windows 10.0 build 19045
+ls C:/Windows/System32 | grep -c dll
+kernel32.dll
+cd 'C:\Program Files'; pwd; cd
+/apps
 EOF
 
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"

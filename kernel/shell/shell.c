@@ -10,6 +10,7 @@
 #include <synth/string.h>
 #include <synth/time.h>
 #include <synth/vfs.h>
+#include <synth/winpath.h>
 
 #include "internal.h"
 
@@ -108,6 +109,8 @@ void sh_unset(struct shell *sh, const char *name)
 
 int sh_resolve(struct shell *sh, const char *path, char *out, size_t cap)
 {
+    if (is_alpha((uint8_t)path[0]) && path[1] == ':')
+        return winpath_to_vfs(sh->cwd, path, out, cap);
     return path_resolve(sh->cwd, path, out, cap);
 }
 
