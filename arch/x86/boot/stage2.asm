@@ -13,6 +13,7 @@ stage2:
     call enable_a20
     call enter_unreal
     call detect_memory
+    call detect_disk
 
     mov dword [lba], KERNEL_LBA
     mov word [count], 1
@@ -75,7 +76,39 @@ stage2:
     mov cr0, eax
     jmp 0x08:protected
 
+detect_disk:
+%ifndef FORCE_CHS
+    mov ah, 0x41
+    mov bx, 0x55aa
+    mov dl, [drive]
+    int 0x13
+    jc .chs
+    cmp bx, 0xaa55
+    jne .chs
+    mov byte [use_lba], 1
+    ret
+.chs:
+%endif
+    mov byte [use_lba], 0
+    mov ah, 0x08
+    mov dl, [drive]
+    push es
+    xor di, di
+    mov es, di
+    int 0x13
+    pop es
+    jc disk_error
+    and cx, 0x3f
+    movzx ecx, cx
+    mov [spt], ecx
+    movzx edx, dh
+    inc edx
+    mov [heads], edx
+    ret
+
 read_chunk:
+    cmp byte [use_lba], 0
+    je read_chunk_chs
     mov ax, [count]
     mov [dap_count], ax
     mov eax, [lba]
@@ -85,6 +118,46 @@ read_chunk:
     mov dl, [drive]
     int 0x13
     jc disk_error
+    ret
+
+read_chunk_chs:
+    push es
+    mov ax, BUFFER_SEG
+    mov es, ax
+    xor bx, bx
+    mov eax, [lba]
+    mov [chs_lba], eax
+    mov cx, [count]
+.sector:
+    push cx
+    mov si, 3
+.retry:
+    mov eax, [chs_lba]
+    xor edx, edx
+    div dword [spt]
+    mov cl, dl
+    inc cl
+    xor edx, edx
+    div dword [heads]
+    mov ch, al
+    shl ah, 6
+    or cl, ah
+    mov dh, dl
+    mov dl, [drive]
+    mov ax, 0x0201
+    int 0x13
+    jnc .ok
+    xor ah, ah
+    int 0x13
+    dec si
+    jnz .retry
+    jmp disk_error
+.ok:
+    pop cx
+    add bx, 512
+    inc dword [chs_lba]
+    loop .sector
+    pop es
     ret
 
 enable_a20:
@@ -140,7 +213,67 @@ detect_memory:
     cmp bp, MMAP_MAX
     jb .loop
 .done:
+%ifdef FORCE_E801
+    xor bp, bp
+    mov di, MMAP_ADDR
+%endif
+    test bp, bp
+    jnz .store
+    int 0x12
+    movzx eax, ax
+    shl eax, 10
+    xor ebx, ebx
+    call add_region
+    mov ax, 0xe801
+    xor cx, cx
+    xor dx, dx
+    int 0x15
+    jc .e88
+    jcxz .use_ax
+    mov ax, cx
+    mov bx, dx
+.use_ax:
+    movzx ecx, bx
+    shl ecx, 16
+    movzx eax, ax
+    shl eax, 10
+    cmp eax, 0x3c00 << 10
+    jne .split
+    add eax, ecx
+    xor ecx, ecx
+.split:
+    push ecx
+    mov ebx, 0x100000
+    call add_region
+    pop eax
+    mov ebx, 0x1000000
+    call add_region
+    jmp .store
+.e88:
+    mov ah, 0x88
+    int 0x15
+    jc .store
+    movzx eax, ax
+    shl eax, 10
+    mov ebx, 0x100000
+    call add_region
+.store:
     mov [mmap_count], bp
+    ret
+
+; appends a usable region (ebx = base, eax = length) to the memory map at di
+add_region:
+    test eax, eax
+    jz .skip
+    mov [di], ebx
+    mov dword [di + 4], 0
+    mov [di + 8], eax
+    mov dword [di + 12], 0
+    mov dword [di + 16], 1
+    mov dword [di + 20], 1
+    add di, 24
+    inc bp
+.skip:
     ret
 
 bad_kernel:
@@ -204,6 +337,10 @@ dap_lba:
     dq 0
 
 drive:          db 0
+use_lba:        db 0
+spt:            dd 0
+heads:          dd 0
+chs_lba:        dd 0
 mmap_count:     dw 0
 count:          dw 0
 lba:            dd 0

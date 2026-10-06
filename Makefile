@@ -74,12 +74,12 @@ $(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin
 $(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
-	@$(NASM) -f bin -Iarch/x86/boot/ -DIMAGE_SECTORS=$(IMAGE_SECTORS) -o $@ $<
+	@$(NASM) -f bin -Iarch/x86/boot/ -DIMAGE_SECTORS=$(IMAGE_SECTORS) $(BOOT_DEFS) -o $@ $<
 
 $(OUT)/stage2.bin: arch/x86/boot/stage2.asm arch/x86/boot/layout.inc
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
-	@$(NASM) -f bin -Iarch/x86/boot/ -o $@ $<
+	@$(NASM) -f bin -Iarch/x86/boot/ $(BOOT_DEFS) -o $@ $<
 
 $(OUT)/kernel.bin: $(OUT)/kernel.elf
 	@$(OBJCOPY) -O binary $< $@

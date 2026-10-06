@@ -1,4 +1,5 @@
 ; SynthOS master boot record: loads stage2 from the sectors that follow it.
+; Uses BIOS LBA extensions when present and falls back to CHS on old BIOSes.
 
 %include "layout.inc"
 
@@ -16,36 +17,84 @@ start:
     cld
     mov [boot_drive], dl
 
+%ifndef FORCE_CHS
     mov ah, 0x41
     mov bx, 0x55aa
     int 0x13
-    jc .no_lba
+    jc .chs
     cmp bx, 0xaa55
-    jne .no_lba
+    jne .chs
 
     mov si, dap
     mov ah, 0x42
     mov dl, [boot_drive]
     int 0x13
-    jc .disk_error
+    jc disk_error
+    jmp .loaded
+%endif
 
+.chs:
+    mov ah, 0x08
+    mov dl, [boot_drive]
+    xor di, di
+    int 0x13
+    jc disk_error
+    and cx, 0x3f
+    mov [spt], cx
+    movzx dx, dh
+    inc dx
+    mov [heads], dx
+
+    mov bx, STAGE2_ADDR
+    mov word [lba], 1
+.next:
+    call read_chs
+    add bx, 512
+    inc word [lba]
+    cmp word [lba], STAGE2_SECTORS + 1
+    jbe .next
+
+.loaded:
     mov dl, [boot_drive]
     jmp 0x0000:STAGE2_ADDR
 
-.no_lba:
-    mov si, msg_lba
-    jmp fail
-.disk_error:
-    mov si, msg_disk
+; reads sector [lba] to es:bx with CHS addressing
+read_chs:
+    mov di, 3
+.retry:
+    mov ax, [lba]
+    xor dx, dx
+    div word [spt]
+    mov cl, dl
+    inc cl
+    xor dx, dx
+    div word [heads]
+    mov ch, al
+    shl ah, 6
+    or cl, ah
+    mov dh, dl
+    mov dl, [boot_drive]
+    mov ax, 0x0201
+    int 0x13
+    jnc .ok
+    xor ah, ah
+    int 0x13
+    dec di
+    jnz .retry
+    jmp disk_error
+.ok:
+    ret
 
-fail:
+disk_error:
+    mov si, msg_disk
+.print:
     lodsb
     test al, al
     jz .halt
     mov ah, 0x0e
     mov bx, 0x0007
     int 0x10
-    jmp fail
+    jmp .print
 .halt:
     cli
     hlt
@@ -58,7 +107,9 @@ dap:
     dq 1
 
 boot_drive: db 0
-msg_lba:    db "SynthOS: BIOS without LBA disk support", 0
+spt:        dw 0
+heads:      dw 0
+lba:        dw 0
 msg_disk:   db "SynthOS: cannot read boot disk", 0
 
 times 446 - ($ - $$) db 0
