@@ -16,6 +16,8 @@ static uint32_t *tables[1024];
 static uint32_t heap_phys;
 static uint32_t heap_bytes;
 static bool enabled;
+static uint32_t mmio_tables[16][1024] __attribute__((aligned(4096)));
+static int mmio_used;
 
 static uint32_t phys_of(const void *ptr)
 {
@@ -30,17 +32,21 @@ static inline void invlpg(uint32_t vaddr)
     __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
 }
 
-void *paging_init(uint32_t start, uint32_t end, size_t *size)
+void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size)
 {
+    table_start = ALIGN_UP(table_start, 4096u);
     start = ALIGN_UP(start, 4096u);
     end &= ~4095u;
     uint32_t bytes = MIN(end - start, HEAP_VIRT_LIMIT);
     uint32_t count = (bytes + 0x3fffffu) / 0x400000u + 1;
-    if (start + count * 4096u > IDENTITY_LIMIT)
+    uint32_t tables_end = table_start + count * 4096u;
+    if (tables_end > IDENTITY_LIMIT || tables_end > table_limit)
         return NULL;
-    uint32_t *carve = (uint32_t *)start;
+    uint32_t *carve = (uint32_t *)table_start;
     memset(carve, 0, count * 4096u);
-    heap_phys = start + count * 4096u;
+    if (start < tables_end && end > table_start)
+        start = tables_end;
+    heap_phys = start;
     heap_bytes = MIN(end - heap_phys, HEAP_VIRT_LIMIT) & ~4095u;
 
     tables[0] = carve;
@@ -104,6 +110,33 @@ int vmm_map(uintptr_t vaddr, void *memory, size_t size)
         invlpg(v);
     }
     return 0;
+}
+
+void *vmm_map_phys(uint32_t phys, size_t size)
+{
+    static uint32_t next = VMM_USER_END;
+    uint32_t offset = phys & 4095u, base = phys - offset;
+    size = ALIGN_UP(size + offset, 4096u);
+    if (!enabled)
+        return (void *)(uintptr_t)phys;
+    if (next + size > KERNEL_HEAP_VIRT || next + size < next)
+        return NULL;
+    uint32_t virt = next;
+    for (uint32_t off = 0; off < size; off += 4096u) {
+        uint32_t v = virt + off;
+        uint32_t pde = v >> 22;
+        if (!tables[pde]) {
+            if (mmio_used == (int)ARRAY_SIZE(mmio_tables))
+                return NULL;
+            uint32_t *t = mmio_tables[mmio_used++];
+            tables[pde] = t;
+            page_dir[pde] = (uint32_t)t | PTE_PRESENT | PTE_WRITE;
+        }
+        tables[pde][(v >> 12) & 1023] = (base + off) | PTE_PRESENT | PTE_WRITE;
+        invlpg(v);
+    }
+    next += size;
+    return (void *)(uintptr_t)(virt + offset);
 }
 
 void vmm_unmap(uintptr_t vaddr, size_t size)

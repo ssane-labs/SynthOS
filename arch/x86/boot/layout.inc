@@ -12,6 +12,9 @@ MMAP_ADDR       equ 0x5000
 MMAP_MAX        equ 64
 BOOT_MAGIC      equ 0x5359424f
 KERNEL_MAGIC    equ 0x4b4e5953
+ESP_LBA         equ 4096
+ESP_SECTORS     equ 4096
+DATA_LBA        equ ESP_LBA + ESP_SECTORS
 
 %ifndef IMAGE_SECTORS
 IMAGE_SECTORS   equ 8192

@@ -1,3 +1,4 @@
+#include <synth/font.h>
 #include <synth/hal.h>
 #include <synth/string.h>
 
@@ -68,8 +69,40 @@ static struct display vga = {
     .cursor_shape = vga_cursor_shape,
 };
 
+static void seq(uint8_t reg, uint8_t value)
+{
+    outb(0x3c4, reg);
+    outb(0x3c5, value);
+}
+
+static void graphics(uint8_t reg, uint8_t value)
+{
+    outb(0x3ce, reg);
+    outb(0x3cf, value);
+}
+
+void vga_load_font(int codepage)
+{
+    const uint8_t(*font)[16] = font_for_codepage(codepage);
+    volatile uint8_t *plane = (volatile uint8_t *)0xa0000;
+    seq(0x02, 0x04);
+    seq(0x04, 0x07);
+    graphics(0x04, 0x02);
+    graphics(0x05, 0x00);
+    graphics(0x06, 0x00);
+    for (int ch = 0; ch < 256; ch++)
+        for (int row = 0; row < 32; row++)
+            plane[ch * 32 + row] = row < 16 ? font[ch][row] : 0;
+    seq(0x02, 0x03);
+    seq(0x04, 0x03);
+    graphics(0x04, 0x00);
+    graphics(0x05, 0x10);
+    graphics(0x06, 0x0e);
+}
+
 void vga_init(void)
 {
+    vga_load_font(437);
     for (uint8_t i = 0; i < 16; i++)
         attribute(i, i);
     inb(0x3da);

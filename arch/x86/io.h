@@ -68,7 +68,16 @@ struct x86_bootinfo {
     uint32_t mmap_count;
     uint32_t kernel_sectors;
     uint32_t kernel_lba;
+    uint32_t flags;
+    uint32_t fb_addr;
+    uint32_t fb_width;
+    uint32_t fb_height;
+    uint32_t fb_pitch;
+    uint32_t fb_bpp;
+    uint8_t fb_shift[4];
 };
+
+#define BOOT_UEFI 0x1u
 
 struct e820_entry {
     uint64_t base;
@@ -119,11 +128,12 @@ bool serial_ready(void);
 int serial_getc(void);
 void serial_write(const char *s, size_t n);
 void vga_init(void);
+void vga_load_font(int codepage);
 struct display *vga_display(void);
 struct display *serial_display(void);
 int serial_key(void);
 const struct x86_bootinfo *x86_boot_info(void);
 void ata_init(void);
-void *paging_init(uint32_t start, uint32_t end, size_t *size);
+void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size);
 
 #endif

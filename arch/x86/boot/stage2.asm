@@ -68,6 +68,7 @@ stage2:
     mov eax, [kernel_sectors]
     mov [BOOTINFO_ADDR + 16], eax
     mov dword [BOOTINFO_ADDR + 20], KERNEL_LBA
+    mov dword [BOOTINFO_ADDR + 24], 0
 
     cli
     lgdt [gdt_desc]

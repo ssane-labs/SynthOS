@@ -62,14 +62,48 @@ ROOTFS_SRC := $(shell find rootfs -type f)
 TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
+.DELETE_ON_ERROR:
 .PHONY: all run run-serial test clean tools programs
 all: $(IMAGE)
 
-$(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin
+ESP_LBA     := 4096
+ESP_SECTORS := 4096
+EFICC       ?= $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
+HAVE_ESP    := $(and $(shell command -v mkfs.fat 2>/dev/null),$(shell command -v mcopy 2>/dev/null))
+
+$(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin $(if $(HAVE_ESP),$(OUT)/esp.img)
 	@echo "  IMAGE   $@"
-	@cat $^ > $@
+	@test $$(( $$(wc -c < $(OUT)/kernel.bin) / 512 + 17 )) -le $(ESP_LBA) || (echo "kernel too large for the disk layout"; exit 1)
+	@cat $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin > $@
 	@dd if=/dev/zero of=$@ bs=512 count=0 seek=$(IMAGE_SECTORS) 2>/dev/null
-	@echo "  ready   $@ ($$(( $$(wc -c < $(OUT)/kernel.bin) / 1024 )) KB kernel)"
+ifneq ($(HAVE_ESP),)
+	@dd if=$(OUT)/esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
+	@echo "  ready   $@ ($$(( $$(wc -c < $(OUT)/kernel.bin) / 1024 )) KB kernel, BIOS + UEFI)"
+else
+	@echo "  ready   $@ ($$(( $$(wc -c < $(OUT)/kernel.bin) / 1024 )) KB kernel, BIOS only: install dosfstools and mtools for UEFI)"
+endif
+
+$(OUT)/esp.img: $(OUT)/kernel.bin $(BUILD)/efi/BOOTX64.EFI
+	@echo "  ESP     $@"
+	@rm -f $@
+	@mkfs.fat -F 12 -n SYNTHOS -C $@ $$(( $(ESP_SECTORS) / 2 )) >/dev/null
+	@mmd -i $@ ::/EFI ::/EFI/BOOT ::/SYNTHOS
+	@mcopy -i $@ $(BUILD)/efi/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	@mcopy -i $@ $(OUT)/kernel.bin ::/SYNTHOS/KERNEL.BIN
+
+$(BUILD)/efi/BOOTX64.EFI: arch/x86/efi/loader.c arch/x86/efi/trampoline.asm arch/x86/efi/blob.asm
+	@mkdir -p $(@D)
+ifneq ($(EFICC),)
+	@echo "  EFI     $@"
+	@$(NASM) -f bin -o $(BUILD)/efi/trampoline.bin arch/x86/efi/trampoline.asm
+	@$(NASM) -f win64 -DTRAMPOLINE_FILE='"$(BUILD)/efi/trampoline.bin"' -o $(BUILD)/efi/blob.o arch/x86/efi/blob.asm
+	@$(EFICC) -std=gnu11 -O2 -Wall -Wextra -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
+	    -nostdlib -shared -Wl,--subsystem,10 -e efi_main -o $@ arch/x86/efi/loader.c $(BUILD)/efi/blob.o
+	@mkdir -p arch/x86/efi/prebuilt && cp $@ arch/x86/efi/prebuilt/
+else
+	@echo "  COPY    arch/x86/efi/prebuilt/BOOTX64.EFI"
+	@cp arch/x86/efi/prebuilt/BOOTX64.EFI $@
+endif
 
 $(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk
 	@mkdir -p $(@D)
