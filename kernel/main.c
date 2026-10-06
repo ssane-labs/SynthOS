@@ -169,8 +169,6 @@ void kmain(const struct boot_info *bi)
         hal_poweroff();
     }
 
-    if (con_is_grid() && !quiet)
-        hal_sleep_ms(150);
     if (con_is_grid())
         con_clear();
     show_welcome(sh);

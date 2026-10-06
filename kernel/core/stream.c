@@ -27,7 +27,19 @@ struct file_ctx {
     char buf[512];
     size_t len;
     size_t pos;
+    char out[1024];
+    size_t out_len;
 };
+
+static long file_flush(struct file_ctx *f)
+{
+    long n = 0;
+    if (f->out_len) {
+        n = vfs_write(f->file, f->out, f->out_len);
+        f->out_len = 0;
+    }
+    return n < 0 ? n : 0;
+}
 
 static long console_read(struct stream *s, void *buf, size_t n)
 {
@@ -156,6 +168,7 @@ void stream_buffer_rewind(struct stream *s)
 static long file_read(struct stream *s, void *buf, size_t n)
 {
     struct file_ctx *f = s->ctx;
+    file_flush(f);
     if (f->pos >= f->len) {
         if (n >= sizeof(f->buf))
             return vfs_read(f->file, buf, n);
@@ -173,12 +186,23 @@ static long file_read(struct stream *s, void *buf, size_t n)
 
 static long file_write(struct stream *s, const void *buf, size_t n)
 {
-    return vfs_write(((struct file_ctx *)s->ctx)->file, buf, n);
+    struct file_ctx *f = s->ctx;
+    if (f->out_len + n > sizeof(f->out)) {
+        long err = file_flush(f);
+        if (err < 0)
+            return err;
+        if (n >= sizeof(f->out))
+            return vfs_write(f->file, buf, n);
+    }
+    memcpy(f->out + f->out_len, buf, n);
+    f->out_len += n;
+    return (long)n;
 }
 
 static void file_close(struct stream *s)
 {
     struct file_ctx *f = s->ctx;
+    file_flush(f);
     vfs_close(f->file);
     kfree(f);
 }

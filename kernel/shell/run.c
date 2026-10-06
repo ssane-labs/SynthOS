@@ -2,6 +2,7 @@
 #include <synth/error.h>
 #include <synth/exec.h>
 #include <synth/fmt.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/string.h>
@@ -22,7 +23,12 @@ static const char *alias_stack[8];
 
 bool sh_interrupted(void)
 {
-    input_poll();
+    static uint64_t last;
+    uint64_t now = hal_ticks_ms();
+    if (now - last >= 25) {
+        last = now;
+        input_poll();
+    }
     return input_break_pending();
 }
 

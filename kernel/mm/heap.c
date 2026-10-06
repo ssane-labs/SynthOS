@@ -19,7 +19,9 @@ struct block {
 
 static uint8_t *heap_start;
 static uint8_t *heap_end;
-static struct block *free_list;
+#define BIN_COUNT 28
+
+static struct block *bins[BIN_COUNT];
 static size_t used_bytes;
 static size_t peak_bytes;
 
@@ -29,13 +31,22 @@ static struct block *next_phys(struct block *b)
     return n < heap_end ? (struct block *)n : NULL;
 }
 
+static int bin_of(size_t size)
+{
+    int bin = 0;
+    for (size >>= 5; size && bin < BIN_COUNT - 1; size >>= 1)
+        bin++;
+    return bin;
+}
+
 static void free_insert(struct block *b)
 {
+    struct block **head = &bins[bin_of(b->size)];
     b->prev_free = NULL;
-    b->next_free = free_list;
-    if (free_list)
-        free_list->prev_free = b;
-    free_list = b;
+    b->next_free = *head;
+    if (*head)
+        (*head)->prev_free = b;
+    *head = b;
 }
 
 static void free_remove(struct block *b)
@@ -43,7 +54,7 @@ static void free_remove(struct block *b)
     if (b->prev_free)
         b->prev_free->next_free = b->next_free;
     else
-        free_list = b->next_free;
+        bins[bin_of(b->size)] = b->next_free;
     if (b->next_free)
         b->next_free->prev_free = b->prev_free;
 }
@@ -59,7 +70,7 @@ void heap_init(void *base, size_t size)
     b->prev_phys = NULL;
     b->magic = HEAP_MAGIC;
     b->used = 0;
-    free_list = NULL;
+    memset(bins, 0, sizeof(bins));
     free_insert(b);
 }
 
@@ -85,13 +96,12 @@ void *kmalloc(size_t size)
         size = 1;
     size = ALIGN_UP(size, HEAP_ALIGN);
     struct block *best = NULL;
-    for (struct block *b = free_list; b; b = b->next_free) {
-        if (b->size >= size && (!best || b->size < best->size)) {
+    int bin = bin_of(size);
+    for (struct block *b = bins[bin]; b && !best; b = b->next_free)
+        if (b->size >= size)
             best = b;
-            if (b->size - size < MIN_SPLIT)
-                break;
-        }
-    }
+    while (!best && ++bin < BIN_COUNT)
+        best = bins[bin];
     if (!best)
         return NULL;
     free_remove(best);

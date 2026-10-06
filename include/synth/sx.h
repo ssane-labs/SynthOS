@@ -7,7 +7,7 @@
 #define SX_VERSION 1
 #define SX_HEADER_SIZE 24
 #define SX_LOAD_BASE 0x1000u
-#define SX_DEFAULT_MEM (256u * 1024u)
+#define SX_DEFAULT_MEM (1024u * 1024u)
 #define SX_MIN_STACK (16u * 1024u)
 #define SX_REG_COUNT 16
 #define SX_REG_NONE 16

@@ -1,5 +1,50 @@
 #include <synth/string.h>
 
+#if defined(__i386__) || defined(__x86_64__)
+
+void *memcpy(void *dst, const void *src, size_t n)
+{
+    void *d = dst;
+    size_t words = n / sizeof(long), rest = n % sizeof(long);
+#if defined(__x86_64__)
+    __asm__ volatile("rep movsq" : "+D"(d), "+S"(src), "+c"(words) : : "memory");
+#else
+    __asm__ volatile("rep movsl" : "+D"(d), "+S"(src), "+c"(words) : : "memory");
+#endif
+    __asm__ volatile("rep movsb" : "+D"(d), "+S"(src), "+c"(rest) : : "memory");
+    return dst;
+}
+
+void *memmove(void *dst, const void *src, size_t n)
+{
+    if (dst <= src || (const uint8_t *)dst >= (const uint8_t *)src + n)
+        return memcpy(dst, src, n);
+    void *d = (uint8_t *)dst + n - 1;
+    const void *s = (const uint8_t *)src + n - 1;
+    __asm__ volatile("std; rep movsb; cld" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    return dst;
+}
+
+void *memset(void *dst, int c, size_t n)
+{
+    void *d = dst;
+    unsigned long v = (uint8_t)c;
+    v |= v << 8;
+    v |= v << 16;
+#if defined(__x86_64__)
+    v |= v << 32;
+    size_t words = n / 8, rest = n % 8;
+    __asm__ volatile("rep stosq" : "+D"(d), "+c"(words) : "a"(v) : "memory");
+#else
+    size_t words = n / 4, rest = n % 4;
+    __asm__ volatile("rep stosl" : "+D"(d), "+c"(words) : "a"(v) : "memory");
+#endif
+    __asm__ volatile("rep stosb" : "+D"(d), "+c"(rest) : "a"(v) : "memory");
+    return dst;
+}
+
+#else
+
 void *memcpy(void *dst, const void *src, size_t n)
 {
     uint8_t *d = dst;
@@ -50,6 +95,8 @@ void *memset(void *dst, int c, size_t n)
         *d++ = v;
     return dst;
 }
+
+#endif
 
 int memcmp(const void *a, const void *b, size_t n)
 {

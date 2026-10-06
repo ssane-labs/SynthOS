@@ -372,125 +372,151 @@ static void syscall(struct vm *vm, uint32_t num)
     }
 }
 
-static bool cond(struct vm *vm, uint8_t op)
-{
-    switch (op) {
-    case SX_JMP: return true;
-    case SX_JZ: return vm->zf;
-    case SX_JNZ: return !vm->zf;
-    case SX_JL: return vm->lf;
-    case SX_JGE: return !vm->lf;
-    case SX_JG: return !vm->lf && !vm->zf;
-    case SX_JLE: return vm->lf || vm->zf;
-    case SX_JB: return vm->bf;
-    case SX_JAE: return !vm->bf;
-    case SX_JA: return !vm->bf && !vm->zf;
-    case SX_JBE: return vm->bf || vm->zf;
-    default: return false;
-    }
-}
-
 static void run(struct vm *vm)
 {
+    static const void *const table[SX_OPCODE_COUNT] = {
+        [SX_NOP] = &&op_nop,   [SX_HALT] = &&op_halt, [SX_MOV] = &&op_mov,   [SX_ADD] = &&op_add,
+        [SX_SUB] = &&op_sub,   [SX_MUL] = &&op_mul,   [SX_DIV] = &&op_div,   [SX_DIVU] = &&op_divu,
+        [SX_MOD] = &&op_mod,   [SX_MODU] = &&op_modu, [SX_AND] = &&op_and,   [SX_OR] = &&op_or,
+        [SX_XOR] = &&op_xor,   [SX_SHL] = &&op_shl,   [SX_SHR] = &&op_shr,   [SX_SAR] = &&op_sar,
+        [SX_NOT] = &&op_not,   [SX_NEG] = &&op_neg,   [SX_CMP] = &&op_cmp,   [SX_JMP] = &&op_jmp,
+        [SX_JZ] = &&op_jz,     [SX_JNZ] = &&op_jnz,   [SX_JL] = &&op_jl,     [SX_JGE] = &&op_jge,
+        [SX_JG] = &&op_jg,     [SX_JLE] = &&op_jle,   [SX_JB] = &&op_jb,     [SX_JAE] = &&op_jae,
+        [SX_JA] = &&op_ja,     [SX_JBE] = &&op_jbe,   [SX_CALL] = &&op_call, [SX_RET] = &&op_ret,
+        [SX_PUSH] = &&op_push, [SX_POP] = &&op_pop,   [SX_LD] = &&op_ld,     [SX_LDH] = &&op_ldh,
+        [SX_LDB] = &&op_ldb,   [SX_ST] = &&op_st,     [SX_STH] = &&op_sth,   [SX_STB] = &&op_stb,
+        [SX_SYS] = &&op_sys,   [SX_SXB] = &&op_sxb,   [SX_SXH] = &&op_sxh,
+    };
     uint32_t *r = vm->r;
+    uint8_t *mem = vm->mem;
     uint32_t budget = VM_POLL_INTERVAL;
-    while (vm->running) {
-        if (UNLIKELY(--budget == 0)) {
-            budget = VM_POLL_INTERVAL;
-            input_poll();
-            if (input_break_pending()) {
-                vm->status = VM_EXIT_BREAK;
-                break;
-            }
+    uint32_t next = vm->pc, imm = 0, src = 0, base = 0;
+    uint8_t a = 0, b = 0, op = 0;
+    bool imm_flag = false;
+    uint8_t *m;
+
+#define NEXT goto dispatch
+#define SRC (imm_flag ? imm : r[b & 15])
+#define BRANCH(cond)                                                                   \
+    do {                                                                               \
+        if (cond)                                                                      \
+            next = imm_flag ? imm : r[a];                                              \
+        NEXT;                                                                          \
+    } while (0)
+
+dispatch:
+    vm->pc = next;
+    if (UNLIKELY(!vm->running))
+        return;
+    if (UNLIKELY(--budget == 0)) {
+        budget = VM_POLL_INTERVAL;
+        input_poll();
+        if (input_break_pending()) {
+            vm->status = VM_EXIT_BREAK;
+            return;
         }
-        if (UNLIKELY(vm->pc < SX_LOAD_BASE || vm->pc > vm->size - 4)) {
+    }
+    if (UNLIKELY(vm->pc < SX_LOAD_BASE || vm->pc > vm->size - 8)) {
+        if (vm->pc < SX_LOAD_BASE || vm->pc > vm->size - 4) {
             vm_fault(vm, "jump outside program memory (pc 0x%x)", vm->pc);
-            break;
+            return;
         }
-        const uint8_t *code = vm->mem + vm->pc;
-        uint8_t op = code[0] & 0x7f;
-        bool imm_flag = code[0] & SX_IMM_FLAG;
-        uint8_t a = code[1] & 15, b = code[2], c = code[3] & 15;
-        uint32_t size = 4, imm = 0;
-        enum sx_shape shape = op < SX_OPCODE_COUNT ? sx_ops[op].shape : SHAPE_NONE;
+    }
+    {
+        const uint8_t *code = mem + vm->pc;
+        op = code[0] & 0x7f;
+        imm_flag = code[0] & SX_IMM_FLAG;
+        a = code[1] & 15;
+        b = code[2];
+        uint8_t c = code[3] & 15;
+        if (UNLIKELY(op >= SX_OPCODE_COUNT))
+            goto op_illegal;
+        enum sx_shape shape = sx_ops[op].shape;
         if (imm_flag || shape == SHAPE_LOAD || shape == SHAPE_STORE || shape == SHAPE_SYS) {
             if (UNLIKELY(vm->pc > vm->size - 8)) {
                 vm_fault(vm, "truncated instruction at 0x%x", vm->pc);
-                break;
+                return;
             }
             imm = rd32(code + 4);
-            size = 8;
+            next = vm->pc + 8;
+        } else {
+            next = vm->pc + 4;
         }
-        uint32_t next = vm->pc + size;
-        uint32_t src = imm_flag ? imm : r[c];
-        uint32_t base = b == SX_REG_NONE ? 0 : r[b & 15];
-        uint8_t *m;
-        switch (op) {
-        case SX_NOP: break;
-        case SX_HALT: vm->running = false; vm->status = (int)r[0]; break;
-        case SX_MOV: r[a] = imm_flag ? imm : r[b & 15]; break;
-        case SX_ADD: r[a] = r[b & 15] + src; break;
-        case SX_SUB: r[a] = r[b & 15] - src; break;
-        case SX_MUL: r[a] = r[b & 15] * src; break;
-        case SX_DIV:
-        case SX_MOD:
-            if (src == 0 || ((int32_t)src == -1 && r[b & 15] == 0x80000000u)) {
-                vm_fault(vm, "division by zero at 0x%x", vm->pc);
-                break;
-            }
-            r[a] = op == SX_DIV ? (uint32_t)((int32_t)r[b & 15] / (int32_t)src)
-                                : (uint32_t)((int32_t)r[b & 15] % (int32_t)src);
-            break;
-        case SX_DIVU:
-        case SX_MODU:
-            if (src == 0) {
-                vm_fault(vm, "division by zero at 0x%x", vm->pc);
-                break;
-            }
-            r[a] = op == SX_DIVU ? r[b & 15] / src : r[b & 15] % src;
-            break;
-        case SX_AND: r[a] = r[b & 15] & src; break;
-        case SX_OR: r[a] = r[b & 15] | src; break;
-        case SX_XOR: r[a] = r[b & 15] ^ src; break;
-        case SX_SHL: r[a] = r[b & 15] << (src & 31); break;
-        case SX_SHR: r[a] = r[b & 15] >> (src & 31); break;
-        case SX_SAR: r[a] = (uint32_t)((int32_t)r[b & 15] >> (src & 31)); break;
-        case SX_NOT: r[a] = ~r[b & 15]; break;
-        case SX_NEG: r[a] = -r[b & 15]; break;
-        case SX_SXB: r[a] = (uint32_t)(int32_t)(int8_t)r[b & 15]; break;
-        case SX_SXH: r[a] = (uint32_t)(int32_t)(int16_t)r[b & 15]; break;
-        case SX_CMP: {
-            uint32_t x = r[a], y = imm_flag ? imm : r[b & 15];
-            vm->zf = x == y;
-            vm->lf = (int32_t)x < (int32_t)y;
-            vm->bf = x < y;
-            break;
-        }
-        case SX_JMP: case SX_JZ: case SX_JNZ: case SX_JL: case SX_JGE: case SX_JG:
-        case SX_JLE: case SX_JB: case SX_JAE: case SX_JA: case SX_JBE:
-            if (cond(vm, op))
-                next = imm_flag ? imm : r[a];
-            break;
-        case SX_CALL:
-            push(vm, next);
-            next = imm_flag ? imm : r[a];
-            break;
-        case SX_RET: next = pop(vm); break;
-        case SX_PUSH: push(vm, imm_flag ? imm : r[a]); break;
-        case SX_POP: r[a] = pop(vm); break;
-        case SX_LD: if ((m = ptr(vm, base + imm, 4))) r[a] = rd32(m); break;
-        case SX_LDH: if ((m = ptr(vm, base + imm, 2))) r[a] = (uint32_t)(m[0] | m[1] << 8); break;
-        case SX_LDB: if ((m = ptr(vm, base + imm, 1))) r[a] = m[0]; break;
-        case SX_ST: if ((m = ptr(vm, base + imm, 4))) wr32(m, r[a]); break;
-        case SX_STH: if ((m = ptr(vm, base + imm, 2))) m[0] = (uint8_t)r[a], m[1] = (uint8_t)(r[a] >> 8); break;
-        case SX_STB: if ((m = ptr(vm, base + imm, 1))) m[0] = (uint8_t)r[a]; break;
-        case SX_SYS: syscall(vm, imm); break;
-        default:
-            vm_fault(vm, "illegal instruction 0x%02x at 0x%x", code[0], vm->pc);
-            break;
-        }
-        vm->pc = next;
+        src = imm_flag ? imm : r[c];
+        base = b == SX_REG_NONE ? 0 : r[b & 15];
+        goto *table[op];
     }
+
+op_nop: NEXT;
+op_halt: vm->running = false; vm->status = (int)r[0]; return;
+op_mov: r[a] = SRC; NEXT;
+op_add: r[a] = r[b & 15] + src; NEXT;
+op_sub: r[a] = r[b & 15] - src; NEXT;
+op_mul: r[a] = r[b & 15] * src; NEXT;
+op_div:
+op_mod:
+    if (src == 0 || ((int32_t)src == -1 && r[b & 15] == 0x80000000u)) {
+        vm_fault(vm, "division by zero at 0x%x", vm->pc);
+        return;
+    }
+    r[a] = op == SX_DIV ? (uint32_t)((int32_t)r[b & 15] / (int32_t)src) : (uint32_t)((int32_t)r[b & 15] % (int32_t)src);
+    NEXT;
+op_divu:
+op_modu:
+    if (src == 0) {
+        vm_fault(vm, "division by zero at 0x%x", vm->pc);
+        return;
+    }
+    r[a] = op == SX_DIVU ? r[b & 15] / src : r[b & 15] % src;
+    NEXT;
+op_and: r[a] = r[b & 15] & src; NEXT;
+op_or: r[a] = r[b & 15] | src; NEXT;
+op_xor: r[a] = r[b & 15] ^ src; NEXT;
+op_shl: r[a] = r[b & 15] << (src & 31); NEXT;
+op_shr: r[a] = r[b & 15] >> (src & 31); NEXT;
+op_sar: r[a] = (uint32_t)((int32_t)r[b & 15] >> (src & 31)); NEXT;
+op_not: r[a] = ~r[b & 15]; NEXT;
+op_neg: r[a] = -r[b & 15]; NEXT;
+op_sxb: r[a] = (uint32_t)(int32_t)(int8_t)r[b & 15]; NEXT;
+op_sxh: r[a] = (uint32_t)(int32_t)(int16_t)r[b & 15]; NEXT;
+op_cmp: {
+    uint32_t x = r[a], y = SRC;
+    vm->zf = x == y;
+    vm->lf = (int32_t)x < (int32_t)y;
+    vm->bf = x < y;
+    NEXT;
+}
+op_jmp: BRANCH(true);
+op_jz: BRANCH(vm->zf);
+op_jnz: BRANCH(!vm->zf);
+op_jl: BRANCH(vm->lf);
+op_jge: BRANCH(!vm->lf);
+op_jg: BRANCH(!vm->lf && !vm->zf);
+op_jle: BRANCH(vm->lf || vm->zf);
+op_jb: BRANCH(vm->bf);
+op_jae: BRANCH(!vm->bf);
+op_ja: BRANCH(!vm->bf && !vm->zf);
+op_jbe: BRANCH(vm->bf || vm->zf);
+op_call:
+    push(vm, next);
+    next = imm_flag ? imm : r[a];
+    NEXT;
+op_ret: next = pop(vm); NEXT;
+op_push: push(vm, imm_flag ? imm : r[a]); NEXT;
+op_pop: r[a] = pop(vm); NEXT;
+op_ld: if ((m = ptr(vm, base + imm, 4))) r[a] = rd32(m); NEXT;
+op_ldh: if ((m = ptr(vm, base + imm, 2))) r[a] = (uint32_t)(m[0] | m[1] << 8); NEXT;
+op_ldb: if ((m = ptr(vm, base + imm, 1))) r[a] = m[0]; NEXT;
+op_st: if ((m = ptr(vm, base + imm, 4))) wr32(m, r[a]); NEXT;
+op_sth: if ((m = ptr(vm, base + imm, 2))) m[0] = (uint8_t)r[a], m[1] = (uint8_t)(r[a] >> 8); NEXT;
+op_stb: if ((m = ptr(vm, base + imm, 1))) m[0] = (uint8_t)r[a]; NEXT;
+op_sys: syscall(vm, imm); NEXT;
+op_illegal:
+    vm_fault(vm, "illegal instruction 0x%02x at 0x%x", mem[vm->pc], vm->pc);
+    return;
+#undef NEXT
+#undef SRC
+#undef BRANCH
 }
 
 static bool sx_probe(const char *path, const uint8_t *head, size_t n)
