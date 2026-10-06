@@ -100,6 +100,12 @@ cal 2 2024 | tail -n 1
  25 26 27 28 29
 whoami
 root
+winpath 'C:\Windows\System32\kernel32.dll' 'C:\Program Files\App' 'c:\users\bob\Desktop'
+/system/win32/kernel32.dll
+winpath /home/a.txt /tmp /apps/x
+C:\Users\root\a.txt
+winpath 'C:\HOME\SRC\HELLO.SASM'
+/home/src/hello.sasm
 EOF
 
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"

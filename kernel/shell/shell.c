@@ -34,7 +34,7 @@ struct shell *shell_create(void)
     sh->err = stream_console();
     str_copy(sh->cwd, "/", sizeof(sh->cwd));
     sh_set(sh, "HOME", "/home");
-    sh_set(sh, "PATH", "/bin:/dos:/home/bin");
+    sh_set(sh, "PATH", "/bin:/apps:/dos:/home/bin");
     sh_set(sh, "PATHEXT", ".sx;.com;.exe;.sh");
     sh_set(sh, "USER", CONFIG_USER);
     sh_set(sh, "HOSTNAME", CONFIG_HOSTNAME);

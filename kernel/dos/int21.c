@@ -7,6 +7,7 @@
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/time.h>
+#include <synth/winpath.h>
 
 #include "dos.h"
 
@@ -65,24 +66,6 @@ static void write_string(struct dos *d, uint16_t seg, uint16_t off, const char *
     while (*s++);
 }
 
-static bool find_ci(const char *dir, const char *name, char *out)
-{
-    struct vdir vd;
-    if (vfs_opendir(dir, &vd) != 0)
-        return false;
-    struct vfs_dirent ent;
-    bool found = false;
-    while (vfs_readdir(&vd, &ent) == 0) {
-        if (str_casecmp(ent.name, name) == 0) {
-            str_copy(out, ent.name, NAME_MAX_LEN);
-            found = true;
-            break;
-        }
-    }
-    vfs_closedir(&vd);
-    return found;
-}
-
 static int device_of(const char *path)
 {
     char base[16];
@@ -100,39 +83,7 @@ static int device_of(const char *path)
 
 int dos_resolve(struct dos *d, const char *dos_path, char *out, size_t cap)
 {
-    char tmp[PATH_MAX_LEN];
-    const char *p = dos_path;
-    if (p[0] && p[1] == ':')
-        p += 2;
-    size_t n = 0;
-    for (; *p && n + 1 < sizeof(tmp); p++)
-        tmp[n++] = *p == '\\' ? '/' : *p;
-    tmp[n] = 0;
-    while (n && tmp[n - 1] == ' ')
-        tmp[--n] = 0;
-    char abs[PATH_MAX_LEN];
-    int err = path_resolve(d->cwd, tmp[0] ? tmp : ".", abs, sizeof(abs));
-    if (err)
-        return err;
-
-    char fixed[PATH_MAX_LEN] = "/";
-    const char *s = abs + 1;
-    while (*s) {
-        const char *slash = strchr(s, '/');
-        size_t len = slash ? (size_t)(slash - s) : strlen(s);
-        char comp[NAME_MAX_LEN], real[NAME_MAX_LEN];
-        len = MIN(len, sizeof(comp) - 1);
-        memcpy(comp, s, len);
-        comp[len] = 0;
-        char candidate[PATH_MAX_LEN];
-        path_join(fixed, comp, candidate, sizeof(candidate));
-        if (!vfs_exists(candidate) && find_ci(fixed, comp, real))
-            path_join(fixed, real, candidate, sizeof(candidate));
-        str_copy(fixed, candidate, sizeof(fixed));
-        s = slash ? slash + 1 : s + strlen(s);
-    }
-    str_copy(out, fixed, cap);
-    return 0;
+    return winpath_to_vfs(d->cwd, dos_path, out, cap);
 }
 
 static int read_path(struct dos *d, uint16_t seg, uint16_t off, char *out, int *device)

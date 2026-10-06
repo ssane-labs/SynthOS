@@ -100,7 +100,7 @@ static void mount_filesystems(const struct boot_info *bi)
         boot_step(files >= 0, "Ramdisk: %d files (%u KB)", files, (unsigned)(bi->initrd_size / 1024));
     }
 
-    static const char *const dirs[] = {"/bin", "/dev", "/etc", "/home", "/tmp", "/dos"};
+    static const char *const dirs[] = {"/apps", "/bin", "/dev", "/dos", "/etc", "/home", "/mnt", "/system/win32", "/system/data", "/tmp"};
     for (size_t i = 0; i < ARRAY_SIZE(dirs); i++)
         vfs_mkdirs(dirs[i]);
     err = vfs_mount("devfs", NULL, "/dev");
