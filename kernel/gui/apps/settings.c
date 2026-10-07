@@ -4,6 +4,7 @@
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
+#include <synth/net.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -25,6 +26,7 @@ enum pane {
     P_DOCK,
     P_WALLPAPER,
     P_DISPLAYS,
+    P_NETWORK,
     P_LOCK,
     P_USERS,
     P_TERMINAL,
@@ -43,6 +45,7 @@ static const struct {
     {"Desktop & Dock", "dock", SYM_DOCK, RGB(44, 44, 48)},
     {"Wallpaper", "wallpaper", SYM_PHOTO, RGB(36, 168, 220)},
     {"Displays", "displays", SYM_DISPLAY, RGB(28, 118, 240)},
+    {"Network", "network", SYM_WIFI, RGB(28, 118, 240)},
     {"Lock Screen", "lock", SYM_LOCK, RGB(44, 44, 48)},
     {"Users & Groups", "users", SYM_USERS, RGB(28, 118, 240)},
     {"Terminal", "terminal", SYM_TERMINAL, RGB(60, 60, 64)},
@@ -416,6 +419,51 @@ static void pane_displays(struct ui *ui, struct settings *s, int x, int y, int w
     }
 }
 
+static void pane_network(struct ui *ui, struct settings *s, int x, int y, int w)
+{
+    UNUSED(s);
+    if (!net_interface_count()) {
+        ui_label(ui, (struct rect){x, y, w, 20}, "No network hardware was found.", &font_sans, style.secondary,
+                 ALIGN_LEFT);
+        ui_label(ui, (struct rect){x, y + 22, w, 20}, "Supported: Intel e1000/e1000e, Realtek RTL8139/RTL8111.",
+                 &font_small, style.secondary, ALIGN_LEFT);
+        return;
+    }
+    for (int i = 0; i < net_interface_count(); i++) {
+        struct net_iface *ifc = net_interface(i);
+        struct netdev *d = ifc->dev;
+        bool link = !d->link || d->link(d);
+        char title[48], ip[16], mask[16], gw[16], dns[16], mac[24], status[48];
+        ksnprintf(title, sizeof(title), "Ethernet (%s, %s)", d->name, d->driver);
+        net_format_ip(ifc->ip, ip, sizeof(ip));
+        net_format_ip(ifc->mask, mask, sizeof(mask));
+        net_format_ip(ifc->gateway, gw, sizeof(gw));
+        net_format_ip(ifc->dns, dns, sizeof(dns));
+        ksnprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", d->mac[0], d->mac[1], d->mac[2], d->mac[3],
+                  d->mac[4], d->mac[5]);
+        str_copy(status, !link ? "Cable unplugged" : ifc->configured ? "Connected" : "Waiting for an address",
+                 sizeof(status));
+        ui_label(ui, (struct rect){x, y, w, 20}, title, &font_bold, style.text, ALIGN_LEFT);
+        if (ui->c)
+            gfx_circle(ui->c, x + w - 8, y + 10, 5,
+                       ifc->configured && link ? RGB(40, 200, 64) : link ? RGB(254, 188, 46) : RGB(255, 95, 87));
+        y += 26;
+        const char *rows[][2] = {{"Status", status},   {"IP address", ifc->configured ? ip : "—"},
+                                 {"Subnet mask", mask}, {"Router", gw},
+                                 {"DNS server", dns},  {"Hardware address", mac},
+                                 {"Configure", ifc->dhcp ? "Using DHCP" : "Manually"}};
+        struct rect g = ui_group(ui, x, y, w, ARRAY_SIZE(rows), ROW);
+        for (size_t k = 0; k < ARRAY_SIZE(rows); k++)
+            ui_group_label(ui, row_at(g, (int)k), rows[k][0], rows[k][1], k + 1 == ARRAY_SIZE(rows));
+        y += (int)ARRAY_SIZE(rows) * ROW + 12;
+        if (ui_button(ui, (struct rect){x + w - 170, y, 170, 30}, "Renew DHCP Lease")) {
+            net_dhcp_start(ifc);
+            gui_notify(d->name, "Asking the network for a new address.");
+        }
+        y += 46;
+    }
+}
+
 static void pane_lock(struct ui *ui, struct settings *s, int x, int y, int w)
 {
     UNUSED(s);
@@ -731,6 +779,7 @@ static void frame(struct ui *ui, void *data)
     case P_DOCK: pane_dock(ui, s, x, y, wdt); break;
     case P_WALLPAPER: pane_wallpaper(ui, s, x, y, wdt); break;
     case P_DISPLAYS: pane_displays(ui, s, x, y, wdt); break;
+    case P_NETWORK: pane_network(ui, s, x, y, wdt); break;
     case P_LOCK: pane_lock(ui, s, x, y, wdt); break;
     case P_USERS: pane_users(ui, s, x, y, wdt); break;
     case P_TERMINAL: pane_terminal(ui, s, x, y, wdt); break;
