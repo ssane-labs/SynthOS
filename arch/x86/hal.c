@@ -32,11 +32,26 @@ struct display *hal_display(void)
     return display;
 }
 
+static void (*idle_hook)(void);
+
+void hal_set_idle(void (*fn)(void))
+{
+    idle_hook = fn;
+}
+
+void hal_net_init(void)
+{
+    e1000_init();
+    realtek_init();
+}
+
 int hal_key_read(int timeout_ms)
 {
     uint64_t end = timeout_ms > 0 ? hal_ticks_ms() + (uint64_t)timeout_ms : 0;
     for (;;) {
         usb_service();
+        if (idle_hook && !hal_in_interrupt())
+            idle_hook();
         int key = keyboard_read();
         if (key == KEY_NONE)
             key = serial_key();

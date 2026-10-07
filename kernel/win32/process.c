@@ -519,6 +519,7 @@ static size_t choose_arena(void)
 
 static void cleanup(void)
 {
+    w32_winsock_cleanup();
 #if CONFIG_GUI
     w32_gui_cleanup();
 #endif

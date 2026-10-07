@@ -80,6 +80,8 @@ struct w32_module_def {
     const struct w32_export *exports;
     size_t count;
     void (*attach)(void);
+    const char *const *ordinals;
+    size_t ordinal_count;
 };
 
 #define W32_FN(fn) {#fn, (void *)fn}
@@ -273,6 +275,7 @@ void w32_preempt(void);
 uint32_t w32_thread_id(void);
 void w32_idle(int ms);
 void w32_gui_cleanup(void);
+void w32_winsock_cleanup(void);
 HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id);
 void w32_run_atexit(void);
 uint32_t w32_call(void *fn, int argc, const uint32_t *args);

@@ -125,6 +125,14 @@ static void *builtin_lookup(const char *module, const char *symbol)
     return NULL;
 }
 
+static void *builtin_ordinal(const char *module, uint32_t ordinal)
+{
+    SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def)
+        if (!strcmp(def->name, module) && def->ordinals && ordinal < def->ordinal_count && def->ordinals[ordinal])
+            return builtin_lookup(module, def->ordinals[ordinal]);
+    return NULL;
+}
+
 static void w32_missing(const char *what)
 {
     ksnprintf(w32->message, sizeof(w32->message), "%s is not supported yet", what);
@@ -262,7 +270,7 @@ static void *resolve(struct w32_image *dll, const char *module, const char *symb
 {
     void *fn = NULL;
     if (dll->builtin) {
-        fn = symbol ? builtin_lookup(dll->name, symbol) : NULL;
+        fn = symbol ? builtin_lookup(dll->name, symbol) : builtin_ordinal(dll->name, ordinal);
     } else {
         fn = export_lookup(dll, symbol, ordinal, 0);
     }
@@ -280,7 +288,7 @@ static void *resolve(struct w32_image *dll, const char *module, const char *symb
 static void *export_lookup(struct w32_image *img, const char *name, uint32_t ordinal, int depth)
 {
     if (img->builtin)
-        return name ? builtin_lookup(img->name, name) : NULL;
+        return name ? builtin_lookup(img->name, name) : builtin_ordinal(img->name, ordinal);
     const uint8_t *mem = (const uint8_t *)img->base;
     uint32_t lfanew = rd32(mem + 0x3c);
     uint32_t opt = lfanew + 24;

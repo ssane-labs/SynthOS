@@ -169,6 +169,8 @@ int vbe_modes(struct display_mode *out, int max);
 void vbe_leave(void);
 const struct framebuffer *uefi_framebuffer(void);
 void nvme_init(void);
+void e1000_init(void);
+void realtek_init(void);
 void irq_install(int irq, irq_handler handler);
 void pit_init(uint32_t hz);
 void keyboard_init(void);

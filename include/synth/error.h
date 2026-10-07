@@ -26,6 +26,12 @@ enum {
     E_TIMEDOUT = -21,
     E_PIPE = -22,
     E_NODEV = -23,
+    E_AGAIN = -24,
+    E_CONNREFUSED = -25,
+    E_CONNRESET = -26,
+    E_NOTCONN = -27,
+    E_ADDRINUSE = -28,
+    E_UNREACH = -29,
 };
 
 const char *err_str(int code);

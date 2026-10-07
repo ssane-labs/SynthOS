@@ -30,6 +30,12 @@ const char *err_str(int code)
         [-E_TIMEDOUT] = "timed out",
         [-E_PIPE] = "endpoint stalled",
         [-E_NODEV] = "no such device",
+        [-E_AGAIN] = "try again",
+        [-E_CONNREFUSED] = "connection refused",
+        [-E_CONNRESET] = "connection reset",
+        [-E_NOTCONN] = "not connected",
+        [-E_ADDRINUSE] = "address in use",
+        [-E_UNREACH] = "network unreachable",
     };
     int idx = -code;
     if (idx >= 0 && idx < (int)ARRAY_SIZE(messages) && messages[idx])

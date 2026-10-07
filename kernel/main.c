@@ -6,6 +6,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/log.h>
+#include <synth/net.h>
 #include <synth/shell.h>
 #include <synth/users.h>
 #include <synth/string.h>
@@ -122,6 +123,23 @@ static void mount_filesystems(const struct boot_info *bi)
 #endif
 }
 
+static void start_network(void)
+{
+    net_init();
+    if (!net_interface_count())
+        return;
+    struct net_iface *ifc = net_interface(0);
+    uint64_t end = hal_ticks_ms() + 2000;
+    while (!ifc->configured && hal_ticks_ms() < end)
+        net_wait(5);
+    char ip[16];
+    net_format_ip(ifc->ip, ip, sizeof(ip));
+    if (ifc->configured)
+        boot_step(true, "Network: %s (%s) %s", ifc->dev->name, ifc->dev->driver, ip);
+    else
+        boot_step(true, "Network: %s (%s) waiting for DHCP", ifc->dev->name, ifc->dev->driver);
+}
+
 static void run_startup(struct shell *sh)
 {
     static const char *const scripts[] = {"/etc/synthrc", "/etc/synth.conf", "/home/.synthrc", "/home/.synth.conf"};
@@ -167,6 +185,7 @@ void kmain(const struct boot_info *bi)
 
     vfs_init();
     mount_filesystems(bi);
+    start_network();
 
     struct shell *sh = shell_create();
     if (!sh)

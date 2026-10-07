@@ -192,6 +192,22 @@ windialog | grep resource
 dialog resource: found
 windialog | tail -n 1
 dialog needs the SynthOS desktop
+winsock | head -n 1
+winsock 2.2 SynthOS sockets
+winsock | grep tcp
+tcp: echo: ping
+winsock | grep udp
+udp: datagram from 127.0.0.1
+winsock | grep getaddrinfo
+getaddrinfo: 127.0.0.1 port 80
+winsock | grep refused
+refused: pending=1 ready=1 error=10061
+ifconfig | grep inet
+inet 10.0.2.15 netmask 255.255.255.0 gateway 10.0.2.2
+ping -c 1 10.0.2.2 | grep from
+64 bytes from 10.0.2.2: icmp_seq=1
+ping -c 1 localhost | grep loss
+1 packets sent, 1 received
 lsusb
 QEMU USB Keyboard
 cat '/mnt/hdb/Long Name Note.txt'
@@ -206,7 +222,7 @@ awk 'NR % 2 == 1' "$work/cases" > "$work/input"
 echo "shutdown" >> "$work/input"
 
 timeout 60 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
-    -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -display none -serial stdio \
+    -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
     < "$work/input" > "$work/output" 2>&1
 
 pass=0
