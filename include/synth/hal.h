@@ -67,6 +67,16 @@ bool hal_in_interrupt(void);
 bool hal_pointer_present(void);
 bool hal_graphics_enter(struct framebuffer *fb);
 void hal_graphics_leave(void);
+
+struct display_mode {
+    uint16_t width, height;
+};
+
+int hal_screen_count(void);
+const char *hal_screen_name(int index);
+int hal_screen_modes(int index, struct display_mode *out, int max);
+bool hal_screen_open(int index, int width, int height, struct framebuffer *fb);
+void hal_screen_close(int index);
 int hal_key_read(int timeout_ms);
 uint64_t hal_ticks_ms(void);
 void hal_sleep_ms(uint32_t ms);

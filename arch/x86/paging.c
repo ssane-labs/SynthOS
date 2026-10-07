@@ -16,7 +16,7 @@ static uint32_t *tables[1024];
 static uint32_t heap_phys;
 static uint32_t heap_bytes;
 static bool enabled;
-static uint32_t mmio_tables[16][1024] __attribute__((aligned(4096)));
+static uint32_t mmio_tables[32][1024] __attribute__((aligned(4096)));
 static int mmio_used;
 
 static uint32_t phys_of(const void *ptr)

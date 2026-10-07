@@ -49,27 +49,58 @@ static int score(const struct mode_info *m)
     return depth * 16 + size;
 }
 
-bool vbe_enter(struct framebuffer *fb)
+static int mode_list(uint16_t *modes, int max)
 {
     bios_init();
     if (!bios_available())
-        return false;
+        return 0;
     uint8_t *info = (uint8_t *)BIOS_BOUNCE;
     memset(info, 0, 512);
     memcpy(info, "VBE2", 4);
     struct bios_regs r = {.eax = 0x4f00, .es = (uint16_t)(BIOS_BOUNCE >> 4), .edi = 0};
     if (!bios_call(0x10, &r) || (r.eax & 0xffff) != 0x004f || memcmp(info, "VESA", 4) != 0)
-        return false;
+        return 0;
     uint16_t list_off, list_seg;
     memcpy(&list_off, info + 14, 2);
     memcpy(&list_seg, info + 16, 2);
-    uint16_t modes[128];
-    int count = 0;
     const uint16_t *list = (const uint16_t *)(uintptr_t)((uint32_t)list_seg * 16 + list_off);
-    while (count < (int)ARRAY_SIZE(modes) && list[count] != 0xffff)
+    int count = 0;
+    while (count < max && list[count] != 0xffff) {
+        modes[count] = list[count];
         count++;
-    memcpy(modes, list, (size_t)count * 2);
+    }
+    return count;
+}
 
+static bool usable(const struct mode_info *m)
+{
+    return (m->attributes & 0x91) == 0x91 && m->memory_model == 6 && m->framebuffer &&
+           (m->bpp == 32 || m->bpp == 24 || m->bpp == 16) && m->width >= 640 && m->height >= 480;
+}
+
+int vbe_modes(struct display_mode *out, int max)
+{
+    uint16_t modes[128];
+    int count = mode_list(modes, 128), n = 0;
+    for (int i = 0; i < count && n < max; i++) {
+        struct mode_info m;
+        if (!query_mode(modes[i], &m) || !usable(&m))
+            continue;
+        bool dup = false;
+        for (int k = 0; k < n; k++)
+            dup |= out[k].width == m.width && out[k].height == m.height;
+        if (!dup)
+            out[n++] = (struct display_mode){m.width, m.height};
+    }
+    return n;
+}
+
+bool vbe_enter(int want_w, int want_h, struct framebuffer *fb)
+{
+    uint16_t modes[128];
+    int count = mode_list(modes, 128);
+    if (!count)
+        return false;
     int best = -1, best_score = -1;
     struct mode_info chosen = {0};
     for (int i = 0; i < count; i++) {
@@ -77,6 +108,8 @@ bool vbe_enter(struct framebuffer *fb)
         if (!query_mode(modes[i], &m))
             continue;
         int s = score(&m);
+        if (want_w && usable(&m) && m.width == want_w && m.height == want_h)
+            s = 1000 + m.bpp;
         if (s > best_score) {
             best_score = s;
             best = modes[i];
@@ -90,7 +123,7 @@ bool vbe_enter(struct framebuffer *fb)
         return false;
     uint32_t pitch = chosen.linear_pitch ? chosen.linear_pitch : chosen.pitch;
     if (mapped_phys != chosen.framebuffer) {
-        mapped_base = vmm_map_phys(chosen.framebuffer, (size_t)pitch * chosen.height);
+        mapped_base = vmm_map_phys(chosen.framebuffer, 16u << 20);
         mapped_phys = chosen.framebuffer;
     }
     if (!mapped_base) {

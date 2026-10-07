@@ -1388,35 +1388,87 @@ static void make_cursors(void)
     }
 }
 
-bool wm_start(const struct framebuffer *fbs, int count)
+static bool setup_screens(const struct framebuffer *fbs, const struct rect *origins, int count)
 {
-    screen_count = 0;
-    int x = 0;
+    int made = 0;
     for (int i = 0; i < count && i < MAX_SCREENS; i++) {
-        struct screen *s = &screens[screen_count];
+        struct screen *s = &screens[made];
         s->fb = fbs[i];
         s->scale = fbs[i].width >= 2400 ? 2 : 1;
         int w = (int)fbs[i].width / s->scale, h = (int)fbs[i].height / s->scale;
         s->mem = kmalloc((size_t)w * (size_t)h * 4);
         if (!s->mem)
             break;
-        s->area = (struct rect){x, 0, w, h};
+        int x = origins ? origins[i].x : 0, y = origins ? origins[i].y : 0;
+        s->area = (struct rect){x, y, w, h};
         s->back.stride = w;
-        s->back.px = s->mem - (x + 0 * w);
+        s->back.px = s->mem - (x + y * w);
         s->back.w = x + w;
-        s->back.h = h;
+        s->back.h = y + h;
         s->dirty_count = 0;
-        x += w;
-        screen_count++;
+        made++;
     }
-    if (!screen_count)
+    screen_count = made;
+    return made > 0;
+}
+
+static void free_screens(void)
+{
+    for (int i = 0; i < screen_count; i++) {
+        kfree(screens[i].mem);
+        screens[i].mem = NULL;
+    }
+    screen_count = 0;
+}
+
+bool wm_start(const struct framebuffer *fbs, const struct rect *origins, int count)
+{
+    if (!setup_screens(fbs, origins, count))
         return false;
     if (!cursor_px[CUR_ARROW])
         make_cursors();
-    mouse_x = screens[0].area.w / 2;
-    mouse_y = screens[0].area.h / 2;
+    mouse_x = screens[0].area.x + screens[0].area.w / 2;
+    mouse_y = screens[0].area.y + screens[0].area.h / 2;
     mouse_buttons = 0;
     cursor_kind = CUR_ARROW;
+    wm_damage_all();
+    return true;
+}
+
+static void keep_visible(struct window *w, void *ctx)
+{
+    UNUSED(ctx);
+    if (w->flags & WIN_OVERLAY) {
+        struct rect s = wm_screen_rect(0);
+        set_frame(w, s);
+        return;
+    }
+    int cx = w->frame.x + w->frame.w / 2, ty = w->frame.y + 10;
+    bool visible_somewhere = false;
+    for (int i = 0; i < screen_count; i++)
+        visible_somewhere |= rect_contains(screens[i].area, cx, ty);
+    if (w->flags & WIN_MAXIMIZED) {
+        struct rect work = wm_work_area(wm_screen_at(cx, ty));
+        set_frame(w, (struct rect){work.x + 4, work.y + 4, work.w - 8, work.h - 8});
+        return;
+    }
+    struct rect work = wm_work_area(visible_somewhere ? wm_screen_at(cx, ty) : 0);
+    struct rect f = w->frame;
+    f.w = MIN(f.w, work.w);
+    f.h = MIN(f.h, work.h);
+    f.x = CLAMP(f.x, work.x, work.x + work.w - f.w);
+    f.y = CLAMP(f.y, work.y, work.y + work.h - f.h);
+    if (f.x != w->frame.x || f.y != w->frame.y || f.w != w->frame.w || f.h != w->frame.h)
+        set_frame(w, f);
+}
+
+bool wm_reconfigure(const struct framebuffer *fbs, const struct rect *origins, int count)
+{
+    free_screens();
+    if (!setup_screens(fbs, origins, count))
+        return false;
+    clamp_mouse(mouse_x, mouse_y);
+    wm_foreach(keep_visible, NULL);
     wm_damage_all();
     return true;
 }
@@ -1426,11 +1478,7 @@ void wm_stop(void)
     while (bottom)
         wm_destroy(bottom);
     focus = NULL;
-    for (int i = 0; i < screen_count; i++) {
-        kfree(screens[i].mem);
-        screens[i].mem = NULL;
-    }
-    screen_count = 0;
+    free_screens();
 }
 
 int wm_window_list(struct window **out, int max)

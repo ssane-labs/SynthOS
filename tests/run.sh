@@ -142,6 +142,8 @@ launch paint
 the desktop is not running
 desktop
 no graphics mode available
+displays
+no displays (text console only)
 useradd -p secret bob Bob Builder
 user bob created, home /home/bob
 users | grep Builder

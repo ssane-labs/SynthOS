@@ -56,7 +56,10 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius);
 int glass_margin(void);
 int gfx_corner_coverage(struct rect r, int radius, int x, int y);
 
-bool wm_start(const struct framebuffer *fbs, int count);
+bool wm_start(const struct framebuffer *fbs, const struct rect *origins, int count);
+bool wm_reconfigure(const struct framebuffer *fbs, const struct rect *origins, int count);
+void gui_displays_changed(void);
+int gui_display_hal(int screen);
 void wm_stop(void);
 void wm_render(void);
 void wm_pointer(const struct pointer_event *ev);

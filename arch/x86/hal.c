@@ -79,29 +79,12 @@ void hal_set_codepage(int codepage)
 static struct framebuffer uefi_fb;
 #endif
 
-bool hal_graphics_enter(struct framebuffer *fb)
+const struct framebuffer *uefi_framebuffer(void)
 {
 #ifdef CONFIG_SERIAL_CONSOLE
-    UNUSED(fb);
-    return false;
+    return NULL;
 #else
-    if (bootinfo->flags & BOOT_UEFI) {
-        if (!uefi_fb.base)
-            return false;
-        *fb = uefi_fb;
-        return true;
-    }
-    return vbe_enter(fb);
-#endif
-}
-
-void hal_graphics_leave(void)
-{
-#ifndef CONFIG_SERIAL_CONSOLE
-    if (bootinfo->flags & BOOT_UEFI)
-        fbcon_invalidate();
-    else
-        vbe_leave();
+    return (bootinfo->flags & BOOT_UEFI) && uefi_fb.base ? &uefi_fb : NULL;
 #endif
 }
 

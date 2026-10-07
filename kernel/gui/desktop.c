@@ -53,6 +53,74 @@ static int icon_count;
 static int selected_icon = -1;
 static int lock_minutes;
 static uint64_t last_input;
+static int want_w[MAX_SCREENS], want_h[MAX_SCREENS];
+static char arrange[8] = "right";
+static int display_hal[MAX_SCREENS];
+static int display_count;
+
+static void scan_desktop(void);
+
+int gui_display_hal(int screen)
+{
+    return screen >= 0 && screen < display_count ? display_hal[screen] : -1;
+}
+
+static int open_displays(struct framebuffer *fbs, struct rect *origins)
+{
+    int available = MIN(hal_screen_count(), MAX_SCREENS);
+    if (!strcmp(arrange, "off"))
+        available = MIN(available, 1);
+    int n = 0;
+    for (int i = 0; i < available; i++)
+        if (hal_screen_open(i, want_w[i], want_h[i], &fbs[n]))
+            display_hal[n++] = i;
+    for (int i = available; i < hal_screen_count(); i++)
+        hal_screen_close(i);
+    display_count = n;
+    int w0 = (int)fbs[0].width / (fbs[0].width >= 2400 ? 2 : 1);
+    int h0 = (int)fbs[0].height / (fbs[0].width >= 2400 ? 2 : 1);
+    origins[0] = (struct rect){0, 0, w0, h0};
+    int right = w0, bottom = h0;
+    for (int i = 1; i < n; i++) {
+        int w = (int)fbs[i].width / (fbs[i].width >= 2400 ? 2 : 1), h = (int)fbs[i].height / (fbs[i].width >= 2400 ? 2 : 1);
+        if (!strcmp(arrange, "left"))
+            origins[i] = (struct rect){-w * i, 0, w, h};
+        else if (!strcmp(arrange, "above"))
+            origins[i] = (struct rect){0, -h * i, w, h};
+        else if (!strcmp(arrange, "below")) {
+            origins[i] = (struct rect){0, bottom, w, h};
+            bottom += h;
+        } else {
+            origins[i] = (struct rect){right, 0, w, h};
+            right += w;
+        }
+    }
+    int min_x = 0, min_y = 0;
+    for (int i = 0; i < n; i++) {
+        min_x = MIN(min_x, origins[i].x);
+        min_y = MIN(min_y, origins[i].y);
+    }
+    for (int i = 0; i < n; i++) {
+        origins[i].x -= min_x;
+        origins[i].y -= min_y;
+    }
+    return n;
+}
+
+void gui_displays_changed(void)
+{
+    struct framebuffer fbs[MAX_SCREENS];
+    struct rect origins[MAX_SCREENS];
+    int n = open_displays(fbs, origins);
+    if (!n)
+        return;
+    chrome_stop();
+    wm_reconfigure(fbs, origins, n);
+    gui_wallpaper_refresh();
+    chrome_start();
+    icon_count = -1;
+    scan_desktop();
+}
 
 void desktop_dir(char *out, size_t cap)
 {
@@ -703,10 +771,12 @@ int gui_run(struct shell *sh)
 {
     if (active)
         return sh_error(sh, "desktop", "the desktop is already running");
-    struct framebuffer fb;
-    if (!hal_graphics_enter(&fb))
+    struct framebuffer fbs[MAX_SCREENS];
+    struct rect origins[MAX_SCREENS];
+    int screens = hal_screen_count() ? open_displays(fbs, origins) : 0;
+    if (!screens)
         return sh_error(sh, "desktop", "no graphics mode available on this display");
-    if (!wm_start(&fb, 1)) {
+    if (!wm_start(fbs, origins, screens)) {
         hal_graphics_leave();
         return sh_error(sh, "desktop", "not enough memory for the desktop");
     }
@@ -873,6 +943,87 @@ static int set_autostart(struct shell *sh, const char *value)
 static const struct setting s_autostart = {"desktop", "on|off", "start the graphical desktop at boot",
                                            get_autostart, set_autostart};
 SETTING(s_autostart);
+
+static void get_resolution(int i, char *buf, size_t cap)
+{
+    if (want_w[i])
+        ksnprintf(buf, cap, "%dx%d", want_w[i], want_h[i]);
+    else
+        str_copy(buf, "auto", cap);
+}
+
+static int set_resolution(int i, const char *value)
+{
+    if (!strcmp(value, "auto")) {
+        want_w[i] = want_h[i] = 0;
+    } else {
+        const char *x = strchr(value, 'x');
+        long w, h;
+        char wbuf[8];
+        if (!x || x - value >= (long)sizeof(wbuf))
+            return E_INVAL;
+        memcpy(wbuf, value, (size_t)(x - value));
+        wbuf[x - value] = 0;
+        if (!str_parse_long(wbuf, &w) || !str_parse_long(x + 1, &h) || w < 320 || h < 200 || w > 4096 || h > 4096)
+            return E_INVAL;
+        want_w[i] = (int)w;
+        want_h[i] = (int)h;
+    }
+    if (active)
+        gui_displays_changed();
+    return 0;
+}
+
+static void get_res1(char *buf, size_t cap)
+{
+    get_resolution(0, buf, cap);
+}
+
+static int set_res1(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return set_resolution(0, value);
+}
+
+static void get_res2(char *buf, size_t cap)
+{
+    get_resolution(1, buf, cap);
+}
+
+static int set_res2(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return set_resolution(1, value);
+}
+
+static const struct setting s_res1 = {"resolution", "auto|<width>x<height>", "resolution of the main display",
+                                      get_res1, set_res1};
+SETTING(s_res1);
+static const struct setting s_res2 = {"resolution2", "auto|<width>x<height>", "resolution of the second display",
+                                      get_res2, set_res2};
+SETTING(s_res2);
+
+static void get_arrange(char *buf, size_t cap)
+{
+    str_copy(buf, arrange, cap);
+}
+
+static int set_arrange(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "right") && strcmp(value, "left") && strcmp(value, "above") && strcmp(value, "below") &&
+        strcmp(value, "off"))
+        return E_INVAL;
+    str_copy(arrange, value, sizeof(arrange));
+    if (active)
+        gui_displays_changed();
+    return 0;
+}
+
+static const struct setting s_arrange = {"arrange", "right|left|above|below|off",
+                                         "where the second display is, or off to use one display", get_arrange,
+                                         set_arrange};
+SETTING(s_arrange);
 
 static void get_locktime(char *buf, size_t cap)
 {

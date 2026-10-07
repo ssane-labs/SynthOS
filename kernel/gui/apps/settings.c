@@ -321,45 +321,96 @@ static void pane_wallpaper(struct ui *ui, struct settings *s, int x, int y, int 
         apply("wallpaper", s->wallpaper_file.buf);
 }
 
+static int menu_display;
+static struct display_mode menu_modes[24];
+static char menu_labels[24][24];
+static struct menu_item menu_items[24];
+
+static void pick_mode(struct window *owner, int index)
+{
+    UNUSED(owner);
+    char value[24];
+    ksnprintf(value, sizeof(value), "%ux%u", menu_modes[index].width, menu_modes[index].height);
+    apply(menu_display ? "resolution2" : "resolution", value);
+}
+
 static void pane_displays(struct ui *ui, struct settings *s, int x, int y, int w)
 {
     UNUSED(s);
     int n = wm_screen_count();
     struct rect g = ui_group(ui, x, y, w, 1, 170);
-    int total_w = 0, max_h = 1;
-    for (int i = 0; i < n; i++) {
-        struct rect a = wm_screen_rect(i);
-        total_w += a.w;
-        max_h = MAX(max_h, a.h);
-    }
-    int scale = MAX(1, MAX(total_w / (w - 80), max_h / 120));
-    int dx = g.x + (w - total_w / scale - (n - 1) * 10) / 2;
+    struct rect bounds = wm_screen_rect(0);
+    for (int i = 1; i < n; i++)
+        bounds = rect_union(bounds, wm_screen_rect(i));
+    int scale = MAX(1, MAX(bounds.w / (w - 80) + 1, bounds.h / 120 + 1));
+    int ox = g.x + (w - bounds.w / scale) / 2, oy = g.y + 16 + (120 - bounds.h / scale) / 2;
     for (int i = 0; i < n && ui->c; i++) {
         struct rect a = wm_screen_rect(i);
-        struct rect r = {dx, g.y + 20 + (120 - a.h / scale) / 2, a.w / scale, a.h / scale};
-        gfx_round(ui->c, r, 6, i == 0 ? style.accent : style.control);
-        gfx_round_frame(ui->c, r, 6, ALPHA(0, 50));
-        if (i == 0)
-            gfx_fill(ui->c, (struct rect){r.x + 6, r.y + 5, r.w - 12, 3}, ALPHA(0xffffffffu, 200));
-        char label[32];
-        ksnprintf(label, sizeof(label), "Display %d", i + 1);
-        gfx_text_box(ui->c, r, &font_bold, label, i == 0 ? RGB(255, 255, 255) : style.text, ALIGN_CENTER);
-        dx += r.w + 10;
+        struct rect r = {ox + (a.x - bounds.x) / scale + 2, oy + (a.y - bounds.y) / scale + 2, a.w / scale - 4,
+                         a.h / scale - 4};
+        const struct canvas *wp = desktop_wallpaper(i);
+        if (wp) {
+            struct canvas shot;
+            if (canvas_alloc(&shot, MAX(r.w, 1), MAX(r.h, 1))) {
+                gfx_scale(&shot, (struct rect){0, 0, r.w, r.h}, wp, 255);
+                gfx_blit_round(ui->c, r, &shot, 5, false);
+                canvas_free(&shot);
+            }
+        } else {
+            gfx_round(ui->c, r, 5, style.control);
+        }
+        gfx_round_frame(ui->c, r, 5, i == 0 ? style.accent : ALPHA(0, 60));
+        gfx_fill(ui->c, (struct rect){r.x + 4, r.y + 3, r.w - 8, 3}, ALPHA(0xffffffffu, 210));
+        char label[8];
+        ksnprintf(label, sizeof(label), "%d", i + 1);
+        gfx_text_box(ui->c, r, &font_title, label, RGB(255, 255, 255), ALIGN_CENTER);
     }
     if (ui->c)
         gfx_text_box(ui->c, (struct rect){g.x, g.y + 146, g.w, 18}, &font_small,
-                     n > 1 ? "The display with the white bar shows the Dock" : "One display connected", style.secondary,
+                     n > 1 ? "Display 1 is the main display with the Dock" : "One display in use", style.secondary,
                      ALIGN_CENTER);
     y += 170 + 20;
+    int available = hal_screen_count();
+    if (available > 1) {
+        g = ui_group(ui, x, y, w, 1, ROW);
+        struct rect r = row_at(g, 0);
+        ui_group_label(ui, r, "Second display", NULL, true);
+        char value[16];
+        current("arrange", value, sizeof(value));
+        static const char *const labels[] = {"Right", "Left", "Above", "Below", "Off"};
+        static const char *const values[] = {"right", "left", "above", "below", "off"};
+        int sel = 0;
+        for (int i = 0; i < 5; i++)
+            if (!strcmp(value, values[i]))
+                sel = i;
+        if (ui_segmented(ui, control(r, 320, 24), labels, 5, &sel)) {
+            apply("arrange", values[sel]);
+            return;
+        }
+        y += ROW + 20;
+    }
     for (int i = 0; i < n; i++) {
-        char title[32], res[32], sc[16];
-        ksnprintf(title, sizeof(title), "Display %d%s", i + 1, i == 0 ? " (main)" : "");
+        int hal = gui_display_hal(i);
+        char title[64], res[32], sc[16];
+        ksnprintf(title, sizeof(title), "Display %d — %s", i + 1, hal_screen_name(hal));
         y = heading(ui, x, y, w, title);
         struct rect a = wm_screen_rect(i);
-        ksnprintf(res, sizeof(res), "%d × %d", a.w, a.h);
-        str_copy(sc, a.w >= 2400 ? "200%" : "100%", sizeof(sc));
+        int scale_factor = a.w >= 2400 ? 2 : 1;
+        ksnprintf(res, sizeof(res), "%d × %d  ▾", a.w * scale_factor, a.h * scale_factor);
+        str_copy(sc, scale_factor == 2 ? "200%" : "100%", sizeof(sc));
         g = ui_group(ui, x, y, w, 2, ROW);
-        ui_group_label(ui, row_at(g, 0), "Resolution", res, false);
+        struct rect r = row_at(g, 0);
+        ui_group_label(ui, r, "Resolution", NULL, false);
+        if (ui_button(ui, control(r, 150, 26), res) && i < 2) {
+            int count = hal_screen_modes(hal, menu_modes, 24);
+            for (int k = 0; k < count; k++) {
+                ksnprintf(menu_labels[k], sizeof(menu_labels[k]), "%u × %u", menu_modes[k].width, menu_modes[k].height);
+                menu_items[k] = (struct menu_item){menu_labels[k], 0, NULL};
+            }
+            menu_display = i;
+            if (count)
+                ui_menu_items(ui->win, r.x + r.w - 164, r.y + r.h, menu_items, count, pick_mode);
+        }
         ui_group_label(ui, row_at(g, 1), "Scale", sc, true);
         y += 2 * ROW + 20;
     }

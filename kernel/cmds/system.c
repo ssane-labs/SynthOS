@@ -524,3 +524,26 @@ COMMAND(cal, "calendar", "system", "cal [month [year]]", "show a calendar")
     }
     return 0;
 }
+
+COMMAND(displays, "screens", "system", "displays", "list displays and the resolutions they support")
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    int count = hal_screen_count();
+    if (!count) {
+        sh_puts(sh, "no displays (text console only)\n");
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        struct display_mode modes[64];
+        int n = hal_screen_modes(i, modes, (int)ARRAY_SIZE(modes));
+        sh_role(sh, ROLE_ACCENT);
+        sh_printf(sh, "%d: %s\n", i + 1, hal_screen_name(i));
+        sh_role(sh, ROLE_MUTED);
+        for (int m = 0; m < n; m++)
+            sh_printf(sh, "%s%ux%u", m ? (m % 8 ? "  " : "\n   ") : "   ", modes[m].width, modes[m].height);
+        sh_puts(sh, "\n");
+        sh_role(sh, ROLE_TEXT);
+    }
+    return 0;
+}
