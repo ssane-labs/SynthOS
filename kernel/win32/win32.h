@@ -175,6 +175,7 @@ struct w32_process {
     struct exec_ctx *ctx;
     struct heap heap;
     void *arena;
+    uint32_t *arena_frames;
     uint32_t arena_base;
     uint32_t arena_size;
     uint8_t *teb;

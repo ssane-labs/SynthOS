@@ -782,11 +782,8 @@ static void found_pci(const struct pci_device *d, void *ctx)
     UNUSED(ctx);
     if (d->class_code != 0x0c || d->subclass != 0x03 || d->prog_if != 0x30 || controller_count >= MAX_CONTROLLERS)
         return;
-    uint32_t bar0 = pci_read(d, 0x10), bar1 = (bar0 & 6) == 4 ? pci_read(d, 0x14) : 0;
-    uint32_t base = bar0 & ~0xfu;
-    if (bar1 && pci_relocate_bar64(d, 0x10, &base))
-        bar1 = 0;
-    if (!base || bar1) {
+    uint64_t base;
+    if (!pci_bar_base(d, 0x10, &base)) {
         klog("xhci: registers above 4 GB are out of reach");
         return;
     }
@@ -802,14 +799,14 @@ static void found_pci(const struct pci_device *d, void *ctx)
     struct xhci *x = kzalloc(sizeof(*x));
     if (!x)
         return;
-    x->cap = vmm_map_phys(base, 0x1000);
+    x->cap = vmm_map_phys64(base, 0x1000);
     if (!x->cap) {
         kfree(x);
         return;
     }
     uint32_t dboff = rd(x->cap, 0x14) & ~3u, rtsoff = rd(x->cap, 0x18) & ~0x1fu;
     uint32_t size = MAX(MAX(dboff + 256 * 4, rtsoff + 0x40), 0x480u + 0x10u * MAX_PORTS);
-    x->cap = vmm_map_phys(base, ALIGN_UP(size, PAGE));
+    x->cap = vmm_map_phys64(base, ALIGN_UP(size, PAGE));
     if (!x->cap) {
         kfree(x);
         return;

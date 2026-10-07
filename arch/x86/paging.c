@@ -1,3 +1,4 @@
+#include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
@@ -7,17 +8,32 @@
 #define KERNEL_HEAP_VIRT 0xc0000000u
 #define HEAP_VIRT_LIMIT 0x3f000000u
 #define IDENTITY_LIMIT 0x400000u
+#define LARGE (2u << 20)
 #define PTE_PRESENT 0x001u
 #define PTE_WRITE 0x002u
 #define PTE_USER 0x004u
+#define PTE_LARGE 0x080u
+#define MAX_REGIONS 8
 
+static bool enabled, pae;
 static uint32_t page_dir[1024] __attribute__((aligned(4096)));
-static uint32_t *tables[1024];
+static uint64_t pdpt[4] __attribute__((aligned(32)));
+static uint64_t pdirs[4][512] __attribute__((aligned(4096)));
+static void *tables[2048];
 static uint32_t heap_phys;
 static uint32_t heap_bytes;
-static bool enabled;
-static uint32_t mmio_tables[4][1024] __attribute__((aligned(4096)));
-static int mmio_used;
+static uint32_t early_tables[4][1024] __attribute__((aligned(4096)));
+static int early_used;
+static uint64_t *pml4, *long_pdpt;
+
+struct region {
+    uint32_t first_pfn, count, free, hint;
+    uint32_t *bitmap;
+};
+
+static struct region regions[MAX_REGIONS];
+static int region_count;
+static bool high_ready;
 
 static uint32_t phys_of(const void *ptr)
 {
@@ -32,16 +48,62 @@ uint32_t vmm_phys(const void *ptr)
     return phys_of(ptr);
 }
 
+bool vmm_pae(void)
+{
+    return pae;
+}
+
 static inline void invlpg(uint32_t vaddr)
 {
     __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
 }
 
-void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size)
+static int shift(void)
 {
-    table_start = ALIGN_UP(table_start, 4096u);
-    start = ALIGN_UP(start, 4096u);
-    end &= ~4095u;
+    return pae ? 21 : 22;
+}
+
+static void set_pde(uint32_t index, uint64_t value)
+{
+    if (pae)
+        pdirs[index >> 9][index & 511] = value;
+    else
+        page_dir[index] = (uint32_t)value;
+}
+
+static void set_pte(uint32_t v, uint64_t phys, uint32_t flags)
+{
+    void *t = tables[v >> shift()];
+    if (pae)
+        ((uint64_t *)t)[(v >> 12) & 511] = phys | flags;
+    else
+        ((uint32_t *)t)[(v >> 12) & 1023] = (uint32_t)phys | flags;
+}
+
+static bool pte_present(uint32_t v)
+{
+    void *t = tables[v >> shift()];
+    if (!t)
+        return false;
+    return pae ? (((uint64_t *)t)[(v >> 12) & 511] & PTE_PRESENT) : (((uint32_t *)t)[(v >> 12) & 1023] & PTE_PRESENT);
+}
+
+static bool ensure_table(uint32_t v, uint32_t flags)
+{
+    uint32_t index = v >> shift();
+    if (tables[index])
+        return true;
+    void *t = early_used < (int)ARRAY_SIZE(early_tables) ? early_tables[early_used++] : kmalloc_pages(4096);
+    if (!t)
+        return false;
+    memset(t, 0, 4096);
+    tables[index] = t;
+    set_pde(index, phys_of(t) | PTE_PRESENT | PTE_WRITE | flags);
+    return true;
+}
+
+static void *legacy_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size)
+{
     uint32_t bytes = MIN(end - start, HEAP_VIRT_LIMIT);
     uint32_t count = (bytes + 0x3fffffu) / 0x400000u + 1;
     uint32_t tables_end = table_start + count * 4096u;
@@ -53,13 +115,11 @@ void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, ui
         start = tables_end;
     heap_phys = start;
     heap_bytes = MIN(end - heap_phys, HEAP_VIRT_LIMIT) & ~4095u;
-
     tables[0] = carve;
     for (uint32_t i = 0; i < 1024; i++)
-        tables[0][i] = (i * 4096u) | PTE_PRESENT | PTE_WRITE;
-    tables[0][0] = 0;
-    page_dir[0] = (uint32_t)tables[0] | PTE_PRESENT | PTE_WRITE;
-
+        carve[i] = (i * 4096u) | PTE_PRESENT | PTE_WRITE;
+    carve[0] = 0;
+    page_dir[0] = (uint32_t)carve | PTE_PRESENT | PTE_WRITE;
     for (uint32_t off = 0; off < heap_bytes; off += 4096u) {
         uint32_t virt = KERNEL_HEAP_VIRT + off;
         uint32_t pde = virt >> 22;
@@ -67,17 +127,62 @@ void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, ui
             tables[pde] = carve + 1024u * (1 + (pde - (KERNEL_HEAP_VIRT >> 22)));
             page_dir[pde] = (uint32_t)tables[pde] | PTE_PRESENT | PTE_WRITE;
         }
-        tables[pde][(virt >> 12) & 1023] = (heap_phys + off) | PTE_PRESENT | PTE_WRITE;
+        ((uint32_t *)tables[pde])[(virt >> 12) & 1023] = (heap_phys + off) | PTE_PRESENT | PTE_WRITE;
     }
-
     __asm__ volatile("mov %0, %%cr3" : : "r"(page_dir) : "memory");
+    *size = heap_bytes;
+    return (void *)KERNEL_HEAP_VIRT;
+}
+
+static void *pae_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size)
+{
+    uint32_t tables_end = table_start + 2 * 4096u;
+    if (tables_end > IDENTITY_LIMIT || tables_end > table_limit)
+        return NULL;
+    uint64_t *low = (uint64_t *)table_start;
+    memset(low, 0, 2 * 4096u);
+    for (uint32_t i = 0; i < 1024; i++)
+        low[i] = (uint64_t)(i * 4096u) | PTE_PRESENT | PTE_WRITE;
+    low[0] = 0;
+    tables[0] = low;
+    tables[1] = low + 512;
+    pdirs[0][0] = (uint32_t)low | PTE_PRESENT | PTE_WRITE;
+    pdirs[0][1] = (uint32_t)(low + 512) | PTE_PRESENT | PTE_WRITE;
+    if (start < tables_end && end > table_start)
+        start = tables_end;
+    heap_phys = ALIGN_UP(start, LARGE);
+    heap_bytes = heap_phys < end ? MIN(end - heap_phys, HEAP_VIRT_LIMIT) & ~(LARGE - 1) : 0;
+    for (uint32_t off = 0; off < heap_bytes; off += LARGE) {
+        uint32_t index = (KERNEL_HEAP_VIRT + off) >> 21;
+        pdirs[index >> 9][index & 511] = (uint64_t)(heap_phys + off) | PTE_PRESENT | PTE_WRITE | PTE_LARGE;
+    }
+    for (int i = 0; i < 4; i++)
+        pdpt[i] = (uint32_t)pdirs[i] | PTE_PRESENT;
+    uint32_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= 1u << 5;
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
+    __asm__ volatile("mov %0, %%cr3" : : "r"(pdpt) : "memory");
+    *size = heap_bytes;
+    return (void *)KERNEL_HEAP_VIRT;
+}
+
+void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size)
+{
+    table_start = ALIGN_UP(table_start, 4096u);
+    start = ALIGN_UP(start, 4096u);
+    end &= ~4095u;
+    pae = cpu_info()->pae && end - start >= 2 * LARGE;
+    void *heap = pae ? pae_init(table_start, table_limit, start, end, size)
+                     : legacy_init(table_start, table_limit, start, end, size);
+    if (!heap)
+        return NULL;
     uint32_t cr0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     cr0 |= 0x80000000u;
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
     enabled = true;
-    *size = heap_bytes;
-    return (void *)KERNEL_HEAP_VIRT;
+    return heap;
 }
 
 bool vmm_available(void)
@@ -89,11 +194,9 @@ bool vmm_range_free(uintptr_t vaddr, size_t size)
 {
     if (vaddr < VMM_USER_START || vaddr + size > VMM_USER_END || vaddr + size < vaddr)
         return false;
-    for (uintptr_t v = vaddr & ~4095u; v < vaddr + size; v += 4096u) {
-        uint32_t *t = tables[v >> 22];
-        if (t && (t[(v >> 12) & 1023] & PTE_PRESENT))
+    for (uintptr_t v = vaddr & ~4095u; v < vaddr + size; v += 4096u)
+        if (pte_present(v))
             return false;
-    }
     return true;
 }
 
@@ -103,56 +206,179 @@ int vmm_map(uintptr_t vaddr, void *memory, size_t size)
         return -1;
     for (uintptr_t off = 0; off < size; off += 4096u) {
         uint32_t v = vaddr + off;
-        uint32_t pde = v >> 22;
-        if (!tables[pde]) {
-            uint32_t *t = kmalloc_pages(4096);
-            if (!t)
-                return -1;
-            tables[pde] = t;
-            page_dir[pde] = phys_of(t) | PTE_PRESENT | PTE_WRITE | PTE_USER;
-        }
-        tables[pde][(v >> 12) & 1023] = phys_of((uint8_t *)memory + off) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        if (!ensure_table(v, PTE_USER))
+            return -1;
+        set_pte(v, phys_of((uint8_t *)memory + off), PTE_PRESENT | PTE_WRITE | PTE_USER);
         invlpg(v);
     }
     return 0;
-}
-
-void *vmm_map_phys(uint32_t phys, size_t size)
-{
-    static uint32_t next = VMM_USER_END;
-    uint32_t offset = phys & 4095u, base = phys - offset;
-    size = ALIGN_UP(size + offset, 4096u);
-    if (!enabled)
-        return (void *)(uintptr_t)phys;
-    if (next + size > KERNEL_HEAP_VIRT || next + size < next)
-        return NULL;
-    uint32_t virt = next;
-    for (uint32_t off = 0; off < size; off += 4096u) {
-        uint32_t v = virt + off;
-        uint32_t pde = v >> 22;
-        if (!tables[pde]) {
-            uint32_t *t = mmio_used < (int)ARRAY_SIZE(mmio_tables) ? mmio_tables[mmio_used++] : kmalloc_pages(4096);
-            if (!t)
-                return NULL;
-            memset(t, 0, 4096);
-            tables[pde] = t;
-            page_dir[pde] = phys_of(t) | PTE_PRESENT | PTE_WRITE;
-        }
-        tables[pde][(v >> 12) & 1023] = (base + off) | PTE_PRESENT | PTE_WRITE;
-        invlpg(v);
-    }
-    next += size;
-    return (void *)(uintptr_t)(virt + offset);
 }
 
 void vmm_unmap(uintptr_t vaddr, size_t size)
 {
     for (uintptr_t off = 0; off < size; off += 4096u) {
         uint32_t v = vaddr + off;
-        uint32_t *t = tables[v >> 22];
-        if (t) {
-            t[(v >> 12) & 1023] = 0;
+        if (tables[v >> shift()]) {
+            set_pte(v, 0, 0);
             invlpg(v);
         }
     }
+}
+
+void *vmm_map_phys64(uint64_t phys, size_t size)
+{
+    static uint32_t next = VMM_USER_END;
+    uint32_t offset = (uint32_t)(phys & 4095u);
+    uint64_t base = phys - offset;
+    size = ALIGN_UP(size + offset, 4096u);
+    if (!enabled)
+        return phys >> 32 ? NULL : (void *)(uintptr_t)phys;
+    if ((phys >> 32) && !pae)
+        return NULL;
+    if (next + size > KERNEL_HEAP_VIRT || next + size < next)
+        return NULL;
+    uint32_t virt = next;
+    for (uint32_t off = 0; off < size; off += 4096u) {
+        uint32_t v = virt + off;
+        if (!ensure_table(v, 0))
+            return NULL;
+        set_pte(v, base + off, PTE_PRESENT | PTE_WRITE);
+        invlpg(v);
+    }
+    next += size;
+    return (void *)(uintptr_t)(virt + offset);
+}
+
+void *vmm_map_phys(uint32_t phys, size_t size)
+{
+    return vmm_map_phys64(phys, size);
+}
+
+static void high_init(void)
+{
+    high_ready = true;
+    if (!pae)
+        return;
+    const struct x86_bootinfo *bi = x86_boot_info();
+    const struct e820_entry *map = (const struct e820_entry *)bi->mmap_addr;
+    for (uint32_t i = 0; i < bi->mmap_count && region_count < MAX_REGIONS; i++) {
+        if (map[i].type != 1)
+            continue;
+        uint64_t start = MAX(map[i].base, 0x100000000ull), end = map[i].base + map[i].length;
+        start = (start + 4095) & ~4095ull;
+        end &= ~4095ull;
+        if (end <= start || (start >> 12) > 0xffffffffull)
+            continue;
+        uint64_t count = MIN((end - start) >> 12, 0xffffffffull - (start >> 12));
+        struct region *r = &regions[region_count];
+        r->bitmap = kzalloc((size_t)((count + 31) / 32) * 4);
+        if (!r->bitmap)
+            continue;
+        r->first_pfn = (uint32_t)(start >> 12);
+        r->count = (uint32_t)count;
+        r->free = r->count;
+        region_count++;
+    }
+    uint64_t total = 0;
+    for (int i = 0; i < region_count; i++)
+        total += (uint64_t)regions[i].count * 4096;
+    if (total)
+        klog("memory: %u MB above 4 GB available for programs", (unsigned)(total >> 20));
+}
+
+size_t vmm_high_pages(void)
+{
+    if (!high_ready)
+        high_init();
+    size_t free = 0;
+    for (int i = 0; i < region_count; i++)
+        free += regions[i].free;
+    return free;
+}
+
+size_t vmm_high_total_pages(void)
+{
+    if (!high_ready)
+        high_init();
+    size_t total = 0;
+    for (int i = 0; i < region_count; i++)
+        total += regions[i].count;
+    return total;
+}
+
+bool vmm_frames_alloc(uint32_t *pfns, size_t n)
+{
+    if (vmm_high_pages() < n)
+        return false;
+    size_t got = 0;
+    for (int i = 0; i < region_count && got < n; i++) {
+        struct region *r = &regions[i];
+        for (uint32_t k = 0; k < r->count && got < n && r->free; k++) {
+            uint32_t bit = (r->hint + k) % r->count;
+            if (r->bitmap[bit / 32] & (1u << (bit % 32)))
+                continue;
+            r->bitmap[bit / 32] |= 1u << (bit % 32);
+            r->free--;
+            r->hint = bit + 1;
+            pfns[got++] = r->first_pfn + bit;
+        }
+    }
+    if (got < n) {
+        vmm_frames_free(pfns, got);
+        return false;
+    }
+    return true;
+}
+
+void vmm_frames_free(const uint32_t *pfns, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        for (int k = 0; k < region_count; k++) {
+            struct region *r = &regions[k];
+            if (pfns[i] < r->first_pfn || pfns[i] - r->first_pfn >= r->count)
+                continue;
+            uint32_t bit = pfns[i] - r->first_pfn;
+            if (r->bitmap[bit / 32] & (1u << (bit % 32))) {
+                r->bitmap[bit / 32] &= ~(1u << (bit % 32));
+                r->free++;
+            }
+            break;
+        }
+}
+
+int vmm_map_frames(uintptr_t vaddr, const uint32_t *pfns, size_t n)
+{
+    if (!enabled || !pae || (vaddr & 4095u))
+        return -1;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t v = vaddr + (uint32_t)i * 4096u;
+        if (!ensure_table(v, PTE_USER))
+            return -1;
+        set_pte(v, (uint64_t)pfns[i] << 12, PTE_PRESENT | PTE_WRITE | PTE_USER);
+        invlpg(v);
+    }
+    return 0;
+}
+
+uint32_t vmm_long_mode_root(void)
+{
+    if (!pae)
+        return 0;
+    if (!pml4) {
+        pml4 = kmalloc_pages(4096);
+        long_pdpt = kmalloc_pages(4096);
+        if (!pml4 || !long_pdpt)
+            return 0;
+        memset(pml4, 0, 4096);
+        memset(long_pdpt, 0, 4096);
+        for (int i = 0; i < 4; i++)
+            long_pdpt[i] = (uint32_t)pdirs[i] | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        pml4[0] = phys_of(long_pdpt) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    }
+    return phys_of(pml4);
+}
+
+uint32_t vmm_pae_root(void)
+{
+    return pae ? (uint32_t)pdpt : (uint32_t)page_dir;
 }

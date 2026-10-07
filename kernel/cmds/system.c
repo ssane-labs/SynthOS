@@ -10,6 +10,7 @@
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/time.h>
+#include <synth/vmm.h>
 
 static const char *const categories[] = {"files", "text", "shell", "system", "custom", "dev"};
 
@@ -275,6 +276,16 @@ COMMAND(mem, "free", "system", "mem", "show memory usage")
     sh_printf(sh, " %u%%\n", (unsigned)(hs.total ? hs.used * 100 / hs.total : 0));
     sh_printf(sh, "  used %s, free %s, total %s\n  peak %s, largest free block %s, %u blocks\n", used, free,
               total, peak, largest, (unsigned)hs.blocks);
+    uint64_t high_total = (uint64_t)vmm_high_total_pages() * 4096, high_free = (uint64_t)vmm_high_pages() * 4096;
+    if (high_total) {
+        fmt_size(free, sizeof(free), high_free);
+        fmt_size(total, sizeof(total), high_total);
+        sh_printf(sh, "Above 4G");
+        bar(sh, high_total - high_free, high_total, 30);
+        sh_printf(sh, " %u%%\n  free %s of %s, used for Windows programs\n",
+                  (unsigned)((high_total - high_free) * 100 / high_total), free, total);
+    }
+    sh_printf(sh, "Paging  %s\n", vmm_pae() ? "PAE (64-bit page tables, physical memory up to 64 GB)" : "32-bit");
     return 0;
 }
 

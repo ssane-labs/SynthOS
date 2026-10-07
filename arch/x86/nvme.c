@@ -225,17 +225,14 @@ static void probe(const struct pci_device *d, void *ctx)
     UNUSED(ctx);
     if (d->class_code != 0x01 || d->subclass != 0x08 || d->prog_if != 0x02 || count == (int)ARRAY_SIZE(controllers))
         return;
-    uint32_t bar0 = pci_read(d, 0x10), bar1 = (bar0 & 0x6) == 0x4 ? pci_read(d, 0x14) : 0;
-    uint32_t base = bar0 & ~0xfu;
-    if (bar1 && pci_relocate_bar64(d, 0x10, &base))
-        bar1 = 0;
-    if (!base || bar1) {
-        klog("nvme: controller registers at %08x%08x are out of reach", (unsigned)bar1, (unsigned)base);
+    uint64_t base;
+    if (!pci_bar_base(d, 0x10, &base)) {
+        klog("nvme: controller registers are out of reach");
         return;
     }
     pci_write(d, 0x04, pci_read(d, 0x04) | 0x06);
     struct nvme *n = &controllers[count];
-    n->regs = vmm_map_phys(base, 0x2000);
+    n->regs = vmm_map_phys64(base, 0x2000);
     if (!n->regs || !setup(n)) {
         klog("nvme: controller did not initialize");
         return;

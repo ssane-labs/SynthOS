@@ -219,14 +219,14 @@ static void found(const struct pci_device *d, void *ctx)
     bool new_eeprom;
     if (d->vendor != 0x8086 || d->class_code != 0x02 || nic_count == MAX_NICS || !supported(d->device, &new_eeprom))
         return;
-    uint32_t bar0 = pci_read(d, 0x10), base = bar0 & ~0xfu;
-    if ((bar0 & 6) == 4 && pci_read(d, 0x14) && !pci_relocate_bar64(d, 0x10, &base)) {
+    uint64_t base;
+    if (!pci_bar_base(d, 0x10, &base)) {
         klog("e1000: registers above 4 GB are out of reach");
         return;
     }
     pci_write(d, 0x04, pci_read(d, 0x04) | 0x06);
     struct e1000 *n = &nics[nic_count];
-    n->regs = vmm_map_phys(base, 0x20000);
+    n->regs = vmm_map_phys64(base, 0x20000);
     n->new_eeprom = new_eeprom;
     if (!n->regs || !setup(n)) {
         klog("e1000: device %04x did not initialize", d->device);

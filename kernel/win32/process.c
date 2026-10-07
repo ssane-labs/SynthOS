@@ -16,6 +16,7 @@
 #define ARENA_BASE 0x20000000u
 #define ARENA_MAX (512u * 1024 * 1024)
 #define ARENA_MIN (1024u * 1024)
+#define ARENA_HIGH_MAX (1024u * 1024 * 1024)
 #define STACK_SIZE (1024u * 1024)
 #define HANDLE_BASE 0x100u
 
@@ -517,6 +518,29 @@ static size_t choose_arena(void)
     return size & ~(size_t)0xffff;
 }
 
+static bool high_arena(void)
+{
+    size_t pages = vmm_high_pages() / 4 * 3;
+    uint32_t size = (uint32_t)MIN((uint64_t)pages * 4096, (uint64_t)ARENA_HIGH_MAX) & ~0xffffu;
+    if (size < 64u * 1024 * 1024)
+        return false;
+    uint32_t *frames = kmalloc(size / 4096 * sizeof(uint32_t));
+    if (!frames)
+        return false;
+    if (!vmm_frames_alloc(frames, size / 4096)) {
+        kfree(frames);
+        return false;
+    }
+    if (vmm_map_frames(ARENA_BASE, frames, size / 4096) != 0) {
+        vmm_frames_free(frames, size / 4096);
+        kfree(frames);
+        return false;
+    }
+    w32->arena_frames = frames;
+    w32->arena_size = size;
+    return true;
+}
+
 static void cleanup(void)
 {
     w32_winsock_cleanup();
@@ -531,6 +555,11 @@ static void cleanup(void)
         vmm_unmap(w32->arena_base, w32->arena_size);
         kfree_pages(w32->arena);
     }
+    if (w32->arena_frames) {
+        vmm_unmap(w32->arena_base, w32->arena_size);
+        vmm_frames_free(w32->arena_frames, w32->arena_size / 4096);
+        kfree(w32->arena_frames);
+    }
 }
 
 static int run(struct exec_ctx *ctx)
@@ -542,13 +571,15 @@ static int run(struct exec_ctx *ctx)
     w32->output_cp = w32->input_cp = codepage_current();
     w32->input_mode = 0x1f7;
     w32->output_mode = 0x7;
-    w32->arena_size = (uint32_t)choose_arena();
     w32->arena_base = ARENA_BASE;
-    if (w32->arena_size < ARENA_MIN)
-        return E_NOMEM;
-    w32->arena = kmalloc_pages(w32->arena_size);
-    if (!w32->arena || vmm_map(ARENA_BASE, w32->arena, w32->arena_size) != 0)
-        return E_NOMEM;
+    if (!high_arena()) {
+        w32->arena_size = (uint32_t)choose_arena();
+        if (w32->arena_size < ARENA_MIN)
+            return E_NOMEM;
+        w32->arena = kmalloc_pages(w32->arena_size);
+        if (!w32->arena || vmm_map(ARENA_BASE, w32->arena, w32->arena_size) != 0)
+            return E_NOMEM;
+    }
     heap_create(&w32->heap, (void *)ARENA_BASE, w32->arena_size, false);
 
     w32->stack_size = MIN(STACK_SIZE, w32->arena_size / 4 & ~0xffffu);
@@ -624,7 +655,9 @@ static void map_process(struct w32_process *p, bool on)
             else
                 vmm_unmap(img->base, img->size);
         }
-    if (on)
+    if (on && p->arena_frames)
+        vmm_map_frames(p->arena_base, p->arena_frames, p->arena_size / 4096);
+    else if (on)
         vmm_map(p->arena_base, p->arena, p->arena_size);
     else
         vmm_unmap(p->arena_base, p->arena_size);

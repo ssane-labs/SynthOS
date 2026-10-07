@@ -11,6 +11,7 @@
 #include <synth/users.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
+#include <synth/vmm.h>
 
 static bool quiet;
 
@@ -177,7 +178,14 @@ void kmain(const struct boot_info *bi)
     }
     char size[16];
     fmt_size(size, sizeof(size), bi->heap_size);
-    boot_step(true, "Memory: %s available to the kernel heap", size);
+    uint64_t high = (uint64_t)vmm_high_total_pages() * 4096;
+    if (high) {
+        char extra[16];
+        fmt_size(extra, sizeof(extra), high);
+        boot_step(true, "Memory: %s for the kernel, %s above 4 GB for programs", size, extra);
+    } else {
+        boot_step(true, "Memory: %s available to the kernel heap", size);
+    }
     if (con_is_grid())
         boot_step(true, "Display: %s %dx%d, 16-color palette", d->name, d->cols, d->rows);
     else

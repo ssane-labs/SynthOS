@@ -1,6 +1,9 @@
 #include <synth/types.h>
 #include <synth/string.h>
 
+#include <synth/log.h>
+#include <synth/vmm.h>
+
 #include "io.h"
 
 static uint32_t address(const struct pci_device *d, uint8_t offset)
@@ -125,4 +128,20 @@ bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *ou
     }
     pci_write(d, 0x04, cmd);
     return false;
+}
+
+bool pci_bar_base(const struct pci_device *d, uint8_t offset, uint64_t *out)
+{
+    uint32_t low = pci_read(d, offset), high = (low & 6) == 4 ? pci_read(d, (uint8_t)(offset + 4)) : 0;
+    uint32_t base = low & ~0xfu;
+    if (high && !vmm_pae()) {
+        if (!pci_relocate_bar64(d, offset, &base))
+            return false;
+        high = 0;
+    }
+    *out = (uint64_t)high << 32 | base;
+    if (high)
+        klog("pci: %02x:%02x.%u registers at %08x%08x (above 4 GB)", d->bus, d->dev, d->fn, (unsigned)high,
+             (unsigned)base);
+    return *out != 0;
 }

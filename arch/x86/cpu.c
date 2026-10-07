@@ -143,6 +143,14 @@ static void detect_cpu(void)
         info.family += (eax >> 20) & 0xff;
     info.tsc = edx & (1u << 4);
     info.sse = (edx & (1u << 25)) && (edx & (1u << 24));
+    info.pae = edx & (1u << 6);
+    eax = 0x80000000u;
+    __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+    if (eax >= 0x80000001u) {
+        eax = 0x80000001u;
+        __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+        info.long_mode = info.pae && (edx & (1u << 29));
+    }
 }
 
 static void fpu_init(void)

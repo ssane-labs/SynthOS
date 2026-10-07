@@ -12,6 +12,15 @@ int vmm_map(uintptr_t vaddr, void *kernel_memory, size_t size);
 void vmm_unmap(uintptr_t vaddr, size_t size);
 bool vmm_range_free(uintptr_t vaddr, size_t size);
 void *vmm_map_phys(uint32_t phys, size_t size);
+void *vmm_map_phys64(uint64_t phys, size_t size);
+bool vmm_pae(void);
+size_t vmm_high_pages(void);
+size_t vmm_high_total_pages(void);
+bool vmm_frames_alloc(uint32_t *pfns, size_t n);
+void vmm_frames_free(const uint32_t *pfns, size_t n);
+int vmm_map_frames(uintptr_t vaddr, const uint32_t *pfns, size_t n);
+uint32_t vmm_long_mode_root(void);
+uint32_t vmm_pae_root(void);
 uint32_t vmm_phys(const void *ptr);
 
 void *kmalloc_pages(size_t size);
