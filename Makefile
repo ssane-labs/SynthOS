@@ -61,8 +61,9 @@ W32_SRC  := $(wildcard programs/win32/*.c programs/win32/*.cpp)
 W32_DLL  := $(patsubst programs/win32/dll/%.c,$(BUILD)/rootfs/apps/%.dll,$(wildcard programs/win32/dll/*.c))
 W32_BIN  := $(patsubst programs/win32/%,$(BUILD)/rootfs/apps/%.exe,$(basename $(W32_SRC))) $(W32_DLL)
 W64CC    ?= $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
-W64_SRC  := $(wildcard programs/win64/*.c)
-W32_BIN  += $(patsubst programs/win64/%.c,$(BUILD)/rootfs/apps/%.exe,$(W64_SRC))
+W64CXX   ?= $(shell command -v x86_64-w64-mingw32-g++ 2>/dev/null)
+W64_SRC  := $(wildcard programs/win64/*.c programs/win64/*.cpp)
+W32_BIN  += $(patsubst programs/win64/%,$(BUILD)/rootfs/apps/%.exe,$(basename $(W64_SRC)))
 ROOTFS_SRC := $(shell find rootfs -type f)
 
 TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
@@ -207,6 +208,17 @@ $(BUILD)/rootfs/apps/%.exe: programs/win64/%.c
 ifneq ($(W64CC),)
 	@echo "  W64CC   $<"
 	@$(W64CC) -O2 -s -o $@ $< -lgdi32
+	@mkdir -p programs/win64/prebuilt && cp $@ programs/win64/prebuilt/
+else
+	@echo "  COPY    programs/win64/prebuilt/$(@F)"
+	@cp programs/win64/prebuilt/$(@F) $@
+endif
+
+$(BUILD)/rootfs/apps/%.exe: programs/win64/%.cpp
+	@mkdir -p $(@D)
+ifneq ($(W64CXX),)
+	@echo "  W64CXX  $<"
+	@$(W64CXX) -Os -s -static -o $@ $<
 	@mkdir -p programs/win64/prebuilt && cp $@ programs/win64/prebuilt/
 else
 	@echo "  COPY    programs/win64/prebuilt/$(@F)"

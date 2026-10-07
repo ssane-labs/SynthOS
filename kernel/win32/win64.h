@@ -63,7 +63,14 @@ static inline uint64_t w64_sx(uint32_t v)
     return (uint64_t)(int64_t)(int32_t)v;
 }
 
+static inline uint64_t w64_ret(uint32_t v)
+{
+    return v >= 0xffff0000u ? w64_sx(v) : v;
+}
+
 uint64_t w64_math(void *target, int kind, const uint64_t *a, const uint64_t *f);
 uint64_t w64_call(uint64_t fn, int argc, const uint64_t *args);
+void *w64_kernel_stub(w64_handler fn, const char *name);
+void w64_seh_setup(void);
 
 #endif

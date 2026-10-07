@@ -180,7 +180,7 @@ static uint64_t dispatch(struct w64_stub *s, uint64_t *a, const uint64_t *f)
     crt_slots64 = saved;
     if (s->flags & W64F_FILE)
         return wrap_file((uint32_t)r);
-    return s->flags & W64F_RET64 ? r : w64_sx((uint32_t)r);
+    return s->flags & W64F_RET64 ? r : w64_ret((uint32_t)r);
 }
 
 static const struct w64_export *find_export(const char *module, const char *name)
@@ -244,6 +244,27 @@ void *w64_lookup(const char *module, const char *symbol, uint32_t ordinal, bool 
     if (!target && !(e && e->fn) && !create_missing)
         return NULL;
     return new_stub(module, symbol, e, target);
+}
+
+void *w64_kernel_stub(w64_handler fn, const char *name)
+{
+    struct w64_stub *s = kmalloc(sizeof(*s) + 16);
+    if (!s)
+        return NULL;
+    s = (struct w64_stub *)ALIGN_UP((uintptr_t)s, 16u);
+    memset(s, 0, sizeof(*s));
+    uint32_t self = U(s), gate = U(w64_gate);
+    s->code[0] = 0x41;
+    s->code[1] = 0xbb;
+    memcpy(s->code + 2, &self, 4);
+    s->code[6] = 0xb8;
+    memcpy(s->code + 7, &gate, 4);
+    s->code[11] = 0xff;
+    s->code[12] = 0xe0;
+    s->fn = fn;
+    s->module = "kernel32.dll";
+    s->name = name;
+    return s;
 }
 
 void *w64_stub(const char *module, const char *symbol, uint32_t ordinal)
@@ -372,6 +393,7 @@ static bool build_peb64(void)
 bool w64_setup(void)
 {
     w64_dispatch_fn = (void *)dispatch;
+    w64_seh_setup();
     crt_slots64 = 0;
     struct w64_state *st = w32_zalloc(sizeof(*st));
     if (!st)
@@ -609,12 +631,6 @@ static uint64_t h_set_filter(uint64_t *a, const uint64_t *f, void *t)
     uint64_t old = S->filter;
     S->filter = a[0];
     return old;
-}
-
-static uint64_t h_capture_context(uint64_t *a, const uint64_t *f, void *t)
-{
-    memset(P(a[0]), 0, 0x4d0);
-    return 0;
 }
 
 static uint64_t h_wait_multiple(uint64_t *a, const uint64_t *f, void *t)
@@ -1056,9 +1072,6 @@ static const struct w64_export kernel32_exports[] = {
     W64_FN("RtlAddFunctionTable", h_one),
     W64_FN("RtlDeleteFunctionTable", h_one),
     W64_FN("RtlInstallFunctionTableCallback", h_one),
-    W64_FN("RtlLookupFunctionEntry", h_zero),
-    W64_FN("RtlVirtualUnwind", h_zero),
-    W64_FN("RtlCaptureContext", h_capture_context),
     W64_FN("SetConsoleCtrlHandler", h_one),
     W64_FN("WaitForMultipleObjects", h_wait_multiple),
     W64_FN("WaitForMultipleObjectsEx", h_wait_multiple),
@@ -1077,9 +1090,6 @@ W64_EXPORTS(kernel32_module, "kernel32.dll", kernel32_exports);
 static const struct w64_export ntdll_exports[] = {
     W64_FN("RtlAddFunctionTable", h_one),
     W64_FN("RtlDeleteFunctionTable", h_one),
-    W64_FN("RtlLookupFunctionEntry", h_zero),
-    W64_FN("RtlVirtualUnwind", h_zero),
-    W64_FN("RtlCaptureContext", h_capture_context),
     W64_NATIVE("memcpy", w64_memcpy),
     W64_NATIVE("memmove", w64_memmove),
     W64_NATIVE("memset", w64_memset),

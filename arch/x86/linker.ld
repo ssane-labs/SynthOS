@@ -56,7 +56,7 @@ SECTIONS
 
     kernel_end = .;
     kernel_sectors = (image_end - 0x100000 + 511) / 512;
-    ASSERT(kernel_end < 0x300000, "kernel image must stay below 3 MiB")
+    ASSERT(kernel_end < 0x380000, "kernel image must stay below 3.5 MiB")
 
     /DISCARD/ : {
         *(.comment)

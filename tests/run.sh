@@ -224,6 +224,12 @@ hello64 > /tmp/h64.txt; echo rc64=$?; grep -c . /tmp/h64.txt
 rc64=7
 hello64 | grep math; winhello after64 | grep 'arg 1'
 arg 1: after64
+cpp64
+~g3 ~v1 ~g2 ~g1 | caught 'deep 5' alive=0
+cpp64 | grep map
+caught 500, map: apple=1 fig=2 pear=1
+cpp64 | grep rethrown
+inner 42, rethrown 42
 cat '/mnt/hdb/Long Name Note.txt'
 hello from fat
 mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'

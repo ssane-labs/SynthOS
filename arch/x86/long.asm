@@ -22,6 +22,12 @@ global w64_memmove
 global w64_memset
 global w64_strlen
 global w64_dispatch_fn
+global w64_capture_context
+global w64_restore_context
+global w64_raise_exception
+global w64_unwind_ex
+global w64_raise_hook
+global w64_unwind_hook
 
 section .text
 
@@ -456,6 +462,145 @@ w64_memset:
     mov rax, r10
     ret
 
+; CONTEXT (x64): ContextFlags 0x30, MxCsr 0x34, SegCs 0x38, SegSs 0x42, EFlags 0x44, Rax 0x78 .. R15 0xf0,
+; Rip 0xf8, Xmm0 0x1a0. RtlCaptureContext describes its caller.
+w64_capture_context:
+    mov [rcx + 0x78], rax
+    pushfq
+    pop rax
+    mov [rcx + 0x44], eax
+    mov [rcx + 0x80], rcx
+    mov [rcx + 0x88], rdx
+    mov [rcx + 0x90], rbx
+    lea rax, [rsp + 8]
+    mov [rcx + 0x98], rax
+    mov [rcx + 0xa0], rbp
+    mov [rcx + 0xa8], rsi
+    mov [rcx + 0xb0], rdi
+    mov [rcx + 0xb8], r8
+    mov [rcx + 0xc0], r9
+    mov [rcx + 0xc8], r10
+    mov [rcx + 0xd0], r11
+    mov [rcx + 0xd8], r12
+    mov [rcx + 0xe0], r13
+    mov [rcx + 0xe8], r14
+    mov [rcx + 0xf0], r15
+    mov rax, [rsp]
+    mov [rcx + 0xf8], rax
+    stmxcsr [rcx + 0x34]
+    mov dword [rcx + 0x30], 0x10000b
+    mov word [rcx + 0x38], CODE64
+    mov word [rcx + 0x42], DATA32
+%assign i 0
+%rep 16
+    movdqu [rcx + 0x1a0 + i * 16], xmm %+ i
+%assign i i + 1
+%endrep
+    mov rax, [rcx + 0x78]
+    ret
+
+w64_restore_context:
+    mov r11, [rcx + 0x98]
+    mov rax, [rcx + 0xf8]
+    mov [r11 - 8], rax
+    mov rax, [rcx + 0x80]
+    mov [r11 - 16], rax
+    mov rax, [rcx + 0xd0]
+    mov [r11 - 24], rax
+    mov eax, [rcx + 0x44]
+    or eax, 0x200
+    mov [r11 - 32], rax
+    ldmxcsr [rcx + 0x34]
+%assign i 0
+%rep 16
+    movdqu xmm %+ i, [rcx + 0x1a0 + i * 16]
+%assign i i + 1
+%endrep
+    mov rax, [rcx + 0x78]
+    mov rdx, [rcx + 0x88]
+    mov rbx, [rcx + 0x90]
+    mov rbp, [rcx + 0xa0]
+    mov rsi, [rcx + 0xa8]
+    mov rdi, [rcx + 0xb0]
+    mov r8, [rcx + 0xb8]
+    mov r9, [rcx + 0xc0]
+    mov r10, [rcx + 0xc8]
+    mov r12, [rcx + 0xd8]
+    mov r13, [rcx + 0xe0]
+    mov r14, [rcx + 0xe8]
+    mov r15, [rcx + 0xf0]
+    lea rsp, [r11 - 32]
+    popfq
+    pop r11
+    pop rcx
+    ret
+
+; RaiseException(code, flags, count, args): build the record and the caller's context, then dispatch.
+w64_raise_exception:
+    sub rsp, 0x598
+    mov [rsp + 0x20], ecx
+    and edx, 1
+    mov [rsp + 0x24], edx
+    mov qword [rsp + 0x28], 0
+    mov rax, [rsp + 0x598]
+    mov [rsp + 0x30], rax
+    cmp r8d, 15
+    jbe .count
+    mov r8d, 15
+.count:
+    test r9, r9
+    jnz .keep
+    xor r8d, r8d
+.keep:
+    mov [rsp + 0x38], r8d
+    xor eax, eax
+.copy:
+    cmp eax, r8d
+    jae .copied
+    mov r10, [r9 + rax * 8]
+    mov [rsp + 0x40 + rax * 8], r10
+    inc eax
+    jmp .copy
+.copied:
+    lea rcx, [rsp + 0xc0]
+    call w64_capture_context
+    mov rax, [rsp + 0x598]
+    mov [rsp + 0xc0 + 0xf8], rax
+    lea rax, [rsp + 0x5a0]
+    mov [rsp + 0xc0 + 0x98], rax
+    lea rcx, [rsp + 0x20]
+    lea rdx, [rsp + 0xc0]
+    mov eax, w64_raise_hook
+    call [rax]
+    add rsp, 0x598
+    ret
+
+; RtlUnwindEx(frame, ip, record, value, context, history): hands the caller's context to the unwinder.
+w64_unwind_ex:
+    sub rsp, 0x518
+    mov [rsp + 0x520], rcx
+    mov [rsp + 0x528], rdx
+    mov [rsp + 0x530], r8
+    mov [rsp + 0x538], r9
+    lea rcx, [rsp + 0x40]
+    call w64_capture_context
+    mov rax, [rsp + 0x518]
+    mov [rsp + 0x40 + 0xf8], rax
+    lea rax, [rsp + 0x520]
+    mov [rsp + 0x40 + 0x98], rax
+    mov rcx, [rsp + 0x520]
+    mov rdx, [rsp + 0x528]
+    mov r8, [rsp + 0x530]
+    mov r9, [rsp + 0x538]
+    lea rax, [rsp + 0x40]
+    mov [rsp + 0x20], rax
+    mov rax, [rsp + 0x548]
+    mov [rsp + 0x28], rax
+    mov eax, w64_unwind_hook
+    call [rax]
+    add rsp, 0x518
+    ret
+
 w64_strlen:
     mov rax, rcx
 .scan:
@@ -471,6 +616,11 @@ section .data
 align 4
 w64_dispatch_fn:
     dd 0
+align 8
+w64_raise_hook:
+    dq 0
+w64_unwind_hook:
+    dq 0
 
 section .rodata
 align 4

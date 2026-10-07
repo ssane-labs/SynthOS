@@ -106,15 +106,18 @@ static void *legacy_init(uint32_t table_start, uint32_t table_limit, uint32_t st
 {
     uint32_t bytes = MIN(end - start, HEAP_VIRT_LIMIT);
     uint32_t count = (bytes + 0x3fffffu) / 0x400000u + 1;
-    uint32_t tables_end = table_start + count * 4096u;
-    if (tables_end > IDENTITY_LIMIT || tables_end > table_limit)
+    uint32_t limit = MIN(IDENTITY_LIMIT, table_limit);
+    if (table_start + 2 * 4096u > limit)
         return NULL;
+    count = MIN(count, (limit - table_start) / 4096u);
+    bytes = MIN(bytes, (count - 1) * 0x400000u);
+    uint32_t tables_end = table_start + count * 4096u;
     uint32_t *carve = (uint32_t *)table_start;
     memset(carve, 0, count * 4096u);
     if (start < tables_end && end > table_start)
         start = tables_end;
     heap_phys = start;
-    heap_bytes = MIN(end - heap_phys, HEAP_VIRT_LIMIT) & ~4095u;
+    heap_bytes = MIN(end - heap_phys, bytes) & ~4095u;
     tables[0] = carve;
     for (uint32_t i = 0; i < 1024; i++)
         carve[i] = (i * 4096u) | PTE_PRESENT | PTE_WRITE;
