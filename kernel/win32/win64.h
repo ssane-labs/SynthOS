@@ -14,6 +14,7 @@ enum {
     W64F_VA = 32,
     W64F_MATH = 64,
     W64F_FILE = 128,
+    W64F_SPLIT0 = 1 << 16,
 };
 
 enum {

@@ -116,7 +116,7 @@ static const char *builtin_alias(const char *name)
         return "msvcrt.dll";
     if (str_starts(name, "api-ms-win-core-") || strcmp(name, "kernelbase.dll") == 0)
         return "kernel32.dll";
-    if (str_starts(name, "msvcr") || strcmp(name, "crtdll.dll") == 0)
+    if (str_starts(name, "msvcr") || str_starts(name, "vcruntime") || strcmp(name, "crtdll.dll") == 0)
         return "msvcrt.dll";
     return name;
 }

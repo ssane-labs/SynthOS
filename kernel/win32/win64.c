@@ -165,6 +165,12 @@ static uint64_t dispatch(struct w64_stub *s, uint64_t *a, const uint64_t *f)
     int count = MAX_ARGS;
     for (int i = 0; i < MAX_ARGS; i++)
         args[i] = narrow(a[i]);
+    if (s->flags & W64F_SPLIT0) {
+        args[0] = (uint32_t)a[0];
+        args[1] = (uint32_t)(a[0] >> 32);
+        for (int i = 1; i < MAX_ARGS - 1; i++)
+            args[i + 1] = narrow(a[i]);
+    }
     if (s->flags & W64F_VA) {
         int fmt = (int)(s->flags >> 8 & 0xff);
         args[fmt + 1] = U(&a[fmt + 1]);
@@ -903,6 +909,59 @@ static uint64_t h_cexit(uint64_t *a, const uint64_t *f, void *t)
     return 0;
 }
 
+static uint64_t h_init_onexit_table(uint64_t *a, const uint64_t *f, void *t)
+{
+    if (!a[0])
+        return (uint64_t)-1;
+    memset(P(a[0]), 0, 24);
+    return 0;
+}
+
+static uint64_t h_register_onexit(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint64_t *table = P(a[0]);
+    if (!table)
+        return (uint64_t)-1;
+    if (table[1] == table[2]) {
+        size_t used = (size_t)(table[1] - table[0]) / 8, cap = used ? used * 2 : 16;
+        uint64_t *grown = w32_realloc(P(table[0]), cap * 8);
+        if (!grown)
+            return (uint64_t)-1;
+        table[0] = U(grown);
+        table[1] = U(grown + used);
+        table[2] = U(grown + cap);
+    }
+    put64(P(table[1]), a[1]);
+    table[1] += 8;
+    return 0;
+}
+
+static uint64_t h_execute_onexit(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint64_t *table = P(a[0]);
+    if (!table)
+        return (uint64_t)-1;
+    while (table[1] > table[0] && !w32->exiting) {
+        table[1] -= 8;
+        uint64_t fn = rd64(P(table[1]));
+        if (fn)
+            w64_call(fn, 0, NULL);
+    }
+    w32_free(P(table[0]));
+    memset(table, 0, 24);
+    return 0;
+}
+
+static uint64_t h_initial_environment(uint64_t *a, const uint64_t *f, void *t)
+{
+    return S->environ;
+}
+
+static uint64_t h_initial_wide_environment(uint64_t *a, const uint64_t *f, void *t)
+{
+    return S->wenviron;
+}
+
 static uint64_t h_signal(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t sig = (uint32_t)a[0];
@@ -1198,6 +1257,25 @@ static const struct w64_export msvcrt_exports[] = {
     W64_FN("_crt_atexit", h_atexit),
     W64_FN("exit", h_exit),
     W64_FN("_cexit", h_cexit),
+    W64_FN("_initialize_onexit_table", h_init_onexit_table),
+    W64_FN("_register_onexit_function", h_register_onexit),
+    W64_FN("_execute_onexit_table", h_execute_onexit),
+    W64_FN("_get_initial_narrow_environment", h_initial_environment),
+    W64_FN("_get_initial_wide_environment", h_initial_wide_environment),
+    W64_FN("__tzname", h_p_tzname),
+    W64_FLAG("__stdio_common_vfprintf", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vfprintf_s", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vfwprintf", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vfwprintf_s", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vsprintf", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vswprintf", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vsprintf_s", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vswprintf_s", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vsnprintf_s", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vsscanf", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vswscanf", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vfscanf", W64F_FMT | W64F_SPLIT0),
+    W64_FLAG("__stdio_common_vfwscanf", W64F_FMT | W64F_SPLIT0),
     W64_FN("signal", h_signal),
     W64_FN("raise", h_raise),
     W64_FN("__setusermatherr", h_zero),

@@ -224,6 +224,10 @@ hello64 | grep sockets
 sockets: SynthOS sockets 127.0.0.1 port 80, select 1 set 1
 hello64 | grep 'window class'
 window class: proc same, extra 16
+hello64u a | grep math
+math 1.4142 0.8415 3.162e+20
+hello64u a | grep sockets
+sockets: SynthOS sockets 127.0.0.1 port 80, select 1 set 1
 hello64 > /tmp/h64.txt; echo rc64=$?; grep -c . /tmp/h64.txt
 rc64=7
 hello64 | grep math; winhello after64 | grep 'arg 1'

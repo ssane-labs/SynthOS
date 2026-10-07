@@ -103,3 +103,41 @@ arch_switch:
     pop ebx
     pop ebp
     ret
+
+section .text
+
+; Microsoft x86 jmp_buf: Ebp, Ebx, Edi, Esi, Esp, Eip, Registration, TryLevel, Cookie.
+global crt_setjmp3
+global crt_longjmp
+crt_setjmp3:
+    mov edx, [esp + 4]
+    mov [edx], ebp
+    mov [edx + 4], ebx
+    mov [edx + 8], edi
+    mov [edx + 12], esi
+    lea ecx, [esp + 4]
+    mov [edx + 16], ecx
+    mov ecx, [esp]
+    mov [edx + 20], ecx
+    mov ecx, [fs:0]
+    mov [edx + 24], ecx
+    mov dword [edx + 28], -1
+    mov dword [edx + 32], 0x56433230
+    xor eax, eax
+    ret
+
+crt_longjmp:
+    mov edx, [esp + 4]
+    mov eax, [esp + 8]
+    test eax, eax
+    jnz .value
+    inc eax
+.value:
+    mov ecx, [edx + 24]
+    mov [fs:0], ecx
+    mov ebp, [edx]
+    mov ebx, [edx + 4]
+    mov edi, [edx + 8]
+    mov esi, [edx + 12]
+    mov esp, [edx + 16]
+    jmp [edx + 20]
