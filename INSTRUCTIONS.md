@@ -16,19 +16,23 @@ SynthOS 0.1.0 «Neon» — рабочая база:
 * свой загрузчик для **BIOS** (MBR + stage2, LBA или CHS, карта памяти E820/E801/88h) и свой
   загрузчик для **UEFI** (`BOOTX64.EFI`) — один и тот же образ грузится на старых и новых ПК;
 * 32-битное ядро x86 (от **i486** и 4–5 МБ ОЗУ), страничная память, null-страница защищена;
+* **графический рабочий стол**: свой композитный оконный менеджер (тени, перетаскивание, изменение
+  размера, развёртывание), панель задач с часами, меню «Пуск», значки, обои, сглаженные шрифты;
+  приложения — Терминал (вся оболочка в окне), Проводник, Блокнот, Paint, Калькулятор, Настройки,
+  Системный монитор, Сапёр; мышь PS/2 с колёсиком; режимы VBE (BIOS) и GOP (UEFI) до 1920×1200;
 * консоль: VGA-текст или графический фреймбуфер UEFI, **свой шрифт 8×16 с кириллицей** (CP437/CP866),
   темы; клавиатура PS/2, таймер, RTC, COM-порт;
 * диски: IDE/ATA, **AHCI (SATA)**, **NVMe**, а на BIOS-машинах — любой диск через BIOS (USB-флешки);
 * файловые системы: ramfs (корень), devfs, своя дисковая **SynthFS** (`/home` сохраняется);
   структура каталогов в стиле Windows: `C:\Windows`, `C:\Program Files`, `C:\Users\<имя>`;
-* оболочка с 84 командами, скриптами, пайпами, подсветкой синтаксиса и автодополнением;
+* оболочка с 86 командами, скриптами, пайпами, подсветкой синтаксиса и автодополнением;
 * **запуск программ Windows** (32-битные консольные `.exe`/`.dll`): свой загрузчик PE и свои
   kernel32, msvcrt, user32, advapi32, shell32, ntdll — C и C++ (STL, исключения), файлы, консоль
   с цветами, DLL, MessageBox, вложенный запуск;
 * виртуальная машина **SX** для своих программ + ассемблер/дизассемблер внутри ОС;
 * эмулятор **MS-DOS** (8086/186) для `.COM` и `.EXE`;
 * редактор `edit`, пейджер `more`, игра `snake`;
-* автотесты: `make test` (63 проверки) и `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB, i486).
+* автотесты: `make test` (66 проверок) и `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB, i486).
 
 ---
 
@@ -119,6 +123,19 @@ make clean        # удалить build/
 
 ## 4. Как пользоваться (коротко)
 
+После загрузки сразу открывается **рабочий стол**. Терминал на нём — обычная оболочка SynthOS.
+
+```text
+Мышь                      окна: перетаскивать за заголовок, края — менять размер,
+                          двойной щелчок по заголовку — развернуть; правая кнопка — контекстное меню
+Win или Ctrl+Esc          меню «Пуск»;  Alt+Tab — следующее окно;  Alt+F4 — закрыть окно
+launch                    список приложений;  launch paint, launch files /home, launch файл.bmp
+desktop off / exit        не запускать стол при загрузке (config save) / выйти в текстовый режим
+desktop (или startx)      снова запустить рабочий стол из текстового режима
+```
+
+Команды оболочки:
+
 ```text
 help / help ls            список команд / справка по команде
 ls -l, cd, tree, find     файлы; edit файл — редактор; more файл — просмотр
@@ -131,7 +148,8 @@ winhello, wincpp, windll  программы Windows из /apps (= C:\Program Fi
 asm файл.sasm             собрать свою программу; dis файл.sx — дизассемблировать
 ```
 
-Про Windows-программы подробно — `more /docs/windows.txt` внутри ОС.
+Про Windows-программы подробно — `more /docs/windows.txt` внутри ОС, про рабочий стол —
+`more /docs/desktop.txt`.
 
 Скрипты: файл `.sh` с командами оболочки (`if … end`, `while … end`, `for x in … end`,
 `func имя … end`). Стартовый скрипт пользователя — `/home/.synthrc`.
@@ -147,6 +165,7 @@ arch/x86/boot/            stage1.asm (MBR, LBA/CHS), stage2.asm (A20, E820/E801,
 arch/x86/efi/             UEFI-загрузчик: loader.c (BOOTX64.EFI), trampoline.asm (выход из long mode)
 arch/x86/                 entry.asm, isr.asm, linker.ld, cpu.c (GDT/IDT/PIC, CPUID/FPU), timer.c,
                           keyboard.c, serial.c, vga.c (+ загрузка шрифта), paging.c (страничная память),
+                          mouse.c (PS/2 мышь), vbe.c (графический режим через BIOS VBE),
                           ata.c, ahci.c, nvme.c, pci.c, bios.c + biosthunk.asm (вызов BIOS из ядра),
                           biosdisk.c, win32.asm (вход в код Windows-программ), hal.c (x86_main + HAL)
 include/synth/            заголовки: hal.h, console.h, theme.h, vfs.h, shell.h, command.h, exec.h,
@@ -165,6 +184,11 @@ kernel/fs/                vfs.c, ramfs.c, devfs.c, sfs.c (SynthFS), ramdisk.c
 kernel/shell/             parse, run, script, shell, lineedit, interactive, prompt, settings, calc, command, state
 kernel/cmds/              files.c, text.c, shell.c, system.c, custom.c — встроенные команды
 kernel/apps/              edit.c, more.c
+kernel/gui/               рабочий стол: gfx.c (рисование, сглаживание, текст), wm.c (оконный менеджер,
+                          композитинг, мышь), desktop.c (обои, значки, панель задач, меню «Пуск»,
+                          цикл событий gui_run), ui.c (виджеты: кнопки, списки, поля, меню, диалоги),
+                          terminal.c (окно терминала), image.c (BMP), uifont.c и icons.c — сгенерированы
+kernel/gui/apps/          приложения: files, notepad, paint, calc_fp, settings, monitor, mines
 kernel/exec/              exec.c (поиск/запуск), script.c (формат .sh)
 kernel/vm/                vm.c (интерпретатор SX), asm.c, opcodes.c, commands.c (asm/dis)
 kernel/dos/               cpu.c (8086/186), dos.c (память/загрузчик/процессы), int21.c, bios.c
@@ -176,6 +200,8 @@ rootfs/                   содержимое корневой ФС: /etc (synt
 tools/mkrd.c              упаковщик rootfs в ramdisk (формат SRD1)
 tools/sasm.c              ассемблер SX для хоста (использует kernel/vm/asm.c)
 tools/mkfont.py           генератор шрифта 8×16 (нужен только для изменения шрифта, требует Pillow)
+tools/mkuifont.py         сглаженные шрифты интерфейса из DejaVu → kernel/gui/uifont.c
+tools/mkicons.py          значки 32×32 и 16×16 → kernel/gui/icons.c
 tests/run.sh              автотесты через COM-порт; tests/hw.sh — матрица «железа»;
                           tests/shot.sh — скриншоты VGA через QEMU
 ```
@@ -265,11 +291,55 @@ W32_EXPORTS(my_module, "kernel32.dll", my_exports);
 сброс на старте процесса — в `.attach` таблицы. Каких функций не хватает программе — видно сразу:
 она остановится с сообщением `… is not supported yet`.
 
+### Новое приложение рабочего стола
+
+Файл в `kernel/gui/apps/`: окно открывается `wm_open`, содержимое рисуется и обрабатывает события
+одной функцией-кадром через `ui_run` (immediate-mode: виджет и рисуется, и возвращает «нажат»),
+приложение регистрируется макросом `GUI_APP` — и само появляется в меню «Пуск» и в `launch`:
+
+```c
+#include "../internal.h"
+
+struct hello { struct ui_state st; int clicks; };
+
+static void frame(struct ui *ui, void *data)
+{
+    struct hello *h = data;
+    ui_panel(ui, (struct rect){0, 0, ui->win->surface.w, ui->win->surface.h}, style.window);
+    if (ui_button(ui, (struct rect){20, 20, 120, 34}, "Click me"))
+        h->clicks++;
+}
+
+static void paint(struct window *w, struct canvas *c) { ui_run(w, w->data, c, NULL, frame, w->data); }
+static void event(struct window *w, struct gui_event *e) { ui_run(w, w->data, NULL, e, frame, w->data); }
+static void destroy(struct window *w) { kfree(w->data); }
+static const struct window_ops ops = {paint, event, NULL, destroy};
+
+static void launch(const char *arg)
+{
+    UNUSED(arg);
+    struct hello *h = kzalloc(sizeof(*h));
+    if (h && !wm_open("Hello", ICON_APP, 300, 200, &ops, h, WIN_RESIZABLE))
+        kfree(h);
+}
+
+static const struct gui_app hello_app = {"Hello", "Example app", ICON_APP, launch, NULL};
+GUI_APP(hello_app);
+```
+
+`struct ui_state` должна быть первым полем данных (или передавайте её отдельно). Цвета — только из
+`style` (они берутся из текущей темы), шрифты — `font_sans`, `font_bold`, `font_title`, `font_mono`.
+Поле `extensions` (`".txt;.md"`) связывает приложение с типами файлов в Проводнике. Периодическая
+работа — `wm_set_timer(w, мс)` и событие `EV_TIMER`. Диалоги: `gui_message`, `ui_confirm`,
+`ui_prompt`, контекстное меню — `ui_menu`. Новые значки — в `tools/mkicons.py`, новые символы
+шрифта — в `SYMBOLS` в `tools/mkuifont.py` (затем перегенерировать `.c`).
+
 ### Порт на новое железо (ARM, RISC-V, калькулятор…)
 
 Создать `arch/<имя>/` и реализовать функции из `include/synth/hal.h`: дисплей (сеточный —
 `present/cursor/palette`, либо потоковый — `write`), `hal_key_read`, время, `hal_reboot/poweroff`,
-`hal_fs_init`; стартовый код должен заполнить `struct boot_info` (куча, ramdisk) и вызвать `kmain()`.
+`hal_fs_init`; для рабочего стола — `hal_graphics_enter/leave` (линейный фреймбуфер 16/24/32 бита)
+и `hal_pointer_read`; стартовый код должен заполнить `struct boot_info` (куча, ramdisk) и вызвать `kmain()`.
 В Makefile добавить выбор платформы (сейчас жёстко `arch/x86`). Ядро, оболочка, VM SX и эмулятор
 DOS переносятся без изменений (эмулятор DOS требует ~1 МБ ОЗУ, отключается `CONFIG_DOS=0`).
 
@@ -319,7 +389,7 @@ DOS переносятся без изменений (эмулятор DOS тр�
 1. **USB:** контроллеры xHCI/EHCI, клавиатура USB HID и флешки (USB Mass Storage) — чтобы не
    зависеть от эмуляции PS/2 и сохранять `/home` на флешке при загрузке через UEFI.
 2. **FAT12/16/32** — чтение/запись флешек и разделов Windows (`mount fat ...`), раздел UEFI.
-3. **Windows дальше:** окна (GDI/user32 поверх фреймбуфера), потоки (`CreateThread`), сеть
+3. **Windows дальше:** окна Windows-программ на рабочем столе (user32/GDI поверх `kernel/gui`), потоки (`CreateThread`), сеть
    (ws2_32), UCRT (`api-ms-win-crt-*` с новыми именами функций), 64-битные программы
    (ядро x86-64 или режим совместимости).
 4. **Многозадачность:** процессы, планировщик, фоновые задачи (`cmd &`), `ps`/`kill`.
@@ -328,19 +398,25 @@ DOS переносятся без изменений (эмулятор DOS тр�
 7. **Эмулятор DOS:** 386-инструкции, EMS/XMS, звук PC-speaker, мышь INT 33h, графика 13h.
 8. **Порты:** ARM (Raspberry Pi), RISC-V, графические калькуляторы — через новый `arch/`.
 9. **Сеть:** драйвер NE2000/virtio-net/e1000, стек TCP/IP, `ping`, `wget`.
+10. **Рабочий стол дальше:** перетаскивание файлов между окнами, просмотр картинок PNG/JPEG,
+    шрифты с кириллицей в интерфейсе, несколько рабочих столов, программы SX с окнами.
 
 ---
 
 ## 10. Для Claude в новом чате
 
 1. Прочитать этот файл, затем `docs/ARCHITECTURE.md` и `CLAUDE.md`.
-2. Проверить окружение: `make && make test` — должно быть `tests: 63 passed, 0 failed`;
+2. Проверить окружение: `make && make test` — должно быть `tests: 66 passed, 0 failed`;
    при наличии `ovmf` — `make test-hw` (`hardware tests: 23 passed, 0 failed`).
-3. Визуальная проверка: `tests/shot.sh build/vga/synthos.img /tmp/shot.png 2 f e t c h ret`.
+3. Визуальная проверка: `tests/shot.sh build/vga/synthos.img /tmp/shot.png 4 f e t c h ret`
+   (после загрузки открыт рабочий стол, клавиши попадают в окно терминала). Мышь в QEMU можно
+   двигать через монитор: `mouse_move dx dy`, `mouse_button 1` (сдвиг за раз не больше ~500).
 4. Соблюдать правила из раздела 7, расширять через макросы из раздела 6, добавлять тесты в
    `tests/run.sh` для всего нового.
 5. Известные ограничения: нет драйверов USB (флешки и USB-клавиатуры работают через BIOS/эмуляцию
    PS/2); ядро 32-битное без PAE (видит до ~3.75 ГБ ОЗУ, устройства выше 4 ГБ недоступны, кроме
    перемещаемых BAR на шине 0); Windows — только 32-битные консольные программы без потоков и окон;
-   эмулятор DOS — только 8086/186 и текстовый режим; одна задача одновременно (но программа может
+   эмулятор DOS — только 8086/186 и текстовый режим; рабочий стол кооперативный (пока команда в
+терминале работает, остальные окна ждут её завершения, кроме программ, читающих клавиатуру);
+одна задача одновременно (но программа может
    запускать другие); пользователь один (root).

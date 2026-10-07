@@ -29,4 +29,4 @@ Shell power
   let x = 6 * 7; echo $x                arithmetic
   Tab completes, Up/Down walk history, Right accepts a suggestion.
 
-Documentation lives in /docs - try: more /docs/shell.txt or more /docs/windows.txt
+Documentation lives in /docs - try: more /docs/desktop.txt, /docs/shell.txt or /docs/windows.txt

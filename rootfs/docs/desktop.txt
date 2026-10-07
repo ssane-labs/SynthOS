@@ -1,0 +1,44 @@
+SynthOS desktop
+===============
+
+The desktop starts when SynthOS boots (on a screen that supports graphics).
+The Terminal window runs the normal shell, so every command works there.
+
+Mouse
+  drag the title bar        move a window
+  drag a window edge        resize it
+  double-click the title    maximize / restore
+  right button              context menu (Files, Notepad), flag (Minesweeper),
+                            paste (Terminal), draw in the second color (Paint)
+  wheel                     scroll the list or text under the pointer
+
+Keyboard
+  Win or Ctrl+Esc           start menu (arrows + Enter to pick an app)
+  Alt+Tab                   next window
+  Alt+F4                    close the active window
+  Ctrl+C / Ctrl+X / Ctrl+V  clipboard in Files, Notepad, Calculator, text fields
+
+Commands
+  launch                    list the apps
+  launch paint              start an app (any word of its name: mon, mines, calc)
+  launch notepad file.txt   open a file in an app
+  launch /home/pic.bmp      open a file in the app that handles its type
+  exit                      leave the desktop (text mode)
+  desktop  (startx, gui)    start the desktop again from text mode
+  config desktop off        boot into text mode; config save remembers it
+  config wallpaper aurora   synthwave, aurora, solid or a .bmp file
+  theme nord                themes color the desktop too
+
+Apps
+  Terminal        the SynthOS shell in a window (closing only hides it)
+  Files           browse, open, copy, cut, paste, rename, delete, new folder
+  Notepad         text editor: selection, clipboard, auto-indent, line numbers
+  Paint           pencil, brush, eraser, line, rectangle, ellipse, fill,
+                  color picker; opens and saves 24-bit BMP files
+  Calculator      keyboard or mouse, %, 1/x, x^2, square root
+  Settings        theme, wallpaper, startup, terminal options, about
+  System Monitor  memory graph, disks, open windows (End task), kernel log
+  Minesweeper     three levels; left click opens, right click flags
+
+The desktop is cooperative: while a long command runs in the Terminal,
+other windows wait until it finishes or asks for a key.

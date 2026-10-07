@@ -119,6 +119,12 @@ void gui_style_refresh(void)
         style.title_text = RGB(25, 25, 35);
         style.taskbar = ALPHA(color_mix(bg, 0xffffffffu, 120), 235);
     }
+    for (int i = 0; i < 4; i++) {
+        int d = luminance(style.muted) - luminance(style.window);
+        if (d >= 90 || d <= -90)
+            break;
+        style.muted = color_mix(style.muted, fg, 80);
+    }
 }
 
 static uint32_t hash(uint32_t x)
@@ -134,6 +140,55 @@ static uint32_t hash(uint32_t x)
 static uint32_t lerp3(uint32_t a, uint32_t b, int t, int span)
 {
     return color_mix(a, b, span ? CLAMP(t * 255 / span, 0, 255) : 0);
+}
+
+static int grid_strength(int d, int k, int depth)
+{
+    int fade = CLAMP((d * 300 / k - 6) * 12, 0, 255);
+    return CLAMP(60 + d * 400 / depth, 60, 255) * fade / 255;
+}
+
+static int grid_sqrt(uint64_t v)
+{
+    uint64_t x = 0;
+    for (uint64_t bit = 1ull << 62; bit; bit >>= 2) {
+        if (v >= x + bit) {
+            v -= x + bit;
+            x = (x >> 1) + bit;
+        } else {
+            x >>= 1;
+        }
+    }
+    return (int)MAX(x, 1);
+}
+
+static void grid_blend(struct canvas *c, int x, int y, int a)
+{
+    if (x < 0 || x >= c->w || a <= 0)
+        return;
+    uint32_t *p = &c->px[y * c->stride + x];
+    *p = color_mix(*p, RGB(255, 60, 200), MIN(a, 255));
+}
+
+static void grid_span(struct canvas *c, int y, int64_t xa, int64_t xb, int a)
+{
+    if (y < 0 || y >= c->h)
+        return;
+    if (xb < xa) {
+        int64_t t = xa;
+        xa = xb;
+        xb = t;
+    }
+    if (xb - xa < 0x10000) {
+        int64_t mid = (xa + xb) / 2;
+        int x = (int)(mid >> 16), frac = (int)((mid & 0xffff) >> 8);
+        grid_blend(c, x, y, a * (255 - frac) / 255);
+        grid_blend(c, x + 1, y, a * frac / 255);
+        return;
+    }
+    int x0 = (int)(xa >> 16), x1 = (int)(xb >> 16);
+    for (int x = MAX(x0, 0); x <= MIN(x1, c->w - 1); x++)
+        grid_blend(c, x, y, a);
 }
 
 static void paint_synthwave(struct canvas *c)
@@ -181,21 +236,28 @@ static void paint_synthwave(struct canvas *c)
         for (int y = MAX(top_y, 0); y < horizon; y++)
             c->px[y * c->stride + x] = y == top_y ? RGB(255, 90, 200) : color_mix(RGB(40, 8, 64), RGB(14, 3, 30), (horizon - y) * 255 / MAX(center_cut, 1));
     }
+    int k = MAX(1, (h - horizon) * 300 / 292), depth = h - horizon;
     for (int y = horizon; y < h; y++) {
         int d = y - horizon + 1;
-        uint32_t ground = lerp3(RGB(46, 8, 66), RGB(8, 2, 20), y - horizon, h - horizon);
-        bool hline = (4000 / d) / 40 != (4000 / (d + 1)) / 40;
-        int fade = CLAMP((d - 6) * 12, 0, 255);
-        int strength = CLAMP(60 + d * 400 / (h - horizon), 60, 255) * fade / 255;
+        uint32_t ground = lerp3(RGB(46, 8, 66), RGB(8, 2, 20), y - horizon, depth);
+        bool hline = (4000 * k / 300 / d) / 40 != (4000 * k / 300 / (d + 1)) / 40;
+        uint32_t color = hline ? color_mix(ground, RGB(255, 60, 200), grid_strength(d, k, depth)) : ground;
         uint32_t *row = c->px + y * c->stride;
-        for (int x = 0; x < w; x++) {
-            int wx = (x - cx) * 300 / d;
-            int m = ((wx % 120) + 120) % 120;
-            bool vline = m < 300 / d + 1;
-            uint32_t p = ground;
-            if (vline || hline)
-                p = color_mix(ground, RGB(255, 60, 200), strength);
-            row[x] = p;
+        for (int x = 0; x < w; x++)
+            row[x] = color;
+    }
+    int lines = (w / 2 + 2) * k / 120 + 1;
+    for (int i = -lines; i <= lines; i++) {
+        int64_t wx = (int64_t)i * 120;
+        int last = i ? (int)MIN((int64_t)depth, (int64_t)(w / 2 + 2) * k / (wx < 0 ? -wx : wx) + 1) : depth;
+        int norm = grid_sqrt((uint64_t)k * (uint64_t)k + (uint64_t)(wx * wx));
+        for (int d = 1; d <= last; d++) {
+            int a = grid_strength(d, k, depth) * CLAMP((120 * d / norm - 4) * 255 / 12, 0, 255) / 255;
+            if (!a)
+                continue;
+            int64_t xa = ((int64_t)cx << 16) + (wx * d << 16) / k;
+            int64_t xb = ((int64_t)cx << 16) + (wx * (d + 1) << 16) / k;
+            grid_span(c, horizon + d - 1, xa, xb, a);
         }
     }
 }

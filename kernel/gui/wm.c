@@ -250,15 +250,41 @@ static bool alloc_surface(struct window *w)
     return true;
 }
 
+static int64_t overlap_cost(struct rect r, const struct window *self)
+{
+    int64_t cost = 0;
+    for (struct window *it = bottom; it; it = it->above) {
+        if (it == self || (it->flags & (WIN_HIDDEN | WIN_MINIMIZED | WIN_POPUP)))
+            continue;
+        struct rect o = rect_intersect(r, it->frame);
+        if (!rect_empty(o))
+            cost += (int64_t)o.w * o.h;
+    }
+    return cost;
+}
+
 static void place(struct window *w)
 {
-    static int cascade;
     int work_h = screen_h - TASKBAR_HEIGHT;
-    int x = (screen_w - w->frame.w) / 2 + (cascade % 6) * 26 - 65;
-    int y = (work_h - w->frame.h) / 2 + (cascade % 6) * 26 - 65;
-    cascade++;
-    w->frame.x = CLAMP(MAX(x, 110), 0, MAX(0, screen_w - w->frame.w));
-    w->frame.y = CLAMP(y, 0, MAX(0, work_h - w->frame.h));
+    int min_x = MIN(110, MAX(0, screen_w - w->frame.w));
+    int max_x = MAX(min_x, screen_w - w->frame.w), max_y = MAX(0, work_h - w->frame.h);
+    int cx = CLAMP((screen_w - w->frame.w) / 2, min_x, max_x), cy = max_y / 2;
+    int64_t best = -1, best_dist = 0;
+    int bx = cx, by = cy;
+    for (int y = 0; y <= max_y; y += 16) {
+        for (int x = min_x; x <= max_x; x += 16) {
+            int64_t cost = overlap_cost((struct rect){x, y, w->frame.w, w->frame.h}, w);
+            int64_t dist = (int64_t)(x - cx) * (x - cx) + (int64_t)(y - cy) * (y - cy);
+            if (best < 0 || cost < best || (cost == best && dist < best_dist)) {
+                best = cost;
+                best_dist = dist;
+                bx = x;
+                by = y;
+            }
+        }
+    }
+    w->frame.x = bx;
+    w->frame.y = by;
 }
 
 struct window *wm_open(const char *title, enum icon_id icon, int cw, int ch, const struct window_ops *ops, void *data,

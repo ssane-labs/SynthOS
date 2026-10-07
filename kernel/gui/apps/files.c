@@ -487,9 +487,15 @@ static void frame(struct ui *ui, void *data)
         gfx_fill(ui->c, status, style.panel);
         char text[128];
         uint64_t total = 0, free = 0;
-        for (struct mount *m = vfs_mounts(); m; m = m->next)
-            if (str_starts(f->path, m->path) && m->fs->statfs)
-                m->fs->statfs(m->root, &total, &free);
+        struct mount *best = NULL;
+        for (struct mount *m = vfs_mounts(); m; m = m->next) {
+            size_t n = strlen(m->path);
+            bool under = str_starts(f->path, m->path) && (n == 1 || f->path[n] == 0 || f->path[n] == '/');
+            if (under && (!best || n > strlen(best->path)))
+                best = m;
+        }
+        if (best && best->fs->statfs)
+            best->fs->statfs(best->root, &total, &free);
         char free_text[16];
         fmt_size(free_text, sizeof(free_text), free);
         ksnprintf(text, sizeof(text), "%d items%s%s", f->count, total ? "    free space: " : "", total ? free_text : "");
