@@ -58,6 +58,18 @@ static inline void invlpg(uint32_t vaddr)
     __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
 }
 
+static void flush_range(uint32_t vaddr, size_t size)
+{
+    if (size > 64u * 4096u) {
+        uint32_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+        return;
+    }
+    for (uint32_t off = 0; off < size; off += 4096u)
+        invlpg(vaddr + off);
+}
+
 static int shift(void)
 {
     return pae ? 21 : 22;
@@ -209,11 +221,13 @@ int vmm_map(uintptr_t vaddr, void *memory, size_t size)
         return -1;
     for (uintptr_t off = 0; off < size; off += 4096u) {
         uint32_t v = vaddr + off;
-        if (!ensure_table(v, PTE_USER))
+        if (!ensure_table(v, PTE_USER)) {
+            flush_range(vaddr, off);
             return -1;
+        }
         set_pte(v, phys_of((uint8_t *)memory + off), PTE_PRESENT | PTE_WRITE | PTE_USER);
-        invlpg(v);
     }
+    flush_range(vaddr, size);
     return 0;
 }
 
@@ -221,11 +235,10 @@ void vmm_unmap(uintptr_t vaddr, size_t size)
 {
     for (uintptr_t off = 0; off < size; off += 4096u) {
         uint32_t v = vaddr + off;
-        if (tables[v >> shift()]) {
+        if (tables[v >> shift()])
             set_pte(v, 0, 0);
-            invlpg(v);
-        }
     }
+    flush_range(vaddr, size);
 }
 
 void *vmm_map_phys64(uint64_t phys, size_t size)
@@ -355,11 +368,13 @@ int vmm_map_frames(uintptr_t vaddr, const uint32_t *pfns, size_t n)
         return -1;
     for (size_t i = 0; i < n; i++) {
         uint32_t v = vaddr + (uint32_t)i * 4096u;
-        if (!ensure_table(v, PTE_USER))
+        if (!ensure_table(v, PTE_USER)) {
+            flush_range(vaddr, i * 4096u);
             return -1;
+        }
         set_pte(v, (uint64_t)pfns[i] << 12, PTE_PRESENT | PTE_WRITE | PTE_USER);
-        invlpg(v);
     }
+    flush_range(vaddr, n * 4096u);
     return 0;
 }
 

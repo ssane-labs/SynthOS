@@ -4,6 +4,7 @@
 
 #define MAX_DIGITS 40
 #define EXACT_DIGITS 19
+#define SIG_DIGITS 17
 
 enum {
     F_LEFT = 1,
@@ -88,20 +89,46 @@ static long double pow10l_int(int e)
     return e < 0 ? 1.0L / r : r;
 }
 
+static long double pow10_small(int e)
+{
+    static long double table[28];
+    if (!table[0]) {
+        long double p = 1.0L;
+        for (int i = 0; i < 28; i++, p *= 10.0L)
+            table[i] = p;
+    }
+    if (e >= 0 && e < 28)
+        return table[e];
+    if (e < 0 && e > -28)
+        return 1.0L / table[-e];
+    return pow10l_int(e);
+}
+
 static int floor_log10(long double v)
 {
-    long double r;
-    __asm__("fldlg2; fxch; fyl2x" : "=t"(r) : "0"(v));
-    int e = (int)r;
-    if (r < 0 && (long double)e != r)
+    long double mant, ex;
+    __asm__("fxtract" : "=t"(mant), "=u"(ex) : "0"(v));
+    long double guess = ex * 0.30102999566398119521L;
+    int32_t e;
+    __asm__("fistpl %0" : "=m"(e) : "t"(guess) : "st");
+    while (e > -4950 && pow10_small(e) > v)
         e--;
+    while (e < 4950 && pow10_small(e + 1) <= v)
+        e++;
     return e;
 }
 
 static int gen_digits(long double v, int ndig, char *digits, int *exp10)
 {
-    int e = floor_log10(v);
-    long double s = e >= 0 ? v / pow10l_int(e) : v * pow10l_int(-e);
+    uint16_t cw, ext, trunc;
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    ext = (uint16_t)((cw & ~0xc00) | 0x300);
+    trunc = (uint16_t)(ext | 0xc00);
+    __asm__ volatile("fldcw %0" : : "m"(ext) : "memory");
+    volatile long double in = v;
+    long double x = in;
+    int e = floor_log10(x);
+    long double s = e >= 0 ? x / pow10_small(e) : x * pow10_small(-e);
     if (s >= 10.0L) {
         s /= 10.0L;
         e++;
@@ -109,25 +136,36 @@ static int gen_digits(long double v, int ndig, char *digits, int *exp10)
         s *= 10.0L;
         e--;
     }
+    volatile long double scaled = s * 1e17L;
+    int64_t u;
+    __asm__ volatile("fldcw %0" : : "m"(trunc) : "memory");
+    __asm__ volatile("fistpll %0" : "=m"(u) : "t"(scaled) : "st");
+    volatile int64_t uv = u;
+    __asm__ volatile("fldcw %0" : : "m"(cw) : "memory");
+    u = uv;
+    if (u >= 1000000000000000000LL) {
+        u /= 10;
+        e++;
+    }
     if (ndig < 0) {
         *exp10 = e;
         return 0;
     }
-    int n = MIN(ndig, MAX_DIGITS);
+    int n = MIN(ndig, MAX_DIGITS), r = MIN(n, SIG_DIGITS);
     char raw[MAX_DIGITS + 2];
-    for (int i = 0; i <= n; i++) {
-        if (i < EXACT_DIGITS) {
-            int d = (int)s;
-            if (d > 9)
-                d = 9;
-            raw[i] = (char)d;
-            s = (s - d) * 10.0L;
-        } else {
-            raw[i] = 0;
-        }
+    uint32_t hi, lo;
+    __asm__("divl %4" : "=a"(hi), "=d"(lo) : "a"((uint32_t)u), "d"((uint32_t)((uint64_t)u >> 32)), "rm"(1000000000u));
+    for (int i = 8; i >= 0; i--) {
+        raw[i] = (char)(hi % 10);
+        hi /= 10;
+        raw[9 + i] = (char)(lo % 10);
+        lo /= 10;
     }
-    if (raw[n] >= 5) {
-        int i = n - 1;
+    bool up = raw[r] >= 5;
+    for (int i = r; i <= n; i++)
+        raw[i] = 0;
+    if (up) {
+        int i = r - 1;
         while (i >= 0 && raw[i] == 9)
             raw[i--] = 0;
         if (i >= 0) {

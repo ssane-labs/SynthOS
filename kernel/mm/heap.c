@@ -197,15 +197,21 @@ void *heap_realloc(struct heap *h, void *ptr, size_t size)
     return fresh;
 }
 
-void *heap_alloc_aligned(struct heap *h, size_t size, size_t align)
+static void *alloc_aligned(struct heap *h, size_t size, size_t align, bool zero)
 {
     uint8_t *raw = heap_alloc(h, size + align + sizeof(void *));
     if (!raw)
         return NULL;
     uint8_t *aligned = (uint8_t *)ALIGN_UP((uintptr_t)raw + sizeof(void *), (uintptr_t)align);
     ((void **)aligned)[-1] = raw;
-    memset(aligned, 0, size);
+    if (zero)
+        memset(aligned, 0, size);
     return aligned;
+}
+
+void *heap_alloc_aligned(struct heap *h, size_t size, size_t align)
+{
+    return alloc_aligned(h, size, align, true);
 }
 
 void heap_free_aligned(struct heap *h, void *ptr)
@@ -275,6 +281,11 @@ void heap_get_stats(struct heap_stats *out)
 void *kmalloc_pages(size_t size)
 {
     return heap_alloc_aligned(&kernel_heap, size, 4096);
+}
+
+void *kmalloc_pages_uninit(size_t size)
+{
+    return alloc_aligned(&kernel_heap, size, 4096, false);
 }
 
 void kfree_pages(void *ptr)

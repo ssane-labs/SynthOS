@@ -98,9 +98,19 @@ void *memset(void *dst, int c, size_t n)
 
 #endif
 
+#define ONES ((uintptr_t)-1 / 0xff)
+#define HIGHS (ONES * 0x80)
+#define HAS_ZERO(w) (((w) - ONES) & ~(w) & HIGHS)
+
 int memcmp(const void *a, const void *b, size_t n)
 {
     const uint8_t *x = a, *y = b;
+    if ((((uintptr_t)x | (uintptr_t)y) & (sizeof(uintptr_t) - 1)) == 0)
+        while (n >= sizeof(uintptr_t) && *(const uintptr_t *)x == *(const uintptr_t *)y) {
+            x += sizeof(uintptr_t);
+            y += sizeof(uintptr_t);
+            n -= sizeof(uintptr_t);
+        }
     for (; n; n--, x++, y++)
         if (*x != *y)
             return *x - *y;
@@ -110,8 +120,18 @@ int memcmp(const void *a, const void *b, size_t n)
 void *memchr(const void *s, int c, size_t n)
 {
     const uint8_t *p = s;
+    uint8_t ch = (uint8_t)c;
+    for (; n && ((uintptr_t)p & (sizeof(uintptr_t) - 1)); n--, p++)
+        if (*p == ch)
+            return (void *)p;
+    uintptr_t mask = ONES * ch;
+    for (; n >= sizeof(uintptr_t); n -= sizeof(uintptr_t), p += sizeof(uintptr_t)) {
+        uintptr_t w = *(const uintptr_t *)p ^ mask;
+        if (HAS_ZERO(w))
+            break;
+    }
     for (; n; n--, p++)
-        if (*p == (uint8_t)c)
+        if (*p == ch)
             return (void *)p;
     return NULL;
 }
@@ -119,6 +139,13 @@ void *memchr(const void *s, int c, size_t n)
 size_t strlen(const char *s)
 {
     const char *p = s;
+    for (; (uintptr_t)p & (sizeof(uintptr_t) - 1); p++)
+        if (!*p)
+            return (size_t)(p - s);
+    const uintptr_t *w = (const uintptr_t *)p;
+    while (!HAS_ZERO(*w))
+        w++;
+    p = (const char *)w;
     while (*p)
         p++;
     return (size_t)(p - s);

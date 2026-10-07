@@ -58,9 +58,14 @@ DWORD w32_error_from_vfs(int err)
     }
 }
 
+#define FRESH_ZERO (64u * 1024)
+
 void *w32_alloc(size_t size)
 {
-    return heap_alloc(&w32->heap, size);
+    void *p = heap_alloc(&w32->heap, size);
+    if (p && size >= FRESH_ZERO)
+        memset(p, 0, size);
+    return p;
 }
 
 void *w32_zalloc(size_t size)
@@ -585,7 +590,7 @@ static int run(struct exec_ctx *ctx)
         w32->arena_size = (uint32_t)choose_arena();
         if (w32->arena_size < ARENA_MIN)
             return E_NOMEM;
-        w32->arena = kmalloc_pages(w32->arena_size);
+        w32->arena = kmalloc_pages_uninit(w32->arena_size);
         if (!w32->arena || vmm_map(ARENA_BASE, w32->arena, w32->arena_size) != 0)
             return E_NOMEM;
     }

@@ -24,6 +24,7 @@ uint32_t vmm_pae_root(void);
 uint32_t vmm_phys(const void *ptr);
 
 void *kmalloc_pages(size_t size);
+void *kmalloc_pages_uninit(size_t size);
 void kfree_pages(void *ptr);
 
 #endif
