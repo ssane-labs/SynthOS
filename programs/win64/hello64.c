@@ -1,3 +1,5 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <math.h>
 #include <setjmp.h>
@@ -10,6 +12,11 @@
 static __thread int counter = 5;
 static jmp_buf jump;
 static volatile LONG total;
+
+static LRESULT CALLBACK class_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    return DefWindowProcA(h, m, w, l);
+}
 
 static int by_value(const void *a, const void *b)
 {
@@ -94,5 +101,31 @@ int main(int argc, char **argv)
     time_t now = time(NULL);
     printf("time is %s\n", now > 1000000000 ? "plausible" : "wrong");
     printf("env SystemRoot=%s\n", getenv("SystemRoot"));
+
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family = AF_INET;
+    if (getaddrinfo("localhost", "80", &hints, &res) == 0) {
+        struct sockaddr_in *sa = (struct sockaddr_in *)res->ai_addr;
+        printf("sockets: %s %s port %d, ", wsa.szDescription, inet_ntoa(sa->sin_addr), ntohs(sa->sin_port));
+        freeaddrinfo(res);
+    }
+    SOCKET u = socket(AF_INET, SOCK_DGRAM, 0);
+    fd_set w;
+    FD_ZERO(&w);
+    FD_SET(u, &w);
+    struct timeval tv = {1, 0};
+    printf("select %d set %d\n", select(0, NULL, &w, NULL, &tv), FD_ISSET(u, &w) ? 1 : 0);
+    closesocket(u);
+
+    WNDCLASSEXA wc = {sizeof(wc)};
+    wc.lpfnWndProc = class_proc;
+    wc.cbWndExtra = 16;
+    wc.lpszClassName = "Hello64";
+    WNDCLASSEXA back = {sizeof(back)};
+    if (RegisterClassExA(&wc) && GetClassInfoExA(NULL, "Hello64", &back))
+        printf("window class: proc %s, extra %d\n", back.lpfnWndProc == class_proc ? "same" : "different",
+               back.cbWndExtra);
     return 7;
 }

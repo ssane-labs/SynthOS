@@ -220,6 +220,10 @@ hello64 | grep 'pointer size'
 pointer size 8, long long 123456789012345, hex fedcba9876
 hello64 | grep threads
 threads 2000, tls 5 6 7
+hello64 | grep sockets
+sockets: SynthOS sockets 127.0.0.1 port 80, select 1 set 1
+hello64 | grep 'window class'
+window class: proc same, extra 16
 hello64 > /tmp/h64.txt; echo rc64=$?; grep -c . /tmp/h64.txt
 rc64=7
 hello64 | grep math; winhello after64 | grep 'arg 1'

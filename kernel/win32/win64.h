@@ -68,9 +68,16 @@ static inline uint64_t w64_ret(uint32_t v)
     return v >= 0xffff0000u ? w64_sx(v) : v;
 }
 
+#define T32(target, ...) w64_call32(target, (const uint32_t[]){__VA_ARGS__}, (int)(sizeof((uint32_t[]){__VA_ARGS__}) / 4))
+#define CALL(module, name, ...) T32(w32_builtin_lookup(module, name), __VA_ARGS__)
+
+uint64_t w64_call32(void *fn, const uint32_t *args, int count);
 uint64_t w64_math(void *target, int kind, const uint64_t *a, const uint64_t *f);
 uint64_t w64_call(uint64_t fn, int argc, const uint64_t *args);
 void *w64_kernel_stub(w64_handler fn, const char *name);
+void *w64_target_stub(w64_handler fn, void *target);
+bool w64_stub_info(uint64_t addr, w64_handler fn, void **target);
+bool w64_is_code64(uint64_t addr);
 void w64_seh_setup(void);
 
 #endif

@@ -8,7 +8,7 @@
 
 SYNTH_TABLE_DECLARE(synth_win64, struct w64_module);
 
-#define MAX_ARGS 12
+#define MAX_ARGS 16
 #define ONEXIT_MAX 128
 #define SIGNALS 32
 #define TEB64_SIZE 8192
@@ -17,7 +17,6 @@ SYNTH_TABLE_DECLARE(synth_win64, struct w64_module);
 
 extern void *w64_dispatch_fn;
 extern char w64_gate[], w64_setjmp[], w64_longjmp[], w64_memcpy[], w64_memmove[], w64_memset[], w64_strlen[];
-uint64_t w64_call32(void *fn, const uint32_t *args, int count);
 uint64_t w64_strtod(uint64_t *a, const uint64_t *f, void *target, bool wide, bool single);
 uint64_t w64_atof(void *target, uint64_t s);
 
@@ -69,8 +68,6 @@ struct thread_start {
 #define S ((struct w64_state *)w32->w64)
 #define P(v) w64_ptr(v)
 #define U(v) ((uint32_t)(uintptr_t)(v))
-#define T32(target, ...) w64_call32(target, (const uint32_t[]){__VA_ARGS__}, (int)(sizeof((uint32_t[]){__VA_ARGS__}) / 4))
-#define CALL(module, name, ...) T32(w32_builtin_lookup(module, name), __VA_ARGS__)
 
 static uint32_t rd32(const void *p)
 {
@@ -244,6 +241,36 @@ void *w64_lookup(const char *module, const char *symbol, uint32_t ordinal, bool 
     if (!target && !(e && e->fn) && !create_missing)
         return NULL;
     return new_stub(module, symbol, e, target);
+}
+
+void *w64_target_stub(w64_handler fn, void *target)
+{
+    for (struct w64_stub *s = S->stubs; s; s = s->next)
+        if (s->fn == fn && s->target == target)
+            return s;
+    struct w64_export e = {"callback", fn, 0, NULL, NULL};
+    return new_stub("user32.dll", "callback", &e, target);
+}
+
+bool w64_stub_info(uint64_t addr, w64_handler fn, void **target)
+{
+    for (struct w64_stub *s = S->stubs; s; s = s->next) {
+        if (U(s) != addr)
+            continue;
+        if (s->fn != fn)
+            return false;
+        *target = s->target;
+        return true;
+    }
+    return false;
+}
+
+bool w64_is_code64(uint64_t addr)
+{
+    for (struct w32_image *img = w32->images; img; img = img->next)
+        if (img->pe64 && !img->builtin && addr >= img->base && addr < (uint64_t)img->base + img->size)
+            return true;
+    return false;
 }
 
 void *w64_kernel_stub(w64_handler fn, const char *name)

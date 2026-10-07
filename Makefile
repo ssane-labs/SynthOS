@@ -207,7 +207,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win64/%.c
 	@mkdir -p $(@D)
 ifneq ($(W64CC),)
 	@echo "  W64CC   $<"
-	@$(W64CC) -O2 -s -o $@ $< -lgdi32
+	@$(W64CC) -O2 -s -o $@ $< -lgdi32 -lws2_32
 	@mkdir -p programs/win64/prebuilt && cp $@ programs/win64/prebuilt/
 else
 	@echo "  COPY    programs/win64/prebuilt/$(@F)"

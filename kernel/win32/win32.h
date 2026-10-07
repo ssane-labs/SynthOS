@@ -185,6 +185,7 @@ struct w32_process {
     uint8_t *teb64;
     uint8_t *peb64;
     void *w64;
+    void *w64_thunks;
     bool win64;
     uint8_t *stack;
     uint32_t stack_size;
