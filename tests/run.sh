@@ -158,6 +158,10 @@ passwd -p topsecret bob
 password for bob updated
 userdel bob
 user bob deleted
+winmem | grep -c verified
+1
+mem | grep Paging
+Paging  PAE
 winthread | head -n 1
 threads done: total=20000 counter=20000 code=5000
 winthread | grep preemption
