@@ -22,15 +22,29 @@ disk_args() {
 }
 
 boot() {
-    # boot FIRMWARE DISK CPU COMMANDS...
+    # boot FIRMWARE DISK CPU COMMANDS... (commands are typed once the shell is ready)
     fw=$1 disk=$2 cpu=$3
     shift 3
     qemu=qemu-system-x86_64
     extra=""
     [ "$fw" = uefi ] && extra="-bios $ovmf"
     [ "$cpu" = 486 ] && qemu=qemu-system-i386 && extra="$extra -cpu 486"
-    (sleep 12; for c in "$@"; do printf '%s\n' "$c"; done; echo shutdown) |
-        timeout 60 $qemu $extra $(disk_args "$disk") -m 128 -display none -serial stdio 2>&1 | tr -d '\r'
+    rm -f "$work/in" "$work/out"
+    mkfifo "$work/in"
+    timeout 90 $qemu $extra $(disk_args "$disk") -m 128 -display none -serial stdio < "$work/in" > "$work/out" 2>&1 &
+    pid=$!
+    exec 3> "$work/in"
+    tries=0
+    while ! grep -q "Shell ready" "$work/out" 2>/dev/null && [ $tries -lt 240 ] && kill -0 $pid 2>/dev/null; do
+        sleep 0.25
+        tries=$((tries + 1))
+    done
+    sleep 1
+    for c in "$@"; do printf '%s\n' "$c" >&3; done
+    echo shutdown >&3
+    wait $pid
+    exec 3>&-
+    tr -d '\r' < "$work/out"
 }
 
 pass=0
