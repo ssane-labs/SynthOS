@@ -7,7 +7,7 @@
 #include "../internal.h"
 
 #define CELL 26
-#define HEADER 92
+#define HEADER 96
 #define MIN_W 360
 #define PAD 10
 #define MAX_W 30
@@ -302,18 +302,19 @@ static void frame(struct ui *ui, void *data)
     struct mines *m = data;
     struct window *w = ui->win;
     int W = w->surface.w, H = w->surface.h;
-    ui_panel(ui, (struct rect){0, 0, W, H}, style.window);
-    ui_panel(ui, (struct rect){0, 0, W, HEADER - 6}, style.panel);
-    int lw = (W - 2 * PAD - 12) / 3;
-    for (int i = 0; i < (int)ARRAY_SIZE(levels); i++)
-        if (ui_tool(ui, (struct rect){PAD + i * (lw + 6), 52, lw, 28}, ICON_MINES, levels[i].name, m->level == i)) {
-            m->level = i;
-            reset(m);
-            wm_set_timer(w, 0);
-            fit(w, m);
-            return;
-        }
-    struct rect smiley = {(W - 44) / 2, 6, 44, 40};
+    ui_panel(ui, (struct rect){0, 0, W, H}, style.content);
+    ui_panel(ui, (struct rect){0, 0, W, HEADER - 8}, style.window);
+    ui_separator(ui, 0, HEADER - 9, W);
+    static const char *const names[] = {"Beginner", "Intermediate", "Expert"};
+    int level = m->level;
+    if (ui_segmented(ui, (struct rect){PAD, 54, W - 2 * PAD, 26}, names, 3, &level)) {
+        m->level = level;
+        reset(m);
+        wm_set_timer(w, 0);
+        fit(w, m);
+        return;
+    }
+    struct rect smiley = {(W - 40) / 2, 8, 40, 38};
     if (ui_button(ui, smiley, "")) {
         reset(m);
         wm_set_timer(w, 0);
@@ -321,8 +322,8 @@ static void frame(struct ui *ui, void *data)
     uint64_t now = m->state == G_PLAYING ? hal_ticks_ms() : m->finished;
     int secs = m->state == G_READY ? 0 : (int)((now - m->started) / 1000);
     if (ui->c) {
-        counter(ui->c, (struct rect){PAD, 8, 64, 36}, m->count - m->flags);
-        counter(ui->c, (struct rect){W - PAD - 64, 8, 64, 36}, secs);
+        counter(ui->c, (struct rect){84, 10, 60, 34}, m->count - m->flags);
+        counter(ui->c, (struct rect){W - PAD - 60, 10, 60, 34}, secs);
         face(ui->c, smiley, m->state, m->press_x >= 0);
     }
     struct rect board = board_rect(w, m);
@@ -402,8 +403,10 @@ static void launch(const char *arg)
     m->seed = (uint32_t)hal_ticks_ms() | 1;
     reset(m);
     struct window *w = wm_open("Minesweeper", ICON_MINES, MAX(m->w * CELL + 2 * PAD, MIN_W), HEADER + m->h * CELL + PAD * 2,
-                               &ops, m, 0);
-    if (!w)
+                               &ops, m, WIN_FULLSIZE | WIN_NOTITLE);
+    if (w)
+        w->toolbar_h = 54;
+    else
         kfree(m);
 }
 

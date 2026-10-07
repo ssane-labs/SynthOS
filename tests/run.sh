@@ -142,6 +142,16 @@ launch paint
 the desktop is not running
 desktop
 no graphics mode available
+useradd -p secret bob Bob Builder
+user bob created, home /home/bob
+users | grep Builder
+Bob Builder
+su bob; echo I am $USER in $PWD; su
+I am bob in /home/bob
+passwd -p topsecret bob
+password for bob updated
+userdel bob
+user bob deleted
 EOF
 
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"

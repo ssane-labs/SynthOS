@@ -7,6 +7,7 @@
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/shell.h>
+#include <synth/users.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -170,6 +171,7 @@ void kmain(const struct boot_info *bi)
     if (!sh)
         panic("cannot create shell");
     boot_step(true, "Shell ready");
+    users_init();
     run_startup(sh);
 
     char command[CONFIG_LINE_MAX];
@@ -183,8 +185,18 @@ void kmain(const struct boot_info *bi)
     if (con_is_grid())
         con_clear();
     show_welcome(sh);
+    bool desktop = false;
 #if CONFIG_GUI
-    if (gui_autostart() && con_is_grid())
+    desktop = gui_autostart() && con_is_grid();
+#endif
+    if (user_autologin())
+        user_switch(sh, user_autologin());
+    else if (!users_need_login())
+        user_switch(sh, users_get(0)->name);
+    else if (!desktop)
+        users_text_login(sh);
+#if CONFIG_GUI
+    if (desktop)
         gui_run(sh);
 #endif
     shell_repl(sh);

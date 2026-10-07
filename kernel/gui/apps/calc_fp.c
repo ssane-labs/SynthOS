@@ -4,8 +4,8 @@
 
 #include "../internal.h"
 
-#define DISPLAY_H 92
-#define GAP 6
+#define DISPLAY_H 120
+#define GAP 10
 
 struct calc {
     struct ui_state st;
@@ -313,24 +313,85 @@ static void press(struct calc *c, int row, int col)
         unary(c, 'i');
 }
 
+static bool calc_key(struct ui *ui, struct rect r, const char *label, uint32_t bg, uint32_t fg)
+{
+    int id = ui_next_id(ui);
+    bool clicked = false;
+    struct gui_event *e = ui->e;
+    if (e) {
+        bool in = ui_hover(ui, r);
+        if (e->type == EV_MOUSE_DOWN && in && e->button == BUTTON_LEFT) {
+            ui->st->active = id;
+            ui->consumed = true;
+            ui->changed = true;
+        } else if (e->type == EV_MOUSE_UP && ui->st->active == id) {
+            clicked = in;
+            ui->consumed = true;
+        }
+    }
+    if (ui->c) {
+        if (ui->st->active == id)
+            bg = color_shade(bg, 60);
+        gfx_round(ui->c, r, r.h / 2, bg);
+        const struct ui_font *f = strlen(label) > 2 ? &font_bold : &font_title;
+        gfx_text_box(ui->c, r, f, label, fg, ALIGN_CENTER);
+    }
+    return clicked;
+}
+
+static char op_of(const char *l)
+{
+    return !strcmp(l, "+") ? '+' : !strcmp(l, "−") ? '-' : !strcmp(l, "×") ? '*' : !strcmp(l, "÷") ? '/' : 0;
+}
+
+static const struct menu_item edit_items[] = {
+    {"Copy", KEY_CTRL('c'), "⌘C"},
+    {"Paste", KEY_CTRL('v'), "⌘V"},
+    {"", 0, NULL},
+    {"Clear", KEY_ESC, "Esc"},
+};
+
+static const struct app_menu menus[] = {
+    {"Edit", edit_items, ARRAY_SIZE(edit_items)},
+};
+
 static void frame(struct ui *ui, void *data)
 {
     struct calc *c = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
-    ui_panel(ui, (struct rect){0, 0, W, H}, style.window);
-    ui_label(ui, (struct rect){12, 8, W - 24, 22}, c->history, &font_sans, style.muted, ALIGN_RIGHT);
     if (ui->c) {
-        const struct ui_font *f = gfx_text_width(&font_title, c->entry) > W - 24 ? &font_bold : &font_title;
-        gfx_text_box(ui->c, (struct rect){12, 32, W - 24, 48}, f, c->entry, style.text, ALIGN_RIGHT);
+        gfx_clear(ui->c, (struct rect){0, 0, W, H}, RGB(28, 28, 30));
+        gfx_text_box(ui->c, (struct rect){16, 34, W - 32, 20}, &font_sans, c->history, RGB(150, 150, 156), ALIGN_RIGHT);
+        bool digits = true;
+        for (const char *p = c->entry; *p; p++)
+            if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z' && *p != 'E'))
+                digits = false;
+        const struct ui_font *f = digits && gfx_text_width(&font_display, c->entry) <= W - 32 ? &font_display
+                                                                                              : &font_large;
+        gfx_text_box(ui->c, (struct rect){16, 54, W - 32, DISPLAY_H - 50}, f, c->entry, RGB(255, 255, 255), ALIGN_RIGHT);
     }
-    int bw = (W - GAP * 5) / 4, bh = (H - DISPLAY_H - GAP * 7) / 6;
+    int top = DISPLAY_H + 14;
+    int bw = (W - GAP * 5) / 4, bh = MIN(bw, (H - top - GAP * 6) / 6);
     for (int r = 0; r < 6; r++)
         for (int col = 0; col < 4; col++) {
-            struct rect b = {GAP + col * (bw + GAP), DISPLAY_H + GAP + r * (bh + GAP), bw, bh};
-            if (ui_button(ui, b, labels[r][col]))
+            struct rect b = {GAP + col * (bw + GAP), top + r * (bh + GAP), bw, bh};
+            const char *l = labels[r][col];
+            char op = op_of(l);
+            uint32_t bg = RGB(51, 51, 54), fg = RGB(255, 255, 255);
+            if ((col == 3 && r > 0) || !strcmp(l, "=")) {
+                bg = RGB(255, 159, 10);
+                if (op && c->op == op && c->fresh) {
+                    bg = RGB(255, 255, 255);
+                    fg = RGB(255, 159, 10);
+                }
+            } else if (r == 0) {
+                bg = RGB(165, 165, 170);
+                fg = RGB(20, 20, 22);
+            } else if (r == 1) {
+                bg = RGB(80, 80, 84);
+            }
+            if (calc_key(ui, b, l, bg, fg))
                 press(c, r, col);
-            if (ui->c && col == 3 && r == 5)
-                gfx_round_frame(ui->c, b, 6, style.accent);
         }
     int k = ui_key(ui);
     if (k == KEY_NONE)
@@ -355,6 +416,7 @@ static void frame(struct ui *ui, void *data)
         format(v, c->entry, sizeof(c->entry));
         c->fresh = false;
     }
+    ui->consumed = true;
 }
 
 static void paint(struct window *w, struct canvas *cv)
@@ -383,15 +445,14 @@ static void launch(const char *arg)
     if (!c)
         return;
     clear(c);
-    struct window *w = wm_open("Calculator", ICON_CALC, 320, 440, &ops, c, WIN_RESIZABLE);
+    struct window *w = wm_open("Calculator", ICON_CALC, 300, 510, &ops, c, WIN_FULLSIZE | WIN_NOTITLE);
     if (!w) {
         kfree(c);
         return;
     }
-    w->min_w = 260;
-    w->min_h = 360;
+    wm_set_menus(w, menus, ARRAY_SIZE(menus));
 }
 
-static const struct gui_app calc_app = {"Calculator", "Arithmetic with the keyboard or mouse", ICON_CALC, launch,
+static const struct gui_app calc_app = {"Calculator", "Basic arithmetic with the keyboard or mouse", ICON_CALC, launch,
                                         NULL};
 GUI_APP(calc_app);

@@ -169,8 +169,10 @@ static void grid_for(struct window *w, int *cols, int *rows)
     *rows = CLAMP((cr.h - 2 * PAD) / FONT_HEIGHT, 5, CONFIG_MAX_ROWS);
 }
 
-static void retitle(void)
+void terminal_retitle(void)
 {
+    if (!term)
+        return;
     char title[64];
     ksnprintf(title, sizeof(title), "%s — synsh — %d×%d", gui_user(), term->display.cols, term->display.rows);
     wm_set_title(term->win, title);
@@ -188,7 +190,7 @@ static void event(struct window *w, struct gui_event *e)
         invalidate_all();
         con_resize(cols, rows);
         con_redraw();
-        retitle();
+        terminal_retitle();
     } else if (e->type == EV_MOUSE_DOWN && e->button == BUTTON_RIGHT) {
         for (const char *p = gui_clipboard(); *p; p++)
             input_inject(*p == '\n' ? KEY_ENTER : (uint8_t)*p);
@@ -238,7 +240,7 @@ struct window *terminal_open(void)
     };
     invalidate_all();
     con_init(&term->display);
-    retitle();
+    terminal_retitle();
     return term->win;
 }
 

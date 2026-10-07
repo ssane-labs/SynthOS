@@ -1,7 +1,10 @@
+#include <synth/error.h>
 #include <synth/fbcon.h>
+#include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 
 #include "internal.h"
@@ -34,6 +37,8 @@ static const struct gui_app *launching_app;
 
 int mouse_x, mouse_y;
 static unsigned mouse_buttons;
+static int mouse_speed = 5, accel_x, accel_y;
+static bool natural_scroll;
 static bool cursor_visible = true;
 
 enum cursor_kind {
@@ -1200,7 +1205,12 @@ void wm_pointer(const struct pointer_event *ev)
 {
     int old_x = mouse_x, old_y = mouse_y;
     struct rect old = cursor_rect();
-    clamp_mouse(mouse_x + ev->dx, mouse_y + ev->dy);
+    accel_x += ev->dx * mouse_speed;
+    accel_y += ev->dy * mouse_speed;
+    int dx = accel_x / 5, dy = accel_y / 5;
+    accel_x -= dx * 5;
+    accel_y -= dy * 5;
+    clamp_mouse(mouse_x + dx, mouse_y + dy);
     if (old_x != mouse_x || old_y != mouse_y) {
         wm_damage_z(old, Z_CURSOR);
         wm_damage_z(cursor_rect(), Z_CURSOR);
@@ -1236,7 +1246,7 @@ void wm_pointer(const struct pointer_event *ev)
     if (ev->wheel) {
         struct window *w;
         if (hit_test(mouse_x, mouse_y, &w) == HIT_WINDOW && w)
-            client_event(w, EV_WHEEL, 0, ev->wheel, 0);
+            client_event(w, EV_WHEEL, 0, natural_scroll ? -ev->wheel : ev->wheel, 0);
     }
 }
 
@@ -1431,3 +1441,40 @@ int wm_window_list(struct window **out, int max)
             out[n++] = w;
     return n;
 }
+
+static void get_speed(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", mouse_speed);
+}
+
+static int set_speed(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 1 || v > 10)
+        return E_INVAL;
+    mouse_speed = (int)v;
+    return 0;
+}
+
+static const struct setting s_speed = {"mousespeed", "1..10", "pointer tracking speed (5 is normal)", get_speed,
+                                       set_speed};
+SETTING(s_speed);
+
+static void get_natural(char *buf, size_t cap)
+{
+    str_copy(buf, natural_scroll ? "on" : "off", cap);
+}
+
+static int set_natural(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    natural_scroll = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_natural = {"naturalscroll", "on|off", "invert the scroll wheel", get_natural,
+                                         set_natural};
+SETTING(s_natural);

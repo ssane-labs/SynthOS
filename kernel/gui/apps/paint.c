@@ -9,10 +9,10 @@
 #include "../image.h"
 #include "../internal.h"
 
-#define TOOLBAR_H 44
-#define TOOLBOX_W 84
-#define PALETTE_H 46
-#define STATUS_H 24
+#define TOOLBAR_H TOOLBAR_HEIGHT
+#define TOOLBOX_W 0
+#define PALETTE_H 48
+#define STATUS_H 0
 #define BAR 12
 #define MARGIN 8
 #define IMG_W 640
@@ -227,7 +227,6 @@ static void update_title(struct window *w, struct paint *p)
     char title[64];
     const char *name = p->path[0] ? path_basename(p->path) : "Untitled";
     str_copy(title, name, sizeof(title));
-    str_append(title, " - Paint", sizeof(title));
     wm_set_title(w, title);
 }
 
@@ -249,7 +248,7 @@ static bool load(struct window *w, struct paint *p, const char *path)
 {
     struct image im;
     if (!image_load(path, &im)) {
-        gui_message("Paint", "Could not open the picture. Only BMP images (24 or 32 bits) are supported.");
+        gui_message("The picture could not be opened", "Only BMP images with 24 or 32 bits per pixel are supported.");
         return false;
     }
     canvas_free(&p->img);
@@ -267,7 +266,7 @@ static bool load(struct window *w, struct paint *p, const char *path)
 static void save(struct window *w, struct paint *p)
 {
     if (image_save(p->path, p->img.px, p->img.w, p->img.h, p->img.stride) != 0) {
-        gui_message("Paint", "Could not save the picture.");
+        gui_message("The picture could not be saved", "Check the file name and that the disk is not full.");
         return;
     }
     p->modified = false;
@@ -297,44 +296,6 @@ static void save_or_prompt(struct window *w, struct paint *p)
         save(w, p);
     else
         ui_prompt(w, "Save picture", "Save as BMP file:", "/home/picture.bmp", on_save_as);
-}
-
-static void tool_glyph(struct canvas *c, struct rect r, int tool)
-{
-    int x = r.x + r.w / 2, y = r.y + r.h / 2;
-    uint32_t ink = style.text;
-    switch (tool) {
-    case T_PENCIL:
-        gfx_thick_line(c, x - 7, y + 7, x + 5, y - 5, 3, ink);
-        gfx_fill(c, (struct rect){x + 5, y - 8, 3, 3}, style.accent);
-        break;
-    case T_BRUSH:
-        gfx_thick_line(c, x + 2, y - 2, x + 8, y - 8, 3, ink);
-        gfx_circle(c, x - 3, y + 3, 5, style.accent);
-        break;
-    case T_ERASER:
-        gfx_round(c, (struct rect){x - 9, y - 5, 18, 11}, 2, RGB(255, 174, 201));
-        gfx_fill(c, (struct rect){x - 9, y - 5, 6, 11}, ink);
-        break;
-    case T_LINE:
-        gfx_thick_line(c, x - 8, y + 8, x + 8, y - 8, 2, ink);
-        break;
-    case T_RECT:
-        rect_shape(c, x - 9, y - 6, x + 9, y + 6, 2, false, ink);
-        break;
-    case T_ELLIPSE:
-        ellipse_rows(c, x - 9, y - 6, x + 9, y + 6, 2, false, ink);
-        break;
-    case T_FILL:
-        gfx_fill(c, (struct rect){x - 7, y - 4, 11, 11}, ink);
-        gfx_fill(c, (struct rect){x - 5, y - 2, 7, 4}, style.accent);
-        gfx_circle(c, x + 7, y + 6, 2, style.accent);
-        break;
-    default:
-        gfx_thick_line(c, x - 6, y + 6, x + 3, y - 3, 3, ink);
-        gfx_circle(c, x + 5, y - 5, 4, ink);
-        break;
-    }
 }
 
 static void hscroll(struct ui *ui, struct rect r, int *pos, int content, int view)
@@ -440,77 +401,89 @@ static void canvas_input(struct ui *ui, struct paint *p, struct rect view, int o
     }
 }
 
-static bool swatch(struct ui *ui, struct paint *p, struct rect r, uint32_t color)
+enum {
+    CMD_NEW,
+    CMD_OPEN,
+    CMD_SAVE,
+    CMD_SAVE_AS,
+    CMD_UNDO,
+    CMD_TOOL,
+};
+
+static const struct menu_item file_items[] = {
+    {"New", KEY_COMMAND(CMD_NEW), "⌘N"},
+    {"Open…", KEY_COMMAND(CMD_OPEN), "⌘O"},
+    {"", 0, NULL},
+    {"Save", KEY_COMMAND(CMD_SAVE), "⌘S"},
+    {"Save As…", KEY_COMMAND(CMD_SAVE_AS), "⇧⌘S"},
+};
+
+static const struct menu_item edit_items[] = {
+    {"Undo", KEY_COMMAND(CMD_UNDO), "⌘Z"},
+};
+
+static const struct menu_item tool_items[] = {
+    {"Pencil", KEY_COMMAND(CMD_TOOL + T_PENCIL), "P"},     {"Brush", KEY_COMMAND(CMD_TOOL + T_BRUSH), "B"},
+    {"Eraser", KEY_COMMAND(CMD_TOOL + T_ERASER), "E"},     {"Line", KEY_COMMAND(CMD_TOOL + T_LINE), "L"},
+    {"Rectangle", KEY_COMMAND(CMD_TOOL + T_RECT), "R"},    {"Ellipse", KEY_COMMAND(CMD_TOOL + T_ELLIPSE), "O"},
+    {"Fill", KEY_COMMAND(CMD_TOOL + T_FILL), "F"},         {"Color Picker", KEY_COMMAND(CMD_TOOL + T_PICK), "I"},
+};
+
+static const struct app_menu menus[] = {
+    {"File", file_items, ARRAY_SIZE(file_items)},
+    {"Edit", edit_items, ARRAY_SIZE(edit_items)},
+    {"Tools", tool_items, ARRAY_SIZE(tool_items)},
+};
+
+static const enum symbol_id tool_symbols[T_COUNT] = {SYM_PENCIL, SYM_BRUSH, SYM_ERASER, SYM_LINE,
+                                                     SYM_RECT,   SYM_ELLIPSE, SYM_BUCKET, SYM_DROPPER};
+
+static void select_tool(struct paint *p, int tool)
 {
-    bool hit = false;
-    if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, r)) {
-        if (ui->e->button == BUTTON_RIGHT)
-            p->bg = color;
-        else
-            p->fg = color;
-        ui->consumed = true;
-        hit = true;
-    }
-    if (ui->c) {
-        gfx_fill(ui->c, r, color);
-        gfx_frame(ui->c, r, ALPHA(style.border, 255));
-    }
-    return hit;
+    if (tool == T_PICK && p->tool != T_PICK)
+        p->prev_tool = p->tool;
+    p->tool = tool;
 }
 
 static void toolbar(struct ui *ui, struct paint *p, int W)
 {
-    ui_panel(ui, (struct rect){0, 0, W, TOOLBAR_H}, style.panel);
-    int x = 8;
-    if (ui_button(ui, (struct rect){x, 7, 64, 30}, "New")) {
-        save_undo(p);
-        new_image(p, IMG_W, IMG_H);
-        update_title(ui->win, p);
-    }
-    x += 70;
-    if (ui_button(ui, (struct rect){x, 7, 64, 30}, "Open"))
-        ui_prompt(ui->win, "Open picture", "BMP file to open:", p->path[0] ? p->path : "/home/", on_open);
-    x += 70;
-    if (ui_button(ui, (struct rect){x, 7, 64, 30}, "Save"))
-        save_or_prompt(ui->win, p);
-    x += 70;
-    if (ui_button(ui, (struct rect){x, 7, 64, 30}, "Undo"))
+    ui_panel(ui, (struct rect){0, 0, W, TOOLBAR_H}, style.window);
+    ui_separator(ui, 0, TOOLBAR_H - 1, W);
+    char title[64];
+    str_copy(title, p->path[0] ? path_basename(p->path) : "Untitled", sizeof(title));
+    if (p->modified)
+        str_append(title, " — Edited", sizeof(title));
+    ui_label(ui, (struct rect){84, 8, 200, 20}, title, &font_bold, style.text, ALIGN_LEFT);
+    char sub[32];
+    ksnprintf(sub, sizeof(sub), "%d × %d", p->img.w, p->img.h);
+    ui_label(ui, (struct rect){84, 26, 200, 16}, sub, &font_small, style.secondary, ALIGN_LEFT);
+    int group_w = T_COUNT * 32 + 8, x = MAX(250, (W - group_w) / 2 - 40);
+    if (ui->c)
+        gfx_round(ui->c, (struct rect){x, 10, group_w, 32}, 16, style.dark ? ALPHA(0xffffffffu, 20) : ALPHA(0, 12));
+    for (int i = 0; i < T_COUNT; i++)
+        if (ui_symbol_button(ui, (struct rect){x + 4 + i * 32, 12, 30, 28}, tool_symbols[i], p->tool == i))
+            select_tool(p, i);
+    x += group_w + 16;
+    ui_slider(ui, (struct rect){x, 16, 90, 20}, &p->size, 1, 32);
+    x += 104;
+    ui_label(ui, (struct rect){x, 0, 40, TOOLBAR_H}, "Fill", &font_sans, style.text, ALIGN_LEFT);
+    ui_switch(ui, (struct rect){x + 30, 16, 32, 20}, &p->filled);
+    if (ui_symbol_button(ui, (struct rect){W - 44, 12, 30, 28}, SYM_UNDO, false))
         undo(p);
-    x += 84;
-    char label[16];
-    ksnprintf(label, sizeof(label), "Size %d", p->size);
-    ui_label(ui, (struct rect){x, 7, 60, 30}, label, &font_sans, style.text, ALIGN_LEFT);
-    ui_slider(ui, (struct rect){x + 62, 12, 110, 20}, &p->size, 1, 32);
-    x += 192;
-    ui_checkbox(ui, (struct rect){x, 7, 130, 30}, "Filled shapes", &p->filled);
 }
 
-static void toolbox(struct ui *ui, struct paint *p, int top, int bottom)
+static void wells(struct ui *ui, struct paint *p, int y)
 {
-    ui_panel(ui, (struct rect){0, top, TOOLBOX_W, bottom - top}, style.panel);
-    for (int i = 0; i < T_COUNT; i++) {
-        struct rect r = {6 + (i % 2) * 38, top + 8 + (i / 2) * 38, 34, 34};
-        if (ui_button(ui, r, "")) {
-            if (i == T_PICK && p->tool != T_PICK)
-                p->prev_tool = p->tool;
-            p->tool = i;
-        }
-        if (ui->c) {
-            if (p->tool == i) {
-                gfx_round(ui->c, r, 6, style.selection);
-                gfx_round_frame(ui->c, r, 6, style.accent);
-            }
-            tool_glyph(ui->c, r, i);
-        }
-    }
-    int y = top + 8 + 4 * 38 + 12;
+    int x = 14;
     if (ui->c) {
-        gfx_fill(ui->c, (struct rect){30, y + 22, 34, 34}, p->bg);
-        gfx_frame(ui->c, (struct rect){30, y + 22, 34, 34}, style.border);
-        gfx_fill(ui->c, (struct rect){14, y + 6, 34, 34}, p->fg);
-        gfx_frame(ui->c, (struct rect){14, y + 6, 34, 34}, style.text);
+        struct rect back = {x + 14, y + 14, 24, 24}, front = {x, y + 6, 24, 24};
+        gfx_round(ui->c, back, 6, p->bg);
+        gfx_round_frame(ui->c, back, 6, style.separator);
+        gfx_drop_shadow(ui->c, front, 6, 4, 60, 1);
+        gfx_round(ui->c, front, 6, p->fg);
+        gfx_round_frame(ui->c, front, 6, ALPHA(0, 60));
     }
-    if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, (struct rect){10, y, 60, 60}) && ui->e->clicks >= 2) {
+    if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, (struct rect){x, y, 40, 40})) {
         uint32_t t = p->fg;
         p->fg = p->bg;
         p->bg = t;
@@ -520,34 +493,56 @@ static void toolbox(struct ui *ui, struct paint *p, int top, int bottom)
 
 static void palette(struct ui *ui, struct paint *p, int y, int W)
 {
-    ui_panel(ui, (struct rect){0, y, W, PALETTE_H}, style.panel);
+    ui_panel(ui, (struct rect){0, y, W, PALETTE_H}, style.window);
+    ui_separator(ui, 0, y, W);
+    wells(ui, p, y);
     int per_row = (int)ARRAY_SIZE(colors) / 2;
-    for (int i = 0; i < (int)ARRAY_SIZE(colors); i++)
-        swatch(ui, p, (struct rect){12 + (i % per_row) * 22, y + 4 + (i / per_row) * 20, 18, 17}, colors[i]);
-}
-
-static void status(struct ui *ui, struct paint *p, int y, int W)
-{
-    ui_panel(ui, (struct rect){0, y, W, STATUS_H}, style.panel);
-    char line[160], pos[32];
+    for (int i = 0; i < (int)ARRAY_SIZE(colors); i++) {
+        struct rect r = {64 + (i % per_row) * 22, y + 4 + (i / per_row) * 20, 18, 18};
+        if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, r)) {
+            if (ui->e->button == BUTTON_RIGHT)
+                p->bg = colors[i];
+            else
+                p->fg = colors[i];
+            ui->consumed = true;
+        }
+        if (ui->c) {
+            gfx_circle(ui->c, r.x + 9, r.y + 9, 8, colors[i]);
+            gfx_ring(ui->c, r.x + 9, r.y + 9, 8, ALPHA(0, 50));
+        }
+    }
+    char pos[32];
     if (p->cx >= 0)
-        ksnprintf(pos, sizeof(pos), "%d, %d px", p->cx, p->cy);
+        ksnprintf(pos, sizeof(pos), "%s   ·   %d, %d", tool_names[p->tool], p->cx, p->cy);
     else
-        pos[0] = 0;
-    ksnprintf(line, sizeof(line), "%s    %d x %d    %s%s", tool_names[p->tool], p->img.w, p->img.h, pos,
-              p->modified ? "    modified" : "");
-    ui_label(ui, (struct rect){10, y, W - 20, STATUS_H}, line, &font_sans, style.muted, ALIGN_LEFT);
+        str_copy(pos, tool_names[p->tool], sizeof(pos));
+    ui_label(ui, (struct rect){W - 220, y, 206, PALETTE_H}, pos, &font_small, style.secondary, ALIGN_RIGHT);
 }
 
 static void keys(struct ui *ui, struct paint *p)
 {
     int k = ui_key(ui);
-    if (k == KEY_CTRL('z'))
+    static const char tool_keys[T_COUNT] = {'p', 'b', 'e', 'l', 'r', 'o', 'f', 'i'};
+    if (k >= KEY_COMMAND(CMD_TOOL) && k < KEY_COMMAND(CMD_TOOL + T_COUNT)) {
+        select_tool(p, k - KEY_COMMAND(CMD_TOOL));
+        return;
+    }
+    for (int i = 0; i < T_COUNT; i++)
+        if (k == tool_keys[i]) {
+            select_tool(p, i);
+            return;
+        }
+    if (k == KEY_CTRL('z') || k == KEY_COMMAND(CMD_UNDO))
         undo(p);
-    else if (k == KEY_CTRL('s'))
+    else if (k == KEY_CTRL('s') || k == KEY_COMMAND(CMD_SAVE))
         save_or_prompt(ui->win, p);
-    else if (k == KEY_CTRL('o'))
-        ui_prompt(ui->win, "Open picture", "BMP file to open:", p->path[0] ? p->path : "/home/", on_open);
+    else if (k == (KEY_CTRL('s') | KEY_MOD_SHIFT) || k == KEY_COMMAND(CMD_SAVE_AS))
+        ui_prompt(ui->win, "Save As", "Save the picture as a BMP file:",
+                  p->path[0] ? p->path : "/home/Pictures/Untitled.bmp", on_save_as);
+    else if (k == KEY_CTRL('o') || k == KEY_COMMAND(CMD_OPEN))
+        ui_prompt(ui->win, "Open", "Enter the path of a BMP image:", p->path[0] ? p->path : "/home/Pictures/", on_open);
+    else if (k == KEY_CTRL('n') || k == KEY_COMMAND(CMD_NEW))
+        gui_app_launch(ui->win->app, NULL);
     else if (k == '[')
         p->size = MAX(1, p->size - 1);
     else if (k == ']')
@@ -558,29 +553,26 @@ static void frame(struct ui *ui, void *data)
 {
     struct paint *p = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
-    int bottom = H - PALETTE_H - STATUS_H;
-    struct rect view = {TOOLBOX_W, TOOLBAR_H, W - TOOLBOX_W - BAR, bottom - TOOLBAR_H - BAR};
+    int bottom = H - PALETTE_H;
+    struct rect view = {0, TOOLBAR_H, W - BAR, bottom - TOOLBAR_H - BAR};
     int content_w = p->img.w + 2 * MARGIN, content_h = p->img.h + 2 * MARGIN;
     p->view_x = CLAMP(p->view_x, 0, MAX(0, content_w - view.w));
     p->view_y = CLAMP(p->view_y, 0, MAX(0, content_h - view.h));
-    int ox = view.x + MARGIN - p->view_x, oy = view.y + MARGIN - p->view_y;
+    int ox = view.x + MAX(MARGIN, (view.w - p->img.w) / 2) - p->view_x;
+    int oy = view.y + MAX(MARGIN, (view.h - p->img.h) / 2) - p->view_y;
     canvas_input(ui, p, view, ox, oy);
     if (ui->c) {
         struct canvas vc = *ui->c;
+        vc.clip = rect_intersect(ui->c->clip, (struct rect){0, view.y, W, view.h + BAR});
+        gfx_clear(&vc, vc.clip, style.dark ? RGB(30, 30, 32) : RGB(222, 222, 226));
         vc.clip = rect_intersect(ui->c->clip, view);
-        gfx_fill(&vc, view, color_mix(style.window, style.desktop, 128));
-        gfx_shadow(&vc, (struct rect){ox, oy, p->img.w, p->img.h}, 0, 6, 80);
+        gfx_drop_shadow(&vc, (struct rect){ox, oy, p->img.w, p->img.h}, 0, 10, 70, 3);
         gfx_blit(&vc, ox, oy, &p->img, (struct rect){0, 0, p->img.w, p->img.h});
-        gfx_fill(ui->c, (struct rect){view.x + view.w, view.y + view.h, BAR, BAR}, style.panel);
-        gfx_fill(ui->c, (struct rect){view.x + view.w, view.y, BAR, view.h}, style.field);
-        gfx_fill(ui->c, (struct rect){view.x, view.y + view.h, view.w, BAR}, style.field);
     }
     ui_scrollbar(ui, (struct rect){view.x + view.w, view.y, BAR, view.h}, &p->view_y, content_h, view.h);
     hscroll(ui, (struct rect){view.x, view.y + view.h, view.w, BAR}, &p->view_x, content_w, view.w);
     toolbar(ui, p, W);
-    toolbox(ui, p, TOOLBAR_H, bottom);
     palette(ui, p, bottom, W);
-    status(ui, p, bottom + PALETTE_H, W);
     keys(ui, p);
 }
 
@@ -609,7 +601,7 @@ static bool on_close(struct window *w)
     struct paint *p = w->data;
     if (!p->modified)
         return true;
-    ui_confirm(w, "Unsaved changes", "This picture has unsaved changes. Close it anyway?", discard);
+    ui_confirm(w, "Do you want to discard the changes?", "Your changes to this picture will be lost.", discard);
     return false;
 }
 
@@ -640,14 +632,16 @@ static void launch(const char *arg)
     p->cx = p->cy = -1;
     int sw, sh;
     wm_screen_size(&sw, &sh);
-    int cw = MIN(TOOLBOX_W + IMG_W + 2 * MARGIN + BAR, sw - 40);
-    int ch = MIN(TOOLBAR_H + IMG_H + 2 * MARGIN + BAR + PALETTE_H + STATUS_H, sh - MENUBAR_HEIGHT - dock_reserved() - TITLE_HEIGHT - 20);
-    struct window *w = wm_open("Untitled - Paint", ICON_PAINT, cw, ch, &ops, p, WIN_RESIZABLE);
+    int cw = MIN(MAX(820, IMG_W + 2 * MARGIN + BAR), sw - 40);
+    int ch = MIN(TOOLBAR_H + IMG_H + 2 * MARGIN + BAR + PALETTE_H, sh - MENUBAR_HEIGHT - dock_reserved() - 16);
+    struct window *w = wm_open("Paint", ICON_PAINT, cw, ch, &ops, p, WIN_RESIZABLE | WIN_FULLSIZE | WIN_NOTITLE);
     if (!w) {
         canvas_free(&p->img);
         kfree(p);
         return;
     }
+    w->toolbar_h = TOOLBAR_H;
+    wm_set_menus(w, menus, ARRAY_SIZE(menus));
     w->min_w = 640;
     w->min_h = 360;
     if (arg && *arg)

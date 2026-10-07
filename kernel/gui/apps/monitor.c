@@ -33,13 +33,14 @@ static void sample(struct monitor *m)
 
 static void bar(struct canvas *c, struct rect r, uint32_t permille, uint32_t color)
 {
-    gfx_round(c, r, 4, style.field);
-    gfx_round(c, (struct rect){r.x, r.y, (int)(r.w * (int)MIN(permille, 1000u) / 1000), r.h}, 4, color);
+    gfx_round(c, r, r.h / 2, style.dark ? RGB(70, 70, 74) : RGB(226, 226, 230));
+    gfx_round(c, (struct rect){r.x, r.y, MAX(r.h, (int)(r.w * (int)MIN(permille, 1000u) / 1000)), r.h}, r.h / 2, color);
 }
 
 static void draw_graph(struct canvas *c, struct rect r, struct monitor *m, uint64_t total)
 {
-    gfx_round(c, r, 6, style.field);
+    gfx_round(c, r, 10, style.group);
+    gfx_round_frame(c, r, 10, style.separator);
     for (int i = 1; i < 4; i++)
         gfx_fill(c, (struct rect){r.x, r.y + r.h * i / 4, r.w, 1}, ALPHA(style.border, 120));
     uint64_t top = total / 16;
@@ -73,16 +74,16 @@ static void draw_graph(struct canvas *c, struct rect r, struct monitor *m, uint6
 
 static void draw_task(struct canvas *c, struct rect row, int index, bool sel, void *ctx)
 {
-    UNUSED(sel);
     struct monitor *m = ctx;
     struct window *w = m->task_list[index];
     if (!wm_window_alive(w))
         return;
-    gfx_icon(c, row.x + 8, row.y + (row.h - 16) / 2, w->icon, 16);
-    gfx_text_box(c, (struct rect){row.x + 32, row.y, row.w - 160, row.h}, &font_sans, w->title, style.text, ALIGN_LEFT);
+    gfx_icon(c, row.x + 14, row.y + (row.h - 16) / 2, w->icon, 16);
+    gfx_text_box(c, (struct rect){row.x + 38, row.y, row.w - 160, row.h}, &font_sans, w->title, ui_row_text(sel), ALIGN_LEFT);
     char size[32];
     fmt_size(size, sizeof(size), (uint64_t)w->surface.w * (uint64_t)w->surface.h * 4);
-    gfx_text_box(c, (struct rect){row.x + row.w - 120, row.y, 110, row.h}, &font_sans, size, style.muted, ALIGN_RIGHT);
+    gfx_text_box(c, (struct rect){row.x + row.w - 130, row.y, 110, row.h}, &font_sans, size,
+                 sel && ui_row_text(sel) != style.text ? ALPHA(0xffffffffu, 200) : style.secondary, ALIGN_RIGHT);
 }
 
 static void refresh_tasks(struct monitor *m)
@@ -140,10 +141,10 @@ static void tasks(struct ui *ui, struct monitor *m, struct rect area)
     struct window *sel = m->tasks.selected >= 0 && m->tasks.selected < m->task_count ? m->task_list[m->tasks.selected] : NULL;
     if (r == LIST_ACTIVATE && sel)
         wm_show(sel);
-    if (ui_button(ui, (struct rect){area.x + area.w - 132, area.y + area.h - 48, 120, 34}, "End task") && sel &&
+    if (ui_button(ui, (struct rect){area.x + area.w - 132, area.y + area.h - 44, 120, 28}, "Quit") && sel &&
         sel != ui->win)
         wm_close(sel);
-    if (ui_button(ui, (struct rect){area.x + area.w - 264, area.y + area.h - 48, 120, 34}, "Switch to") && sel)
+    if (ui_button(ui, (struct rect){area.x + area.w - 264, area.y + area.h - 44, 120, 28}, "Show") && sel)
         wm_show(sel);
 }
 
@@ -152,7 +153,7 @@ static void log_tab(struct ui *ui, struct monitor *m, struct rect area)
     if (!ui->c)
         return;
     log_snapshot(m->log, sizeof(m->log));
-    gfx_round(ui->c, rect_inset(area, 10), 6, style.field);
+    gfx_round(ui->c, rect_inset(area, 10), 10, style.dark ? RGB(22, 22, 24) : RGB(248, 248, 250));
     int lines = 0;
     for (const char *p = m->log; *p; p++)
         lines += *p == '\n';
@@ -173,19 +174,20 @@ static void log_tab(struct ui *ui, struct monitor *m, struct rect area)
     }
 }
 
-static const char *const tab_names[TAB_COUNT] = {"Performance", "Windows", "Kernel log"};
+static const char *const tab_names[TAB_COUNT] = {"Performance", "Windows", "Kernel Log"};
 
 static void frame(struct ui *ui, void *data)
 {
     struct monitor *m = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
-    ui_panel(ui, (struct rect){0, 0, W, H}, style.window);
-    ui_panel(ui, (struct rect){0, 0, W, 42}, style.panel);
-    for (int i = 0; i < TAB_COUNT; i++)
-        if (ui_tool(ui, (struct rect){8 + i * 124, 6, 118, 30}, i == 0 ? ICON_MONITOR : i == 1 ? ICON_APP : ICON_TEXT,
-                    tab_names[i], m->tab == i))
-            m->tab = i;
-    struct rect area = {0, 42, W, H - 42};
+    ui_panel(ui, (struct rect){0, 0, W, H}, style.content);
+    ui_panel(ui, (struct rect){0, 0, W, TOOLBAR_HEIGHT}, style.window);
+    ui_separator(ui, 0, TOOLBAR_HEIGHT - 1, W);
+    ui_label(ui, (struct rect){84, 8, 200, 20}, "System Monitor", &font_bold, style.text, ALIGN_LEFT);
+    ui_label(ui, (struct rect){84, 26, 200, 16}, tab_names[m->tab], &font_small, style.secondary, ALIGN_LEFT);
+    int sw = MIN(330, W - 300);
+    ui_segmented(ui, (struct rect){W - sw - 14, 12, sw, 28}, tab_names, TAB_COUNT, &m->tab);
+    struct rect area = {0, TOOLBAR_HEIGHT, W, H - TOOLBAR_HEIGHT};
     if (m->tab == 0)
         performance(ui, m, area);
     else if (m->tab == 1)
@@ -217,17 +219,20 @@ static const struct window_ops ops = {paint, event, NULL, destroy};
 
 static void launch(const char *arg)
 {
-    UNUSED(arg);
     struct monitor *m = kzalloc(sizeof(*m));
     if (!m)
         return;
     m->tasks.selected = -1;
     sample(m);
-    struct window *w = wm_open("System Monitor", ICON_MONITOR, 560, 520, &ops, m, WIN_RESIZABLE);
+    if (arg && !strcmp(arg, "windows"))
+        m->tab = 1;
+    struct window *w = wm_open("System Monitor", ICON_MONITOR, 600, 540, &ops, m,
+                               WIN_RESIZABLE | WIN_FULLSIZE | WIN_NOTITLE);
     if (!w) {
         kfree(m);
         return;
     }
+    w->toolbar_h = TOOLBAR_HEIGHT;
     wm_set_timer(w, 1000);
 }
 

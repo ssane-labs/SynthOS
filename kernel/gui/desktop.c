@@ -14,13 +14,13 @@
 #include <synth/string.h>
 #include <synth/theme.h>
 #include <synth/time.h>
+#include <synth/users.h>
 #include <synth/vfs.h>
 
 #include "internal.h"
 
 SYNTH_TABLE_DECLARE(synth_gui_apps, struct gui_app);
 
-#define DESKTOP_DIR "/home/Desktop"
 #define CELL_W 100
 #define CELL_H 96
 #define MAX_ICONS 24
@@ -51,6 +51,18 @@ struct desktop_icon {
 static struct desktop_icon icons[MAX_ICONS];
 static int icon_count;
 static int selected_icon = -1;
+static int lock_minutes;
+static uint64_t last_input;
+
+void desktop_dir(char *out, size_t cap)
+{
+    path_join(user_home(), "Desktop", out, cap);
+}
+
+const struct canvas *desktop_wallpaper(int screen)
+{
+    return screen >= 0 && screen < MAX_SCREENS && wallpapers[screen].px ? &wallpapers[screen] : NULL;
+}
 
 static const struct {
     const char *name;
@@ -193,18 +205,20 @@ static enum icon_id icon_for(const char *name, bool dir)
 static void scan_desktop(void)
 {
     struct desktop_icon fresh[MAX_ICONS];
+    char dir[PATH_MAX_LEN];
+    desktop_dir(dir, sizeof(dir));
     int n = 0;
     str_copy(fresh[n].label, "SynthOS HD", sizeof(fresh[n].label));
     str_copy(fresh[n].path, "/", sizeof(fresh[n].path));
     fresh[n++].icon = ICON_COMPUTER;
     struct vdir d;
-    if (vfs_opendir(DESKTOP_DIR, &d) == 0) {
+    if (vfs_opendir(dir, &d) == 0) {
         struct vfs_dirent ent;
         while (n < MAX_ICONS && vfs_readdir(&d, &ent) == 0) {
             if (ent.name[0] == '.')
                 continue;
             str_copy(fresh[n].label, ent.name, sizeof(fresh[n].label));
-            path_join(DESKTOP_DIR, ent.name, fresh[n].path, sizeof(fresh[n].path));
+            path_join(dir, ent.name, fresh[n].path, sizeof(fresh[n].path));
             fresh[n].icon = icon_for(ent.name, ent.type == VN_DIR);
             n++;
         }
@@ -289,13 +303,15 @@ void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
 static void desktop_pick(struct window *owner, int index)
 {
     UNUSED(owner);
+    char dir[PATH_MAX_LEN];
+    desktop_dir(dir, sizeof(dir));
     if (index == 0) {
         char path[PATH_MAX_LEN];
         for (int i = 0; i < 100; i++) {
             if (i)
-                ksnprintf(path, sizeof(path), DESKTOP_DIR "/untitled folder %d", i + 1);
+                ksnprintf(path, sizeof(path), "%s/untitled folder %d", dir, i + 1);
             else
-                str_copy(path, DESKTOP_DIR "/untitled folder", sizeof(path));
+                ksnprintf(path, sizeof(path), "%s/untitled folder", dir);
             if (!vfs_exists(path)) {
                 vfs_mkdir(path);
                 break;
@@ -303,7 +319,7 @@ static void desktop_pick(struct window *owner, int index)
         }
         scan_desktop();
     } else if (index == 1) {
-        gui_open_file(DESKTOP_DIR);
+        gui_open_file(dir);
     } else if (index == 3) {
         const struct gui_app *settings = gui_app_find("System Settings");
         gui_app_launch(settings, "wallpaper");
@@ -402,8 +418,26 @@ void gui_set_clipboard(const char *text, size_t n)
 
 const char *gui_user(void)
 {
-    const char *user = session ? sh_get(session, "USER") : NULL;
-    return user && *user ? user : "root";
+    return user_current()->name;
+}
+
+static void close_app_window(struct window *w, void *ctx)
+{
+    UNUSED(ctx);
+    if (wm_window_alive(w) && !(w->flags & (WIN_KEEP | WIN_POPUP | WIN_OVERLAY)))
+        wm_destroy(w);
+}
+
+void gui_session_login(const char *name)
+{
+    user_switch(session, name);
+    icon_count = -1;
+    scan_desktop();
+    chrome_changed();
+    terminal_retitle();
+    last_input = hal_ticks_ms();
+    if (session && session->idle)
+        gui_terminal_run("clear");
 }
 
 void gui_terminal_show(void)
@@ -431,6 +465,13 @@ void gui_quit(int action)
 {
     if (!session)
         return;
+    if (action == QUIT_LOGOUT) {
+        wm_close_popups();
+        wm_foreach(close_app_window, NULL);
+        user_logout();
+        gui_login();
+        return;
+    }
     if (!session->idle) {
         gui_message("Cannot leave yet", "A program is still running in the terminal.");
         gui_terminal_show();
@@ -562,7 +603,11 @@ static void handle_key(int key)
 {
     int base = KEY_BASE(key);
     if (gui_locked()) {
-        wm_key(key);
+        struct window *lock = wm_top_popup();
+        if (lock && lock->ops && lock->ops->event) {
+            struct gui_event e = {.type = EV_KEY, .key = key};
+            lock->ops->event(lock, &e);
+        }
         return;
     }
     if (key == KEY_SUPER || key == (KEY_ESC | KEY_MOD_CTRL)) {
@@ -617,6 +662,14 @@ static void pump(int timeout_ms)
         wm_pointer(&ev);
         busy = true;
     }
+    uint64_t now = hal_ticks_ms();
+    if (busy)
+        last_input = now;
+    else if (lock_minutes && now - last_input > (uint64_t)lock_minutes * 60000 && !gui_locked() &&
+             user_current()->has_password) {
+        gui_lock();
+        last_input = now;
+    }
     wm_timers();
     struct rtc_time t;
     hal_rtc(&t);
@@ -624,7 +677,6 @@ static void pump(int timeout_ms)
         last_minute = t.minute;
         chrome_changed();
     }
-    uint64_t now = hal_ticks_ms();
     if (now - last_scan > 2000) {
         last_scan = now;
         scan_desktop();
@@ -638,10 +690,13 @@ static void pump(int timeout_ms)
 
 static void prepare_home(void)
 {
-    static const char *const dirs[] = {DESKTOP_DIR, "/home/Documents", "/home/Downloads", "/home/Pictures"};
-    for (size_t i = 0; i < ARRAY_SIZE(dirs); i++)
-        if (!vfs_exists(dirs[i]))
-            vfs_mkdirs(dirs[i]);
+    static const char *const dirs[] = {"Desktop", "Documents", "Downloads", "Pictures"};
+    for (size_t i = 0; i < ARRAY_SIZE(dirs); i++) {
+        char path[PATH_MAX_LEN];
+        path_join(user_home(), dirs[i], path, sizeof(path));
+        if (!vfs_exists(path))
+            vfs_mkdirs(path);
+    }
 }
 
 int gui_run(struct shell *sh)
@@ -680,6 +735,9 @@ int gui_run(struct shell *sh)
         return sh_error(sh, "desktop", "cannot open the terminal window");
     }
     input_set_pump(pump);
+    last_input = hal_ticks_ms();
+    if (!user_logged_in())
+        gui_login();
     con_role(ROLE_ACCENT);
     kprintf("SynthOS desktop");
     con_role(ROLE_MUTED);
@@ -815,6 +873,25 @@ static int set_autostart(struct shell *sh, const char *value)
 static const struct setting s_autostart = {"desktop", "on|off", "start the graphical desktop at boot",
                                            get_autostart, set_autostart};
 SETTING(s_autostart);
+
+static void get_locktime(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", lock_minutes);
+}
+
+static int set_locktime(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 0 || v > 1440)
+        return E_INVAL;
+    lock_minutes = (int)v;
+    return 0;
+}
+
+static const struct setting s_locktime = {"locktime", "<minutes>|0", "lock the desktop after this many idle minutes",
+                                          get_locktime, set_locktime};
+SETTING(s_locktime);
 
 bool gui_autostart(void)
 {

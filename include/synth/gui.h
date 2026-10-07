@@ -32,7 +32,7 @@ struct ui_font {
     const uint8_t *alpha;
 };
 
-extern const struct ui_font font_sans, font_bold, font_small, font_title, font_large, font_mono, font_clock;
+extern const struct ui_font font_sans, font_bold, font_small, font_title, font_large, font_mono, font_clock, font_display;
 
 enum icon_id {
     ICON_FOLDER,
@@ -454,6 +454,7 @@ struct window *ui_menu_items(struct window *owner, int x, int y, const struct me
                              ui_pick_fn pick);
 void ui_confirm(struct window *owner, const char *title, const char *text, ui_prompt_fn done);
 void ui_prompt(struct window *owner, const char *title, const char *label, const char *initial, ui_prompt_fn done);
+void ui_prompt_secret(struct window *owner, const char *title, const char *label, ui_prompt_fn done);
 int ui_wrap_text(struct canvas *c, struct rect r, const struct ui_font *f, const char *s, uint32_t color);
 
 struct gui_app {
@@ -481,6 +482,7 @@ const char *gui_clipboard(void);
 void gui_set_clipboard(const char *text, size_t n);
 void gui_quit(int action);
 const char *gui_user(void);
+void gui_lock(void);
 
 enum {
     QUIT_TEXT,

@@ -436,7 +436,7 @@ static bool text_field(struct ui *ui, struct rect r, struct ui_text *t, const ch
         inner.clip = rect_intersect(ui->c->clip, (struct rect){r.x + inset - 2, r.y + 2, r.w - inset - 2, r.h - 4});
         int ty = r.y + (r.h - f->height) / 2;
         if (!t->len && hint)
-            gfx_text(&inner, r.x + inset, ty, f, hint, style.tertiary);
+            gfx_text(&inner, r.x + inset, ty, f, hint, style.secondary);
         else
             gfx_text(&inner, r.x + inset - t->scroll, ty, f, shown, style.text);
         if (focused)
@@ -914,12 +914,12 @@ static void dialog_destroy(struct window *w)
 
 static const struct window_ops dialog_ops = {dialog_paint, dialog_event, NULL, dialog_destroy};
 
-static void open_dialog(struct window *owner, const char *title, const char *text, const char *initial,
-                        ui_prompt_fn done, enum icon_id icon)
+static struct dialog *open_dialog(struct window *owner, const char *title, const char *text, const char *initial,
+                                  ui_prompt_fn done, enum icon_id icon)
 {
     struct dialog *d = kzalloc(sizeof(*d));
     if (!d)
-        return;
+        return NULL;
     str_copy(d->title, title, sizeof(d->title));
     str_copy(d->text, text, sizeof(d->text));
     d->has_input = initial != NULL;
@@ -936,11 +936,12 @@ static void open_dialog(struct window *owner, const char *title, const char *tex
     struct window *w = wm_open(title, icon, DIALOG_W, h, &dialog_ops, d, WIN_DIALOG | WIN_GLASS);
     if (!w) {
         kfree(d);
-        return;
+        return NULL;
     }
     w->owner = owner;
     if (owner)
         w->app = owner->app;
+    return d;
 }
 
 void gui_message(const char *title, const char *text)
@@ -956,4 +957,11 @@ void ui_confirm(struct window *owner, const char *title, const char *text, ui_pr
 void ui_prompt(struct window *owner, const char *title, const char *label, const char *initial, ui_prompt_fn done)
 {
     open_dialog(owner, title, label, initial ? initial : "", done, owner ? owner->icon : ICON_TEXT);
+}
+
+void ui_prompt_secret(struct window *owner, const char *title, const char *label, ui_prompt_fn done)
+{
+    struct dialog *d = open_dialog(owner, title, label, "", done, ICON_USER);
+    if (d)
+        d->input.password = true;
 }

@@ -110,8 +110,13 @@ struct window *terminal_open(void);
 void terminal_close(void);
 void terminal_flush(void);
 struct window *terminal_window(void);
+void terminal_retitle(void);
 
 void gui_lock(void);
+void gui_login(void);
 bool gui_locked(void);
+void gui_session_login(const char *name);
+const struct canvas *desktop_wallpaper(int screen);
+void desktop_dir(char *out, size_t cap);
 
 #endif

@@ -8,11 +8,46 @@
 
 #include "../internal.h"
 
-#define TOOLBAR_H 40
+#define TOOLBAR_H 0
 #define STATUS_H 24
 #define GUTTER_W 46
-#define LINE_H 17
-#define TEXT_PAD 6
+#define LINE_H 18
+#define TEXT_PAD 8
+
+enum {
+    CMD_NEW,
+    CMD_OPEN,
+    CMD_SAVE,
+    CMD_SAVE_AS,
+    CMD_NUMBERS,
+    CMD_SELECT_ALL,
+};
+
+static const struct menu_item file_items[] = {
+    {"New", KEY_COMMAND(CMD_NEW), "⌘N"},
+    {"Open…", KEY_COMMAND(CMD_OPEN), "⌘O"},
+    {"", 0, NULL},
+    {"Save", KEY_COMMAND(CMD_SAVE), "⌘S"},
+    {"Save As…", KEY_COMMAND(CMD_SAVE_AS), "⇧⌘S"},
+};
+
+static const struct menu_item edit_items[] = {
+    {"Cut", KEY_CTRL('x'), "⌘X"},
+    {"Copy", KEY_CTRL('c'), "⌘C"},
+    {"Paste", KEY_CTRL('v'), "⌘V"},
+    {"", 0, NULL},
+    {"Select All", KEY_COMMAND(CMD_SELECT_ALL), "⌘A"},
+};
+
+static const struct menu_item view_items[] = {
+    {"Line Numbers", KEY_COMMAND(CMD_NUMBERS), NULL},
+};
+
+static const struct app_menu menus[] = {
+    {"File", file_items, ARRAY_SIZE(file_items)},
+    {"Edit", edit_items, ARRAY_SIZE(edit_items)},
+    {"View", view_items, ARRAY_SIZE(view_items)},
+};
 
 struct notepad {
     struct ui_state st;
@@ -26,6 +61,7 @@ struct notepad {
     char path[PATH_MAX_LEN];
     size_t *lines;
     int line_count, line_cap;
+    bool numbers;
 };
 
 static void index_lines(struct notepad *n)
@@ -80,7 +116,7 @@ static bool reserve(struct notepad *n, size_t extra)
 static void title(struct window *w, struct notepad *n)
 {
     char t[64];
-    ksnprintf(t, sizeof(t), "%s%s - Notepad", n->modified ? "*" : "", n->path[0] ? path_basename(n->path) : "Untitled");
+    ksnprintf(t, sizeof(t), "%s%s", n->path[0] ? path_basename(n->path) : "Untitled", n->modified ? " — Edited" : "");
     wm_set_title(w, t);
 }
 
@@ -188,7 +224,7 @@ static bool open_path(struct window *w, struct notepad *n, const char *path)
     size_t size;
     int err = vfs_read_all(path, &data, &size);
     if (err && err != E_NOENT) {
-        gui_message("Notepad", "Cannot open that file.");
+        gui_message("The document could not be opened", "The file can't be read.");
         return false;
     }
     load_text(n, err ? "" : data, err ? 0 : size);
@@ -204,8 +240,8 @@ static void save_to(struct window *w, struct notepad *n, const char *path)
     int err = vfs_write_all(path, n->text, n->len);
     if (err) {
         char msg[128];
-        ksnprintf(msg, sizeof(msg), "Could not save: %s.", err_str(err));
-        gui_message("Notepad", msg);
+        ksnprintf(msg, sizeof(msg), "The document could not be saved: %s.", err_str(err));
+        gui_message("Save failed", msg);
         return;
     }
     str_copy(n->path, path, sizeof(n->path));
@@ -243,7 +279,7 @@ static void save(struct window *w, struct notepad *n)
     if (n->path[0])
         save_to(w, n, n->path);
     else
-        ui_prompt(w, "Save as", "Save to file:", "/home/untitled.txt", on_save_as);
+        ui_prompt(w, "Save As", "Choose a file name and folder:", "/home/Documents/Untitled.txt", on_save_as);
 }
 
 static void copy_selection(struct notepad *n)
@@ -257,7 +293,7 @@ static void copy_selection(struct notepad *n)
 static void ensure_visible(struct window *w, struct notepad *n)
 {
     int view_h = w->surface.h - TOOLBAR_H - STATUS_H - 2 * TEXT_PAD;
-    int view_w = w->surface.w - GUTTER_W - 2 * TEXT_PAD - 14;
+    int view_w = w->surface.w - (n->numbers ? GUTTER_W : 0) - 2 * TEXT_PAD - 14;
     int line = line_of(n, n->cursor);
     if (line * LINE_H < n->scroll_y)
         n->scroll_y = line * LINE_H;
@@ -320,7 +356,7 @@ static void key(struct window *w, struct notepad *n, int k)
         ensure_visible(w, n);
         return;
     }
-    if (k == KEY_CTRL('a')) {
+    if (k == KEY_CTRL('a') || k == KEY_COMMAND(CMD_SELECT_ALL)) {
         n->anchor = 0;
         n->cursor = n->len;
     } else if (k == KEY_CTRL('c')) {
@@ -331,13 +367,21 @@ static void key(struct window *w, struct notepad *n, int k)
     } else if (k == KEY_CTRL('v')) {
         const char *clip = gui_clipboard();
         insert(n, clip, strlen(clip));
-    } else if (k == KEY_CTRL('s')) {
+    } else if (k == (KEY_CTRL('s') | KEY_MOD_SHIFT) || k == KEY_COMMAND(CMD_SAVE_AS)) {
+        ui_prompt(w, "Save As", "Choose a file name and folder:", n->path[0] ? n->path : "/home/Documents/Untitled.txt",
+                  on_save_as);
+        return;
+    } else if (k == KEY_CTRL('s') || k == KEY_COMMAND(CMD_SAVE)) {
         save(w, n);
-    } else if (k == KEY_CTRL('o')) {
-        ui_prompt(w, "Open", "File to open:", n->path[0] ? n->path : "/home/", on_open);
-    } else if (k == KEY_CTRL('n')) {
-        load_text(n, "", 0);
-        n->path[0] = 0;
+    } else if (k == KEY_CTRL('o') || k == KEY_COMMAND(CMD_OPEN)) {
+        ui_prompt(w, "Open", "Enter the path of a text file:", n->path[0] ? n->path : "/home/", on_open);
+        return;
+    } else if (k == KEY_CTRL('n') || k == KEY_COMMAND(CMD_NEW)) {
+        gui_app_launch(w->app, NULL);
+        return;
+    } else if (k == KEY_COMMAND(CMD_NUMBERS)) {
+        n->numbers = !n->numbers;
+        return;
     } else if (k == KEY_BACKSPACE) {
         if (has_selection(n))
             delete_selection(n);
@@ -384,24 +428,11 @@ static void frame(struct ui *ui, void *data)
     struct notepad *n = data;
     struct window *w = ui->win;
     int W = w->surface.w, H = w->surface.h;
-    ui_panel(ui, (struct rect){0, 0, W, TOOLBAR_H}, style.panel);
-    if (ui_tool(ui, (struct rect){6, 6, 74, 28}, ICON_FILE, "New", false)) {
-        load_text(n, "", 0);
-        n->path[0] = 0;
-        title(w, n);
-    }
-    if (ui_tool(ui, (struct rect){84, 6, 76, 28}, ICON_FOLDER, "Open", false))
-        ui_prompt(w, "Open", "File to open:", n->path[0] ? n->path : "/home/", on_open);
-    if (ui_tool(ui, (struct rect){164, 6, 74, 28}, ICON_TEXT, "Save", false))
-        save(w, n);
-    if (ui_tool(ui, (struct rect){242, 6, 96, 28}, ICON_TEXT, "Save as", false))
-        ui_prompt(w, "Save as", "Save to file:", n->path[0] ? n->path : "/home/untitled.txt", on_save_as);
-
-    struct rect area = {0, TOOLBAR_H, W - 14, H - TOOLBAR_H - STATUS_H};
-    struct rect text = {GUTTER_W + TEXT_PAD, TOOLBAR_H + TEXT_PAD, area.w - GUTTER_W - 2 * TEXT_PAD,
+    int gutter = n->numbers ? GUTTER_W : 0;
+    struct rect area = {0, TOOLBAR_H, W, H - TOOLBAR_H - STATUS_H};
+    struct rect text = {gutter + TEXT_PAD, TOOLBAR_H + TEXT_PAD, area.w - gutter - 2 * TEXT_PAD - 10,
                         area.h - 2 * TEXT_PAD};
-    int content = n->line_count * LINE_H;
-    ui_scrollbar(ui, (struct rect){W - 14, TOOLBAR_H, 14, area.h}, &n->scroll_y, content, text.h);
+    int content = n->line_count * LINE_H + 2 * TEXT_PAD;
 
     struct gui_event *e = ui->e;
     if (e && (e->type == EV_MOUSE_DOWN || (e->type == EV_MOUSE_MOVE && n->selecting)) &&
@@ -433,12 +464,16 @@ static void frame(struct ui *ui, void *data)
         key(w, n, k);
         ui->consumed = true;
     }
+    ui_scrollbar(ui, (struct rect){W - 10, TOOLBAR_H, 10, area.h}, &n->scroll_y, content, area.h);
 
     if (!ui->c)
         return;
     struct canvas *c = ui->c;
-    gfx_fill(c, area, style.field);
-    gfx_fill(c, (struct rect){0, area.y, GUTTER_W, area.h}, color_mix(style.field, style.panel, 128));
+    gfx_clear(c, area, style.content);
+    if (gutter) {
+        gfx_clear(c, (struct rect){0, area.y, gutter, area.h}, color_mix(style.content, style.window, 110));
+        gfx_fill(c, (struct rect){gutter - 1, area.y, 1, area.h}, style.separator);
+    }
     struct canvas inner = *c;
     inner.clip = rect_intersect(c->clip, (struct rect){0, area.y, area.w, area.h});
     int first = n->scroll_y / LINE_H;
@@ -449,31 +484,36 @@ static void frame(struct ui *ui, void *data)
         int y = text.y + line * LINE_H - n->scroll_y;
         if (y > area.y + area.h)
             break;
-        char num[12];
-        ksnprintf(num, sizeof(num), "%d", line + 1);
-        gfx_text_box(&inner, (struct rect){0, y, GUTTER_W - 8, LINE_H}, &font_mono, num,
-                     line == cursor_line ? style.text : style.muted, ALIGN_RIGHT);
+        if (gutter) {
+            char num[12];
+            ksnprintf(num, sizeof(num), "%d", line + 1);
+            gfx_text_box(&inner, (struct rect){0, y, gutter - 10, LINE_H}, &font_mono, num,
+                         line == cursor_line ? style.text : style.tertiary, ALIGN_RIGHT);
+        }
         size_t start = n->lines[line], end = line_end(n, line);
         struct canvas tc = inner;
-        tc.clip = rect_intersect(inner.clip, (struct rect){GUTTER_W + 2, area.y, area.w - GUTTER_W - 2, area.h});
+        tc.clip = rect_intersect(inner.clip, (struct rect){gutter + 2, area.y, area.w - gutter - 2, area.h});
         if (sa < sb && sa <= end && sb >= start) {
             size_t a = MAX(sa, start), b = MIN(sb, end);
             int x0 = gfx_text_width_n(&font_mono, n->text + start, a - start);
             int x1 = gfx_text_width_n(&font_mono, n->text + start, b - start) + (sb > end ? 6 : 0);
-            gfx_fill(&tc, (struct rect){text.x + x0 - n->scroll_x, y, x1 - x0, LINE_H}, style.selection);
+            gfx_fill(&tc, (struct rect){text.x + x0 - n->scroll_x, y, x1 - x0, LINE_H},
+                     w == wm_focused() ? ALPHA(style.accent, 70) : style.selection_inactive);
         }
         gfx_text_n(&tc, text.x - n->scroll_x, y + 1, &font_mono, n->text + start, end - start, style.text);
         if (line == cursor_line && w == wm_focused()) {
             int cx = text.x + x_of(n, n->cursor) - n->scroll_x;
-            gfx_fill(&tc, (struct rect){cx, y, 2, LINE_H}, style.accent);
+            gfx_fill(&tc, (struct rect){cx, y + 1, 2, LINE_H - 2}, style.text);
         }
     }
-    gfx_fill(c, (struct rect){0, H - STATUS_H, W, STATUS_H}, style.panel);
+    gfx_clear(c, (struct rect){0, H - STATUS_H, W, STATUS_H}, style.window);
+    gfx_fill(c, (struct rect){0, H - STATUS_H, W, 1}, style.separator);
     char status[96];
     int col = (int)(n->cursor - n->lines[cursor_line]) + 1;
-    ksnprintf(status, sizeof(status), "Ln %d, Col %d    %d lines    %u bytes%s", cursor_line + 1, col, n->line_count,
-              (unsigned)n->len, n->modified ? "    modified" : "");
-    gfx_text_box(c, (struct rect){10, H - STATUS_H, W - 20, STATUS_H}, &font_sans, status, style.muted, ALIGN_LEFT);
+    ksnprintf(status, sizeof(status), "Line %d, Column %d   ·   %d line%s   ·   %u bytes", cursor_line + 1, col,
+              n->line_count, n->line_count == 1 ? "" : "s", (unsigned)n->len);
+    gfx_text_box(c, (struct rect){12, H - STATUS_H, W - 24, STATUS_H}, &font_small, status, style.secondary,
+                 ALIGN_LEFT);
 }
 
 static void paint(struct window *w, struct canvas *c)
@@ -501,7 +541,7 @@ static bool on_close(struct window *w)
     struct notepad *n = w->data;
     if (!n->modified)
         return true;
-    ui_confirm(w, "Unsaved changes", "This document has unsaved changes. Close it anyway?", discard);
+    ui_confirm(w, "Do you want to discard the changes?", "Your changes will be lost if you don't save them.", discard);
     return false;
 }
 
@@ -522,7 +562,7 @@ static void launch(const char *arg)
         return;
     n->st.focus = -1;
     load_text(n, "", 0);
-    struct window *w = wm_open("Untitled - Notepad", ICON_NOTEPAD, 640, 440, &ops, n, WIN_RESIZABLE);
+    struct window *w = wm_open("Untitled", ICON_NOTEPAD, 680, 460, &ops, n, WIN_RESIZABLE);
     if (!w) {
         kfree(n->text);
         kfree(n);
@@ -530,6 +570,7 @@ static void launch(const char *arg)
     }
     w->min_w = 360;
     w->min_h = 200;
+    wm_set_menus(w, menus, ARRAY_SIZE(menus));
     if (arg && *arg)
         open_path(w, n, arg);
 }

@@ -25,6 +25,8 @@ FONTS = [
     ("font_mono", DEJAVU + "DejaVuSansMono.ttf", DEJAVU + "DejaVuSansMono.ttf", 13, TEXT + GREEK),
     ("font_clock", INTER + "InterDisplay-SemiBold.otf", DEJAVU + "DejaVuSans-Bold.ttf", 92,
      [ord(c) for c in "0123456789: "]),
+    ("font_display", INTER + "InterDisplay-Light.otf", DEJAVU + "DejaVuSans.ttf", 46,
+     [ord(c) for c in " 0123456789.,-+e×÷−=%()ErorCandivbyzIlpt"]),
 ]
 
 
@@ -39,7 +41,7 @@ def render(path, fallback, size, codes):
     ref = font.getmask("", mode="L")
     ascent, descent = font.getmetrics()
     glyphs, data = [], bytearray()
-    for code in codes:
+    for code in sorted(set(codes)):
         ch = chr(code)
         use = font
         if code > 0x7F and missing(font, ch, ref):
