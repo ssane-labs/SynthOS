@@ -70,7 +70,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw clean tools programs
+.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs
 all: $(IMAGE)
 
 ESP_LBA     := 4096
@@ -271,6 +271,12 @@ run-serial:
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
 	@tests/run.sh $(BUILD)/serial/synthos.img
+
+test-crypto:
+	@mkdir -p $(BUILD)/tools
+	@$(HOSTCC) -O2 -Iinclude -o $(BUILD)/tools/cryptotest tests/crypto/driver.c kernel/crypto/hash.c kernel/crypto/aes.c \
+	    kernel/crypto/chacha.c kernel/crypto/x25519.c kernel/crypto/pk.c kernel/lib/sha256.c
+	@python3 -I tests/crypto/check.py $(BUILD)/tools/cryptotest
 
 test-hw:
 	@$(MAKE) --no-print-directory SERIAL=1

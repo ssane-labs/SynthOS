@@ -7,6 +7,7 @@
 #include <synth/path.h>
 #include <synth/stream.h>
 #include <synth/string.h>
+#include <synth/tls.h>
 #include <synth/vfs.h>
 
 static int number(const char *s)
@@ -102,7 +103,9 @@ COMMAND(dhcp, NULL, "system", "dhcp [iface]", "get a network address from a DHCP
 static int resolve(struct shell *sh, const char *who, const char *host, uint32_t *ip)
 {
     int err = net_resolve(host, ip, 4000);
-    if (err)
+    if (err == E_NOENT)
+        sh_error(sh, who, "%s: host not found", host);
+    else if (err)
         net_fail(sh, who, host, err);
     return err;
 }
@@ -211,12 +214,49 @@ static bool parse_url(const char *s, struct url *u, bool *https)
     return true;
 }
 
-static long read_all(int s, char *buf, size_t cap, struct shell *sh)
+struct conn {
+    int sock;
+    struct tls *tls;
+};
+
+static long conn_recv(struct conn *c, void *buf, size_t n)
+{
+    return c->tls ? tls_read(c->tls, buf, n) : net_recv(c->sock, buf, n);
+}
+
+static int conn_send(struct conn *c, const void *buf, size_t n)
+{
+    if (c->tls) {
+        long k = tls_write(c->tls, buf, n);
+        return k < 0 ? (int)k : 0;
+    }
+    const char *p = buf;
+    while (n) {
+        long k = net_send(c->sock, p, n);
+        if (k == E_AGAIN) {
+            net_wait(1);
+            continue;
+        }
+        if (k < 0)
+            return (int)k;
+        p += k;
+        n -= (size_t)k;
+    }
+    return 0;
+}
+
+static void conn_close(struct conn *c)
+{
+    tls_close(c->tls);
+    net_close(c->sock);
+}
+
+static long read_all(struct conn *c, char *buf, size_t cap, struct shell *sh)
 {
     size_t got = 0;
     uint64_t last = hal_ticks_ms();
     while (got < cap && !sh_interrupted()) {
-        long n = net_recv(s, buf + got, cap - got);
+        long n = conn_recv(c, buf + got, cap - got);
         if (n > 0) {
             got += (size_t)n;
             last = hal_ticks_ms();
@@ -233,14 +273,59 @@ static long read_all(int s, char *buf, size_t cap, struct shell *sh)
     return (long)got;
 }
 
-static int fetch(struct shell *sh, const char *address, const char *output, int depth)
+static bool header_has(const char *headers, const char *name, const char *value)
+{
+    size_t n = strlen(name);
+    for (const char *p = headers; (p = strchr(p, '\n')); ) {
+        p++;
+        if (str_ncasecmp(p, name, n) == 0 && p[n] == ':') {
+            const char *v = p + n + 1;
+            while (*v == ' ')
+                v++;
+            size_t k = 0;
+            while (v[k] && v[k] != '\r' && v[k] != '\n')
+                k++;
+            for (size_t i = 0; i + strlen(value) <= k; i++)
+                if (str_ncasecmp(v + i, value, strlen(value)) == 0)
+                    return true;
+        }
+    }
+    return false;
+}
+
+static size_t dechunk(char *body, size_t length)
+{
+    size_t in = 0, out = 0;
+    while (in < length) {
+        size_t size = 0;
+        while (in < length && is_xdigit(body[in])) {
+            int c = body[in++];
+            size = size * 16 + (size_t)(c <= '9' ? c - '0' : (c | 32) - 'a' + 10);
+        }
+        while (in < length && body[in] != '\n')
+            in++;
+        in++;
+        if (!size || in >= length)
+            break;
+        size = MIN(size, length - in);
+        memmove(body + out, body + in, size);
+        out += size;
+        in += size + 2;
+    }
+    return out;
+}
+
+static int tls_fail(struct shell *sh, const char *host, int err)
+{
+    return sh_error(sh, "wget", "%s: %s", host, tls_strerror(err));
+}
+
+static int fetch(struct shell *sh, const char *address, const char *output, bool verify, int depth)
 {
     struct url u;
     bool https;
     if (!parse_url(address, &u, &https))
         return sh_error(sh, "wget", "%s: bad address", address);
-    if (https)
-        return sh_error(sh, "wget", "%s: HTTPS is not supported yet, use http://", u.host);
     uint32_t ip;
     if (resolve(sh, "wget", u.host, &ip))
         return 1;
@@ -249,44 +334,47 @@ static int fetch(struct shell *sh, const char *address, const char *output, int 
     sh_role(sh, ROLE_MUTED);
     sh_printf(sh, "Connecting to %s (%s):%u... ", u.host, text, u.port);
     sh_role(sh, ROLE_TEXT);
-    int s = net_socket(NET_TCP);
-    if (s < 0)
-        return net_fail(sh, "wget", "socket", s);
-    int err = net_connect(s, ip, u.port, 8000);
+    struct conn c = {net_socket(NET_TCP), NULL};
+    if (c.sock < 0)
+        return net_fail(sh, "wget", "socket", c.sock);
+    int err = net_connect(c.sock, ip, u.port, 8000);
     if (err) {
         sh_puts(sh, "\n");
-        net_close(s);
+        net_close(c.sock);
         return net_fail(sh, "wget", u.host, err);
     }
     sh_puts(sh, "connected.\n");
+    if (https) {
+        c.tls = tls_connect(c.sock, u.host, verify, &err);
+        if (!c.tls) {
+            net_close(c.sock);
+            return tls_fail(sh, u.host, err);
+        }
+        sh_role(sh, ROLE_MUTED);
+        sh_printf(sh, "%s, %s, certificate for %s%s\n", tls_version(c.tls), tls_cipher(c.tls),
+                  tls_peer_name(c.tls), verify ? " (verified)" : " (not verified)");
+        sh_role(sh, ROLE_TEXT);
+    }
     char request[768];
     int n = ksnprintf(request, sizeof(request),
-                      "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: SynthOS-wget/1.0\r\nAccept: */*\r\n"
+                      "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: SynthOS-wget/1.1\r\nAccept: */*\r\n"
                       "Connection: close\r\n\r\n",
                       u.path, u.host);
-    for (int sent = 0; sent < n;) {
-        long k = net_send(s, request + sent, (size_t)(n - sent));
-        if (k == E_AGAIN) {
-            net_wait(1);
-            continue;
-        }
-        if (k < 0) {
-            net_close(s);
-            return net_fail(sh, "wget", "send", (int)k);
-        }
-        sent += (int)k;
+    if ((err = conn_send(&c, request, (size_t)n))) {
+        conn_close(&c);
+        return net_fail(sh, "wget", "send", err);
     }
     size_t cap = 8u << 20;
     char *buf = kmalloc(cap + 1);
     if (!buf) {
-        net_close(s);
+        conn_close(&c);
         return net_fail(sh, "wget", "buffer", E_NOMEM);
     }
-    long got = read_all(s, buf, cap, sh);
-    net_close(s);
+    long got = read_all(&c, buf, cap, sh);
+    conn_close(&c);
     if (got < 0) {
         kfree(buf);
-        return net_fail(sh, "wget", "receive", (int)got);
+        return https && got <= TLS_ERR_PROTOCOL ? tls_fail(sh, u.host, (int)got) : net_fail(sh, "wget", "receive", (int)got);
     }
     buf[got] = 0;
     char *body = strstr(buf, "\r\n\r\n");
@@ -297,9 +385,11 @@ static int fetch(struct shell *sh, const char *address, const char *output, int 
         kfree(buf);
         return sh_error(sh, "wget", "%s: not an HTTP response", u.host);
     }
-    *body = 0;
+    body[2] = 0;
     body += 4;
     size_t length = (size_t)(buf + got - body);
+    if (header_has(buf, "Transfer-Encoding", "chunked"))
+        length = dechunk(body, length);
     if ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308) && depth < 4) {
         char *loc = strstr(buf, "\nLocation: ");
         if (!loc)
@@ -311,12 +401,13 @@ static int fetch(struct shell *sh, const char *address, const char *output, int 
             while (loc[k] && loc[k] != '\r' && loc[k] != '\n' && k + 1 < sizeof(next))
                 k++;
             if (loc[0] == '/')
-                ksnprintf(next, sizeof(next), "http://%s:%u%.*s", u.host, u.port, (int)k, loc);
+                ksnprintf(next, sizeof(next), "%s://%s:%u%.*s", https ? "https" : "http", u.host, u.port, (int)k,
+                          loc);
             else
                 ksnprintf(next, sizeof(next), "%.*s", (int)k, loc);
             sh_printf(sh, "HTTP %d, redirected to %s\n", status, next);
             kfree(buf);
-            return fetch(sh, next, output, depth + 1);
+            return fetch(sh, next, output, verify, depth + 1);
         }
     }
     sh_printf(sh, "HTTP request sent, response %d\n", status);
@@ -352,17 +443,38 @@ static int fetch(struct shell *sh, const char *address, const char *output, int 
     return 0;
 }
 
-COMMAND(wget, "fetch", "system", "wget [-O file] http://host[:port]/path", "download a file over HTTP")
+COMMAND(wget, "fetch", "system", "wget [-k] [-O file] http[s]://host[:port]/path",
+        "download a file over HTTP or HTTPS (-k: do not check the certificate)")
 {
     const char *output = NULL;
+    bool verify = true;
     int i = 1;
-    if (i + 1 < argc && !strcmp(argv[i], "-O")) {
-        output = argv[i + 1];
-        i += 2;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (!strcmp(argv[i], "-k") || !strcmp(argv[i], "--insecure"))
+            verify = false;
+        else if (!strcmp(argv[i], "-O") && i + 1 < argc)
+            output = argv[++i];
+        else
+            return command_usage(sh, command_find("wget"));
     }
     if (i >= argc)
         return command_usage(sh, command_find("wget"));
-    return fetch(sh, argv[i], output, 0);
+    return fetch(sh, argv[i], output, verify, 0);
+}
+
+COMMAND(certs, NULL, "system", "certs [reload|list]", "show the trusted HTTPS root certificates")
+{
+    if (argc > 1 && !strcmp(argv[1], "reload"))
+        tls_roots_load();
+    int n = tls_roots_count();
+    if (argc > 1 && !strcmp(argv[1], "list")) {
+        for (int i = 0; i < n; i++) {
+            const struct x509 *c = tls_root(i);
+            sh_printf(sh, "%-4s %s\n", c->key == KEY_RSA ? "RSA" : c->key == KEY_NONE ? "?" : "EC", c->cn);
+        }
+    }
+    sh_printf(sh, "%d trusted root certificates (/etc/certs, /home/certs)\n", n);
+    return 0;
 }
 
 COMMAND(httpd, "serve", "system", "httpd [port] [directory]", "serve a directory over HTTP until Ctrl+C")

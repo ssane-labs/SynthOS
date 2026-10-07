@@ -3,6 +3,7 @@
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
+#include <synth/sha256.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -270,6 +271,31 @@ COMMAND(wc, NULL, "text", "wc [-l] [-w] [-c] [file...]", "count lines, words and
     if (flags & OPT('c'))
         sh_printf(sh, "%8lu", bytes);
     sh_puts(sh, "\n");
+    return rc;
+}
+
+COMMAND(sha256sum, NULL, "text", "sha256sum [file...]", "print SHA-256 checksums")
+{
+    int rc = 0;
+    for (int i = 1; i < argc || i == 1; i++) {
+        struct stream *s = open_input(sh, "sha256sum", i < argc ? argv[i] : NULL);
+        if (!s) {
+            rc = 1;
+            continue;
+        }
+        struct sha256 h;
+        sha256_init(&h);
+        char buf[512];
+        long n;
+        while ((n = stream_read(s, buf, sizeof(buf))) > 0)
+            sha256_update(&h, buf, (size_t)n);
+        close_input(sh, s);
+        uint8_t d[32];
+        sha256_final(&h, d);
+        for (int k = 0; k < 32; k++)
+            sh_printf(sh, "%02x", d[k]);
+        sh_printf(sh, "  %s\n", i < argc ? argv[i] : "-");
+    }
     return rc;
 }
 

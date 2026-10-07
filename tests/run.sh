@@ -246,12 +246,42 @@ mv '/mnt/hdb/Long Name Note.txt' /mnt/hdb/n.txt; cat /mnt/hdb/n.txt | tr a-z A-Z
 HELLO FROM FAT
 EOF
 
+server=""
+if command -v openssl >/dev/null; then
+    port=$((20000 + $$ % 20000))
+    mkdir -p "$work/www"
+    echo "secret over tls" > "$work/www/hello.txt"
+    printf 'subjectAltName=IP:10.0.2.2\nbasicConstraints=CA:FALSE\n' > "$work/ext.cnf"
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 30 -nodes -keyout "$work/ca.key" -out "$work/ca.pem" \
+        -subj "/CN=SynthOS Test CA" 2>/dev/null
+    openssl ecparam -name prime256v1 -genkey -noout -out "$work/srv.key"
+    openssl req -new -key "$work/srv.key" -out "$work/srv.csr" -subj "/CN=10.0.2.2" 2>/dev/null
+    openssl x509 -req -in "$work/srv.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key" -CAcreateserial -days 30 \
+        -sha256 -extfile "$work/ext.cnf" -out "$work/srv.pem" 2>/dev/null
+    mcopy -i "$work/fat.img" "$work/ca.pem" ::/test-ca.pem
+    (cd "$work/www" && exec openssl s_server -accept "$port" -cert "$work/srv.pem" -key "$work/srv.key" -WWW -quiet) \
+        >/dev/null 2>&1 &
+    server=$!
+    cat >> "$work/cases" <<EOF
+wget -O - https://10.0.2.2:$port/hello.txt
+certificate is not trusted
+mkdir /home/certs; cp /mnt/hdb/test-ca.pem /home/certs/; certs reload | grep -c trusted; wget -O - https://10.0.2.2:$port/hello.txt
+secret over tls
+wget -O /tmp/t.txt https://10.0.2.2:$port/hello.txt | grep TLS
+TLS 1.3, AES-128-GCM, certificate for 10.0.2.2 (verified)
+sha256sum /tmp/t.txt
+$(sha256sum "$work/www/hello.txt" | cut -c1-64)  /tmp/t.txt
+EOF
+fi
+
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"
 echo "shutdown" >> "$work/input"
 
-timeout 60 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
+timeout 90 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
     -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
     < "$work/input" > "$work/output" 2>&1
+
+[ -n "$server" ] && kill "$server" 2>/dev/null
 
 pass=0
 fail=0
