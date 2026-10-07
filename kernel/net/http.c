@@ -269,6 +269,159 @@ static bool chunked_done(const char *body, size_t n)
     return n >= 5 && memcmp(body + n - 5, "0\r\n\r\n", 5) == 0;
 }
 
+#define MAX_COOKIES 160
+#define COOKIE_HEADER_MAX 6144
+
+struct cookie {
+    char domain[128];
+    char path[96];
+    char name[64];
+    char *value;
+    bool secure, host_only;
+};
+
+static struct cookie *jar;
+static int jar_next;
+
+static bool domain_match(const char *host, const char *domain, bool exact)
+{
+    size_t h = strlen(host), d = strlen(domain);
+    if (!str_casecmp(host, domain))
+        return true;
+    return !exact && h > d && host[h - d - 1] == '.' && !str_casecmp(host + h - d, domain);
+}
+
+static void cookie_store(const struct http_url *u, const char *line)
+{
+    struct cookie c = {0};
+    size_t n = span_until(line, "=;");
+    if (line[n] != '=' || !n || n >= sizeof(c.name))
+        return;
+    memcpy(c.name, line, n);
+    const char *v = line + n + 1;
+    size_t vl = span_until(v, ";");
+    str_copy(c.domain, u->host, sizeof(c.domain));
+    str_copy(c.path, "/", sizeof(c.path));
+    c.host_only = true;
+    bool remove = false;
+    for (const char *a = v + vl; *a == ';';) {
+        a++;
+        while (*a == ' ')
+            a++;
+        size_t al = span_until(a, ";");
+        char item[160];
+        str_copy(item, a, MIN(al + 1, sizeof(item)));
+        char *eq = strchr(item, '=');
+        const char *val = eq ? eq + 1 : "";
+        if (eq)
+            *eq = 0;
+        if (!str_casecmp(item, "domain") && *val) {
+            if (*val == '.')
+                val++;
+            if (!domain_match(u->host, val, false))
+                return;
+            str_copy(c.domain, val, sizeof(c.domain));
+            c.host_only = false;
+        } else if (!str_casecmp(item, "path") && *val == '/') {
+            str_copy(c.path, val, sizeof(c.path));
+        } else if (!str_casecmp(item, "secure")) {
+            c.secure = true;
+        } else if (!str_casecmp(item, "max-age")) {
+            remove = str_to_long(val, NULL, 10) <= 0;
+        } else if (!str_casecmp(item, "expires")) {
+            remove = strstr(val, "1970") != NULL;
+        }
+        a += al;
+    }
+    if (!jar && !(jar = kzalloc(MAX_COOKIES * sizeof(*jar))))
+        return;
+    int slot = -1;
+    for (int i = 0; i < MAX_COOKIES; i++)
+        if (jar[i].value && !strcmp(jar[i].name, c.name) && !str_casecmp(jar[i].domain, c.domain) &&
+            !strcmp(jar[i].path, c.path))
+            slot = i;
+    if (remove) {
+        if (slot >= 0) {
+            kfree(jar[slot].value);
+            jar[slot].value = NULL;
+        }
+        return;
+    }
+    if (slot < 0) {
+        for (int i = 0; i < MAX_COOKIES && slot < 0; i++)
+            if (!jar[i].value)
+                slot = i;
+        if (slot < 0) {
+            slot = jar_next;
+            jar_next = (jar_next + 1) % MAX_COOKIES;
+        }
+    }
+    c.value = kmalloc(vl + 1);
+    if (!c.value)
+        return;
+    memcpy(c.value, v, vl);
+    c.value[vl] = 0;
+    kfree(jar[slot].value);
+    jar[slot] = c;
+}
+
+static void cookies_from(const struct http_url *u, const char *headers)
+{
+    for (const char *p = headers; p && *p;) {
+        if (!str_ncasecmp(p, "Set-Cookie:", 11)) {
+            const char *v = p + 11;
+            while (*v == ' ')
+                v++;
+            size_t n = span_until(v, "\r\n");
+            char *line = kmalloc(n + 1);
+            if (line) {
+                memcpy(line, v, n);
+                line[n] = 0;
+                cookie_store(u, line);
+                kfree(line);
+            }
+        }
+        p = strchr(p, '\n');
+        if (p)
+            p++;
+    }
+}
+
+static int cookies_for(const struct http_url *u, char *out, size_t cap)
+{
+    size_t n = 0;
+    out[0] = 0;
+    for (int i = 0; jar && i < MAX_COOKIES; i++) {
+        const struct cookie *c = &jar[i];
+        if (!c->value || (c->secure && !u->https) || !domain_match(u->host, c->domain, c->host_only) ||
+            !str_starts(u->path, c->path))
+            continue;
+        size_t need = strlen(c->name) + strlen(c->value) + 4;
+        if (n + need + 16 > cap)
+            break;
+        n += (size_t)ksnprintf(out + n, cap - n, "%s%s=%s", n ? "; " : "Cookie: ", c->name, c->value);
+    }
+    if (n)
+        n += (size_t)ksnprintf(out + n, cap - n, "\r\n");
+    return (int)n;
+}
+
+void http_cookies_clear(void)
+{
+    for (int i = 0; jar && i < MAX_COOKIES; i++) {
+        kfree(jar[i].value);
+        jar[i].value = NULL;
+    }
+}
+
+int http_cookie_count(void)
+{
+    int n = 0;
+    for (int i = 0; jar && i < MAX_COOKIES; i++)
+        n += jar[i].value != NULL;
+    return n;
+}
+
 static int fetch_once(const struct http_request *req, const char *url, struct http_response *resp)
 {
     struct http_url u;
@@ -306,21 +459,23 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         str_copy(host, u.host, sizeof(host));
     else
         ksnprintf(host, sizeof(host), "%s:%u", u.host, u.port);
-    char *head = kmalloc(HTTP_URL_MAX + 2048);
+    char *head = kmalloc(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX);
     if (!head) {
         conn_close(&c);
         return E_NOMEM;
     }
-    int n = ksnprintf(head, HTTP_URL_MAX + 2048,
+    int n = ksnprintf(head, HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX,
                       "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (SynthOS) SynthOS-HTTP/1.0\r\n"
                       "Accept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
                       method, u.path, host);
     if (req->body)
-        n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 - n), "Content-Length: %u\r\n",
+        n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX - n), "Content-Length: %u\r\n",
                        (unsigned)req->body_len);
+    if (!(req->flags & HTTP_NO_COOKIES))
+        n += cookies_for(&u, head + n, COOKIE_HEADER_MAX);
     if (req->headers)
-        n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 - n), "%s", req->headers);
-    n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 - n), "\r\n");
+        n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX - n), "%s", req->headers);
+    n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX - n), "\r\n");
     err = conn_send(&c, head, (size_t)n);
     kfree(head);
     if (!err && req->body && req->body_len)
@@ -364,7 +519,7 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
             if (!have_headers)
                 have_headers = body_state(buf, got, &header_len, &expected, &chunked);
             if (have_headers && req->progress)
-                req->progress(req->ctx, "downloading", got - header_len, expected);
+                req->progress(req->ctx, "downloading", got - header_len, expected == (size_t)-1 ? 0 : expected);
             if (have_headers && expected != (size_t)-1 && got - header_len >= expected)
                 break;
             if (have_headers && chunked && chunked_done(buf + header_len, got - header_len))
@@ -415,6 +570,8 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
     }
     memcpy(resp->headers, buf, header_len);
     resp->headers[header_len] = 0;
+    if (!(req->flags & HTTP_NO_COOKIES))
+        cookies_from(&u, resp->headers);
     memcpy(resp->body, buf + header_len, body_len);
     resp->body[body_len] = 0;
     resp->length = body_len;

@@ -67,6 +67,7 @@ enum icon_id {
     ICON_FOLDER_DOCS,
     ICON_FOLDER_DESKTOP,
     ICON_FOLDER_DOWNLOADS,
+    ICON_BROWSER,
     ICON_COUNT,
 };
 

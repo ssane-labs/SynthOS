@@ -246,6 +246,18 @@ def monitor_icon():
     return app_base((180, 180, 188, 255), (110, 110, 118, 255), glyph)
 
 
+def browser_icon():
+    def glyph(img, d):
+        white = (255, 255, 255, 235)
+        d.ellipse([58, 58, 198, 198], outline=white, width=8)
+        d.ellipse([98, 58, 158, 198], outline=white, width=7)
+        d.line([(128, 58), (128, 198)], fill=white, width=7)
+        d.line([(60, 128), (196, 128)], fill=white, width=7)
+        d.arc([58, 20, 198, 110], 35, 145, fill=white, width=7)
+        d.arc([58, 146, 198, 236], 215, 325, fill=white, width=7)
+    return app_base((90, 200, 250, 255), (20, 110, 220, 255), glyph)
+
+
 def mines_icon():
     def glyph(img, d):
         for row in range(4):
@@ -512,6 +524,7 @@ ICONS = [
     ("ICON_USER", user_icon), ("ICON_TRASH", trash_icon), ("ICON_TRASH_FULL", trash_full_icon),
     ("ICON_USB", usb_icon), ("ICON_FOLDER_APPS", apps_folder_icon), ("ICON_FOLDER_DOCS", docs_folder_icon),
     ("ICON_FOLDER_DESKTOP", desktop_folder_icon), ("ICON_FOLDER_DOWNLOADS", downloads_folder_icon),
+    ("ICON_BROWSER", browser_icon),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)

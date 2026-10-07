@@ -284,6 +284,17 @@ COMMAND(certs, NULL, "system", "certs [reload|list]", "show the trusted HTTPS ro
     return 0;
 }
 
+COMMAND(cookies, NULL, "system", "cookies [clear]", "show or forget the cookies web sites have set")
+{
+    if (argc > 1 && !strcmp(argv[1], "clear"))
+        http_cookies_clear();
+    else if (argc > 1)
+        return command_usage(sh, command_find("cookies"));
+    int n = http_cookie_count();
+    sh_printf(sh, "%d cookie%s stored\n", n, n == 1 ? "" : "s");
+    return 0;
+}
+
 COMMAND(httpd, "serve", "system", "httpd [port] [directory]", "serve a directory over HTTP until Ctrl+C")
 {
     uint16_t port = argc > 1 ? (uint16_t)number(argv[1]) : 8080;

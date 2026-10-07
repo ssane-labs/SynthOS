@@ -577,5 +577,5 @@ static void launch(const char *arg)
 
 static const struct gui_app notepad_app = {
     "Notepad", "Edit text files", ICON_NOTEPAD, launch,
-    ".txt;.md;.c;.h;.cpp;.asm;.sasm;.inc;.conf;.theme;.log;.ini;.cfg;.json;.xml;.html;.css;.js;.py;.bat;.synthrc"};
+    ".txt;.md;.c;.h;.cpp;.asm;.sasm;.inc;.conf;.theme;.log;.ini;.cfg;.json;.xml;.css;.js;.py;.bat;.synthrc"};
 GUI_APP(notepad_app);

@@ -389,14 +389,14 @@ int x509_load_pem(const char *text, size_t len, void (*fn)(const uint8_t *der, s
 
 #define MAX_ROOTS 256
 
-static struct x509 roots[MAX_ROOTS];
+static struct x509 *roots;
 static int root_count;
 static bool roots_loaded;
 
 static void add_root(const uint8_t *der, size_t len, void *ctx)
 {
     UNUSED(ctx);
-    if (root_count >= MAX_ROOTS)
+    if (!roots || root_count >= MAX_ROOTS)
         return;
     uint8_t *copy = kmalloc(len);
     if (!copy)
@@ -439,6 +439,8 @@ static void load_dir(const char *dir)
 
 int tls_roots_load(void)
 {
+    if (!roots && !(roots = kzalloc(MAX_ROOTS * sizeof(*roots))))
+        return 0;
     for (int i = 0; i < root_count; i++)
         kfree((void *)roots[i].raw);
     root_count = 0;

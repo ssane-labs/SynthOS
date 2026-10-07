@@ -1136,7 +1136,9 @@ COMMAND(launch, "xopen,open", "system", "launch [app|file] [file]", "start a des
     char path[PATH_MAX_LEN];
     const struct gui_app *app = gui_app_find(argv[1]);
     if (app) {
-        if (argc > 2 && sh_resolve(sh, argv[2], path, sizeof(path)) != 0)
+        if (argc > 2 && strstr(argv[2], "://"))
+            str_copy(path, argv[2], sizeof(path));
+        else if (argc > 2 && sh_resolve(sh, argv[2], path, sizeof(path)) != 0)
             return sh_error(sh, "launch", "bad path: %s", argv[2]);
         gui_app_launch(app, argc > 2 ? path : NULL);
         return 0;

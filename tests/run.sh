@@ -11,6 +11,15 @@ dd if=/dev/zero of="$work/fat.img" bs=1k count=1440 2>/dev/null
 mkfs.fat -n SYNTHTEST "$work/fat.img" >/dev/null
 echo "hello from fat" > "$work/note.txt"
 mcopy -i "$work/fat.img" "$work/note.txt" "::/Long Name Note.txt"
+cat > "$work/page.html" <<'EOF'
+<html><head><title>Test &amp; Page</title><script>document.write("no")</script></head><body>
+<h1>Hello</h1><p>A <b>bold</b> word and a <a href="next.html">link</a>.</p>
+<ul><li>first</li><li>second</li></ul><ol start="3"><li>third</li></ol>
+<div hidden>invisible</div><p style="display: none">gone</p>
+<form action="/find"><input name="q" placeholder="Query"><input type="submit" value="Go"></form>
+<pre>  keep   spaces</pre><p>Caf&eacute; &mdash; &#x41;&#66;</p></body></html>
+EOF
+mcopy -i "$work/fat.img" "$work/page.html" ::/page.html
 
 # each case: a command line, then the text expected somewhere in the output
 cat > "$work/cases" <<'EOF'
@@ -244,6 +253,18 @@ mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; ca
 saved
 mv '/mnt/hdb/Long Name Note.txt' /mnt/hdb/n.txt; cat /mnt/hdb/n.txt | tr a-z A-Z
 HELLO FROM FAT
+browse /mnt/hdb/page.html | grep link
+A bold word and a link[1].
+browse /mnt/hdb/page.html | grep next
+   1. file:///mnt/hdb/next.html
+browse -n /mnt/hdb/page.html | grep third
+  3. third
+browse -n /mnt/hdb/page.html | grep Query
+[Query____] [Go]
+browse -n /mnt/hdb/page.html | grep Caf
+Café - AB
+browse -n /mnt/hdb/page.html | wc
+      17      23     125
 EOF
 
 server=""
@@ -265,6 +286,47 @@ if command -v openssl >/dev/null; then
     (cd "$work/www" && exec openssl s_server -accept "$((port + 1))" -cert "$work/srv.pem" -key "$work/srv.key" -WWW \
         -quiet -tls1_2 -cipher ECDHE-ECDSA-AES256-GCM-SHA384) >/dev/null 2>&1 &
     server="$server $!"
+    cp "$work/page.html" "$work/www/page.html"
+    if command -v python3 >/dev/null; then
+        cat > "$work/cookie.py" <<'PYEOF'
+import http.server, sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        if self.path == "/set":
+            self.send_header("Set-Cookie", "session=abc123; Path=/; HttpOnly")
+            self.send_header("Set-Cookie", "theme=dark; Max-Age=3600")
+            body = "<p>set</p>"
+        elif self.path == "/drop":
+            self.send_header("Set-Cookie", "theme=; Max-Age=0")
+            body = "<p>dropped</p>"
+        else:
+            body = "<p>cookie=[%s]</p>" % self.headers.get("Cookie", "none")
+        data = body.encode()
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+http.server.HTTPServer(("", int(sys.argv[1])), Handler).serve_forever()
+PYEOF
+        python3 -I "$work/cookie.py" "$((port + 2))" >/dev/null 2>&1 &
+        server="$server $!"
+        cat >> "$work/cases" <<EOF
+browse -n http://10.0.2.2:$((port + 2))/set; browse -n http://10.0.2.2:$((port + 2))/echo
+cookie=[session=abc123; theme=dark]
+browse -n http://10.0.2.2:$((port + 2))/drop; browse -n http://10.0.2.2:$((port + 2))/echo
+cookie=[session=abc123]
+cookies
+1 cookie stored
+cookies clear; browse -n http://10.0.2.2:$((port + 2))/echo
+cookie=[none]
+EOF
+    fi
     cat >> "$work/cases" <<EOF
 wget -O - https://10.0.2.2:$port/hello.txt
 certificate is not trusted
@@ -276,6 +338,8 @@ sha256sum /tmp/t.txt
 $(sha256sum "$work/www/hello.txt" | cut -c1-64)  /tmp/t.txt
 wget -O /tmp/t12.txt https://10.0.2.2:$((port + 1))/hello.txt | grep TLS; cat /tmp/t12.txt
 TLS 1.2, AES-256-GCM, certificate for 10.0.2.2 (verified)
+browse -n https://10.0.2.2:$port/page.html | grep bold
+A bold word and a link.
 cd /tmp; winnet https://10.0.2.2:$port/hello.txt | grep wininet
 wininet: status 200, 16 bytes, first line 'secret over tls'
 cd /tmp; winnet64 https://10.0.2.2:$port/hello.txt | grep winhttp
