@@ -262,6 +262,9 @@ if command -v openssl >/dev/null; then
     (cd "$work/www" && exec openssl s_server -accept "$port" -cert "$work/srv.pem" -key "$work/srv.key" -WWW -quiet) \
         >/dev/null 2>&1 &
     server=$!
+    (cd "$work/www" && exec openssl s_server -accept "$((port + 1))" -cert "$work/srv.pem" -key "$work/srv.key" -WWW \
+        -quiet -tls1_2 -cipher ECDHE-ECDSA-AES256-GCM-SHA384) >/dev/null 2>&1 &
+    server="$server $!"
     cat >> "$work/cases" <<EOF
 wget -O - https://10.0.2.2:$port/hello.txt
 certificate is not trusted
@@ -271,6 +274,8 @@ wget -O /tmp/t.txt https://10.0.2.2:$port/hello.txt | grep TLS
 TLS 1.3, AES-128-GCM, certificate for 10.0.2.2 (verified)
 sha256sum /tmp/t.txt
 $(sha256sum "$work/www/hello.txt" | cut -c1-64)  /tmp/t.txt
+wget -O /tmp/t12.txt https://10.0.2.2:$((port + 1))/hello.txt | grep TLS; cat /tmp/t12.txt
+TLS 1.2, AES-256-GCM, certificate for 10.0.2.2 (verified)
 cd /tmp; winnet https://10.0.2.2:$port/hello.txt | grep wininet
 wininet: status 200, 16 bytes, first line 'secret over tls'
 cd /tmp; winnet64 https://10.0.2.2:$port/hello.txt | grep winhttp
@@ -287,7 +292,7 @@ timeout 90 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,fil
     -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
     < "$work/input" > "$work/output" 2>&1
 
-[ -n "$server" ] && kill "$server" 2>/dev/null
+[ -n "$server" ] && kill $server 2>/dev/null
 
 pass=0
 fail=0
