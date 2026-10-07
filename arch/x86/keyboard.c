@@ -6,7 +6,7 @@
 
 static volatile int buffer[BUFFER_SIZE];
 static volatile unsigned head, tail;
-static bool shift_l, shift_r, ctrl, alt, caps, extended;
+static bool shift_l, shift_r, ctrl, alt, caps, extended, super, super_used;
 
 static const char normal_map[0x3a] = {
     0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 8, 9,
@@ -30,7 +30,8 @@ static void push(int key)
 
 static int modifiers(void)
 {
-    return (ctrl ? KEY_MOD_CTRL : 0) | (alt ? KEY_MOD_ALT : 0) | (shift_l || shift_r ? KEY_MOD_SHIFT : 0);
+    return (ctrl ? KEY_MOD_CTRL : 0) | (alt ? KEY_MOD_ALT : 0) | (shift_l || shift_r ? KEY_MOD_SHIFT : 0) |
+           (super ? KEY_MOD_SUPER : 0);
 }
 
 static int extended_key(uint8_t code)
@@ -48,8 +49,6 @@ static int extended_key(uint8_t code)
     case 0x53: return KEY_DELETE;
     case 0x1c: return KEY_ENTER;
     case 0x35: return '/';
-    case 0x5b:
-    case 0x5c: return KEY_SUPER;
     default: return KEY_NONE;
     }
 }
@@ -84,6 +83,17 @@ static void handle(uint8_t sc)
     bool ext = extended;
     extended = false;
 
+    if (ext && (code == 0x5b || code == 0x5c)) {
+        if (!release && !super) {
+            super = true;
+            super_used = false;
+        } else if (release) {
+            super = false;
+            if (!super_used)
+                push(KEY_SUPER);
+        }
+        return;
+    }
     switch (code) {
     case 0x2a: shift_l = !release; return;
     case 0x36: shift_r = !release; return;
@@ -121,15 +131,19 @@ static void handle(uint8_t sc)
         key = (uint8_t)c;
         if (ctrl && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '[' || c == ']' || c == '\\'))
             key = KEY_CTRL(c);
-        else if (ctrl && (key == KEY_BACKSPACE || key == KEY_TAB))
+        else if (ctrl && (key == KEY_BACKSPACE || key == KEY_TAB || key == ' ' || key == ',' || key == '.'))
             key |= KEY_MOD_CTRL;
         if (alt)
             key |= KEY_MOD_ALT;
+        if (super)
+            key |= KEY_MOD_SUPER;
         if (key == KEY_TAB && shifted)
             key |= KEY_MOD_SHIFT;
     }
-    if (key != KEY_NONE)
+    if (key != KEY_NONE) {
+        super_used |= super;
         push(key);
+    }
 }
 
 void i8042_drain(void)

@@ -9,57 +9,58 @@
 #include <synth/input.h>
 #include <synth/keys.h>
 #include <synth/log.h>
+#include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/theme.h>
 #include <synth/time.h>
 #include <synth/vfs.h>
 
-#include "image.h"
 #include "internal.h"
 
 SYNTH_TABLE_DECLARE(synth_gui_apps, struct gui_app);
 
-#define ICON_CELL_W 84
-#define ICON_CELL_H 80
-#define START_W 56
-#define TASK_BUTTON_W 170
-#define TRAY_W 96
-#define MENU_W 340
-#define MENU_ROW 40
+#define DESKTOP_DIR "/home/Desktop"
+#define CELL_W 100
+#define CELL_H 96
+#define MAX_ICONS 24
+#define NOTE_W 340
+#define NOTE_H 72
 
 struct gui_style style;
 
-static struct canvas wallpaper;
+static struct canvas wallpapers[MAX_SCREENS];
 static bool active;
 static int quit_action = -1;
 static struct shell *session;
-static char wallpaper_setting[PATH_MAX_LEN] = "synthwave";
+static char wallpaper_setting[PATH_MAX_LEN] = "waves";
+static char appearance_setting[8] = "light";
+static char accent_setting[12] = "blue";
+static char glass_setting[10] = "liquid";
 static bool autostart = true;
 static char clipboard[4096];
 static int last_minute = -1;
-static struct window *start_menu;
-static int task_hover = -1;
-static bool start_hover;
+static uint64_t last_scan;
 
 struct desktop_icon {
-    const char *label;
+    char label[64];
+    char path[PATH_MAX_LEN];
     enum icon_id icon;
-    const char *app;
-    const char *arg;
 };
 
-static const struct desktop_icon desktop_icons[] = {
-    {"Computer", ICON_COMPUTER, "Files", "/"},
-    {"Home", ICON_HOME, "Files", "/home"},
-    {"Programs", ICON_FOLDER, "Files", "/apps"},
-    {"Terminal", ICON_TERMINAL, "Terminal", NULL},
-    {"Notepad", ICON_NOTEPAD, "Notepad", NULL},
-    {"Paint", ICON_PAINT, "Paint", NULL},
-    {"Settings", ICON_SETTINGS, "Settings", NULL},
-};
-
+static struct desktop_icon icons[MAX_ICONS];
+static int icon_count;
 static int selected_icon = -1;
+
+static const struct {
+    const char *name;
+    uint32_t light, dark;
+} accents[] = {
+    {"blue", RGB(0, 122, 255), RGB(10, 132, 255)},       {"purple", RGB(149, 61, 150), RGB(191, 90, 242)},
+    {"pink", RGB(247, 79, 158), RGB(255, 55, 140)},      {"red", RGB(224, 56, 62), RGB(255, 69, 58)},
+    {"orange", RGB(247, 130, 27), RGB(255, 159, 10)},    {"yellow", RGB(230, 168, 0), RGB(255, 204, 0)},
+    {"green", RGB(98, 186, 70), RGB(48, 209, 88)},       {"graphite", RGB(140, 140, 140), RGB(152, 152, 157)},
+};
 
 bool gui_active(void)
 {
@@ -71,593 +72,244 @@ static uint32_t palette_color(int index)
     return 0xff000000u | theme_current()->palette[index & 15];
 }
 
-static int luminance(uint32_t c)
+static bool want_dark(void)
 {
-    return (int)((c >> 16 & 0xff) * 3 + (c >> 8 & 0xff) * 6 + (c & 0xff)) / 10;
+    if (!strcmp(appearance_setting, "dark"))
+        return true;
+    if (!strcmp(appearance_setting, "auto"))
+        return color_luma(palette_color(ATTR_BG(theme_attr(ROLE_TEXT)))) < 128;
+    return false;
 }
 
 void gui_style_refresh(void)
 {
-    uint8_t text_attr = theme_attr(ROLE_TEXT);
-    uint32_t bg = palette_color(ATTR_BG(text_attr));
-    uint32_t fg = palette_color(ATTR_FG(text_attr));
-    uint32_t accent = palette_color(ATTR_FG(theme_attr(ROLE_ACCENT)));
-    uint32_t accent2 = palette_color(ATTR_FG(theme_attr(ROLE_ACCENT2)));
-    bool dark = luminance(bg) < 128;
+    bool dark = want_dark();
+    style.dark = dark;
+    style.glass = !strcmp(glass_setting, "solid") ? GLASS_SOLID : !strcmp(glass_setting, "frosted") ? GLASS_FROSTED
+                                                                                                      : GLASS_LIQUID;
+    uint32_t accent = dark ? accents[0].dark : accents[0].light;
+    for (size_t i = 0; i < ARRAY_SIZE(accents); i++)
+        if (!strcmp(accent_setting, accents[i].name))
+            accent = dark ? accents[i].dark : accents[i].light;
     for (int i = 0; i < 16; i++)
         style.palette[i] = palette_color(i);
-    style.desktop = bg;
     style.accent = accent;
-    style.accent2 = accent2;
-    style.text = fg;
-    style.muted = palette_color(ATTR_FG(theme_attr(ROLE_MUTED)));
-    style.error = palette_color(ATTR_FG(theme_attr(ROLE_ERROR)));
-    style.ok = palette_color(ATTR_FG(theme_attr(ROLE_OK)));
-    style.selection = ALPHA(accent, 80);
+    style.accent_text = RGB(255, 255, 255);
+    style.error = dark ? RGB(255, 69, 58) : RGB(255, 59, 48);
+    style.ok = dark ? RGB(48, 209, 88) : RGB(52, 199, 89);
+    style.warning = dark ? RGB(255, 159, 10) : RGB(255, 149, 0);
     if (dark) {
-        style.window = color_mix(bg, 0xffffffffu, 16);
-        style.panel = color_mix(bg, 0xffffffffu, 30);
-        style.border = color_mix(bg, 0xffffffffu, 60);
-        style.field = color_mix(bg, 0xff000000u, 70);
-        style.button = color_mix(bg, 0xffffffffu, 40);
-        style.button_hover = color_mix(bg, 0xffffffffu, 64);
-        style.title_active_top = color_mix(color_mix(accent2, bg, 120), 0xffffffffu, 20);
-        style.title_active_bottom = color_mix(accent2, bg, 150);
-        style.title_inactive = color_mix(bg, 0xffffffffu, 34);
-        style.title_text = RGB(250, 250, 255);
-        style.taskbar = ALPHA(color_mix(bg, 0xff000000u, 90), 228);
+        style.window = RGB(36, 36, 38);
+        style.content = RGB(30, 30, 31);
+        style.sidebar = RGBA(44, 44, 48, 196);
+        style.titlebar = RGB(48, 48, 50);
+        style.titlebar_inactive = RGB(38, 38, 40);
+        style.separator = ALPHA(0xffffffffu, 30);
+        style.text = RGB(236, 236, 240);
+        style.secondary = RGB(152, 152, 157);
+        style.tertiary = RGB(104, 104, 108);
+        style.selection_inactive = RGB(70, 70, 74);
+        style.hover = ALPHA(0xffffffffu, 18);
+        style.control = RGB(80, 80, 84);
+        style.control_pressed = RGB(104, 104, 108);
+        style.control_border = ALPHA(0, 90);
+        style.field = RGB(28, 28, 30);
+        style.field_border = ALPHA(0xffffffffu, 40);
+        style.zebra = RGB(38, 38, 40);
+        style.group = RGB(46, 46, 48);
+        style.menu = RGB(44, 44, 48);
     } else {
-        style.window = color_mix(bg, 0xffffffffu, 150);
-        style.panel = color_mix(bg, 0xff000000u, 14);
-        style.border = color_mix(bg, 0xff000000u, 70);
+        style.window = RGB(236, 236, 238);
+        style.content = RGB(255, 255, 255);
+        style.sidebar = RGBA(232, 232, 236, 200);
+        style.titlebar = RGB(232, 232, 234);
+        style.titlebar_inactive = RGB(244, 244, 246);
+        style.separator = ALPHA(0, 26);
+        style.text = RGB(29, 29, 31);
+        style.secondary = RGB(120, 120, 126);
+        style.tertiary = RGB(176, 176, 180);
+        style.selection_inactive = RGB(218, 218, 222);
+        style.hover = ALPHA(0, 14);
+        style.control = RGB(255, 255, 255);
+        style.control_pressed = RGB(226, 226, 230);
+        style.control_border = ALPHA(0, 42);
         style.field = RGB(255, 255, 255);
-        style.button = color_mix(bg, 0xff000000u, 22);
-        style.button_hover = color_mix(bg, 0xff000000u, 40);
-        style.title_active_top = color_mix(accent, 0xffffffffu, 120);
-        style.title_active_bottom = color_mix(accent, 0xffffffffu, 70);
-        style.title_inactive = color_mix(bg, 0xff000000u, 26);
-        style.title_text = RGB(25, 25, 35);
-        style.taskbar = ALPHA(color_mix(bg, 0xffffffffu, 120), 235);
+        style.field_border = ALPHA(0, 48);
+        style.zebra = RGB(244, 245, 246);
+        style.group = RGB(255, 255, 255);
+        style.menu = RGB(246, 246, 248);
     }
-    for (int i = 0; i < 4; i++) {
-        int d = luminance(style.muted) - luminance(style.window);
-        if (d >= 90 || d <= -90)
-            break;
-        style.muted = color_mix(style.muted, fg, 80);
-    }
-}
-
-static uint32_t hash(uint32_t x)
-{
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
-
-static uint32_t lerp3(uint32_t a, uint32_t b, int t, int span)
-{
-    return color_mix(a, b, span ? CLAMP(t * 255 / span, 0, 255) : 0);
-}
-
-static int grid_strength(int d, int k, int depth)
-{
-    int fade = CLAMP((d * 300 / k - 6) * 12, 0, 255);
-    return CLAMP(60 + d * 400 / depth, 60, 255) * fade / 255;
-}
-
-static int grid_sqrt(uint64_t v)
-{
-    uint64_t x = 0;
-    for (uint64_t bit = 1ull << 62; bit; bit >>= 2) {
-        if (v >= x + bit) {
-            v -= x + bit;
-            x = (x >> 1) + bit;
-        } else {
-            x >>= 1;
-        }
-    }
-    return (int)MAX(x, 1);
-}
-
-static void grid_blend(struct canvas *c, int x, int y, int a)
-{
-    if (x < 0 || x >= c->w || a <= 0)
-        return;
-    uint32_t *p = &c->px[y * c->stride + x];
-    *p = color_mix(*p, RGB(255, 60, 200), MIN(a, 255));
-}
-
-static void grid_span(struct canvas *c, int y, int64_t xa, int64_t xb, int a)
-{
-    if (y < 0 || y >= c->h)
-        return;
-    if (xb < xa) {
-        int64_t t = xa;
-        xa = xb;
-        xb = t;
-    }
-    if (xb - xa < 0x10000) {
-        int64_t mid = (xa + xb) / 2;
-        int x = (int)(mid >> 16), frac = (int)((mid & 0xffff) >> 8);
-        grid_blend(c, x, y, a * (255 - frac) / 255);
-        grid_blend(c, x + 1, y, a * frac / 255);
-        return;
-    }
-    int x0 = (int)(xa >> 16), x1 = (int)(xb >> 16);
-    for (int x = MAX(x0, 0); x <= MIN(x1, c->w - 1); x++)
-        grid_blend(c, x, y, a);
-}
-
-static void paint_synthwave(struct canvas *c)
-{
-    int w = c->w, h = c->h, horizon = h * 62 / 100;
-    int cx = w / 2, radius = h * 22 / 100, sun_y = horizon - radius / 4;
-    uint32_t top = RGB(14, 3, 34), mid = RGB(96, 18, 108), low = RGB(255, 96, 110);
-    for (int y = 0; y < horizon; y++) {
-        uint32_t sky = y < horizon * 6 / 10 ? lerp3(top, mid, y, horizon * 6 / 10)
-                                             : lerp3(mid, low, y - horizon * 6 / 10, horizon - horizon * 6 / 10);
-        uint32_t *row = c->px + y * c->stride;
-        for (int x = 0; x < w; x++) {
-            uint32_t p = sky;
-            uint32_t r = hash((uint32_t)(y * 7919 + x * 104729));
-            if (y < horizon * 7 / 10 && r % 900 == 0)
-                p = color_mix(p, 0xffffffffu, 120 + (int)(r >> 24) / 2);
-            int dx = x - cx, dy = y - sun_y;
-            int d2 = dx * dx + dy * dy;
-            if (d2 <= radius * radius) {
-                uint32_t sun = lerp3(RGB(255, 230, 90), RGB(255, 50, 150), y - (sun_y - radius), 2 * radius);
-                int rel = y - sun_y;
-                bool gap = false;
-                if (rel > -radius / 6) {
-                    int period = MAX(6, radius / 7);
-                    int gap_h = 1 + (rel + radius / 6) * (period - 2) / (radius + radius / 6);
-                    gap = (rel + radius) % period < gap_h;
-                }
-                if (!gap)
-                    p = sun;
-            } else if (d2 < (radius * 14 / 10) * (radius * 14 / 10)) {
-                int glow = 255 - (int)((uint32_t)(d2 - radius * radius) * 255 / (uint32_t)(radius * radius * 96 / 100));
-                p = color_mix(p, RGB(255, 80, 160), CLAMP(glow, 0, 255) / 4);
-            }
-            row[x] = p;
-        }
-    }
-    int ridge[64];
-    for (int i = 0; i < 64; i++)
-        ridge[i] = (int)(hash((uint32_t)i * 2654435761u) % (uint32_t)(h / 9)) + h / 40;
-    for (int x = 0; x < w; x++) {
-        int seg = x * 63 / MAX(w - 1, 1), off = x * 63 % MAX(w - 1, 1);
-        int peak = ridge[seg] + (ridge[MIN(seg + 1, 63)] - ridge[seg]) * off / MAX(w - 1, 1);
-        int center_cut = (x > cx - radius * 3 / 2 && x < cx + radius * 3 / 2) ? peak / 3 : peak;
-        int top_y = horizon - center_cut;
-        for (int y = MAX(top_y, 0); y < horizon; y++)
-            c->px[y * c->stride + x] = y == top_y ? RGB(255, 90, 200) : color_mix(RGB(40, 8, 64), RGB(14, 3, 30), (horizon - y) * 255 / MAX(center_cut, 1));
-    }
-    int k = MAX(1, (h - horizon) * 300 / 292), depth = h - horizon;
-    for (int y = horizon; y < h; y++) {
-        int d = y - horizon + 1;
-        uint32_t ground = lerp3(RGB(46, 8, 66), RGB(8, 2, 20), y - horizon, depth);
-        bool hline = (4000 * k / 300 / d) / 40 != (4000 * k / 300 / (d + 1)) / 40;
-        uint32_t color = hline ? color_mix(ground, RGB(255, 60, 200), grid_strength(d, k, depth)) : ground;
-        uint32_t *row = c->px + y * c->stride;
-        for (int x = 0; x < w; x++)
-            row[x] = color;
-    }
-    int lines = (w / 2 + 2) * k / 120 + 1;
-    for (int i = -lines; i <= lines; i++) {
-        int64_t wx = (int64_t)i * 120;
-        int last = i ? (int)MIN((int64_t)depth, (int64_t)(w / 2 + 2) * k / (wx < 0 ? -wx : wx) + 1) : depth;
-        int norm = grid_sqrt((uint64_t)k * (uint64_t)k + (uint64_t)(wx * wx));
-        for (int d = 1; d <= last; d++) {
-            int a = grid_strength(d, k, depth) * CLAMP((120 * d / norm - 4) * 255 / 12, 0, 255) / 255;
-            if (!a)
-                continue;
-            int64_t xa = ((int64_t)cx << 16) + (wx * d << 16) / k;
-            int64_t xb = ((int64_t)cx << 16) + (wx * (d + 1) << 16) / k;
-            grid_span(c, horizon + d - 1, xa, xb, a);
-        }
-    }
-}
-
-static void paint_aurora(struct canvas *c)
-{
-    uint32_t base = color_mix(style.desktop, 0xff000000u, 60);
-    struct {
-        int x, y, r;
-        uint32_t color;
-    } blobs[3] = {{c->w / 5, c->h / 4, c->h / 2, style.accent},
-                  {c->w * 4 / 5, c->h / 3, c->h * 6 / 10, style.accent2},
-                  {c->w / 2, c->h, c->h * 7 / 10, style.palette[COLOR_CYAN]}};
-    for (int y = 0; y < c->h; y++) {
-        uint32_t *row = c->px + y * c->stride;
-        uint32_t line = color_mix(base, color_mix(style.desktop, 0xff000000u, 140), y * 255 / MAX(c->h - 1, 1));
-        for (int x = 0; x < c->w; x++) {
-            uint32_t p = line;
-            for (int i = 0; i < 3; i++) {
-                int dx = x - blobs[i].x, dy = y - blobs[i].y;
-                int d2 = dx * dx + dy * dy, r2 = blobs[i].r * blobs[i].r;
-                if (d2 < r2)
-                    p = color_mix(p, blobs[i].color, (r2 - d2) / (r2 / 140 + 1));
-            }
-            row[x] = p;
-        }
-    }
-}
-
-static bool paint_image(struct canvas *c, const char *path)
-{
-    struct image img;
-    if (!image_load(path, &img))
-        return false;
-    for (int y = 0; y < c->h; y++)
-        for (int x = 0; x < c->w; x++) {
-            int sx = x * img.w / c->w, sy = y * img.h / c->h;
-            c->px[y * c->stride + x] = 0xff000000u | img.px[sy * img.w + sx];
-        }
-    image_free(&img);
-    return true;
+    style.selection = accent;
+    style.desktop = style.window;
+    style.panel = style.window;
+    style.border = style.separator;
+    style.muted = style.secondary;
+    style.button = style.control;
+    style.button_hover = style.control_pressed;
+    style.accent2 = color_mix(accent, dark ? 0xff000000u : 0xffffffffu, 60);
 }
 
 void gui_wallpaper_refresh(void)
 {
-    int w, h;
-    wm_screen_size(&w, &h);
-    if (!wallpaper.px && !canvas_alloc(&wallpaper, w, h))
-        return;
-    if (strcmp(wallpaper_setting, "aurora") == 0)
-        paint_aurora(&wallpaper);
-    else if (strcmp(wallpaper_setting, "solid") == 0)
-        gfx_fill(&wallpaper, (struct rect){0, 0, w, h}, style.desktop);
-    else if (strcmp(wallpaper_setting, "synthwave") == 0 || !paint_image(&wallpaper, wallpaper_setting))
-        paint_synthwave(&wallpaper);
+    for (int i = 0; i < wm_screen_count(); i++) {
+        struct rect a = wm_screen_rect(i);
+        if (wallpapers[i].px && (wallpapers[i].w != a.w || wallpapers[i].h != a.h))
+            canvas_free(&wallpapers[i]);
+        if (!wallpapers[i].px && !canvas_alloc(&wallpapers[i], a.w, a.h))
+            continue;
+        wallpaper_paint(&wallpapers[i], wallpaper_setting, style.dark);
+    }
     wm_damage_all();
+}
+
+static void free_wallpapers(void)
+{
+    for (int i = 0; i < MAX_SCREENS; i++)
+        canvas_free(&wallpapers[i]);
+}
+
+static enum icon_id icon_for(const char *name, bool dir)
+{
+    if (dir)
+        return ICON_FOLDER;
+    const char *ext = path_ext(name);
+    if (!ext)
+        return ICON_FILE;
+    if (!str_casecmp(ext, ".bmp"))
+        return ICON_IMAGE;
+    if (!str_casecmp(ext, ".exe"))
+        return ICON_APP;
+    if (!str_casecmp(ext, ".dll"))
+        return ICON_DLL;
+    if (!str_casecmp(ext, ".com"))
+        return ICON_DOS;
+    if (!str_casecmp(ext, ".sx"))
+        return ICON_SX;
+    if (!str_casecmp(ext, ".sh") || !str_casecmp(ext, ".bat"))
+        return ICON_SCRIPT;
+    return ICON_TEXT;
+}
+
+static void scan_desktop(void)
+{
+    struct desktop_icon fresh[MAX_ICONS];
+    int n = 0;
+    str_copy(fresh[n].label, "SynthOS HD", sizeof(fresh[n].label));
+    str_copy(fresh[n].path, "/", sizeof(fresh[n].path));
+    fresh[n++].icon = ICON_COMPUTER;
+    struct vdir d;
+    if (vfs_opendir(DESKTOP_DIR, &d) == 0) {
+        struct vfs_dirent ent;
+        while (n < MAX_ICONS && vfs_readdir(&d, &ent) == 0) {
+            if (ent.name[0] == '.')
+                continue;
+            str_copy(fresh[n].label, ent.name, sizeof(fresh[n].label));
+            path_join(DESKTOP_DIR, ent.name, fresh[n].path, sizeof(fresh[n].path));
+            fresh[n].icon = icon_for(ent.name, ent.type == VN_DIR);
+            n++;
+        }
+        vfs_closedir(&d);
+    }
+    if (n == icon_count && !memcmp(fresh, icons, sizeof(fresh[0]) * (size_t)n))
+        return;
+    memcpy(icons, fresh, sizeof(fresh[0]) * (size_t)n);
+    icon_count = n;
+    if (selected_icon >= n)
+        selected_icon = -1;
+    struct rect s = wm_screen_rect(0);
+    wm_damage_z((struct rect){s.x + s.w - 4 * CELL_W, s.y, 4 * CELL_W, s.h}, Z_DESKTOP);
 }
 
 static struct rect icon_cell(int i)
 {
-    int h;
-    wm_screen_size(NULL, &h);
-    int per_column = MAX(1, (h - TASKBAR_HEIGHT - 16) / ICON_CELL_H);
-    return (struct rect){12 + (i / per_column) * ICON_CELL_W, 12 + (i % per_column) * ICON_CELL_H, ICON_CELL_W - 4,
-                         ICON_CELL_H - 4};
+    struct rect s = wm_work_area(0);
+    int per_column = MAX(1, (s.h - 16) / CELL_H);
+    return (struct rect){s.x + s.w - 12 - (i / per_column + 1) * CELL_W, s.y + 10 + (i % per_column) * CELL_H, CELL_W,
+                         CELL_H - 6};
 }
 
-static void shadowed_text(struct canvas *c, struct rect r, const char *s)
+static void icon_label(struct canvas *c, struct rect cell, const char *label, bool selected)
 {
-    gfx_text_box(c, (struct rect){r.x + 1, r.y + 1, r.w, r.h}, &font_bold, s, ALPHA(0, 200), ALIGN_CENTER);
-    gfx_text_box(c, r, &font_bold, s, RGB(255, 255, 255), ALIGN_CENTER);
-}
-
-void desktop_paint(struct canvas *c)
-{
-    if (wallpaper.px)
-        gfx_blit(c, 0, 0, &wallpaper, (struct rect){0, 0, wallpaper.w, wallpaper.h});
+    int w = MIN(gfx_text_width(&font_bold, label) + 10, cell.w);
+    struct rect r = {cell.x + (cell.w - w) / 2, cell.y + 70, w, 18};
+    if (selected)
+        gfx_round(c, r, 5, style.accent);
     else
-        gfx_fill(c, (struct rect){0, 0, c->w, c->h}, style.desktop);
-    for (int i = 0; i < (int)ARRAY_SIZE(desktop_icons); i++) {
+        gfx_text_box(c, (struct rect){r.x + 1, r.y + 1, r.w, r.h}, &font_bold, label, ALPHA(0, 150), ALIGN_CENTER);
+    gfx_text_box(c, r, &font_bold, label, RGB(255, 255, 255), ALIGN_CENTER);
+}
+
+void desktop_paint(struct canvas *c, int screen, struct rect area)
+{
+    if (screen < MAX_SCREENS && wallpapers[screen].px) {
+        struct rect s = wm_screen_rect(screen);
+        gfx_blit(c, s.x, s.y, &wallpapers[screen], (struct rect){0, 0, wallpapers[screen].w, wallpapers[screen].h});
+    } else {
+        gfx_fill(c, area, style.window);
+    }
+    if (screen != 0)
+        return;
+    for (int i = 0; i < icon_count; i++) {
         struct rect cell = icon_cell(i);
         if (rect_empty(rect_intersect(cell, c->clip)))
             continue;
         if (i == selected_icon)
-            gfx_round(c, cell, 8, ALPHA(style.accent, 90));
-        gfx_icon(c, cell.x + (cell.w - 32) / 2, cell.y + 8, desktop_icons[i].icon, 32);
-        shadowed_text(c, (struct rect){cell.x + 2, cell.y + 46, cell.w - 4, 20}, desktop_icons[i].label);
+            gfx_round(c, (struct rect){cell.x + 14, cell.y - 2, cell.w - 28, 70}, 8, ALPHA(0, 70));
+        gfx_icon(c, cell.x + (cell.w - 64) / 2, cell.y + 2, icons[i].icon, 64);
+        icon_label(c, cell, icons[i].label, i == selected_icon);
     }
 }
 
-static void launch(const char *app_name, const char *arg)
-{
-    const struct gui_app *app = gui_app_find(app_name);
-    if (app)
-        app->launch(arg);
-}
+static void desktop_pick(struct window *owner, int index);
 
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
 {
     if (!down)
         return;
     int hit = -1;
-    for (int i = 0; i < (int)ARRAY_SIZE(desktop_icons); i++)
+    for (int i = 0; i < icon_count; i++)
         if (rect_contains(icon_cell(i), x, y))
             hit = i;
     if (hit != selected_icon) {
         if (selected_icon >= 0)
-            wm_damage(icon_cell(selected_icon));
+            wm_damage_z(icon_cell(selected_icon), Z_DESKTOP);
         if (hit >= 0)
-            wm_damage(icon_cell(hit));
+            wm_damage_z(icon_cell(hit), Z_DESKTOP);
         selected_icon = hit;
     }
     if (hit >= 0 && button == BUTTON_LEFT && clicks >= 2)
-        launch(desktop_icons[hit].app, desktop_icons[hit].arg);
-}
-
-static struct rect taskbar_rect(void)
-{
-    int w, h;
-    wm_screen_size(&w, &h);
-    return (struct rect){0, h - TASKBAR_HEIGHT, w, TASKBAR_HEIGHT};
-}
-
-bool taskbar_hit(int x, int y)
-{
-    return rect_contains(taskbar_rect(), x, y);
-}
-
-void taskbar_changed(void)
-{
-    wm_damage(taskbar_rect());
-}
-
-static struct rect start_rect(void)
-{
-    struct rect bar = taskbar_rect();
-    return (struct rect){bar.x + 6, bar.y + 4, START_W - 12, TASKBAR_HEIGHT - 8};
-}
-
-static int task_layout(struct window **list, int *button_w)
-{
-    struct rect bar = taskbar_rect();
-    int n = wm_window_list(list, 32);
-    int space = bar.w - START_W - TRAY_W - 12;
-    *button_w = n ? MIN(TASK_BUTTON_W, space / n - 4) : TASK_BUTTON_W;
-    return n;
-}
-
-static struct rect task_rect(int i, int button_w)
-{
-    struct rect bar = taskbar_rect();
-    return (struct rect){bar.x + START_W + 4 + i * (button_w + 4), bar.y + 4, button_w, TASKBAR_HEIGHT - 8};
-}
-
-void taskbar_paint(struct canvas *c)
-{
-    struct rect bar = taskbar_rect();
-    if (rect_empty(rect_intersect(bar, c->clip)))
-        return;
-    gfx_fill(c, bar, style.taskbar);
-    gfx_fill(c, (struct rect){bar.x, bar.y, bar.w, 1}, ALPHA(0xffffffffu, 40));
-    struct rect sr = start_rect();
-    if (start_hover || start_menu)
-        gfx_round(c, sr, 6, ALPHA(0xffffffffu, start_menu ? 60 : 35));
-    gfx_icon(c, sr.x + (sr.w - 32) / 2, sr.y, ICON_LOGO, 32);
-
-    struct window *list[32];
-    int button_w;
-    int n = task_layout(list, &button_w);
-    struct window *focus = wm_focused();
-    for (int i = 0; i < n; i++) {
-        struct rect r = task_rect(i, button_w);
-        bool is_focus = list[i] == focus;
-        bool minimized = list[i]->flags & WIN_MINIMIZED;
-        if (is_focus || task_hover == i)
-            gfx_round(c, r, 6, ALPHA(0xffffffffu, is_focus ? 45 : 28));
-        if (is_focus)
-            gfx_round(c, (struct rect){r.x + r.w / 2 - 12, r.y + r.h - 3, 24, 3}, 1, style.accent);
-        else if (!minimized)
-            gfx_round(c, (struct rect){r.x + r.w / 2 - 4, r.y + r.h - 3, 8, 3}, 1, ALPHA(0xffffffffu, 120));
-        gfx_icon(c, r.x + 8, r.y + (r.h - 16) / 2, list[i]->icon, 16);
-        gfx_text_box(c, (struct rect){r.x + 30, r.y, r.w - 36, r.h - 2}, &font_sans, list[i]->title,
-                     ALPHA(luminance(style.taskbar) < 128 ? 0xffffffffu : 0xff101018u, minimized ? 150 : 255), ALIGN_LEFT);
-    }
-
-    struct rtc_time t;
-    hal_rtc(&t);
-    char clock[16], date[16];
-    ksnprintf(clock, sizeof(clock), "%02u:%02u", t.hour, t.minute);
-    ksnprintf(date, sizeof(date), "%02u.%02u.%04u", t.day, t.month, t.year);
-    struct rect tray = {bar.x + bar.w - TRAY_W, bar.y, TRAY_W - 8, bar.h};
-    uint32_t tc = luminance(style.taskbar) < 128 ? 0xffffffffu : 0xff101018u;
-    gfx_text_box(c, (struct rect){tray.x, tray.y + 3, tray.w, 18}, &font_bold, clock, tc, ALIGN_RIGHT);
-    gfx_text_box(c, (struct rect){tray.x, tray.y + 19, tray.w, 18}, &font_sans, date, ALPHA(tc, 180), ALIGN_RIGHT);
-}
-
-void taskbar_hover(int x, int y)
-{
-    bool start = rect_contains(start_rect(), x, y);
-    int hover = -1;
-    struct window *list[32];
-    int button_w;
-    int n = task_layout(list, &button_w);
-    for (int i = 0; i < n; i++)
-        if (rect_contains(task_rect(i, button_w), x, y))
-            hover = i;
-    if (start != start_hover || hover != task_hover) {
-        start_hover = start;
-        task_hover = hover;
-        taskbar_changed();
+        gui_open_file(icons[hit].path);
+    if (button == BUTTON_RIGHT) {
+        static const char *const items[] = {"New Folder", "Open Desktop in Files", "", "Change Wallpaper…",
+                                            "Open Terminal"};
+        ui_menu(NULL, x, y, items, ARRAY_SIZE(items), desktop_pick);
     }
 }
 
-void taskbar_mouse(int x, int y, unsigned button, bool down)
+static void desktop_pick(struct window *owner, int index)
 {
-    if (!down)
-        return;
-    if (rect_contains(start_rect(), x, y)) {
-        start_menu_toggle();
-        return;
-    }
-    struct window *list[32];
-    int button_w;
-    int n = task_layout(list, &button_w);
-    for (int i = 0; i < n; i++) {
-        if (!rect_contains(task_rect(i, button_w), x, y))
-            continue;
-        struct window *w = list[i];
-        if (button == BUTTON_RIGHT) {
-            wm_close(w);
-        } else if (w == wm_focused() && !(w->flags & WIN_MINIMIZED)) {
-            wm_minimize(w);
-        } else {
-            w->flags &= ~WIN_MINIMIZED;
-            wm_focus(w);
-            wm_damage_all();
+    UNUSED(owner);
+    if (index == 0) {
+        char path[PATH_MAX_LEN];
+        for (int i = 0; i < 100; i++) {
+            if (i)
+                ksnprintf(path, sizeof(path), DESKTOP_DIR "/untitled folder %d", i + 1);
+            else
+                str_copy(path, DESKTOP_DIR "/untitled folder", sizeof(path));
+            if (!vfs_exists(path)) {
+                vfs_mkdir(path);
+                break;
+            }
         }
-        return;
+        scan_desktop();
+    } else if (index == 1) {
+        gui_open_file(DESKTOP_DIR);
+    } else if (index == 3) {
+        const struct gui_app *settings = gui_app_find("System Settings");
+        gui_app_launch(settings, "wallpaper");
+    } else if (index == 4) {
+        gui_terminal_show();
     }
-}
-
-struct menu_entry {
-    const char *label;
-    enum icon_id icon;
-    const struct gui_app *app;
-    int action;
-};
-
-struct start_state {
-    struct menu_entry entries[32];
-    int count;
-    int hover;
-};
-
-static void collect(const struct gui_app *app, void *ctx)
-{
-    struct start_state *s = ctx;
-    if (s->count < 28)
-        s->entries[s->count++] = (struct menu_entry){app->name, app->icon, app, -1};
-}
-
-static const char *const power_labels[3] = {"Text mode", "Restart", "Shut down"};
-
-static struct rect power_rect(struct window *w, int i)
-{
-    int bw = (w->frame.w - 24) / 3;
-    return (struct rect){12 + i * bw, w->frame.h - 46, bw - 6, 34};
-}
-
-static int menu_row_at(struct window *w, int x, int y)
-{
-    struct start_state *s = w->data;
-    for (int i = 0; i < s->count; i++)
-        if (y >= 70 + i * MENU_ROW && y < 70 + (i + 1) * MENU_ROW && x > 8 && x < w->frame.w - 8)
-            return i;
-    for (int i = 0; i < 3; i++)
-        if (rect_contains(power_rect(w, i), x, y))
-            return 100 + i;
-    return -1;
-}
-
-static void start_paint(struct window *w, struct canvas *c)
-{
-    struct start_state *s = w->data;
-    gfx_fill(c, (struct rect){0, 0, c->w, c->h}, color_mix(style.window, 0xff000000u, 20));
-    gfx_gradient(c, (struct rect){0, 0, c->w, 60}, style.title_active_top, style.title_active_bottom);
-    gfx_icon(c, 14, 14, ICON_LOGO, 32);
-    gfx_text(c, 56, 12, &font_title, "SynthOS", style.title_text);
-    const char *user = session ? sh_get(session, "USER") : NULL;
-    char line[64];
-    ksnprintf(line, sizeof(line), "%s  ·  %s", user ? user : "root", "v" SYNTH_VERSION " \"" SYNTH_CODENAME "\"");
-    gfx_text(c, 58, 36, &font_sans, line, ALPHA(style.title_text, 200));
-    for (int i = 0; i < s->count; i++) {
-        struct rect row = {8, 70 + i * MENU_ROW, c->w - 16, MENU_ROW - 2};
-        if (s->hover == i)
-            gfx_round(c, row, 6, style.selection);
-        gfx_icon(c, row.x + 8, row.y + 3, s->entries[i].icon, 32);
-        gfx_text_box(c, (struct rect){row.x + 50, row.y + 2, row.w - 56, 18}, &font_bold, s->entries[i].label,
-                     style.text, ALIGN_LEFT);
-        if (s->entries[i].app && s->entries[i].app->description)
-            gfx_text_box(c, (struct rect){row.x + 50, row.y + 19, row.w - 56, 16}, &font_sans,
-                         s->entries[i].app->description, style.muted, ALIGN_LEFT);
-    }
-    gfx_fill(c, (struct rect){0, c->h - 58, c->w, 1}, style.border);
-    for (int i = 0; i < 3; i++) {
-        struct rect r = power_rect(w, i);
-        gfx_round(c, r, 6, s->hover == 100 + i ? (i == 2 ? style.error : style.button_hover) : style.button);
-        gfx_text_box(c, r, &font_bold, power_labels[i], style.text, ALIGN_CENTER);
-    }
-}
-
-static void start_activate(struct window *w, int row)
-{
-    struct start_state *s = w->data;
-    if (row >= 100) {
-        wm_destroy(w);
-        gui_quit(row - 100);
-        return;
-    }
-    if (row < 0 || row >= s->count)
-        return;
-    const struct gui_app *app = s->entries[row].app;
-    wm_destroy(w);
-    if (app)
-        app->launch(NULL);
-}
-
-static void start_event(struct window *w, struct gui_event *e)
-{
-    struct start_state *s = w->data;
-    int old = s->hover;
-    if (e->type == EV_MOUSE_MOVE)
-        s->hover = menu_row_at(w, e->x, e->y);
-    else if (e->type == EV_LEAVE)
-        s->hover = -1;
-    else if (e->type == EV_MOUSE_UP && e->button == BUTTON_LEFT) {
-        start_activate(w, menu_row_at(w, e->x, e->y));
-        return;
-    } else if (e->type == EV_KEY) {
-        int key = KEY_BASE(e->key);
-        if (key == KEY_ESC) {
-            wm_destroy(w);
-            return;
-        }
-        if (key == KEY_DOWN)
-            s->hover = s->hover < 0 || s->hover >= s->count - 1 ? 0 : s->hover + 1;
-        else if (key == KEY_UP)
-            s->hover = s->hover <= 0 ? s->count - 1 : s->hover - 1;
-        else if (key == KEY_ENTER || key == '\r') {
-            start_activate(w, s->hover);
-            return;
-        }
-    }
-    if (old != s->hover)
-        wm_invalidate(w);
-}
-
-static void start_destroy(struct window *w)
-{
-    kfree(w->data);
-    if (start_menu == w)
-        start_menu = NULL;
-    taskbar_changed();
-}
-
-static const struct window_ops start_ops = {start_paint, start_event, NULL, start_destroy};
-
-static int compare_entries(const void *a, const void *b)
-{
-    return strcmp(((const struct menu_entry *)a)->label, ((const struct menu_entry *)b)->label);
-}
-
-static void sort_entries(struct menu_entry *e, int n)
-{
-    for (int i = 1; i < n; i++)
-        for (int j = i; j > 0 && compare_entries(&e[j - 1], &e[j]) > 0; j--) {
-            struct menu_entry t = e[j];
-            e[j] = e[j - 1];
-            e[j - 1] = t;
-        }
-}
-
-void start_menu_toggle(void)
-{
-    if (start_menu) {
-        wm_destroy(start_menu);
-        return;
-    }
-    struct start_state *s = kzalloc(sizeof(*s));
-    if (!s)
-        return;
-    s->hover = -1;
-    gui_app_foreach(collect, s);
-    sort_entries(s->entries, s->count);
-    int h = 70 + s->count * MENU_ROW + 66;
-    struct rect bar = taskbar_rect();
-    start_menu = wm_popup(bar.x + 6, bar.y - h - 6, MENU_W, h, &start_ops, s, NULL);
-    if (!start_menu)
-        kfree(s);
-    taskbar_changed();
 }
 
 static bool word_prefix(const char *name, const char *prefix)
@@ -688,6 +340,15 @@ void gui_app_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx
         fn(app, ctx);
 }
 
+void gui_app_launch(const struct gui_app *app, const char *arg)
+{
+    if (!app)
+        return;
+    wm_set_app(app);
+    app->launch(arg);
+    wm_set_app(NULL);
+}
+
 static bool extension_listed(const char *list, const char *ext)
 {
     if (!list || !ext)
@@ -708,13 +369,13 @@ static bool extension_listed(const char *list, const char *ext)
 bool gui_open_file(const char *path)
 {
     if (vfs_is_dir(path)) {
-        launch("Files", path);
+        gui_app_launch(gui_app_find("Files"), path);
         return true;
     }
     const char *ext = path_ext(path);
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         if (extension_listed(app->extensions, ext)) {
-            app->launch(path);
+            gui_app_launch(app, path);
             return true;
         }
     if (exec_is_executable_name(path)) {
@@ -723,7 +384,7 @@ bool gui_open_file(const char *path)
         gui_terminal_run(line);
         return true;
     }
-    launch("Notepad", path);
+    gui_app_launch(gui_app_find("Notepad"), path);
     return true;
 }
 
@@ -737,6 +398,12 @@ void gui_set_clipboard(const char *text, size_t n)
     n = MIN(n, sizeof(clipboard) - 1);
     memcpy(clipboard, text, n);
     clipboard[n] = 0;
+}
+
+const char *gui_user(void)
+{
+    const char *user = session ? sh_get(session, "USER") : NULL;
+    return user && *user ? user : "root";
 }
 
 void gui_terminal_show(void)
@@ -774,11 +441,136 @@ void gui_quit(int action)
     input_inject(KEY_EOF);
 }
 
+struct note {
+    char title[64];
+    char text[160];
+    uint64_t until;
+};
+
+static void note_paint(struct window *w, struct canvas *c)
+{
+    struct note *n = w->data;
+    gfx_clear(c, (struct rect){0, 0, c->w, c->h}, 0);
+    gfx_icon(c, 12, (c->h - 36) / 2, ICON_LOGO, 36);
+    gfx_text_box(c, (struct rect){58, 12, c->w - 70, 18}, &font_bold, n->title, style.text, ALIGN_LEFT);
+    ui_wrap_text(c, (struct rect){58, 32, c->w - 70, c->h - 36}, &font_sans, n->text, style.text);
+}
+
+static void note_event(struct window *w, struct gui_event *e)
+{
+    struct note *n = w->data;
+    if (e->type == EV_MOUSE_DOWN) {
+        e->handled = true;
+        wm_destroy(w);
+    } else if (e->type == EV_TIMER && hal_ticks_ms() >= n->until) {
+        wm_destroy(w);
+    }
+}
+
+static void note_destroy(struct window *w)
+{
+    kfree(w->data);
+}
+
+static const struct window_ops note_ops = {note_paint, note_event, NULL, note_destroy};
+
+static void note_below(struct window *w, void *ctx)
+{
+    int *y = ctx;
+    if (w->ops == &note_ops)
+        *y = MAX(*y, w->frame.y + w->frame.h + 10);
+}
+
+void gui_notify(const char *title, const char *text)
+{
+    if (!active)
+        return;
+    struct note *n = kzalloc(sizeof(*n));
+    if (!n)
+        return;
+    str_copy(n->title, title, sizeof(n->title));
+    str_copy(n->text, text, sizeof(n->text));
+    n->until = hal_ticks_ms() + 6000;
+    struct rect s = wm_screen_rect(0);
+    int y = s.y + MENUBAR_HEIGHT + 10;
+    wm_foreach(note_below, &y);
+    struct window *w = wm_popup(s.x + s.w - NOTE_W - 12, y, NOTE_W, NOTE_H, &note_ops, n, NULL);
+    if (!w) {
+        kfree(n);
+        return;
+    }
+    w->radius = 18;
+    w->flags |= WIN_PASSIVE;
+    wm_set_timer(w, 500);
+}
+
+void notify_tick(void)
+{
+}
+
+static void cmd_key(int key)
+{
+    struct window *f = wm_focused();
+    int base = KEY_BASE(key);
+    int mods = key & KEY_MOD_MASK & ~KEY_MOD_SUPER;
+    if (base == 'q' || base == 'Q') {
+        if (f && f->app) {
+            for (struct window *w = wm_app_window(f->app); w; w = wm_app_window(f->app)) {
+                wm_close(w);
+                if (wm_window_alive(w))
+                    break;
+            }
+        } else if (f) {
+            wm_close(f);
+        }
+        return;
+    }
+    if (base == 'w' || base == 'W') {
+        if (f)
+            wm_close(f);
+        return;
+    }
+    if (base == 'm' || base == 'M') {
+        if (f)
+            wm_minimize(f);
+        return;
+    }
+    if (base == ' ') {
+        spotlight_toggle();
+        return;
+    }
+    if (base == KEY_TAB) {
+        wm_cycle();
+        return;
+    }
+    if (base == ',') {
+        gui_app_launch(gui_app_find("System Settings"), NULL);
+        return;
+    }
+    if (base == 'l' || base == 'L') {
+        gui_lock();
+        return;
+    }
+    if ((base >= 'a' && base <= 'z') || (base >= 'A' && base <= 'Z')) {
+        wm_key(KEY_CTRL(base) | (mods & KEY_MOD_SHIFT));
+        return;
+    }
+    wm_key(base | mods);
+}
+
 static void handle_key(int key)
 {
     int base = KEY_BASE(key);
-    if (base == KEY_SUPER || (key == (KEY_ESC | KEY_MOD_CTRL))) {
-        start_menu_toggle();
+    if (gui_locked()) {
+        wm_key(key);
+        return;
+    }
+    if (key == KEY_SUPER || key == (KEY_ESC | KEY_MOD_CTRL)) {
+        launchpad_toggle();
+        return;
+    }
+    if (key == (' ' | KEY_MOD_CTRL) || key == KEY_CTRL(' ')) {
+        spotlight_toggle();
         return;
     }
     if (key == (KEY_TAB | KEY_MOD_ALT)) {
@@ -796,6 +588,10 @@ static void handle_key(int key)
     if (popup && popup->ops && popup->ops->event) {
         struct gui_event e = {.type = EV_KEY, .key = key};
         popup->ops->event(popup, &e);
+        return;
+    }
+    if ((key & KEY_MOD_SUPER) && base != KEY_SUPER) {
+        cmd_key(key);
         return;
     }
     wm_key(key);
@@ -826,13 +622,26 @@ static void pump(int timeout_ms)
     hal_rtc(&t);
     if (t.minute != last_minute) {
         last_minute = t.minute;
-        taskbar_changed();
+        chrome_changed();
+    }
+    uint64_t now = hal_ticks_ms();
+    if (now - last_scan > 2000) {
+        last_scan = now;
+        scan_desktop();
     }
     terminal_flush();
     wm_render();
     pumping = false;
     if (!busy && timeout_ms != 0)
         hal_sleep_ms((uint32_t)(timeout_ms > 0 ? MIN(timeout_ms, 8) : 8));
+}
+
+static void prepare_home(void)
+{
+    static const char *const dirs[] = {DESKTOP_DIR, "/home/Documents", "/home/Downloads", "/home/Pictures"};
+    for (size_t i = 0; i < ARRAY_SIZE(dirs); i++)
+        if (!vfs_exists(dirs[i]))
+            vfs_mkdirs(dirs[i]);
 }
 
 int gui_run(struct shell *sh)
@@ -842,7 +651,7 @@ int gui_run(struct shell *sh)
     struct framebuffer fb;
     if (!hal_graphics_enter(&fb))
         return sh_error(sh, "desktop", "no graphics mode available on this display");
-    if (!wm_start(&fb)) {
+    if (!wm_start(&fb, 1)) {
         hal_graphics_leave();
         return sh_error(sh, "desktop", "not enough memory for the desktop");
     }
@@ -852,11 +661,20 @@ int gui_run(struct shell *sh)
     quit_action = -1;
     last_minute = -1;
     selected_icon = -1;
+    icon_count = 0;
+    prepare_home();
     gui_style_refresh();
     gui_wallpaper_refresh();
-    if (!terminal_open()) {
+    chrome_start();
+    scan_desktop();
+    wm_set_app(gui_app_find("Terminal"));
+    struct window *term = terminal_open();
+    wm_set_app(NULL);
+    if (!term) {
+        chrome_stop();
         active = false;
         wm_stop();
+        free_wallpapers();
         hal_graphics_leave();
         con_init(text_display);
         return sh_error(sh, "desktop", "cannot open the terminal window");
@@ -865,16 +683,17 @@ int gui_run(struct shell *sh)
     con_role(ROLE_ACCENT);
     kprintf("SynthOS desktop");
     con_role(ROLE_MUTED);
-    kprintf(" - this terminal runs the shell. Type 'exit' or use the start menu to leave.\n");
+    kprintf(" - this terminal runs the shell. Type 'exit' or use the SynthOS menu to leave.\n");
     con_reset();
 
     shell_repl(sh);
 
     sh->ctl = CTL_NONE;
     input_set_pump(NULL);
+    chrome_stop();
     terminal_close();
     wm_stop();
-    canvas_free(&wallpaper);
+    free_wallpapers();
     active = false;
     session = NULL;
     hal_graphics_leave();
@@ -895,16 +714,89 @@ static int set_wallpaper(struct shell *sh, const char *value)
 {
     UNUSED(sh);
     str_copy(wallpaper_setting, value, sizeof(wallpaper_setting));
-    if (active) {
-        gui_style_refresh();
+    if (active)
         gui_wallpaper_refresh();
-    }
     return 0;
 }
 
-static const struct setting s_wallpaper = {"wallpaper", "synthwave|aurora|solid|<file.bmp>", "desktop background",
-                                           get_wallpaper, set_wallpaper};
+static const struct setting s_wallpaper = {"wallpaper", "waves|hills|aurora|synthwave|solid|<file.bmp>",
+                                           "desktop background", get_wallpaper, set_wallpaper};
 SETTING(s_wallpaper);
+
+static void invalidate_one(struct window *w, void *ctx)
+{
+    UNUSED(ctx);
+    wm_invalidate(w);
+}
+
+static void refresh_all(void)
+{
+    if (!active)
+        return;
+    gui_style_refresh();
+    gui_wallpaper_refresh();
+    wm_foreach(invalidate_one, NULL);
+    chrome_changed();
+}
+
+static void get_appearance(char *buf, size_t cap)
+{
+    str_copy(buf, appearance_setting, cap);
+}
+
+static int set_appearance(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "light") && strcmp(value, "dark") && strcmp(value, "auto"))
+        return E_INVAL;
+    str_copy(appearance_setting, value, sizeof(appearance_setting));
+    refresh_all();
+    return 0;
+}
+
+static const struct setting s_appearance = {"appearance", "light|dark|auto", "desktop light or dark mode",
+                                            get_appearance, set_appearance};
+SETTING(s_appearance);
+
+static void get_accent(char *buf, size_t cap)
+{
+    str_copy(buf, accent_setting, cap);
+}
+
+static int set_accent(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    for (size_t i = 0; i < ARRAY_SIZE(accents); i++)
+        if (!strcmp(value, accents[i].name)) {
+            str_copy(accent_setting, value, sizeof(accent_setting));
+            refresh_all();
+            return 0;
+        }
+    return E_INVAL;
+}
+
+static const struct setting s_accent = {"accent", "blue|purple|pink|red|orange|yellow|green|graphite",
+                                        "desktop accent color", get_accent, set_accent};
+SETTING(s_accent);
+
+static void get_glass(char *buf, size_t cap)
+{
+    str_copy(buf, glass_setting, cap);
+}
+
+static int set_glass(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "liquid") && strcmp(value, "frosted") && strcmp(value, "solid"))
+        return E_INVAL;
+    str_copy(glass_setting, value, sizeof(glass_setting));
+    refresh_all();
+    return 0;
+}
+
+static const struct setting s_glass = {"glass", "liquid|frosted|solid", "transparency of menus, dock and sidebars",
+                                       get_glass, set_glass};
+SETTING(s_glass);
 
 static void get_autostart(char *buf, size_t cap)
 {
@@ -946,7 +838,7 @@ static void list_app(const struct gui_app *app, void *ctx)
     sh_role(sh, ROLE_TEXT);
 }
 
-COMMAND(launch, "xopen", "system", "launch [app|file] [file]", "start a desktop app or open a file in one")
+COMMAND(launch, "xopen,open", "system", "launch [app|file] [file]", "start a desktop app or open a file in one")
 {
     if (argc < 2) {
         gui_app_foreach(list_app, sh);
@@ -959,10 +851,20 @@ COMMAND(launch, "xopen", "system", "launch [app|file] [file]", "start a desktop 
     if (app) {
         if (argc > 2 && sh_resolve(sh, argv[2], path, sizeof(path)) != 0)
             return sh_error(sh, "launch", "bad path: %s", argv[2]);
-        app->launch(argc > 2 ? path : NULL);
+        gui_app_launch(app, argc > 2 ? path : NULL);
         return 0;
     }
     if (sh_resolve(sh, argv[1], path, sizeof(path)) != 0 || !vfs_exists(path))
         return sh_error(sh, "launch", "no such app or file: %s", argv[1]);
     return gui_open_file(path) ? 0 : sh_error(sh, "launch", "nothing can open %s", argv[1]);
+}
+
+COMMAND(notify, NULL, "system", "notify <title> [text]", "show a desktop notification")
+{
+    if (argc < 2)
+        return sh_error(sh, "notify", "usage: notify <title> [text]");
+    if (!active)
+        return sh_error(sh, "notify", "the desktop is not running");
+    gui_notify(argv[1], argc > 2 ? argv[2] : "");
+    return 0;
 }

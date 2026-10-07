@@ -2,7 +2,10 @@
 #include <synth/font.h>
 #include <synth/gui.h>
 #include <synth/heap.h>
+#include <synth/lz4.h>
 #include <synth/string.h>
+
+#include "internal.h"
 
 struct rect rect_make(int x, int y, int w, int h)
 {
@@ -17,6 +20,12 @@ bool rect_empty(struct rect r)
 bool rect_contains(struct rect r, int x, int y)
 {
     return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+}
+
+bool rect_inside(struct rect inner, struct rect outer)
+{
+    return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w &&
+           inner.y + inner.h <= outer.y + outer.h;
 }
 
 struct rect rect_intersect(struct rect a, struct rect b)
@@ -50,6 +59,25 @@ static inline uint32_t blend(uint32_t dst, uint32_t src, unsigned a)
     return 0xff000000u | rb | g;
 }
 
+static inline uint32_t over(uint32_t dst, uint32_t src, unsigned a)
+{
+    unsigned da = dst >> 24;
+    if (da == 255 || a == 255)
+        return blend(dst, src, a);
+    if (!a)
+        return dst;
+    unsigned wd = da * (255 - a) / 255;
+    unsigned oa = a + wd;
+    if (!oa)
+        return 0;
+    uint32_t out = oa << 24;
+    for (int shift = 0; shift < 24; shift += 8) {
+        unsigned s = src >> shift & 0xff, d = dst >> shift & 0xff;
+        out |= ((s * a + d * wd) / oa) << shift;
+    }
+    return out;
+}
+
 uint32_t color_mix(uint32_t a, uint32_t b, int t)
 {
     return blend(a, b, (unsigned)CLAMP(t, 0, 255));
@@ -59,6 +87,11 @@ uint32_t color_shade(uint32_t c, int amount)
 {
     return amount >= 0 ? blend(c, 0xffffffffu, (unsigned)MIN(amount, 255))
                        : blend(c, 0xff000000u, (unsigned)MIN(-amount, 255));
+}
+
+int color_luma(uint32_t c)
+{
+    return (int)((c >> 16 & 0xff) * 3 + (c >> 8 & 0xff) * 6 + (c & 0xff)) / 10;
 }
 
 struct canvas canvas_make(uint32_t *px, int w, int h)
@@ -90,7 +123,15 @@ static inline void put(struct canvas *c, int x, int y, uint32_t color)
 {
     uint32_t a = color >> 24;
     uint32_t *p = &c->px[y * c->stride + x];
-    *p = a == 255 ? color : blend(*p, color, a);
+    *p = a == 255 ? color : over(*p, color, a);
+}
+
+static inline void put_a(struct canvas *c, int x, int y, uint32_t color, unsigned a)
+{
+    if (!a)
+        return;
+    uint32_t *p = &c->px[y * c->stride + x];
+    *p = a >= 255 ? (color | 0xff000000u) : over(*p, color, a);
 }
 
 void gfx_pixel(struct canvas *c, int x, int y, uint32_t color)
@@ -102,17 +143,28 @@ void gfx_pixel(struct canvas *c, int x, int y, uint32_t color)
 void gfx_fill(struct canvas *c, struct rect r, uint32_t color)
 {
     r = rect_intersect(r, c->clip);
-    if (rect_empty(r) || !(color >> 24))
+    unsigned a = color >> 24;
+    if (rect_empty(r) || !a)
         return;
     for (int y = r.y; y < r.y + r.h; y++) {
         uint32_t *row = c->px + y * c->stride + r.x;
-        if (color >> 24 == 255) {
+        if (a == 255) {
             for (int x = 0; x < r.w; x++)
                 row[x] = color;
         } else {
             for (int x = 0; x < r.w; x++)
-                row[x] = blend(row[x], color, color >> 24);
+                row[x] = (row[x] >> 24) == 255 ? blend(row[x], color, a) : over(row[x], color, a);
         }
+    }
+}
+
+void gfx_clear(struct canvas *c, struct rect r, uint32_t color)
+{
+    r = rect_intersect(r, c->clip);
+    for (int y = r.y; y < r.y + r.h; y++) {
+        uint32_t *row = c->px + y * c->stride + r.x;
+        for (int x = 0; x < r.w; x++)
+            row[x] = color;
     }
 }
 
@@ -179,32 +231,58 @@ static int corner_coverage(struct rect r, int radius, int x, int y)
     return CLAMP(radius * 16 - d + 8, 0, 16) * 16;
 }
 
-static void round_rows(struct canvas *c, struct rect r, int radius, uint32_t top, uint32_t bottom, bool outline)
+int gfx_corner_coverage(struct rect r, int radius, int x, int y)
 {
-    radius = MIN(radius, MIN(r.w, r.h) / 2);
+    return corner_coverage(r, radius, x, y);
+}
+
+enum round_mode {
+    ROUND_FILL,
+    ROUND_OUTLINE,
+    ROUND_CLEAR,
+};
+
+static void round_rows(struct canvas *c, struct rect r, int radius, uint32_t top, uint32_t bottom, enum round_mode mode)
+{
+    radius = MAX(0, MIN(radius, MIN(r.w, r.h) / 2));
     struct rect area = rect_intersect(r, c->clip);
     for (int y = area.y; y < area.y + area.h; y++) {
         uint32_t color = top == bottom ? top : lerp_color(top, bottom, y - r.y, r.h - 1);
         unsigned alpha = color >> 24;
         bool in_corner_rows = y < r.y + radius || y >= r.y + r.h - radius;
+        uint32_t *row = c->px + y * c->stride;
         for (int x = area.x; x < area.x + area.w; x++) {
-            if (outline) {
+            if (mode == ROUND_OUTLINE) {
                 bool edge = y == r.y || y == r.y + r.h - 1 || x == r.x || x == r.x + r.w - 1;
-                if (!edge && !in_corner_rows && x >= r.x + radius && x < r.x + r.w - radius)
+                if (!edge && !in_corner_rows) {
+                    if (x < r.x + r.w - 1)
+                        x = r.x + r.w - 2;
+                    continue;
+                }
+                if (!edge && x >= r.x + radius && x < r.x + r.w - radius)
                     continue;
                 int outer = corner_coverage(r, radius, x, y);
                 int inner = edge ? 0 : corner_coverage(rect_inset(r, 1), MAX(radius - 1, 0), x, y);
                 int cov = outer - inner;
                 if (cov > 0)
-                    put(c, x, y, ALPHA(color, alpha * (unsigned)MIN(cov, 256) >> 8));
+                    put_a(c, x, y, color, alpha * (unsigned)MIN(cov, 256) >> 8);
                 continue;
             }
             int cov = in_corner_rows || x < r.x + radius || x >= r.x + r.w - radius ? corner_coverage(r, radius, x, y)
                                                                                      : 256;
+            if (mode == ROUND_CLEAR) {
+                if (cov >= 256)
+                    row[x] = color;
+                else if (cov > 0)
+                    row[x] = over(row[x] & 0x00ffffffu, color, alpha * (unsigned)cov >> 8);
+                else
+                    row[x] = 0;
+                continue;
+            }
             if (cov >= 256)
                 put(c, x, y, color);
             else if (cov > 0)
-                put(c, x, y, ALPHA(color, alpha * (unsigned)cov >> 8));
+                put_a(c, x, y, color, alpha * (unsigned)cov >> 8);
         }
     }
 }
@@ -215,12 +293,17 @@ void gfx_round(struct canvas *c, struct rect r, int radius, uint32_t color)
         gfx_fill(c, r, color);
         return;
     }
-    round_rows(c, r, radius, color, color, false);
+    round_rows(c, r, radius, color, color, ROUND_FILL);
+}
+
+void gfx_round_clear(struct canvas *c, struct rect r, int radius, uint32_t color)
+{
+    round_rows(c, r, radius, color, color, ROUND_CLEAR);
 }
 
 void gfx_round_gradient(struct canvas *c, struct rect r, int radius, uint32_t top, uint32_t bottom)
 {
-    round_rows(c, r, radius, top, bottom, false);
+    round_rows(c, r, radius, top, bottom, ROUND_FILL);
 }
 
 void gfx_round_frame(struct canvas *c, struct rect r, int radius, uint32_t color)
@@ -229,29 +312,69 @@ void gfx_round_frame(struct canvas *c, struct rect r, int radius, uint32_t color
         gfx_frame(c, r, color);
         return;
     }
-    round_rows(c, r, radius, color, color, true);
+    round_rows(c, r, radius, color, color, ROUND_OUTLINE);
+}
+
+void gfx_round_frame_gradient(struct canvas *c, struct rect r, int radius, uint32_t top, uint32_t bottom)
+{
+    round_rows(c, r, radius, top, bottom, ROUND_OUTLINE);
+}
+
+static uint8_t shadow_falloff[257];
+
+static void shadow_init(void)
+{
+    if (shadow_falloff[0])
+        return;
+    for (int i = 0; i <= 256; i++) {
+        int t = 256 - i;
+        shadow_falloff[i] = (uint8_t)(t * t / 256 * (256 + t) / 512);
+    }
+    shadow_falloff[0] = 255;
+}
+
+void gfx_drop_shadow(struct canvas *c, struct rect r, int radius, int size, int strength, int dy)
+{
+    if (size <= 0 || strength <= 0)
+        return;
+    shadow_init();
+    struct rect s = {r.x, r.y + dy, r.w, r.h};
+    radius = MIN(radius, MIN(r.w, r.h) / 2);
+    struct rect outer = {s.x - size, s.y - size, s.w + 2 * size, s.h + 2 * size};
+    struct rect area = rect_intersect(outer, c->clip);
+    struct rect skip = rect_inset(r, radius);
+    for (int y = area.y; y < area.y + area.h; y++) {
+        int dy0 = y < s.y + radius ? s.y + radius - y : y >= s.y + s.h - radius ? y - (s.y + s.h - radius - 1) : 0;
+        bool skip_row = y >= skip.y && y < skip.y + skip.h;
+        for (int x = area.x; x < area.x + area.w; x++) {
+            if (skip_row && x >= skip.x && x < skip.x + skip.w) {
+                x = skip.x + skip.w - 1;
+                continue;
+            }
+            int dx0 = x < s.x + radius ? s.x + radius - x : x >= s.x + s.w - radius ? x - (s.x + s.w - radius - 1) : 0;
+            int d16;
+            if (!dx0 && !dy0)
+                d16 = 0;
+            else if (!dx0)
+                d16 = (dy0 - radius) * 16;
+            else if (!dy0)
+                d16 = (dx0 - radius) * 16;
+            else
+                d16 = (int)isqrt((uint32_t)((dx0 * dx0 + dy0 * dy0) * 256)) - radius * 16;
+            if (d16 < 0)
+                d16 = 0;
+            if (d16 >= size * 16)
+                continue;
+            unsigned a = (unsigned)strength * shadow_falloff[d16 * 256 / (size * 16)] / 255;
+            if (a)
+                put_a(c, x, y, 0, a);
+        }
+    }
 }
 
 void gfx_shadow(struct canvas *c, struct rect r, int radius, int size, int strength)
 {
-    struct rect outer = {r.x - size, r.y - size + size / 3, r.w + 2 * size, r.h + 2 * size};
-    struct rect area = rect_intersect(outer, c->clip);
-    for (int y = area.y; y < area.y + area.h; y++)
-        for (int x = area.x; x < area.x + area.w; x++) {
-            int sy = y - size / 3;
-            int dx = x < r.x + radius ? r.x + radius - x : x >= r.x + r.w - radius ? x - (r.x + r.w - radius - 1) : 0;
-            int dy = sy < r.y + radius ? r.y + radius - sy : sy >= r.y + r.h - radius ? sy - (r.y + r.h - radius - 1) : 0;
-            int d = (int)isqrt((uint32_t)(dx * dx + dy * dy)) - radius;
-            if (d <= 0) {
-                if (rect_contains(r, x, y))
-                    continue;
-                d = 0;
-            }
-            if (d >= size)
-                continue;
-            int t = size - d;
-            put(c, x, y, ALPHA(0, (unsigned)(strength * t * t / (size * size))));
-        }
+    gfx_drop_shadow(c, r, radius, size, strength, size / 3);
 }
 
 void gfx_line(struct canvas *c, int x0, int y0, int x1, int y1, uint32_t color)
@@ -281,7 +404,12 @@ void gfx_circle(struct canvas *c, int cx, int cy, int r, uint32_t color)
         gfx_pixel(c, cx, cy, color);
         return;
     }
-    round_rows(c, (struct rect){cx - r, cy - r, 2 * r + 1, 2 * r + 1}, r, color, color, false);
+    round_rows(c, (struct rect){cx - r, cy - r, 2 * r + 1, 2 * r + 1}, r, color, color, ROUND_FILL);
+}
+
+void gfx_ring(struct canvas *c, int cx, int cy, int r, uint32_t color)
+{
+    round_rows(c, (struct rect){cx - r, cy - r, 2 * r + 1, 2 * r + 1}, r, color, color, ROUND_OUTLINE);
 }
 
 void gfx_thick_line(struct canvas *c, int x0, int y0, int x1, int y1, int width, uint32_t color)
@@ -307,6 +435,131 @@ void gfx_blit(struct canvas *c, int x, int y, const struct canvas *src, struct r
     }
 }
 
+void gfx_blit_alpha(struct canvas *c, int x, int y, const struct canvas *src, struct rect from, int alpha)
+{
+    struct rect dst = rect_intersect((struct rect){x, y, from.w, from.h}, c->clip);
+    for (int row = 0; row < dst.h; row++) {
+        const uint32_t *s = src->px + (from.y + dst.y - y + row) * src->stride + from.x + dst.x - x;
+        uint32_t *d = c->px + (dst.y + row) * c->stride + dst.x;
+        for (int i = 0; i < dst.w; i++) {
+            unsigned a = (s[i] >> 24) * (unsigned)alpha / 255;
+            if (a >= 255)
+                d[i] = s[i];
+            else if (a)
+                d[i] = over(d[i], s[i], a);
+        }
+    }
+}
+
+void gfx_blit_round(struct canvas *c, struct rect dst, const struct canvas *src, int radius, bool blend_alpha)
+{
+    struct rect area = rect_intersect(dst, c->clip);
+    radius = MIN(radius, MIN(dst.w, dst.h) / 2);
+    for (int y = area.y; y < area.y + area.h; y++) {
+        int sy = y - dst.y;
+        if (sy >= src->h)
+            break;
+        const uint32_t *s = src->px + sy * src->stride - dst.x;
+        uint32_t *d = c->px + y * c->stride;
+        bool corner_row = y < dst.y + radius || y >= dst.y + dst.h - radius;
+        int x0 = area.x, x1 = MIN(area.x + area.w, dst.x + src->w);
+        for (int x = x0; x < x1; x++) {
+            int cov = 256;
+            if (corner_row && (x < dst.x + radius || x >= dst.x + dst.w - radius))
+                cov = corner_coverage(dst, radius, x, y);
+            else if (!blend_alpha && !corner_row) {
+                int end = MIN(x1, dst.x + dst.w - radius);
+                if (end > x) {
+                    if (x >= dst.x + radius) {
+                        memcpy(d + x, s + x, (size_t)(end - x) * 4);
+                        x = end - 1;
+                        continue;
+                    }
+                }
+            }
+            if (!cov)
+                continue;
+            uint32_t p = s[x];
+            unsigned a = blend_alpha ? (p >> 24) : 255;
+            a = a * (unsigned)cov >> 8;
+            if (a >= 255)
+                d[x] = p | 0xff000000u;
+            else if (a)
+                d[x] = over(d[x], p, a);
+        }
+    }
+}
+
+static uint32_t sample_bilinear(const uint32_t *px, int w, int h, int stride, int fx, int fy)
+{
+    int x0 = fx >> 8, y0 = fy >> 8, tx = fx & 255, ty = fy & 255;
+    x0 = CLAMP(x0, 0, w - 1);
+    y0 = CLAMP(y0, 0, h - 1);
+    int x1 = MIN(x0 + 1, w - 1), y1 = MIN(y0 + 1, h - 1);
+    uint32_t p[4] = {px[y0 * stride + x0], px[y0 * stride + x1], px[y1 * stride + x0], px[y1 * stride + x1]};
+    int wgt[4] = {(256 - tx) * (256 - ty), tx * (256 - ty), (256 - tx) * ty, tx * ty};
+    unsigned a = 0, r = 0, g = 0, b = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned pa = p[i] >> 24, wa = pa * (unsigned)wgt[i];
+        a += wa;
+        r += (p[i] >> 16 & 0xff) * wa / 256;
+        g += (p[i] >> 8 & 0xff) * wa / 256;
+        b += (p[i] & 0xff) * wa / 256;
+    }
+    if (!a)
+        return 0;
+    unsigned oa = a >> 16;
+    unsigned div = MAX(a / 256, 1u);
+    return oa << 24 | MIN(r / div, 255u) << 16 | MIN(g / div, 255u) << 8 | MIN(b / div, 255u);
+}
+
+static uint32_t sample_box(const uint32_t *px, int stride, int x0, int y0, int x1, int y1)
+{
+    unsigned a = 0, r = 0, g = 0, b = 0, n = 0;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            uint32_t p = px[y * stride + x];
+            unsigned pa = p >> 24;
+            a += pa;
+            r += (p >> 16 & 0xff) * pa;
+            g += (p >> 8 & 0xff) * pa;
+            b += (p & 0xff) * pa;
+            n++;
+        }
+    if (!a || !n)
+        return 0;
+    return (a / n) << 24 | (r / a) << 16 | (g / a) << 8 | (b / a);
+}
+
+static void draw_scaled(struct canvas *c, struct rect dst, const uint32_t *px, int w, int h, int stride, int alpha)
+{
+    if (dst.w <= 0 || dst.h <= 0)
+        return;
+    struct rect area = rect_intersect(dst, c->clip);
+    bool shrink = dst.w * 2 <= w || dst.h * 2 <= h;
+    for (int y = area.y; y < area.y + area.h; y++)
+        for (int x = area.x; x < area.x + area.w; x++) {
+            uint32_t p;
+            if (shrink) {
+                int sx0 = (x - dst.x) * w / dst.w, sx1 = MAX(sx0 + 1, (x - dst.x + 1) * w / dst.w);
+                int sy0 = (y - dst.y) * h / dst.h, sy1 = MAX(sy0 + 1, (y - dst.y + 1) * h / dst.h);
+                p = sample_box(px, stride, sx0, sy0, sx1, sy1);
+            } else {
+                int fx = ((x - dst.x) * 2 + 1) * w * 128 / dst.w - 128;
+                int fy = ((y - dst.y) * 2 + 1) * h * 128 / dst.h - 128;
+                p = sample_bilinear(px, w, h, stride, MAX(fx, 0), MAX(fy, 0));
+            }
+            unsigned a = (p >> 24) * (unsigned)alpha / 255;
+            if (a)
+                put_a(c, x, y, p, a);
+        }
+}
+
+void gfx_scale(struct canvas *c, struct rect dst, const struct canvas *src, int alpha)
+{
+    draw_scaled(c, dst, src->px, src->w, src->h, src->stride, alpha);
+}
+
 void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int h)
 {
     struct rect dst = rect_intersect((struct rect){x, y, w, h}, c->clip);
@@ -318,14 +571,114 @@ void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int 
         }
 }
 
+#define ICON_SIZE 64
+
+static uint32_t *icon_px[ICON_COUNT][3];
+static uint8_t *symbol_px[SYM_COUNT];
+
+static uint32_t *half_size(const uint32_t *src, int size)
+{
+    int h = size / 2;
+    uint32_t *out = kmalloc((size_t)h * (size_t)h * 4);
+    if (!out)
+        return NULL;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < h; x++)
+            out[y * h + x] = sample_box(src, size, x * 2, y * 2, x * 2 + 2, y * 2 + 2);
+    return out;
+}
+
+static bool load_icon(enum icon_id id)
+{
+    if (icon_px[id][0])
+        return true;
+    const struct packed_image *p = &icon_pack[id];
+    if (!p->data)
+        return false;
+    size_t raw = (size_t)p->size * p->size * 4;
+    uint8_t *planes = kmalloc(raw);
+    uint32_t *px = kmalloc(raw);
+    if (!planes || !px || lz4_decode(p->data, p->length, planes, raw) != raw) {
+        kfree(planes);
+        kfree(px);
+        return false;
+    }
+    unfilter_planes(planes, px, p->size, p->size);
+    kfree(planes);
+    icon_px[id][0] = px;
+    icon_px[id][1] = half_size(px, ICON_SIZE);
+    icon_px[id][2] = icon_px[id][1] ? half_size(icon_px[id][1], ICON_SIZE / 2) : NULL;
+    return true;
+}
+
+const uint32_t *gfx_icon_pixels(enum icon_id id)
+{
+    return (unsigned)id < ICON_COUNT && load_icon(id) ? icon_px[id][0] : NULL;
+}
+
+void gfx_icon_alpha(struct canvas *c, int x, int y, enum icon_id id, int size, int alpha)
+{
+    if ((unsigned)id >= ICON_COUNT || !load_icon(id))
+        return;
+    if (alpha >= 255) {
+        for (int level = 0; level < 3; level++)
+            if (size == ICON_SIZE >> level && icon_px[id][level]) {
+                gfx_image(c, x, y, icon_px[id][level], size, size);
+                return;
+            }
+    }
+    int level = size <= 20 && icon_px[id][2] ? 2 : size <= 40 && icon_px[id][1] ? 1 : 0;
+    int s = ICON_SIZE >> level;
+    draw_scaled(c, (struct rect){x, y, size, size}, icon_px[id][level], s, s, s, alpha);
+}
+
 void gfx_icon(struct canvas *c, int x, int y, enum icon_id id, int size)
 {
-    if ((unsigned)id >= ICON_COUNT)
+    gfx_icon_alpha(c, x, y, id, size, 255);
+}
+
+static bool load_symbol(enum symbol_id id)
+{
+    if (symbol_px[id])
+        return true;
+    const struct packed_image *p = &symbol_pack[id];
+    uint8_t *data = kmalloc(16 * 16 + 32 * 32);
+    if (!data || !p->data || lz4_decode(p->data, p->length, data, 16 * 16 + 32 * 32) != 16 * 16 + 32 * 32) {
+        kfree(data);
+        return false;
+    }
+    unfilter_rows(data, 16, 16);
+    unfilter_rows(data + 256, 32, 32);
+    symbol_px[id] = data;
+    return true;
+}
+
+void gfx_symbol(struct canvas *c, int x, int y, enum symbol_id id, int size, uint32_t color)
+{
+    if ((unsigned)id >= SYM_COUNT || !load_symbol(id))
         return;
-    if (size <= 16)
-        gfx_image(c, x, y, icons[id].small, 16, 16);
-    else
-        gfx_image(c, x, y, icons[id].large, 32, 32);
+    unsigned base = color >> 24;
+    const uint8_t *src = size <= 20 ? symbol_px[id] : symbol_px[id] + 256;
+    int s = size <= 20 ? 16 : 32;
+    struct rect dst = rect_intersect((struct rect){x, y, size, size}, c->clip);
+    for (int row = dst.y; row < dst.y + dst.h; row++)
+        for (int col = dst.x; col < dst.x + dst.w; col++) {
+            unsigned a;
+            if (size == s) {
+                a = src[(row - y) * s + (col - x)];
+            } else {
+                int fx = ((col - x) * 2 + 1) * s * 128 / size - 128, fy = ((row - y) * 2 + 1) * s * 128 / size - 128;
+                fx = MAX(fx, 0);
+                fy = MAX(fy, 0);
+                int x0 = MIN(fx >> 8, s - 1), y0 = MIN(fy >> 8, s - 1), tx = fx & 255, ty = fy & 255;
+                int x1 = MIN(x0 + 1, s - 1), y1 = MIN(y0 + 1, s - 1);
+                a = ((unsigned)src[y0 * s + x0] * (unsigned)(256 - tx) * (unsigned)(256 - ty) +
+                     (unsigned)src[y0 * s + x1] * (unsigned)tx * (unsigned)(256 - ty) +
+                     (unsigned)src[y1 * s + x0] * (unsigned)(256 - tx) * (unsigned)ty +
+                     (unsigned)src[y1 * s + x1] * (unsigned)tx * (unsigned)ty) >> 16;
+            }
+            put_a(c, col, row, color, a * base / 255);
+        }
 }
 
 uint32_t utf8_next(const char **s)
@@ -353,7 +706,7 @@ uint32_t utf8_next(const char **s)
     return cp;
 }
 
-static const struct ui_glyph *find_glyph(const struct ui_font *f, uint32_t code)
+static const struct ui_glyph *lookup(const struct ui_font *f, uint32_t code)
 {
     int lo = 0, hi = f->count - 1;
     while (lo <= hi) {
@@ -365,7 +718,18 @@ static const struct ui_glyph *find_glyph(const struct ui_font *f, uint32_t code)
         else
             hi = mid - 1;
     }
-    return code == '?' ? NULL : find_glyph(f, '?');
+    return NULL;
+}
+
+static const struct ui_glyph *find_glyph(const struct ui_font *f, uint32_t code)
+{
+    const struct ui_glyph *g = lookup(f, code);
+    return g ? g : lookup(f, '?');
+}
+
+bool gfx_has_glyph(const struct ui_font *f, uint32_t code)
+{
+    return lookup(f, code) != NULL;
 }
 
 static void draw_glyph(struct canvas *c, int x, int y, const struct ui_font *f, const struct ui_glyph *g,
@@ -385,9 +749,19 @@ static void draw_glyph(struct canvas *c, int x, int y, const struct ui_font *f, 
             uint8_t nib = data[row * stride + col / 2];
             unsigned a = col & 1 ? nib & 0x0f : nib >> 4;
             if (a)
-                put(c, px, py, ALPHA(color, base * a * 17 / 255));
+                put_a(c, px, py, color, base * a * 17 / 255);
         }
     }
+}
+
+int gfx_glyph(struct canvas *c, int x, int y, const struct ui_font *f, uint32_t code, uint32_t color)
+{
+    const struct ui_glyph *g = find_glyph(f, code);
+    if (!g)
+        return 0;
+    if (c)
+        draw_glyph(c, x, y, f, g, color);
+    return g->advance;
 }
 
 int gfx_text_n(struct canvas *c, int x, int y, const struct ui_font *f, const char *s, size_t n, uint32_t color)

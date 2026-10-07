@@ -1,5 +1,7 @@
+#include <synth/codepage.h>
 #include <synth/config.h>
 #include <synth/console.h>
+#include <synth/fmt.h>
 #include <synth/font.h>
 #include <synth/heap.h>
 #include <synth/input.h>
@@ -9,7 +11,7 @@
 
 #include "internal.h"
 
-#define PAD 6
+#define PAD 8
 #define FRAME_MS 33
 
 struct term {
@@ -42,7 +44,16 @@ static void draw_cell(int x, int y, struct cell c, bool cursor)
         return;
     struct canvas c2 = *s;
     c2.clip = (struct rect){0, 0, s->w, s->h};
-    gfx_cell(&c2, px, py, c.ch, fg, bg);
+    uint32_t code = c.ch < 0x80 ? c.ch : codepage_to_unicode(c.ch);
+    bool box = code >= 0x2500 && code < 0x25a0;
+    if (c.ch > ' ' && !box && gfx_has_glyph(&font_mono, code)) {
+        gfx_fill(&c2, (struct rect){px, py, FONT_WIDTH, FONT_HEIGHT}, bg);
+        c2.clip = (struct rect){px, py, FONT_WIDTH + 1, FONT_HEIGHT};
+        gfx_glyph(&c2, px, py - 1, &font_mono, code, fg);
+        c2.clip = (struct rect){0, 0, s->w, s->h};
+    } else {
+        gfx_cell(&c2, px, py, c.ch, fg, bg);
+    }
     if (cursor) {
         if (term->shape == CURSOR_BLOCK)
             gfx_fill(&c2, (struct rect){px, py, FONT_WIDTH, FONT_HEIGHT}, ALPHA(fg, 160));
@@ -158,6 +169,13 @@ static void grid_for(struct window *w, int *cols, int *rows)
     *rows = CLAMP((cr.h - 2 * PAD) / FONT_HEIGHT, 5, CONFIG_MAX_ROWS);
 }
 
+static void retitle(void)
+{
+    char title[64];
+    ksnprintf(title, sizeof(title), "%s — synsh — %d×%d", gui_user(), term->display.cols, term->display.rows);
+    wm_set_title(term->win, title);
+}
+
 static void event(struct window *w, struct gui_event *e)
 {
     if (e->type == EV_KEY) {
@@ -170,6 +188,7 @@ static void event(struct window *w, struct gui_event *e)
         invalidate_all();
         con_resize(cols, rows);
         con_redraw();
+        retitle();
     } else if (e->type == EV_MOUSE_DOWN && e->button == BUTTON_RIGHT) {
         for (const char *p = gui_clipboard(); *p; p++)
             input_inject(*p == '\n' ? KEY_ENTER : (uint8_t)*p);
@@ -193,7 +212,10 @@ struct window *terminal_open(void)
     term->shape = con_cursor_shape();
     int sw, sh;
     wm_screen_size(&sw, &sh);
-    int cols = MIN(100, (sw - 80) / FONT_WIDTH), rows = MIN(30, (sh - TASKBAR_HEIGHT - 120) / FONT_HEIGHT);
+    struct rect work = wm_work_area(0);
+    UNUSED(sw);
+    UNUSED(sh);
+    int cols = MIN(100, (work.w - 80) / FONT_WIDTH), rows = MIN(30, (work.h - TITLE_HEIGHT - 60) / FONT_HEIGHT);
     term->win = wm_open("Terminal", ICON_TERMINAL, cols * FONT_WIDTH + 2 * PAD, rows * FONT_HEIGHT + 2 * PAD, &ops,
                         term, WIN_RESIZABLE | WIN_KEEP);
     if (!term->win) {
@@ -201,8 +223,8 @@ struct window *terminal_open(void)
         term = NULL;
         return NULL;
     }
-    term->win->min_w = 30 * FONT_WIDTH;
-    term->win->min_h = 8 * FONT_HEIGHT + TITLE_HEIGHT;
+    term->win->min_w = 30 * FONT_WIDTH + 2 * PAD;
+    term->win->min_h = 8 * FONT_HEIGHT + TITLE_HEIGHT + 2 * PAD;
     grid_for(term->win, &cols, &rows);
     term->display = (struct display){
         .name = "desktop terminal",
@@ -216,6 +238,7 @@ struct window *terminal_open(void)
     };
     invalidate_all();
     con_init(&term->display);
+    retitle();
     return term->win;
 }
 
@@ -236,6 +259,6 @@ static void launch_terminal(const char *arg)
     gui_terminal_show();
 }
 
-static const struct gui_app terminal_app = {"Terminal", "Shell with all SynthOS commands", ICON_TERMINAL,
+static const struct gui_app terminal_app = {"Terminal", "The SynthOS shell with all commands", ICON_TERMINAL,
                                             launch_terminal, NULL};
 GUI_APP(terminal_app);

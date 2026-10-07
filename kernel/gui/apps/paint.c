@@ -641,7 +641,7 @@ static void launch(const char *arg)
     int sw, sh;
     wm_screen_size(&sw, &sh);
     int cw = MIN(TOOLBOX_W + IMG_W + 2 * MARGIN + BAR, sw - 40);
-    int ch = MIN(TOOLBAR_H + IMG_H + 2 * MARGIN + BAR + PALETTE_H + STATUS_H, sh - TASKBAR_HEIGHT - TITLE_HEIGHT - 20);
+    int ch = MIN(TOOLBAR_H + IMG_H + 2 * MARGIN + BAR + PALETTE_H + STATUS_H, sh - MENUBAR_HEIGHT - dock_reserved() - TITLE_HEIGHT - 20);
     struct window *w = wm_open("Untitled - Paint", ICON_PAINT, cw, ch, &ops, p, WIN_RESIZABLE);
     if (!w) {
         canvas_free(&p->img);

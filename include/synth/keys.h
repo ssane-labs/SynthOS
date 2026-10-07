@@ -39,7 +39,9 @@ enum key_code {
 #define KEY_MOD_SHIFT 0x1000
 #define KEY_MOD_CTRL 0x2000
 #define KEY_MOD_ALT 0x4000
-#define KEY_MOD_MASK 0x7000
+#define KEY_MOD_SUPER 0x8000
+#define KEY_MOD_MASK 0xf000
+#define KEY_COMMAND(n) (0x10800 + (n))
 #define KEY_BASE(k) ((k) & 0x0fff)
 
 const char *key_name(int key, char *buf, int cap);
