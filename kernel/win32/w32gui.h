@@ -155,6 +155,7 @@ struct w32_class {
     HANDLE instance;
     uint16_t atom;
     enum control_kind control;
+    bool dialog;
     uintptr_t extra[8];
     struct w32_class *next;
 };
@@ -193,6 +194,10 @@ struct w32_window {
     size_t edit_cap, edit_len, caret;
     int scroll;
     void *bar;
+    void *dlgproc;
+    intptr_t dlg_result;
+    bool dlg_ended;
+    intptr_t dlg_msgresult;
 };
 
 struct w32_window *w32_win(HANDLE h);
@@ -222,5 +227,15 @@ HANDLE w32_dc_font(HANDLE dc);
 COLORREF w32_dc_text_color(HANDLE dc);
 
 LRESULT WINAPI w32_control_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_dialog_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_dispatch(const MSG *msg);
+LRESULT WINAPI w32_def_window_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp);
+bool w32_dialog_key(struct w32_window *dialog, struct w32_window *focus, int key);
+bool w32_next_message(MSG *msg);
+HANDLE w32_create_window(DWORD ex, const char *cls, const char *title, DWORD style, int x, int y, int w, int h,
+                         HANDLE parent, HANDLE menu, HANDLE inst, void *param);
+HANDLE w32_menu_new(void);
+bool w32_menu_append(HANDLE menu, UINT flags, uintptr_t id, const char *text);
+const void *w32_find_resource(HANDLE module, const void *type, const void *name, uint32_t *size);
 
 #endif

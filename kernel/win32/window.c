@@ -44,6 +44,7 @@ enum {
 struct queued {
     MSG msg;
     uint32_t thread;
+    unsigned mods;
 };
 
 struct timer {
@@ -183,6 +184,7 @@ static void enqueue(HANDLE hwnd, uint32_t thread, UINT msg, WPARAM wp, LPARAM lp
     struct queued *q = &queue[queue_tail++ % QUEUE_SIZE];
     q->msg = (MSG){hwnd, msg, wp, lp, message_time(), {mouse_x, mouse_y}};
     q->thread = thread;
+    q->mods = key_mods;
 }
 
 void w32_post(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp)
@@ -299,6 +301,11 @@ static void builtin_classes(void)
         enum control_kind kind;
         int background;
     } list[] = {{"Button", CK_BUTTON, 16}, {"Static", CK_STATIC, 16}, {"Edit", CK_EDIT, 6}};
+    if (!find_class("#32770")) {
+        struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
+        if (c)
+            c->dialog = true;
+    }
     for (size_t i = 0; i < ARRAY_SIZE(list); i++)
         if (!find_class(list[i].name)) {
             struct w32_class *c = add_class(list[i].name, w32_control_proc, 8, (HANDLE)(intptr_t)list[i].background,
@@ -566,6 +573,12 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         w32_invalidate(w, NULL, true);
     }
     return w;
+}
+
+HANDLE w32_create_window(DWORD ex, const char *cls, const char *title, DWORD style, int x, int y, int w, int h,
+                         HANDLE parent, HANDLE menu, HANDLE inst, void *param)
+{
+    return create_window(ex, cls, title, title, cls, style, x, y, w, h, parent, menu, inst, param, false);
 }
 
 static HANDLE WINAPI CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR title, DWORD style, int x, int y, int w, int h,
@@ -1569,6 +1582,8 @@ static BOOL WINAPI KillTimer(HANDLE h, uintptr_t id)
     return FALSE;
 }
 
+bool w32_next_message(MSG *msg);
+
 static bool in_filter(const MSG *m, HANDLE hwnd, UINT lo, UINT hi)
 {
     if (hwnd && hwnd != (HANDLE)-1 && m->hwnd != hwnd) {
@@ -1607,6 +1622,7 @@ static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
             continue;
         *msg = q->msg;
         if (remove) {
+            key_mods = q->mods;
             for (unsigned k = i; k != queue_head; k--)
                 queue[k % QUEUE_SIZE] = queue[(k - 1) % QUEUE_SIZE];
             queue_head++;
@@ -1645,6 +1661,11 @@ static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
         }
     }
     return false;
+}
+
+bool w32_next_message(MSG *msg)
+{
+    return next_message(msg, NULL, 0, 0, true);
 }
 
 static BOOL get_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi)
@@ -1724,20 +1745,7 @@ LRESULT WINAPI w32_dispatch(const MSG *msg)
     return r;
 }
 
-static BOOL WINAPI IsDialogMessageA(HANDLE dlg, MSG *msg)
-{
-    UNUSED(dlg);
-    UNUSED(msg);
-    return FALSE;
-}
 
-static int WINAPI TranslateAcceleratorA(HANDLE wnd, HANDLE table, MSG *msg)
-{
-    UNUSED(wnd);
-    UNUSED(table);
-    UNUSED(msg);
-    return 0;
-}
 
 static HANDLE WINAPI SetCapture(HANDLE h)
 {
@@ -1943,6 +1951,19 @@ static BOOL insert_item(struct w32_menu *m, int at, UINT flags, uintptr_t id, co
         str_copy(it->text, text, sizeof(it->text));
     m->count++;
     return TRUE;
+}
+
+HANDLE w32_menu_new(void)
+{
+    struct w32_menu *m = w32_zalloc(sizeof(*m));
+    if (m)
+        m->magic = MENU_MAGIC;
+    return m;
+}
+
+bool w32_menu_append(HANDLE h, UINT flags, uintptr_t id, const char *text)
+{
+    return insert_item(menu_of(h), -1, flags, id, text);
 }
 
 static BOOL WINAPI AppendMenuA(HANDLE h, UINT flags, uintptr_t id, LPCSTR text)
@@ -2227,6 +2248,8 @@ static void key_message(struct w32_window *top, int key)
     DWORD state = 0;
     if (!w32_key_info(key, &vk, &scan, &ch, &state))
         return;
+    if (top->cls->dialog && w32_dialog_key(top, target, key))
+        return;
     key_mods = (unsigned)key & KEY_MOD_MASK;
     bool alt = key & KEY_MOD_ALT;
     LPARAM lp = (LPARAM)(1u | (uint32_t)scan << 16 | (alt ? 1u << 29 : 0));
@@ -2381,8 +2404,8 @@ static const struct w32_export window_exports[] = {
     W32_AS("GetWindowDC", GetDC), W32_FN(ReleaseDC), W32_FN(SetTimer), W32_FN(KillTimer), W32_FN(GetMessageA),
     W32_AS("GetMessageW", GetMessageA), W32_FN(PeekMessageA), W32_AS("PeekMessageW", PeekMessageA),
     W32_FN(WaitMessage), W32_FN(MsgWaitForMultipleObjects), W32_FN(TranslateMessage), W32_AS("DispatchMessageA", w32_dispatch),
-    W32_AS("DispatchMessageW", w32_dispatch), W32_FN(IsDialogMessageA), W32_AS("IsDialogMessageW", IsDialogMessageA),
-    W32_FN(TranslateAcceleratorA), W32_AS("TranslateAcceleratorW", TranslateAcceleratorA), W32_FN(SetCapture),
+    W32_AS("DispatchMessageW", w32_dispatch),
+    W32_FN(SetCapture),
     W32_FN(ReleaseCapture), W32_FN(GetCapture), W32_FN(SetFocus), W32_FN(GetFocus), W32_FN(GetCursorPos),
     W32_FN(SetCursorPos), W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(GetSystemMetrics),
     W32_FN(SystemParametersInfoA), W32_AS("SystemParametersInfoW", SystemParametersInfoA), W32_FN(LoadCursorA),

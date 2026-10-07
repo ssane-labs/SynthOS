@@ -340,23 +340,7 @@ static BOOL WINAPI IsCharAlphaNumericA(char c)
 
 
 
-static int WINAPI LoadStringA(HANDLE inst, UINT id, LPSTR buf, int cap)
-{
-    UNUSED(inst);
-    UNUSED(id);
-    if (cap > 0)
-        buf[0] = 0;
-    return 0;
-}
 
-static int WINAPI LoadStringW(HANDLE inst, UINT id, LPWSTR buf, int cap)
-{
-    UNUSED(inst);
-    UNUSED(id);
-    if (cap > 0)
-        buf[0] = 0;
-    return 0;
-}
 
 static DWORD WINAPI GetKeyboardLayout(DWORD thread)
 {
@@ -370,8 +354,7 @@ static const struct w32_export user32_exports[] = {
     W32_FN(wvsprintfA), W32_FN(wvsprintfW), W32_FN(CharUpperA), W32_FN(CharLowerA), W32_FN(CharUpperW),
     W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA),
     W32_FN(CharNextW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
-    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA), W32_FN(LoadStringA), W32_FN(LoadStringW),
-    W32_AS("GetProcessWindowStation", w32_zero0), W32_AS("GetUserObjectInformationW", w32_zero5),
+    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA), W32_AS("GetProcessWindowStation", w32_zero0), W32_AS("GetUserObjectInformationW", w32_zero5),
     W32_AS("GetKeyboardLayout", GetKeyboardLayout),
 };
 

@@ -186,6 +186,12 @@ wingdi | grep bpp
 bitmap 64x64 32bpp
 winwindow
 needs the SynthOS desktop
+windialog | head -n 1
+strings: Greeter / Hello from a string table
+windialog | grep resource
+dialog resource: found
+windialog | tail -n 1
+dialog needs the SynthOS desktop
 lsusb
 QEMU USB Keyboard
 cat '/mnt/hdb/Long Name Note.txt'
