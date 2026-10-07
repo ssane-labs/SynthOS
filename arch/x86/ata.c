@@ -2,10 +2,12 @@
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/string.h>
+#include <synth/vmm.h>
 
 #include "io.h"
 
 #define ATA_TIMEOUT_MS 2000
+#define DMA_SECTORS 128
 
 enum {
     REG_DATA = 0,
@@ -25,12 +27,24 @@ enum {
     ST_BSY = 0x80,
 };
 
+struct prd {
+    uint32_t addr;
+    uint16_t bytes;
+    uint16_t flags;
+};
+
 struct ata_drive {
     uint16_t io;
     uint16_t ctrl;
     uint8_t slave;
+    bool dma;
+    uint16_t bm;
+    struct prd *prd;
+    uint8_t *buffer;
     struct blockdev dev;
 };
+
+static uint16_t bm_base;
 
 static struct ata_drive drives[4] = {
     {.io = 0x1f0, .ctrl = 0x3f6, .slave = 0},
@@ -71,10 +85,58 @@ static void select_lba(struct ata_drive *d, uint32_t lba, uint8_t count)
     outb(d->io + REG_LBA2, (uint8_t)(lba >> 16));
 }
 
+static int dma_transfer(struct ata_drive *d, uint32_t lba, uint32_t n, bool write)
+{
+    uint32_t bytes = n * BLOCK_SIZE, phys = vmm_phys(d->buffer);
+    int k = 0;
+    while (bytes) {
+        uint32_t chunk = MIN(bytes, 0x10000 - (phys & 0xffff));
+        d->prd[k++] = (struct prd){phys, (uint16_t)chunk, 0};
+        phys += chunk;
+        bytes -= chunk;
+    }
+    d->prd[k - 1].flags = 0x8000;
+    int err = wait_ready(d, false);
+    if (err)
+        return err;
+    outb(d->bm, 0);
+    outl(d->bm + 4, vmm_phys(d->prd));
+    outb(d->bm + 2, inb(d->bm + 2) | 0x06);
+    outb(d->bm, write ? 0x00 : 0x08);
+    select_lba(d, lba, (uint8_t)n);
+    outb(d->io + REG_STATUS, write ? 0xca : 0xc8);
+    outb(d->bm, write ? 0x01 : 0x09);
+    uint64_t end = hal_ticks_ms() + ATA_TIMEOUT_MS;
+    for (;;) {
+        uint8_t bs = inb(d->bm + 2), st = inb(d->io + REG_STATUS);
+        if (!(bs & 0x01) && !(st & ST_BSY))
+            break;
+        if ((bs & 0x02) || hal_ticks_ms() > end) {
+            outb(d->bm, 0);
+            return E_IO;
+        }
+    }
+    outb(d->bm, 0);
+    uint8_t bs = inb(d->bm + 2), st = inb(d->io + REG_STATUS);
+    outb(d->bm + 2, bs | 0x06);
+    return (bs & 0x02) || (st & (ST_ERR | ST_DF)) ? E_IO : 0;
+}
+
 static int ata_read(struct blockdev *dev, uint32_t lba, uint32_t count, void *buf)
 {
     struct ata_drive *d = dev->priv;
     uint16_t *p = buf;
+    while (count && d->dma) {
+        uint32_t n = MIN(count, (uint32_t)DMA_SECTORS);
+        if (dma_transfer(d, lba, n, false)) {
+            d->dma = false;
+            break;
+        }
+        memcpy(p, d->buffer, n * BLOCK_SIZE);
+        p += n * BLOCK_SIZE / 2;
+        lba += n;
+        count -= n;
+    }
     while (count) {
         uint8_t n = (uint8_t)MIN(count, 128u);
         int err = wait_ready(d, false);
@@ -99,6 +161,17 @@ static int ata_write(struct blockdev *dev, uint32_t lba, uint32_t count, const v
 {
     struct ata_drive *d = dev->priv;
     const uint16_t *p = buf;
+    while (count && d->dma) {
+        uint32_t n = MIN(count, (uint32_t)DMA_SECTORS);
+        memcpy(d->buffer, p, n * BLOCK_SIZE);
+        if (dma_transfer(d, lba, n, true)) {
+            d->dma = false;
+            break;
+        }
+        p += n * BLOCK_SIZE / 2;
+        lba += n;
+        count -= n;
+    }
     while (count) {
         uint8_t n = (uint8_t)MIN(count, 128u);
         int err = wait_ready(d, false);
@@ -158,12 +231,34 @@ static bool identify(struct ata_drive *d)
     d->dev.model[40] = 0;
     str_trim(d->dev.model);
     d->dev.sectors = sectors;
+    if (bm_base && (id[49] & (1u << 8)) && (d->io == 0x1f0 || d->io == 0x170)) {
+        uint8_t *mem = kmalloc_pages(4096 + DMA_SECTORS * BLOCK_SIZE);
+        if (mem) {
+            d->prd = (struct prd *)mem;
+            d->buffer = mem + 4096;
+            d->bm = (uint16_t)(bm_base + (d->io == 0x170 ? 8 : 0));
+            d->dma = true;
+        }
+    }
     return true;
+}
+
+static void find_busmaster(const struct pci_device *p, void *ctx)
+{
+    UNUSED(ctx);
+    if (p->class_code != 0x01 || p->subclass != 0x01 || bm_base || !(p->prog_if & 0x80))
+        return;
+    uint32_t bar = pci_read(p, 0x20);
+    if (!(bar & 1) || !(bar & ~3u))
+        return;
+    pci_write(p, 0x04, pci_read(p, 0x04) | 0x05);
+    bm_base = (uint16_t)(bar & ~3u);
 }
 
 void ata_init(void)
 {
     static const char *const names[] = {"hda", "hdb", "hdc", "hdd"};
+    pci_foreach(find_busmaster, NULL);
     for (int i = 0; i < 4; i++) {
         struct ata_drive *d = &drives[i];
         if (!identify(d))

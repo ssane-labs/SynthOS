@@ -321,6 +321,65 @@ COMMAND(time, NULL, "system", "time command [args...]", "measure how long a comm
     return rc;
 }
 
+static void sift(uint32_t *a, uint32_t root, uint32_t n)
+{
+    for (uint32_t child; (child = 2 * root + 1) < n; root = child) {
+        if (child + 1 < n && a[child + 1] > a[child])
+            child++;
+        if (a[root] >= a[child])
+            return;
+        uint32_t t = a[root];
+        a[root] = a[child];
+        a[child] = t;
+    }
+}
+
+static void sort_u32(uint32_t *a, uint32_t n)
+{
+    for (uint32_t i = n / 2; i-- > 0;)
+        sift(a, i, n);
+    for (uint32_t end = n; end-- > 1;) {
+        uint32_t t = a[0];
+        a[0] = a[end];
+        a[end] = t;
+        sift(a, 0, end);
+    }
+}
+
+COMMAND(prof, NULL, "dev", "prof command [args...]",
+        "run a command and list where the CPU spent its time (addresses for addr2line)")
+{
+    if (argc < 2)
+        return command_usage(sh, command_find("prof"));
+    uint32_t cap = 1u << 18;
+    uint32_t *buf = kmalloc(cap * sizeof(uint32_t));
+    if (!buf)
+        return sh_error(sh, "prof", "out of memory");
+    hal_profile_start(buf, cap);
+    int rc = run_argv(sh, argc - 1, argv + 1);
+    uint32_t n = hal_profile_stop();
+    sort_u32(buf, n);
+    sh_printf(sh, "prof: %u samples\n", n);
+    for (int k = 0; k < 60; k++) {
+        uint32_t best = 0, at = 0;
+        for (uint32_t i = 0, j; i < n; i = j) {
+            for (j = i; j < n && buf[j] == buf[i];)
+                j++;
+            if (j - i > best && buf[i] != 0xffffffffu) {
+                best = j - i;
+                at = i;
+            }
+        }
+        if (!best)
+            break;
+        sh_printf(sh, "prof %08x %u\n", buf[at], best);
+        for (uint32_t i = at; i < at + best; i++)
+            buf[i] = 0xffffffffu;
+    }
+    kfree(buf);
+    return rc;
+}
+
 COMMAND(sleep, NULL, "system", "sleep seconds|<n>ms", "pause for a while")
 {
     long n;

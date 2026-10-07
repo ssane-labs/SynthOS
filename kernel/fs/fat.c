@@ -16,8 +16,8 @@
 #define ATTR_LFN 0x0f
 
 struct cache_line {
-    uint32_t lba;
-    bool valid;
+    uint32_t lba, used;
+    bool valid, dirty;
     uint8_t data[BLOCK_SIZE];
 };
 
@@ -33,6 +33,10 @@ struct fat {
     uint32_t hint;
     uint32_t free_count;
     bool free_known;
+    uint8_t *wb;
+    uint32_t wb_lba, wb_count;
+    uint32_t clock;
+    struct cache_line *last;
     struct cache_line cache[FAT_CACHE];
 };
 
@@ -77,10 +81,105 @@ static void put32(uint8_t *p, uint32_t v)
     put16(p + 2, v >> 16);
 }
 
+#define WB_SECTORS 128
+
+static int wb_flush(struct fat *fs)
+{
+    if (!fs->wb_count)
+        return 0;
+    int err = block_write(fs->dev, fs->wb_lba, fs->wb_count, fs->wb);
+    fs->wb_count = 0;
+    return err;
+}
+
+static int wb_sync(struct fat *fs, uint32_t lba, uint32_t count)
+{
+    if (fs->wb_count && lba < fs->wb_lba + fs->wb_count && fs->wb_lba < lba + count)
+        return wb_flush(fs);
+    return 0;
+}
+
+static int data_write(struct fat *fs, uint32_t lba, uint32_t count, const uint8_t *buf)
+{
+    int err = 0;
+    while (count && !err) {
+        if (fs->wb_count && lba != fs->wb_lba + fs->wb_count && (err = wb_flush(fs)))
+            return err;
+        if (!fs->wb_count && count >= WB_SECTORS)
+            return block_write(fs->dev, lba, count, buf);
+        if (!fs->wb && !(fs->wb = kmalloc(WB_SECTORS * BLOCK_SIZE)))
+            return block_write(fs->dev, lba, count, buf);
+        if (!fs->wb_count)
+            fs->wb_lba = lba;
+        uint32_t n = MIN(count, WB_SECTORS - fs->wb_count);
+        memcpy(fs->wb + fs->wb_count * BLOCK_SIZE, buf, n * BLOCK_SIZE);
+        fs->wb_count += n;
+        lba += n;
+        buf += n * BLOCK_SIZE;
+        count -= n;
+        if (fs->wb_count == WB_SECTORS)
+            err = wb_flush(fs);
+    }
+    return err;
+}
+
+static int write_back(struct fat *fs, struct cache_line *c)
+{
+    if (!c->dirty)
+        return 0;
+    c->dirty = false;
+    int err = block_write(fs->dev, c->lba, 1, c->data);
+    if (err)
+        c->valid = false;
+    return err;
+}
+
+static int fat_flush(struct fat *fs)
+{
+    int first = wb_flush(fs);
+    for (int i = 0; i < FAT_CACHE; i++) {
+        int err = write_back(fs, &fs->cache[i]);
+        if (err && !first)
+            first = err;
+    }
+    return first;
+}
+
+static struct cache_line *lookup(struct fat *fs, uint32_t lba)
+{
+    if (fs->last && fs->last->valid && fs->last->lba == lba)
+        return fs->last;
+    for (int i = 0; i < FAT_CACHE; i++)
+        if (fs->cache[i].valid && fs->cache[i].lba == lba)
+            return fs->last = &fs->cache[i];
+    return NULL;
+}
+
+static void mark_dirty(struct fat *fs, uint32_t lba)
+{
+    struct cache_line *c = lookup(fs, lba);
+    if (c)
+        c->dirty = true;
+}
+
 static uint8_t *sector(struct fat *fs, uint32_t lba, int *err)
 {
-    struct cache_line *c = &fs->cache[lba % FAT_CACHE];
-    if (!c->valid || c->lba != lba) {
+    struct cache_line *c = lookup(fs, lba);
+    if (!c) {
+        c = &fs->cache[0];
+        for (int i = 0; i < FAT_CACHE; i++) {
+            struct cache_line *l = &fs->cache[i];
+            if (!l->valid) {
+                c = l;
+                break;
+            }
+            if (l->used < c->used)
+                c = l;
+        }
+        if (c->valid && (*err = write_back(fs, c)))
+            return NULL;
+        if ((*err = wb_sync(fs, lba, 1)))
+            return NULL;
         *err = block_read(fs->dev, lba, 1, c->data);
         if (*err) {
             c->valid = false;
@@ -88,15 +187,22 @@ static uint8_t *sector(struct fat *fs, uint32_t lba, int *err)
         }
         c->lba = lba;
         c->valid = true;
+        fs->last = c;
     }
+    c->used = ++fs->clock;
     *err = 0;
     return c->data;
 }
 
 static int sector_sync(struct fat *fs, uint32_t lba)
 {
-    struct cache_line *c = &fs->cache[lba % FAT_CACHE];
-    int err = block_write(fs->dev, lba, 1, c->data);
+    struct cache_line *c = lookup(fs, lba);
+    if (!c)
+        return E_IO;
+    c->dirty = false;
+    int err = wb_sync(fs, lba, 1);
+    if (!err)
+        err = block_write(fs->dev, lba, 1, c->data);
     if (err)
         c->valid = false;
     return err;
@@ -104,15 +210,9 @@ static int sector_sync(struct fat *fs, uint32_t lba)
 
 static void cache_drop(struct fat *fs, uint32_t lba, uint32_t count)
 {
-    for (uint32_t i = 0; i < count && i < FAT_CACHE; i++) {
-        struct cache_line *c = &fs->cache[(lba + i) % FAT_CACHE];
-        if (c->valid && c->lba >= lba && c->lba < lba + count)
-            c->valid = false;
-    }
-    if (count > FAT_CACHE)
-        for (int i = 0; i < FAT_CACHE; i++)
-            if (fs->cache[i].lba >= lba && fs->cache[i].lba < lba + count)
-                fs->cache[i].valid = false;
+    for (int i = 0; i < FAT_CACHE; i++)
+        if (fs->cache[i].lba >= lba && fs->cache[i].lba < lba + count)
+            fs->cache[i].valid = fs->cache[i].dirty = false;
 }
 
 static uint32_t cluster_lba(struct fat *fs, uint32_t c)
@@ -180,16 +280,16 @@ static int fat_set(struct fat *fs, uint32_t c, uint32_t v)
                 p[at] = (uint8_t)value;
                 *hi = (uint8_t)((*hi & 0xf0) | (value >> 8));
             }
-            if ((err = sector_sync(fs, lba)) || (q != p && (err = sector_sync(fs, lba + 1))))
-                return err;
+            mark_dirty(fs, lba);
+            if (q != p)
+                mark_dirty(fs, lba + 1);
             continue;
         }
         if (fs->bits == 16)
             put16(p + at, v);
         else
             put32(p + at, (le32(p + at) & 0xf0000000u) | (v & 0x0fffffff));
-        if ((err = sector_sync(fs, lba)))
-            return err;
+        mark_dirty(fs, lba);
     }
     return 0;
 }
@@ -200,7 +300,9 @@ static int zero_cluster(struct fat *fs, uint32_t c)
     if (!zero)
         return E_NOMEM;
     uint32_t lba = cluster_lba(fs, c);
-    int err = block_write(fs->dev, lba, fs->spc, zero);
+    int err = wb_sync(fs, lba, fs->spc);
+    if (!err)
+        err = block_write(fs->dev, lba, fs->spc, zero);
     cache_drop(fs, lba, fs->spc);
     kfree(zero);
     return err;
@@ -518,7 +620,8 @@ static int update_entry(struct fat_node *n, bool touch)
         put16(e + 18, date);
         e[11] |= n->vn.type == VN_FILE ? ATTR_ARCHIVE : 0;
     }
-    return sector_sync(n->fs, lba);
+    mark_dirty(n->fs, lba);
+    return 0;
 }
 
 static int node_cluster(struct fat_node *n, uint32_t index, bool extend, uint32_t *out)
@@ -569,18 +672,26 @@ static long file_io(struct fat_node *n, uint32_t off, uint8_t *buf, size_t len, 
     size_t done = 0;
     while (done < len) {
         uint32_t pos = off + (uint32_t)done, within = pos % fs->cluster_bytes, c;
-        int err = node_cluster(n, pos / fs->cluster_bytes, write, &c);
+        uint32_t index = pos / fs->cluster_bytes;
+        int err = node_cluster(n, index, write, &c);
         if (err)
             return done ? (long)done : err;
-        uint32_t chunk = (uint32_t)MIN(len - done, fs->cluster_bytes - within);
+        uint32_t span = fs->cluster_bytes - within;
+        for (uint32_t k = 1; within % BLOCK_SIZE == 0 && span < len - done && span < (1u << 20); k++) {
+            uint32_t next;
+            if (node_cluster(n, index + k, write, &next) || next != c + k)
+                break;
+            span += fs->cluster_bytes;
+        }
+        uint32_t chunk = (uint32_t)MIN(len - done, span);
         uint32_t lba = cluster_lba(fs, c) + within / BLOCK_SIZE, at = within % BLOCK_SIZE;
         if (at == 0 && chunk >= BLOCK_SIZE) {
             uint32_t count = chunk / BLOCK_SIZE;
             chunk = count * BLOCK_SIZE;
             if (write) {
-                err = block_write(fs->dev, lba, count, buf + done);
+                err = data_write(fs, lba, count, buf + done);
                 cache_drop(fs, lba, count);
-            } else {
+            } else if (!(err = wb_sync(fs, lba, count))) {
                 err = block_read(fs->dev, lba, count, buf + done);
             }
         } else {
@@ -1047,18 +1158,45 @@ static int f_stat(struct vnode *vn, struct vstat *st)
 
 static void f_release(struct vnode *vn)
 {
+    fat_flush(node(vn)->fs);
     kfree(node(vn));
+}
+
+static int flushed(struct vnode *vn, int err)
+{
+    int f = fat_flush(node(vn)->fs);
+    return err < 0 ? err : f ? f : err;
+}
+
+static int fs_create(struct vnode *dir, const char *name, int type, struct vnode **out)
+{
+    return flushed(dir, f_create(dir, name, type, out));
+}
+
+static int fs_unlink(struct vnode *dir, const char *name)
+{
+    return flushed(dir, f_unlink(dir, name));
+}
+
+static int fs_rename(struct vnode *odir, const char *oname, struct vnode *ndir, const char *nname)
+{
+    return flushed(odir, f_rename(odir, oname, ndir, nname));
+}
+
+static int fs_truncate(struct vnode *vn, uint32_t size)
+{
+    return flushed(vn, f_truncate(vn, size));
 }
 
 static const struct vnode_ops fat_ops = {
     .lookup = f_lookup,
-    .create = f_create,
-    .unlink = f_unlink,
-    .rename = f_rename,
+    .create = fs_create,
+    .unlink = fs_unlink,
+    .rename = fs_rename,
     .readdir = f_readdir,
     .read = f_read,
     .write = f_write,
-    .truncate = f_truncate,
+    .truncate = fs_truncate,
     .stat = f_stat,
     .release = f_release,
 };

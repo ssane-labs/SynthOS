@@ -17,9 +17,26 @@ void timer_hook(void (*fn)(void))
         hooks[hook_count++] = fn;
 }
 
+static uint32_t *prof_buf;
+static volatile uint32_t prof_len, prof_cap;
+
+void hal_profile_start(uint32_t *buf, uint32_t cap)
+{
+    prof_len = 0;
+    prof_cap = cap;
+    prof_buf = buf;
+}
+
+uint32_t hal_profile_stop(void)
+{
+    prof_buf = NULL;
+    return prof_len;
+}
+
 static void pit_tick(struct regs *r)
 {
-    UNUSED(r);
+    if (prof_buf && prof_len < prof_cap)
+        prof_buf[prof_len++] = r->eip;
     ticks++;
     if (ticks * 1000u / tick_hz % 2 == 0)
         for (int i = 0; i < hook_count; i++)
