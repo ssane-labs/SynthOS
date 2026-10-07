@@ -287,14 +287,19 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
 static void on_tick(uint32_t eip)
 {
     static unsigned ticks;
-    if (!w32 || !w32->jump.active || ++ticks % 32 || eip < VMM_USER_START || eip >= 0xc0000000u)
+    if (!w32 || !w32->jump.active || eip < VMM_USER_START || eip >= 0xc0000000u)
         return;
-    input_poll();
-    if (input_break_pending()) {
-        w32->exiting = true;
-        w32->exit_code = STATUS_CONTROL_C_EXIT;
-        arch_w32_abort(&w32->jump, STATUS_CONTROL_C_EXIT);
+    ticks++;
+    if (ticks % 32 == 0) {
+        input_poll();
+        if (input_break_pending()) {
+            w32->exiting = true;
+            w32->exit_code = STATUS_CONTROL_C_EXIT;
+            arch_w32_abort(&w32->jump, STATUS_CONTROL_C_EXIT);
+        }
     }
+    if (ticks % 10 == 0)
+        w32_preempt();
 }
 
 static bool needs_quotes(const char *s)
@@ -485,6 +490,11 @@ static void setup_tls(struct w32_image *img)
     put32(w32->teb, 0x2c, (uint32_t)slots);
     if (index_addr)
         *(uint32_t *)index_addr = 0;
+    w32->tls_start = start;
+    w32->tls_size = size;
+    w32->tls_zero = zero;
+    w32->tls_callbacks = callbacks;
+    w32->tls_index = 0;
     for (const uint32_t *cb = (const uint32_t *)callbacks; cb && *cb; cb++) {
         uint32_t args[3] = {img->base, 1, 0};
         w32_call((void *)*cb, 3, args);
@@ -545,7 +555,7 @@ static int run(struct exec_ctx *ctx)
     }
     build_command_line(ctx);
     build_environment(ctx);
-    if (!w32->stack || !build_teb_peb())
+    if (!w32->stack || !build_teb_peb() || !w32_threads_start())
         return E_NOMEM;
 
     int error = 0;
@@ -570,6 +580,9 @@ static int run(struct exec_ctx *ctx)
     }
     arch_set_tick_hook(NULL);
     arch_set_fault_handler(NULL);
+    if (w32->threads)
+        arch_w32_set_teb((uint32_t)w32->threads->teb);
+    w32_threads_end();
     return (int)w32->exit_code;
 }
 

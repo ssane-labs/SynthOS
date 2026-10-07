@@ -712,25 +712,59 @@ static unsigned long crt_threadid(void)
     return 0x1004;
 }
 
+struct thread_start {
+    void (*fn)(void *);
+    void *arg;
+};
+
+static DWORD WINAPI begin_trampoline(void *p)
+{
+    struct thread_start start = *(struct thread_start *)p;
+    w32_free(p);
+    start.fn(start.arg);
+    return 0;
+}
+
 static uintptr_t crt_beginthread(void *fn, unsigned stack, void *arg)
 {
-    UNUSED(fn);
-    UNUSED(stack);
-    UNUSED(arg);
-    crt_set_errno(CRT_EINVAL);
-    return (uintptr_t)-1;
+    struct thread_start *start = w32_alloc(sizeof(*start));
+    if (!start) {
+        crt_set_errno(CRT_EINVAL);
+        return (uintptr_t)-1;
+    }
+    start->fn = (void (*)(void *))fn;
+    start->arg = arg;
+    HANDLE h = w32_create_thread(stack, (void *)begin_trampoline, start, 0, NULL);
+    return h ? (uintptr_t)h : (uintptr_t)-1;
 }
 
 static uintptr_t crt_beginthreadex(void *sec, unsigned stack, void *fn, void *arg, unsigned flags, unsigned *id)
 {
     UNUSED(sec);
-    UNUSED(flags);
-    UNUSED(id);
-    UNUSED(stack);
-    UNUSED(fn);
-    UNUSED(arg);
-    crt_set_errno(CRT_EINVAL);
-    return 0;
+    DWORD tid = 0;
+    HANDLE h = w32_create_thread(stack, fn, arg, flags, &tid);
+    if (id)
+        *id = tid;
+    return (uintptr_t)h;
+}
+
+static void crt_endthreadex(unsigned code)
+{
+    typedef void WINAPI (*exit_fn)(DWORD);
+    struct w32_image *k = w32_find_module("kernel32.dll");
+    exit_fn fn = k ? (exit_fn)w32_get_proc(k, "ExitThread", 0) : NULL;
+    if (fn)
+        fn(code);
+}
+
+static void crt_endthread(void)
+{
+    crt_endthreadex(0);
+}
+
+static unsigned long crt_current_threadid(void)
+{
+    return w32_thread_id();
 }
 
 static const struct w32_export crt_exports[] = {
@@ -780,9 +814,9 @@ static const struct w32_export crt_exports[] = {
     W32_AS("_sleep", crt_sleep), W32_AS("_beep", crt_beep), W32_AS("setlocale", crt_setlocale),
     W32_AS("_wsetlocale", crt_wsetlocale), W32_AS("localeconv", crt_localeconv), W32_AS("_getmbcp", crt_getmbcp),
     W32_AS("_setmbcp", crt_setmbcp), W32_AS("___lc_codepage_func", crt_lc_codepage),
-    W32_AS("_resetstkoflw", crt_resetstkoflw), W32_AS("__threadid", crt_threadid),
+    W32_AS("_resetstkoflw", crt_resetstkoflw), W32_AS("__threadid", crt_current_threadid),
     W32_AS("__threadhandle", crt_threadid), W32_AS("_beginthread", crt_beginthread),
-    W32_AS("_beginthreadex", crt_beginthreadex), W32_AS("_endthread", crt_nop), W32_AS("_endthreadex", crt_nop),
+    W32_AS("_beginthreadex", crt_beginthreadex), W32_AS("_endthread", crt_endthread), W32_AS("_endthreadex", crt_endthreadex),
     W32_AS("__CppXcptFilter", crt_xcpt_filter), W32_AS("_crt_debugger_hook", crt_nop),
 };
 

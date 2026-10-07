@@ -41,6 +41,7 @@ struct cstream {
 
 struct user_file {
     CRT_FILE pub;
+    uint8_t lock[24];
     struct cstream st;
 };
 

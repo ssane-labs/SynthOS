@@ -82,3 +82,24 @@ arch_call_on_stack:
     mov esp, ebp
     pop ebp
     ret
+
+section .text
+
+; void arch_switch(uint32_t *save_esp, uint32_t new_esp)
+global arch_switch
+arch_switch:
+    mov eax, [esp + 4]
+    mov edx, [esp + 8]
+    push ebp
+    push ebx
+    push esi
+    push edi
+    pushfd
+    mov [eax], esp
+    mov esp, edx
+    popfd
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret

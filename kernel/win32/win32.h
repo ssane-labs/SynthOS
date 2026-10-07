@@ -101,6 +101,8 @@ enum w32_object_type {
     WH_MUTEX,
     WH_SEMAPHORE,
     WH_NULL,
+    WH_THREAD,
+    WH_PROCESS,
 };
 
 struct w32_find {
@@ -116,6 +118,8 @@ struct w32_find_entry {
     uint32_t mtime;
 };
 
+struct w32_thread;
+
 struct w32_object {
     enum w32_object_type type;
     int refs;
@@ -123,6 +127,28 @@ struct w32_object {
     struct w32_find *find;
     uint32_t value;
     bool append;
+    bool manual;
+    uint32_t owner;
+    uint32_t max;
+    struct w32_thread *thread;
+};
+
+struct w32_thread {
+    uint32_t esp;
+    uint32_t id;
+    uint8_t *teb;
+    uint8_t *stack;
+    uint32_t stack_size;
+    void *start;
+    void *param;
+    bool done;
+    bool waiting;
+    int suspended;
+    int irq_depth;
+    uint32_t exit_code;
+    void *fls[64];
+    uint8_t fpu_area[528];
+    struct w32_thread *next;
 };
 
 struct w32_image {
@@ -179,6 +205,11 @@ struct w32_process {
     DWORD input_mode;
     DWORD output_mode;
     char message[160];
+    struct w32_thread *threads;
+    struct w32_thread *current;
+    int live_threads;
+    uint32_t next_tid;
+    uint32_t tls_start, tls_size, tls_zero, tls_callbacks, tls_index;
 };
 
 extern struct w32_process *w32;
@@ -234,6 +265,14 @@ void w32_unload_all(void);
 
 NORETURN void w32_exit(uint32_t code);
 void w32_sleep(uint32_t ms);
+bool w32_threads_start(void);
+void w32_threads_end(void);
+void w32_block(void);
+void w32_yield(void);
+void w32_preempt(void);
+uint32_t w32_thread_id(void);
+void w32_idle(int ms);
+HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id);
 void w32_run_atexit(void);
 uint32_t w32_call(void *fn, int argc, const uint32_t *args);
 uint32_t w32_kernel_call(uint32_t (*fn)(void *), void *arg);

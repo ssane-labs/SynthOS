@@ -32,8 +32,6 @@ typedef struct {
 
 static W32_STATE void *unhandled_filter;
 static W32_STATE uint32_t error_mode;
-static W32_STATE void *fls_values[W32_TLS_SLOTS];
-static W32_STATE bool fls_used[W32_TLS_SLOTS];
 
 static void WINAPI ExitProcess(UINT code)
 {
@@ -63,10 +61,6 @@ static DWORD WINAPI GetCurrentProcessId(void)
     return 0x100;
 }
 
-static DWORD WINAPI GetCurrentThreadId(void)
-{
-    return 0x104;
-}
 
 static DWORD WINAPI GetLastError(void)
 {
@@ -434,11 +428,6 @@ static void WINAPI RtlCaptureContext(uint8_t *ctx)
     memcpy(ctx, &(DWORD){0x1003f}, 4);
 }
 
-static DWORD WINAPI GetThreadId(HANDLE h)
-{
-    UNUSED(h);
-    return 0x104;
-}
 
 static DWORD WINAPI GetProcessId(HANDLE h)
 {
@@ -510,28 +499,8 @@ static void WINAPI DebugBreak(void)
     w32_exit(0x80000003u);
 }
 
-static void WINAPI Sleep(DWORD ms)
-{
-    w32_sleep(ms);
-}
 
-void w32_sleep(uint32_t ms)
-{
-    con_flush();
-    uint64_t end = hal_ticks_ms() + ms;
-    while (hal_ticks_ms() < end) {
-        hal_sleep_ms((uint32_t)MIN(end - hal_ticks_ms(), (uint64_t)10));
-        if (sh_interrupted())
-            w32_exit(STATUS_CONTROL_C_EXIT);
-    }
-}
 
-static DWORD WINAPI SleepEx(DWORD ms, BOOL alertable)
-{
-    UNUSED(alertable);
-    Sleep(ms);
-    return 0;
-}
 
 static DWORD WINAPI GetTickCount(void)
 {
@@ -894,168 +863,27 @@ static BOOL WINAPI TlsSetValue(DWORD index, void *value)
     return TRUE;
 }
 
-static DWORD WINAPI FlsAlloc(void *callback)
-{
-    UNUSED(callback);
-    for (DWORD i = 0; i < W32_TLS_SLOTS; i++) {
-        if (!fls_used[i]) {
-            fls_used[i] = true;
-            fls_values[i] = NULL;
-            return i;
-        }
-    }
-    return 0xffffffffu;
-}
 
-static BOOL WINAPI FlsFree(DWORD index)
-{
-    if (index < W32_TLS_SLOTS)
-        fls_used[index] = false;
-    return TRUE;
-}
 
-static void *WINAPI FlsGetValue(DWORD index)
-{
-    return index < W32_TLS_SLOTS ? fls_values[index] : NULL;
-}
 
-static BOOL WINAPI FlsSetValue(DWORD index, void *value)
-{
-    if (index >= W32_TLS_SLOTS)
-        return FALSE;
-    fls_values[index] = value;
-    return TRUE;
-}
 
-static void WINAPI CriticalSectionNop(void *cs)
-{
-    UNUSED(cs);
-}
 
-static BOOL WINAPI InitializeCriticalSectionAndSpinCount(void *cs, DWORD spin)
-{
-    UNUSED(cs);
-    UNUSED(spin);
-    return TRUE;
-}
 
-static BOOL WINAPI InitializeCriticalSectionEx(void *cs, DWORD spin, DWORD flags)
-{
-    UNUSED(cs);
-    UNUSED(spin);
-    UNUSED(flags);
-    return TRUE;
-}
 
-static BOOL WINAPI TryEnterCriticalSection(void *cs)
-{
-    UNUSED(cs);
-    return TRUE;
-}
 
-static HANDLE new_object(enum w32_object_type type, uint32_t value)
-{
-    HANDLE h = w32_handle_new(type);
-    struct w32_object *o = w32_handle_get(h);
-    if (o)
-        o->value = value;
-    return h;
-}
 
-static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL initial, LPCSTR name)
-{
-    UNUSED(sa);
-    UNUSED(manual);
-    UNUSED(name);
-    return new_object(WH_EVENT, (uint32_t)initial);
-}
 
-static HANDLE WINAPI CreateEventW(void *sa, BOOL manual, BOOL initial, LPCWSTR name)
-{
-    UNUSED(name);
-    return CreateEventA(sa, manual, initial, NULL);
-}
 
-static HANDLE WINAPI CreateMutexA(void *sa, BOOL owner, LPCSTR name)
-{
-    UNUSED(sa);
-    UNUSED(name);
-    return new_object(WH_MUTEX, (uint32_t)owner);
-}
 
-static HANDLE WINAPI CreateMutexW(void *sa, BOOL owner, LPCWSTR name)
-{
-    UNUSED(name);
-    return CreateMutexA(sa, owner, NULL);
-}
 
-static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG initial, LONG max, LPCSTR name)
-{
-    UNUSED(sa);
-    UNUSED(max);
-    UNUSED(name);
-    return new_object(WH_SEMAPHORE, (uint32_t)initial);
-}
 
-static HANDLE WINAPI CreateSemaphoreW(void *sa, LONG initial, LONG max, LPCWSTR name)
-{
-    UNUSED(name);
-    return CreateSemaphoreA(sa, initial, max, NULL);
-}
 
-static BOOL WINAPI SetEvent(HANDLE h)
-{
-    struct w32_object *o = w32_handle_get(h);
-    if (o)
-        o->value = 1;
-    return o != NULL;
-}
 
-static BOOL WINAPI ResetEvent(HANDLE h)
-{
-    struct w32_object *o = w32_handle_get(h);
-    if (o)
-        o->value = 0;
-    return o != NULL;
-}
 
-static BOOL WINAPI ReleaseMutex(HANDLE h)
-{
-    return w32_handle_get(h) != NULL;
-}
 
-static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG count, LONG *previous)
-{
-    struct w32_object *o = w32_handle_get(h);
-    if (!o)
-        return FALSE;
-    if (previous)
-        *previous = (LONG)o->value;
-    o->value += (uint32_t)count;
-    return TRUE;
-}
 
-static DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms)
-{
-    UNUSED(h);
-    UNUSED(ms);
-    return WAIT_OBJECT_0;
-}
 
-static DWORD WINAPI WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable)
-{
-    UNUSED(alertable);
-    return WaitForSingleObject(h, ms);
-}
 
-static DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE *handles, BOOL all, DWORD ms)
-{
-    UNUSED(count);
-    UNUSED(handles);
-    UNUSED(all);
-    UNUSED(ms);
-    return WAIT_OBJECT_0;
-}
 
 static BOOL WINAPI CloseHandle(HANDLE h)
 {
@@ -1091,17 +919,6 @@ static BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out
     return TRUE;
 }
 
-static HANDLE WINAPI CreateThread(void *sa, SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id)
-{
-    UNUSED(sa);
-    UNUSED(stack);
-    UNUSED(start);
-    UNUSED(param);
-    UNUSED(flags);
-    UNUSED(id);
-    w32_set_error(ERROR_NOT_SUPPORTED);
-    return NULL;
-}
 
 static LONG WINAPI InterlockedIncrement(volatile LONG *v)
 {
@@ -1140,27 +957,8 @@ static void WINAPI InitializeSListHead(void *head)
     memset(head, 0, 8);
 }
 
-static void WINAPI SrwNop(void *lock)
-{
-    UNUSED(lock);
-}
 
-static BOOL WINAPI SleepConditionVariableCS(void *cv, void *cs, DWORD ms)
-{
-    UNUSED(cv);
-    UNUSED(cs);
-    UNUSED(ms);
-    return TRUE;
-}
 
-static BOOL WINAPI InitOnceExecuteOnce(uint32_t *once, void *fn, void *param, void **context)
-{
-    if (*once)
-        return TRUE;
-    *once = 1;
-    typedef BOOL WINAPI (*init_fn)(uint32_t *, void *, void **);
-    return ((init_fn)fn)(once, param, context);
-}
 
 static BOOL WINAPI SetConsoleCtrlHandler(void *handler, BOOL add)
 {
@@ -1279,6 +1077,15 @@ static int spawn(const char *app, const char *cmdline, DWORD *exit_code)
     return err;
 }
 
+static HANDLE new_object(enum w32_object_type type, uint32_t value)
+{
+    HANDLE h = w32_handle_new(type);
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->value = value;
+    return h;
+}
+
 static BOOL create_process(const char *app, const char *cmdline, uint32_t *info)
 {
     DWORD code = 0;
@@ -1287,10 +1094,10 @@ static BOOL create_process(const char *app, const char *cmdline, uint32_t *info)
         w32_set_error((DWORD)err);
         return FALSE;
     }
-    HANDLE process = new_object(WH_EVENT, code);
+    HANDLE process = new_object(WH_PROCESS, code);
     if (info) {
         info[0] = (uint32_t)process;
-        info[1] = (uint32_t)new_object(WH_EVENT, 0);
+        info[1] = (uint32_t)new_object(WH_PROCESS, 0);
         info[2] = 0x200;
         info[3] = 0x204;
     }
@@ -1438,7 +1245,7 @@ static void *WINAPI LocalReAlloc(void *mem, SIZE_T size, UINT flags)
 
 static const struct w32_export kernel32_core[] = {
     W32_FN(ExitProcess), W32_FN(TerminateProcess), W32_FN(GetCurrentProcess), W32_FN(GetCurrentThread),
-    W32_FN(GetCurrentProcessId), W32_FN(GetCurrentThreadId), W32_FN(GetLastError), W32_FN(SetLastError),
+    W32_FN(GetCurrentProcessId), W32_FN(GetLastError), W32_FN(SetLastError),
     W32_FN(SetErrorMode), W32_FN(GetErrorMode), W32_FN(GetModuleHandleA), W32_FN(GetModuleHandleW),
     W32_FN(GetModuleHandleExA), W32_FN(GetModuleHandleExW), W32_FN(GetModuleFileNameA),
     W32_FN(GetModuleFileNameW), W32_FN(LoadLibraryA), W32_FN(LoadLibraryW), W32_FN(LoadLibraryExA),
@@ -1447,10 +1254,9 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(GetVersionExA), W32_FN(GetVersionExW), W32_FN(IsProcessorFeaturePresent), W32_FN(GetSystemInfo),
     W32_AS("GetNativeSystemInfo", GetSystemInfo), W32_FN(IsWow64Process), W32_FN(SetUnhandledExceptionFilter),
     W32_FN(UnhandledExceptionFilter), W32_FN(RaiseException), W32_FN(RtlUnwind), W32_FN(RtlCaptureContext),
-    W32_FN(GetThreadId), W32_FN(GetProcessId), W32_FN(InterlockedPushEntrySList), W32_FN(InterlockedPopEntrySList),
+    W32_FN(GetProcessId), W32_FN(InterlockedPushEntrySList), W32_FN(InterlockedPopEntrySList),
     W32_FN(InterlockedFlushSList), W32_FN(QueryDepthSList), W32_FN(RtlPcToFileHeader), W32_FN(IsDebuggerPresent),
-    W32_FN(OutputDebugStringA), W32_FN(OutputDebugStringW), W32_FN(DebugBreak), W32_FN(Sleep), W32_FN(SleepEx),
-    W32_FN(GetTickCount), W32_FN(GetTickCount64), W32_FN(QueryPerformanceCounter),
+    W32_FN(OutputDebugStringA), W32_FN(OutputDebugStringW), W32_FN(DebugBreak), W32_FN(GetTickCount), W32_FN(GetTickCount64), W32_FN(QueryPerformanceCounter),
     W32_FN(QueryPerformanceFrequency), W32_FN(GetSystemTimeAsFileTime), W32_FN(GetSystemTimePreciseAsFileTime),
     W32_FN(GetSystemTime), W32_FN(GetLocalTime), W32_FN(FileTimeToSystemTime), W32_FN(SystemTimeToFileTime),
     W32_FN(FileTimeToLocalFileTime), W32_FN(LocalFileTimeToFileTime), W32_FN(SystemTimeToTzSpecificLocalTime),
@@ -1462,21 +1268,10 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(GlobalMemoryStatus), W32_FN(GlobalMemoryStatusEx), W32_FN(LocalAlloc), W32_FN(LocalReAlloc),
     W32_FN(LocalFree), W32_AS("LocalLock", GlobalLock), W32_AS("LocalUnlock", GlobalUnlock),
     W32_AS("LocalSize", GlobalSize), W32_FN(TlsAlloc), W32_FN(TlsFree), W32_FN(TlsGetValue), W32_FN(TlsSetValue),
-    W32_FN(FlsAlloc), W32_FN(FlsFree), W32_FN(FlsGetValue), W32_FN(FlsSetValue),
-    W32_AS("InitializeCriticalSection", CriticalSectionNop), W32_AS("EnterCriticalSection", CriticalSectionNop),
-    W32_AS("LeaveCriticalSection", CriticalSectionNop), W32_AS("DeleteCriticalSection", CriticalSectionNop),
-    W32_FN(InitializeCriticalSectionAndSpinCount), W32_FN(InitializeCriticalSectionEx),
-    W32_FN(TryEnterCriticalSection), W32_FN(CreateEventA), W32_FN(CreateEventW), W32_FN(CreateMutexA),
-    W32_FN(CreateMutexW), W32_FN(CreateSemaphoreA), W32_FN(CreateSemaphoreW), W32_FN(SetEvent),
-    W32_FN(ResetEvent), W32_FN(ReleaseMutex), W32_FN(ReleaseSemaphore), W32_FN(WaitForSingleObject),
-    W32_FN(WaitForSingleObjectEx), W32_FN(WaitForMultipleObjects), W32_FN(CloseHandle), W32_FN(DuplicateHandle),
-    W32_FN(CreateThread), W32_FN(InterlockedIncrement), W32_FN(InterlockedDecrement), W32_FN(InterlockedExchange),
+    W32_FN(CloseHandle), W32_FN(DuplicateHandle),
+    W32_FN(InterlockedIncrement), W32_FN(InterlockedDecrement), W32_FN(InterlockedExchange),
     W32_FN(InterlockedExchangeAdd), W32_FN(InterlockedCompareExchange), W32_FN(InitializeSListHead),
-    W32_AS("InitializeSRWLock", SrwNop), W32_AS("AcquireSRWLockExclusive", SrwNop),
-    W32_AS("ReleaseSRWLockExclusive", SrwNop), W32_AS("AcquireSRWLockShared", SrwNop),
-    W32_AS("ReleaseSRWLockShared", SrwNop), W32_AS("InitializeConditionVariable", SrwNop),
-    W32_AS("WakeConditionVariable", SrwNop), W32_AS("WakeAllConditionVariable", SrwNop),
-    W32_FN(SleepConditionVariableCS), W32_FN(InitOnceExecuteOnce), W32_FN(SetConsoleCtrlHandler),
+    W32_FN(SetConsoleCtrlHandler),
     W32_FN(GetProcessAffinityMask), W32_FN(EncodePointer), W32_FN(DecodePointer),
     W32_AS("EncodeSystemPointer", EncodePointer), W32_AS("DecodeSystemPointer", DecodePointer),
     W32_FN(SetHandleCount), W32_FN(CreateProcessA), W32_FN(CreateProcessW), W32_FN(GetExitCodeProcess),
@@ -1487,8 +1282,6 @@ static void kernel32_attach(void)
 {
     unhandled_filter = NULL;
     error_mode = 0;
-    memset(fls_values, 0, sizeof(fls_values));
-    memset(fls_used, 0, sizeof(fls_used));
 }
 
 W32_EXPORTS(kernel32_core_module, "kernel32.dll", kernel32_core, .attach = kernel32_attach);

@@ -158,6 +158,16 @@ passwd -p topsecret bob
 password for bob updated
 userdel bob
 user bob deleted
+winthread | head -n 1
+threads done: total=20000 counter=20000 code=5000
+winthread | grep preemption
+preemption: ok
+winthread | grep -c ok
+2
+winthread | grep semaphore
+semaphore: got=3 waiter=7
+winthread | grep condition
+condition variable: consumed=5
 lsusb
 QEMU USB Keyboard
 cat '/mnt/hdb/Long Name Note.txt'

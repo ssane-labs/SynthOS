@@ -223,3 +223,38 @@ bool hal_in_interrupt(void)
 {
     return interrupt_depth > 0;
 }
+
+int arch_irq_depth(void)
+{
+    return interrupt_depth;
+}
+
+void arch_set_irq_depth(int depth)
+{
+    interrupt_depth = depth;
+}
+
+void arch_fpu_save(void *area)
+{
+    if (!info.fpu)
+        return;
+    if (sse)
+        __asm__ volatile("fxsave (%0)" : : "r"(area) : "memory");
+    else
+        __asm__ volatile("fnsave (%0); frstor (%0)" : : "r"(area) : "memory");
+}
+
+void arch_fpu_restore(const void *area)
+{
+    if (!info.fpu)
+        return;
+    if (sse)
+        __asm__ volatile("fxrstor (%0)" : : "r"(area) : "memory");
+    else
+        __asm__ volatile("frstor (%0)" : : "r"(area) : "memory");
+}
+
+void arch_load_teb_selector(void)
+{
+    __asm__ volatile("mov %0, %%fs" : : "r"(0x18) : "memory");
+}
