@@ -547,6 +547,7 @@ static bool high_arena(void)
 static void cleanup(void)
 {
     w32_winsock_cleanup();
+    w32_inet_cleanup();
 #if CONFIG_GUI
     w32_gui_cleanup();
 #endif

@@ -152,7 +152,7 @@ static bool parse_spki(struct der *spki, struct x509 *c)
         struct der seq, n, e;
         if (!der_expect(&key, 0x30, &seq, NULL) || !der_expect(&seq, 0x02, &n, NULL) || !der_expect(&seq, 0x02, &e, NULL))
             return false;
-        c->key = KEY_RSA;
+        c->key = PK_RSA;
         c->rsa_n = n.p;
         c->rsa_n_len = n.n;
         c->rsa_e = e.p;
@@ -164,14 +164,14 @@ static bool parse_spki(struct der *spki, struct x509 *c)
         if (!der_expect(&alg, 0x06, &curve, NULL))
             return false;
         if (oid_is(&curve, oid_p256, sizeof(oid_p256)))
-            c->key = KEY_EC_P256;
+            c->key = PK_EC_P256;
         else if (oid_is(&curve, oid_p384, sizeof(oid_p384)))
-            c->key = KEY_EC_P384;
+            c->key = PK_EC_P384;
         c->ec_point = key.p;
         c->ec_point_len = key.n;
         return true;
     }
-    c->key = KEY_NONE;
+    c->key = PK_NONE;
     return true;
 }
 
@@ -271,15 +271,15 @@ bool x509_verify_signature(const struct x509 *cert, const struct x509 *issuer)
     uint8_t digest[HASH_MAX];
     hash_digest(h, cert->tbs, cert->tbs_len, digest);
     if (cert->sig_alg <= SIG_RSA_SHA512)
-        return issuer->key == KEY_RSA &&
+        return issuer->key == PK_RSA &&
                rsa_verify_pkcs1(issuer->rsa_n, issuer->rsa_n_len, issuer->rsa_e, issuer->rsa_e_len, h, digest,
                                 cert->sig, cert->sig_len);
-    if (issuer->key != KEY_EC_P256 && issuer->key != KEY_EC_P384)
+    if (issuer->key != PK_EC_P256 && issuer->key != PK_EC_P384)
         return false;
     struct der sig = {cert->sig, cert->sig_len}, seq, r, s;
     if (!der_expect(&sig, 0x30, &seq, NULL) || !der_expect(&seq, 0x02, &r, NULL) || !der_expect(&seq, 0x02, &s, NULL))
         return false;
-    return ecdsa_verify(issuer->key == KEY_EC_P256 ? EC_P256 : EC_P384, issuer->ec_point, issuer->ec_point_len, digest,
+    return ecdsa_verify(issuer->key == PK_EC_P256 ? EC_P256 : EC_P384, issuer->ec_point, issuer->ec_point_len, digest,
                         h->digest, r.p, r.n, s.p, s.n);
 }
 

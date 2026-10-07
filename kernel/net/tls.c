@@ -614,13 +614,13 @@ static int check_certificate_verify(struct tls *t, const uint8_t *m, size_t len)
     bool ok = false;
     if (alg == 0x0403 || alg == 0x0503) {
         enum ec_curve c = alg == 0x0403 ? EC_P256 : EC_P384;
-        if ((leaf->key == KEY_EC_P256 && c == EC_P256) || (leaf->key == KEY_EC_P384 && c == EC_P384)) {
+        if ((leaf->key == PK_EC_P256 && c == EC_P256) || (leaf->key == PK_EC_P384 && c == EC_P384)) {
             const uint8_t *r, *sv;
             size_t r_len, s_len;
             if (der_signature(sig, sig_len, &r, &r_len, &sv, &s_len))
                 ok = ecdsa_verify(c, leaf->ec_point, leaf->ec_point_len, digest, h->digest, r, r_len, sv, s_len);
         }
-    } else if (leaf->key == KEY_RSA) {
+    } else if (leaf->key == PK_RSA) {
         ok = rsa_verify_pss(leaf->rsa_n, leaf->rsa_n_len, leaf->rsa_e, leaf->rsa_e_len, h, digest, sig, sig_len);
     }
     return ok || !t->verify ? 0 : TLS_ERR_SIGNATURE;

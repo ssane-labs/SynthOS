@@ -73,8 +73,8 @@ SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.
 .PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs
 all: $(IMAGE)
 
-ESP_LBA     := 4096
-ESP_SECTORS := 4096
+ESP_LBA     := 8192
+ESP_SECTORS := 8192
 EFICC       ?= $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 HAVE_ESP    := $(and $(shell command -v mkfs.fat 2>/dev/null),$(shell command -v mcopy 2>/dev/null))
 
@@ -196,7 +196,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win32/%.c
 ifneq ($(W32CC),)
 	@echo "  W32CC   $<"
 	@$(if $(wildcard programs/win32/$*.rc),$(W32CC:%gcc=%windres) -O coff -o $(BUILD)/$*.res.o programs/win32/$*.rc)
-	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32
+	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon
 	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"
@@ -219,7 +219,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win64/%.c
 	@mkdir -p $(@D)
 ifneq ($(W64CC),)
 	@echo "  W64CC   $<"
-	@$(W64CC) -O2 -s -o $@ $< -lgdi32 -lws2_32
+	@$(W64CC) -O2 -s -o $@ $< -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon
 	@mkdir -p programs/win64/prebuilt && cp $@ programs/win64/prebuilt/
 else
 	@echo "  COPY    programs/win64/prebuilt/$(@F)"

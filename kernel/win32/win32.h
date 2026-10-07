@@ -296,6 +296,7 @@ uint32_t w32_thread_id(void);
 void w32_idle(int ms);
 void w32_gui_cleanup(void);
 void w32_winsock_cleanup(void);
+void w32_inet_cleanup(void);
 HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id);
 void w32_run_atexit(void);
 uint32_t w32_call(void *fn, int argc, const uint32_t *args);

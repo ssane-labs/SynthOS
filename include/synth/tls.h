@@ -3,7 +3,7 @@
 
 #include <synth/types.h>
 
-enum x509_key { KEY_NONE, KEY_RSA, KEY_EC_P256, KEY_EC_P384 };
+enum x509_key { PK_NONE, PK_RSA, PK_EC_P256, PK_EC_P384 };
 
 struct x509 {
     const uint8_t *raw, *tbs, *issuer, *subject, *sig, *san;

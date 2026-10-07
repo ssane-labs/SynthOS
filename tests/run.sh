@@ -271,6 +271,12 @@ wget -O /tmp/t.txt https://10.0.2.2:$port/hello.txt | grep TLS
 TLS 1.3, AES-128-GCM, certificate for 10.0.2.2 (verified)
 sha256sum /tmp/t.txt
 $(sha256sum "$work/www/hello.txt" | cut -c1-64)  /tmp/t.txt
+cd /tmp; winnet https://10.0.2.2:$port/hello.txt | grep wininet
+wininet: status 200, 16 bytes, first line 'secret over tls'
+cd /tmp; winnet64 https://10.0.2.2:$port/hello.txt | grep winhttp
+winhttp: status 200, 16 bytes
+cd /tmp; winnet64 https://10.0.2.2:$port/hello.txt | grep urlmon
+urlmon: ok, 16 bytes
 EOF
 fi
 

@@ -12,7 +12,7 @@
 
 #define BOOT_MAGIC 0x5359424fu
 #define KERNEL_MAGIC 0x4b4e5953u
-#define DISK_DATA_LBA 8192u
+#define DISK_DATA_LBA 16384u
 
 extern const char synth_ramdisk_start[];
 extern const char synth_ramdisk_end[];
