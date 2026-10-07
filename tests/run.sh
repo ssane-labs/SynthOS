@@ -136,6 +136,12 @@ ls C:/Windows/System32 | grep -c dll
 kernel32.dll
 cd 'C:\Program Files'; pwd; cd
 /apps
+launch | grep Mine
+Clear the field without hitting a mine
+launch paint
+the desktop is not running
+desktop
+no graphics mode available
 EOF
 
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"

@@ -409,6 +409,7 @@ void shell_repl(struct shell *sh)
         hooks.prompt = draw_prompt;
         text[0] = 0;
         int n;
+        sh->idle = true;
         for (;;) {
             n = lineedit_read(line, CONFIG_LINE_MAX, &hooks);
             if (n < 0)
@@ -420,7 +421,8 @@ void shell_repl(struct shell *sh)
                 break;
             hooks.prompt = draw_continuation;
         }
-        if (n == LE_EOF && !con_is_grid())
+        sh->idle = false;
+        if (n == LE_EOF && (!con_is_grid() || sh->ctl == CTL_EXIT))
             break;
         if (n < 0)
             continue;

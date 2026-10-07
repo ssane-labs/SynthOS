@@ -15,6 +15,8 @@ static uint64_t tsc_remainder;
 
 void bios_init(void)
 {
+    if (ready || (x86_boot_info()->flags & BOOT_UEFI))
+        return;
     size_t size = (size_t)(bios_thunk_end - bios_thunk_start);
     if (size > THUNK_REGS - THUNK_ADDR)
         return;

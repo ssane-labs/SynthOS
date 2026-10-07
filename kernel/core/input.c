@@ -8,10 +8,16 @@ static int queue[QUEUE_SIZE];
 static unsigned head, tail;
 static bool break_mode;
 static volatile bool break_flag;
+static void (*pump)(int timeout_ms);
+
+void input_set_pump(void (*fn)(int timeout_ms))
+{
+    pump = fn;
+}
 
 static bool push(int key)
 {
-    if (key == KEY_RESIZE) {
+    if (key == KEY_RESIZE && !pump) {
         struct display *d = hal_display();
         con_resize(d->cols, d->rows);
     }
@@ -25,10 +31,19 @@ static bool push(int key)
     return true;
 }
 
+void input_inject(int key)
+{
+    push(key);
+}
+
 bool input_poll(void)
 {
     if (tail != head)
         return true;
+    if (pump && !hal_in_interrupt()) {
+        pump(0);
+        return tail != head;
+    }
     for (;;) {
         int key = hal_key_read(0);
         if (key == KEY_NONE)
@@ -52,6 +67,12 @@ int input_getkey(int timeout_ms)
             if (now >= deadline)
                 return KEY_NONE;
             wait = (int)(deadline - now);
+        }
+        if (pump) {
+            pump(break_mode && wait < 0 ? 50 : wait);
+            if (timeout_ms == 0 && tail == head)
+                return KEY_NONE;
+            continue;
         }
         int key = hal_key_read(break_mode && wait < 0 ? 50 : wait);
         if (key == KEY_NONE) {

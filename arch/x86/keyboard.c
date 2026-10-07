@@ -48,6 +48,8 @@ static int extended_key(uint8_t code)
     case 0x53: return KEY_DELETE;
     case 0x1c: return KEY_ENTER;
     case 0x35: return '/';
+    case 0x5b:
+    case 0x5c: return KEY_SUPER;
     default: return KEY_NONE;
     }
 }
@@ -130,11 +132,22 @@ static void handle(uint8_t sc)
         push(key);
 }
 
+void i8042_drain(void)
+{
+    uint8_t status;
+    while ((status = inb(0x64)) & 1) {
+        uint8_t data = inb(0x60);
+        if (status & 0x20)
+            mouse_byte(data);
+        else
+            handle(data);
+    }
+}
+
 static void keyboard_irq(struct regs *r)
 {
     UNUSED(r);
-    while (inb(0x64) & 1)
-        handle(inb(0x60));
+    i8042_drain();
 }
 
 void keyboard_init(void)

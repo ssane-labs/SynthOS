@@ -196,7 +196,7 @@ COMMAND(fetch, "sysinfo,neofetch", "system", "fetch", "show system information w
     labels[n] = "Memory";
     ksnprintf(lines[n++], 96, "%s / %s", used, total);
     labels[n] = "Display";
-    ksnprintf(lines[n++], 96, "%s %dx%d", hal_display()->name, con_cols(), con_rows());
+    ksnprintf(lines[n++], 96, "%s %dx%d", con_display()->name, con_cols(), con_rows());
     labels[n] = "Theme";
     ksnprintf(lines[n++], 96, "%s, cp%d", theme_current()->name, codepage_current());
     labels[n] = "Shell";

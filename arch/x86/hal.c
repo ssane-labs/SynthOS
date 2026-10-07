@@ -76,6 +76,36 @@ void hal_set_codepage(int codepage)
 }
 
 #ifndef CONFIG_SERIAL_CONSOLE
+static struct framebuffer uefi_fb;
+#endif
+
+bool hal_graphics_enter(struct framebuffer *fb)
+{
+#ifdef CONFIG_SERIAL_CONSOLE
+    UNUSED(fb);
+    return false;
+#else
+    if (bootinfo->flags & BOOT_UEFI) {
+        if (!uefi_fb.base)
+            return false;
+        *fb = uefi_fb;
+        return true;
+    }
+    return vbe_enter(fb);
+#endif
+}
+
+void hal_graphics_leave(void)
+{
+#ifndef CONFIG_SERIAL_CONSOLE
+    if (bootinfo->flags & BOOT_UEFI)
+        fbcon_invalidate();
+    else
+        vbe_leave();
+#endif
+}
+
+#ifndef CONFIG_SERIAL_CONSOLE
 static struct display *framebuffer_display(void)
 {
     if (!(bootinfo->flags & BOOT_UEFI) || !bootinfo->fb_addr)
@@ -90,6 +120,7 @@ static struct display *framebuffer_display(void)
         .blue_shift = bootinfo->fb_shift[2],
     };
     fb.base = vmm_map_phys(bootinfo->fb_addr, (size_t)fb.pitch * fb.height);
+    uefi_fb = fb;
     struct display *d = fbcon_create(&fb);
     framebuffer_console = d != NULL;
     return d;
@@ -245,6 +276,7 @@ void x86_main(uint32_t magic, const struct x86_bootinfo *info)
     cpu_init();
     pit_init(1000);
     keyboard_init();
+    mouse_init();
     serial_init();
 #ifdef CONFIG_SERIAL_CONSOLE
     display = serial_display();

@@ -41,6 +41,9 @@ endif
 ifeq ($(CONFIG_WIN32),0)
 KERNEL_SRC := $(filter-out kernel/win32/%,$(KERNEL_SRC))
 endif
+ifeq ($(CONFIG_GUI),0)
+KERNEL_SRC := $(filter-out kernel/gui/%,$(KERNEL_SRC))
+endif
 ifeq ($(CONFIG_EDITOR),0)
 KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif

@@ -213,7 +213,7 @@ void dos_enter_screen(struct dos *d, bool clear)
         return;
     if (!d->screen) {
         d->screen = true;
-        struct display *disp = hal_display();
+        struct display *disp = con_display();
         if (disp->palette)
             disp->palette(vga_palette);
         int cx, cy;

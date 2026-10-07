@@ -49,6 +49,7 @@ struct shell {
     int loop_depth;
     int call_depth;
     bool interactive;
+    bool idle;
     struct strmap vars;
     struct strmap aliases;
     struct sh_function *funcs;

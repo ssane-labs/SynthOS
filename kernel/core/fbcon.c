@@ -139,6 +139,13 @@ struct display *fbcon_create(const struct framebuffer *info)
     return &display;
 }
 
+void fbcon_invalidate(void)
+{
+    for (int i = 0; i < display.cols * display.rows; i++)
+        shown[i] = (struct cell){0xff, 0xff};
+    clear_margins();
+}
+
 void fbcon_codepage_changed(void)
 {
     if (display.cols)

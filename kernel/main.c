@@ -64,6 +64,10 @@ static bool cmdline_flag(const char *cmdline, const char *flag)
 #if CONFIG_WIN32
 void win32_install(void);
 #endif
+#if CONFIG_GUI
+bool gui_autostart(void);
+int gui_run(struct shell *sh);
+#endif
 
 static void mount_storage(void)
 {
@@ -179,6 +183,10 @@ void kmain(const struct boot_info *bi)
     if (con_is_grid())
         con_clear();
     show_welcome(sh);
+#if CONFIG_GUI
+    if (gui_autostart() && con_is_grid())
+        gui_run(sh);
+#endif
     shell_repl(sh);
 
     con_role(ROLE_MUTED);

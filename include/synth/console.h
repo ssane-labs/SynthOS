@@ -7,6 +7,7 @@
 typedef void (*status_render_fn)(int cols);
 
 void con_init(struct display *d);
+struct display *con_display(void);
 void con_resize(int cols, int rows);
 bool con_is_grid(void);
 int con_cols(void);

@@ -80,6 +80,11 @@ static bool alloc_cells(int c, int r)
     return true;
 }
 
+struct display *con_display(void)
+{
+    return disp;
+}
+
 void con_init(struct display *d)
 {
     disp = d;

@@ -132,6 +132,8 @@ bool bios_available(void);
 bool bios_call(uint8_t intno, struct bios_regs *r);
 void biosdisk_init(uint8_t drive);
 
+struct framebuffer;
+
 struct pci_device {
     uint8_t bus, dev, fn;
     uint16_t vendor, device;
@@ -143,11 +145,16 @@ void pci_write(const struct pci_device *d, uint8_t offset, uint32_t value);
 void pci_foreach(void (*fn)(const struct pci_device *d, void *ctx), void *ctx);
 bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *out);
 void ahci_init(void);
+bool vbe_enter(struct framebuffer *fb);
+void vbe_leave(void);
 void nvme_init(void);
 void irq_install(int irq, irq_handler handler);
 void pit_init(uint32_t hz);
 void keyboard_init(void);
 int keyboard_read(void);
+void i8042_drain(void);
+void mouse_init(void);
+void mouse_byte(uint8_t data);
 void serial_init(void);
 bool serial_ready(void);
 int serial_getc(void);

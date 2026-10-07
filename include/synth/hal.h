@@ -52,7 +52,21 @@ struct boot_info {
     const char *cmdline;
 };
 
+struct pointer_event {
+    int dx;
+    int dy;
+    int wheel;
+    unsigned buttons;
+};
+
+struct framebuffer;
+
 struct display *hal_display(void);
+bool hal_pointer_read(struct pointer_event *ev);
+bool hal_in_interrupt(void);
+bool hal_pointer_present(void);
+bool hal_graphics_enter(struct framebuffer *fb);
+void hal_graphics_leave(void);
 int hal_key_read(int timeout_ms);
 uint64_t hal_ticks_ms(void);
 void hal_sleep_ms(uint32_t ms);

@@ -16,5 +16,6 @@ struct framebuffer {
 
 struct display *fbcon_create(const struct framebuffer *fb);
 void fbcon_codepage_changed(void);
+void fbcon_invalidate(void);
 
 #endif

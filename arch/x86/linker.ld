@@ -29,6 +29,9 @@ SECTIONS
         __start_synth_win32 = .;
         KEEP(*(synth_win32))
         __stop_synth_win32 = .;
+        __start_synth_gui_apps = .;
+        KEEP(*(synth_gui_apps))
+        __stop_synth_gui_apps = .;
         __start_synth_fs = .;
         KEEP(*(synth_fs))
         __stop_synth_fs = .;

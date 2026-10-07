@@ -34,6 +34,7 @@ static arch_fault_fn fault_handler;
 static void (*tick_hook)(uint32_t eip);
 static bool sse;
 static struct cpu_info info;
+static volatile int interrupt_depth;
 
 static void fpu_init(void);
 static struct idt_entry idt[256];
@@ -206,6 +207,7 @@ void x86_interrupt(struct regs *r)
     }
     int irq = (int)r->vector - 32;
     if (irq >= 0 && irq < 16) {
+        interrupt_depth++;
         if (irq_handlers[irq])
             irq_handlers[irq](r);
         if (irq >= 8)
@@ -213,5 +215,11 @@ void x86_interrupt(struct regs *r)
         outb(0x20, 0x20);
         if (irq == 0 && tick_hook)
             tick_hook(r->eip);
+        interrupt_depth--;
     }
+}
+
+bool hal_in_interrupt(void)
+{
+    return interrupt_depth > 0;
 }
