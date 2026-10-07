@@ -168,6 +168,24 @@ winthread | grep semaphore
 semaphore: got=3 waiter=7
 winthread | grep condition
 condition variable: consumed=5
+wingdi | head -n 2 | tail -n 1
+red rect=100
+wingdi | grep ellipse
+ellipse round
+wingdi | grep line=
+line=64
+wingdi | grep dib
+dib pixel=ff0000
+wingdi | grep extent
+text extent ok, ink ok
+wingdi | grep blit
+blit red=100
+wingdi | grep stretch
+stretch red=25
+wingdi | grep bpp
+bitmap 64x64 32bpp
+winwindow
+needs the SynthOS desktop
 lsusb
 QEMU USB Keyboard
 cat '/mnt/hdb/Long Name Note.txt'

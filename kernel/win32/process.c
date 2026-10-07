@@ -519,6 +519,9 @@ static size_t choose_arena(void)
 
 static void cleanup(void)
 {
+#if CONFIG_GUI
+    w32_gui_cleanup();
+#endif
     for (int i = 0; i < W32_MAX_HANDLES; i++)
         if (w32->handles[i].type != WH_FREE)
             w32_handle_close((HANDLE)(uintptr_t)(HANDLE_BASE + i * 4));

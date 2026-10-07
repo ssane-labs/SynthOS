@@ -191,7 +191,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win32/%.c
 	@mkdir -p $(@D)
 ifneq ($(W32CC),)
 	@echo "  W32CC   $<"
-	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^)
+	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) -lgdi32
 	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"

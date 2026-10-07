@@ -1,5 +1,7 @@
 #include <synth/error.h>
+#include <synth/heap.h>
 #include <synth/log.h>
+#include <synth/lz4.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -20,7 +22,23 @@ static uint16_t rd16(const uint8_t *p)
     return (uint16_t)(p[0] | p[1] << 8);
 }
 
+static int unpack(const void *data, size_t size, const char *dest);
+
 int ramdisk_unpack(const void *data, size_t size, const char *dest)
+{
+    const uint8_t *z = data;
+    if (size < 8 || memcmp(z, "SRDZ", 4) != 0)
+        return unpack(data, size, dest);
+    uint32_t raw = rd32(z + 4);
+    uint8_t *buf = kmalloc(raw);
+    if (!buf)
+        return E_NOMEM;
+    int files = lz4_decode(z + 8, size - 8, buf, raw) == raw ? unpack(buf, raw, dest) : E_IO;
+    kfree(buf);
+    return files;
+}
+
+static int unpack(const void *data, size_t size, const char *dest)
 {
     const uint8_t *p = data;
     if (size < 8 || memcmp(p, RAMDISK_MAGIC, 4) != 0)

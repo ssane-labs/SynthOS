@@ -848,6 +848,9 @@ struct dialog {
     ui_prompt_fn done;
     struct window *owner;
     enum icon_id icon;
+    char buttons[3][16];
+    int button_count;
+    ui_pick_fn pick;
 };
 
 #define DIALOG_W 300
@@ -869,6 +872,29 @@ static void dialog_frame(struct ui *ui, void *data)
         if (!ui->st->focus)
             ui->st->focus = ui->id + 1;
         submit = ui_textbox(ui, (struct rect){20, y, area.w - 40, 26}, &d->input);
+    }
+    if (d->button_count) {
+        int n = d->button_count, bw = (area.w - 40 - 10 * (n - 1)) / n, chosen = -2;
+        for (int i = 0; i < n; i++) {
+            struct rect r = {20 + i * (bw + 10), area.h - 46, bw, 28};
+            if (i == n - 1 ? ui_button_primary(ui, r, d->buttons[i]) : ui_button(ui, r, d->buttons[i]))
+                chosen = i;
+        }
+        int key = ui_key(ui);
+        if (key == KEY_ENTER || key == '\r')
+            chosen = n - 1;
+        else if (key == KEY_ESC)
+            chosen = n > 1 ? 0 : n - 1;
+        if (chosen >= 0) {
+            struct window *w = ui->win;
+            ui_pick_fn pick = d->pick;
+            struct window *owner = d->owner;
+            ui->win = NULL;
+            wm_destroy(w);
+            if (pick)
+                pick(owner, chosen);
+        }
+        return;
     }
     bool two = d->has_input || d->done;
     int bw = two ? (area.w - 50) / 2 : area.w - 40;
@@ -947,6 +973,19 @@ static struct dialog *open_dialog(struct window *owner, const char *title, const
 void gui_message(const char *title, const char *text)
 {
     open_dialog(NULL, title, text, NULL, NULL, ICON_INFO);
+}
+
+bool ui_alert(struct window *owner, const char *title, const char *text, enum icon_id icon,
+              const char *const *buttons, int count, ui_pick_fn pick)
+{
+    struct dialog *d = open_dialog(owner, title, text, NULL, NULL, icon);
+    if (!d)
+        return false;
+    d->button_count = MIN(count, 3);
+    for (int i = 0; i < d->button_count; i++)
+        str_copy(d->buttons[i], buttons[i], sizeof(d->buttons[i]));
+    d->pick = pick;
+    return true;
 }
 
 void ui_confirm(struct window *owner, const char *title, const char *text, ui_prompt_fn done)

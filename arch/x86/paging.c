@@ -16,7 +16,7 @@ static uint32_t *tables[1024];
 static uint32_t heap_phys;
 static uint32_t heap_bytes;
 static bool enabled;
-static uint32_t mmio_tables[32][1024] __attribute__((aligned(4096)));
+static uint32_t mmio_tables[4][1024] __attribute__((aligned(4096)));
 static int mmio_used;
 
 static uint32_t phys_of(const void *ptr)
@@ -131,11 +131,12 @@ void *vmm_map_phys(uint32_t phys, size_t size)
         uint32_t v = virt + off;
         uint32_t pde = v >> 22;
         if (!tables[pde]) {
-            if (mmio_used == (int)ARRAY_SIZE(mmio_tables))
+            uint32_t *t = mmio_used < (int)ARRAY_SIZE(mmio_tables) ? mmio_tables[mmio_used++] : kmalloc_pages(4096);
+            if (!t)
                 return NULL;
-            uint32_t *t = mmio_tables[mmio_used++];
+            memset(t, 0, 4096);
             tables[pde] = t;
-            page_dir[pde] = (uint32_t)t | PTE_PRESENT | PTE_WRITE;
+            page_dir[pde] = phys_of(t) | PTE_PRESENT | PTE_WRITE;
         }
         tables[pde][(v >> 12) & 1023] = (base + off) | PTE_PRESENT | PTE_WRITE;
         invlpg(v);

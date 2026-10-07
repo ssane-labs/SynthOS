@@ -1,3 +1,5 @@
+#include <synth/config.h>
+#include <synth/gui.h>
 #include <synth/console.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
@@ -48,6 +50,14 @@ static int buttons_for(UINT type, struct button *out)
 
 static int message_box_text(const char *text, const char *caption, UINT type)
 {
+#if CONFIG_GUI
+    if (gui_active()) {
+        int w32_gui_message_box(const char *text, const char *caption, UINT type);
+        int r = w32_gui_message_box(text, caption, type);
+        if (r)
+            return r;
+    }
+#endif
     struct button buttons[3];
     int count = buttons_for(type, buttons);
     if (!con_is_grid() || !stream_is_console(w32->ctx->out)) {
@@ -328,25 +338,7 @@ static BOOL WINAPI IsCharAlphaNumericA(char c)
     return is_alnum((uint8_t)c);
 }
 
-static int WINAPI GetSystemMetrics(int index)
-{
-    switch (index) {
-    case 0:
-        return con_cols() * 8;
-    case 1:
-        return con_rows() * 16;
-    case 43:
-        return 2;
-    default:
-        return 0;
-    }
-}
 
-static short WINAPI GetKeyState(int vk)
-{
-    UNUSED(vk);
-    return 0;
-}
 
 static int WINAPI LoadStringA(HANDLE inst, UINT id, LPSTR buf, int cap)
 {
@@ -378,10 +370,7 @@ static const struct w32_export user32_exports[] = {
     W32_FN(wvsprintfA), W32_FN(wvsprintfW), W32_FN(CharUpperA), W32_FN(CharLowerA), W32_FN(CharUpperW),
     W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA),
     W32_FN(CharNextW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
-    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA), W32_FN(GetSystemMetrics),
-    W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(LoadStringA), W32_FN(LoadStringW),
-    W32_AS("GetDesktopWindow", w32_zero0), W32_AS("GetForegroundWindow", w32_zero0),
-    W32_AS("GetActiveWindow", w32_zero0), W32_AS("FindWindowA", w32_zero2), W32_AS("FindWindowW", w32_zero2),
+    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA), W32_FN(LoadStringA), W32_FN(LoadStringW),
     W32_AS("GetProcessWindowStation", w32_zero0), W32_AS("GetUserObjectInformationW", w32_zero5),
     W32_AS("GetKeyboardLayout", GetKeyboardLayout),
 };
