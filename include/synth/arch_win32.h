@@ -27,6 +27,12 @@ void arch_set_irq_depth(int depth);
 void arch_fpu_save(void *area);
 void arch_fpu_restore(const void *area);
 void arch_load_teb_selector(void);
+void arch_w64_set_teb(uint32_t base);
+bool arch_long_supported(void);
+bool arch_long_enter(void);
+void arch_long_leave(void);
+bool arch_long_active(void);
+uint64_t arch_w64_call(uint32_t fn, int argc, const uint64_t *args);
 uint32_t arch_call_on_stack(uint32_t (*fn)(void *), void *arg, void *stack_top);
 
 #endif

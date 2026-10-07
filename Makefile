@@ -47,7 +47,7 @@ endif
 ifeq ($(CONFIG_EDITOR),0)
 KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
-KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm
+KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm arch/x86/long.asm
 KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/ramdisk.o $(OUT)/obj/biosblob.o
 
 SX_SRC   := $(wildcard programs/sx/*.sasm)
@@ -60,6 +60,9 @@ W32CXX   ?= $(if $(W32CC),$(W32CC:%gcc=%g++))
 W32_SRC  := $(wildcard programs/win32/*.c programs/win32/*.cpp)
 W32_DLL  := $(patsubst programs/win32/dll/%.c,$(BUILD)/rootfs/apps/%.dll,$(wildcard programs/win32/dll/*.c))
 W32_BIN  := $(patsubst programs/win32/%,$(BUILD)/rootfs/apps/%.exe,$(basename $(W32_SRC))) $(W32_DLL)
+W64CC    ?= $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
+W64_SRC  := $(wildcard programs/win64/*.c)
+W32_BIN  += $(patsubst programs/win64/%.c,$(BUILD)/rootfs/apps/%.exe,$(W64_SRC))
 ROOTFS_SRC := $(shell find rootfs -type f)
 
 TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
@@ -197,6 +200,17 @@ ifneq ($(W32CC),)
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"
 	@cp programs/win32/prebuilt/$(@F) $@
+endif
+
+$(BUILD)/rootfs/apps/%.exe: programs/win64/%.c
+	@mkdir -p $(@D)
+ifneq ($(W64CC),)
+	@echo "  W64CC   $<"
+	@$(W64CC) -O2 -s -o $@ $< -lgdi32
+	@mkdir -p programs/win64/prebuilt && cp $@ programs/win64/prebuilt/
+else
+	@echo "  COPY    programs/win64/prebuilt/$(@F)"
+	@cp programs/win64/prebuilt/$(@F) $@
 endif
 
 $(BUILD)/rootfs/apps/%.exe: programs/win32/%.cpp

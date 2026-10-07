@@ -59,6 +59,7 @@ typedef void (*crt_wsink)(void *ctx, const WCHAR *s, size_t n);
 
 extern int crt_errno_value;
 extern int crt_fmode;
+extern int crt_slots64;
 extern CRT_FILE crt_iob[3];
 
 void crt_set_errno(int e);

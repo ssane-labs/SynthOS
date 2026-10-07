@@ -1,6 +1,7 @@
 #include <synth/arch_win32.h>
 #include <synth/log.h>
 #include <synth/string.h>
+#include <synth/vmm.h>
 
 #include "io.h"
 
@@ -21,15 +22,31 @@ struct idt_entry {
     uint16_t offset_high;
 } __attribute__((packed));
 
+struct idt64_entry {
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t ist;
+    uint8_t flags;
+    uint16_t offset_mid;
+    uint32_t offset_high;
+    uint32_t zero;
+} __attribute__((packed));
+
 struct table_ptr {
     uint16_t limit;
     uint32_t base;
 } __attribute__((packed));
 
 extern const uint32_t isr_table[48];
+extern const uint32_t isr64_table[48];
 void gdt_flush(const struct table_ptr *ptr);
+void long_switch_on(uint32_t pml4, const struct table_ptr *idt);
+void long_switch_off(uint32_t root, const struct table_ptr *idt);
 
-static struct gdt_entry gdt[6];
+static struct gdt_entry gdt[8];
+static struct idt64_entry idt64[256] __attribute__((aligned(16)));
+static struct table_ptr idt32_ptr, idt64_ptr;
+static bool long_active;
 static arch_fault_fn fault_handler;
 static void (*tick_hook)(uint32_t eip);
 static bool sse;
@@ -109,6 +126,8 @@ void cpu_init(void)
     gdt_set(3, 0, 0xfff, 0x92, 0x40);
     gdt_set(4, 0, 0xffff, 0x9a, 0x00);
     gdt_set(5, 0, 0xffff, 0x92, 0x00);
+    gdt_set(6, 0, 0xfffff, 0x9a, 0xa0);
+    gdt_set(7, 0, 0x1fff, 0x92, 0x40);
     struct table_ptr gp = {sizeof(gdt) - 1, (uint32_t)gdt};
     gdt_flush(&gp);
 
@@ -117,8 +136,8 @@ void cpu_init(void)
         uint32_t addr = isr_table[i];
         idt[i] = (struct idt_entry){(uint16_t)(addr & 0xffff), 0x08, 0, 0x8e, (uint16_t)(addr >> 16)};
     }
-    struct table_ptr ip = {sizeof(idt) - 1, (uint32_t)idt};
-    __asm__ volatile("lidt %0" : : "m"(ip));
+    idt32_ptr = (struct table_ptr){sizeof(idt) - 1, (uint32_t)idt};
+    __asm__ volatile("lidt %0" : : "m"(idt32_ptr));
     fpu_init();
 }
 
@@ -190,6 +209,50 @@ bool arch_has_sse(void)
 void arch_w32_set_teb(uint32_t base)
 {
     gdt_set(3, base, 0xfff, 0x92, 0x40);
+}
+
+void arch_w64_set_teb(uint32_t base)
+{
+    gdt_set(7, base, 0x1fff, 0x92, 0x40);
+}
+
+bool arch_long_supported(void)
+{
+    return info.long_mode && info.sse && vmm_pae();
+}
+
+bool arch_long_enter(void)
+{
+    if (long_active)
+        return true;
+    if (!arch_long_supported())
+        return false;
+    uint32_t root = vmm_long_mode_root();
+    if (!root)
+        return false;
+    if (!idt64_ptr.base) {
+        for (int i = 0; i < 48; i++) {
+            uint32_t addr = isr64_table[i];
+            idt64[i] = (struct idt64_entry){(uint16_t)addr, 0x30, 0, 0x8e, (uint16_t)(addr >> 16), 0, 0};
+        }
+        idt64_ptr = (struct table_ptr){sizeof(idt64) - 1, (uint32_t)idt64};
+    }
+    long_switch_on(root, &idt64_ptr);
+    long_active = true;
+    return true;
+}
+
+void arch_long_leave(void)
+{
+    if (!long_active)
+        return;
+    long_switch_off(vmm_pae_root(), &idt32_ptr);
+    long_active = false;
+}
+
+bool arch_long_active(void)
+{
+    return long_active;
 }
 
 void arch_set_fault_handler(arch_fault_fn fn)

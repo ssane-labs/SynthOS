@@ -23,7 +23,8 @@ struct pe_info {
     uint16_t sections;
     uint16_t characteristics;
     uint32_t entry;
-    uint32_t image_base;
+    uint64_t image_base;
+    bool pe64;
     uint32_t image_size;
     uint32_t headers_size;
     uint32_t dirs;
@@ -43,6 +44,11 @@ static uint16_t rd16(const uint8_t *p)
     return (uint16_t)(p[0] | p[1] << 8);
 }
 
+static uint64_t rd64(const uint8_t *p)
+{
+    return rd32(p) | (uint64_t)rd32(p + 4) << 32;
+}
+
 static bool parse_headers(const uint8_t *file, size_t size, struct pe_info *pe)
 {
     if (size < 0x40 || file[0] != 'M' || file[1] != 'Z')
@@ -54,16 +60,20 @@ static bool parse_headers(const uint8_t *file, size_t size, struct pe_info *pe)
     pe->file_size = size;
     pe->coff = lfanew + 4;
     pe->opt = pe->coff + 20;
-    if (rd16(file + pe->coff) != 0x14c || rd16(file + pe->opt) != 0x10b)
+    uint16_t machine = rd16(file + pe->coff), magic = rd16(file + pe->opt);
+    pe->pe64 = machine == 0x8664 && magic == 0x20b;
+    if (!pe->pe64 && (machine != 0x14c || magic != 0x10b))
+        return false;
+    if (pe->pe64 && lfanew + 24 + 112 > size)
         return false;
     pe->sections = rd16(file + pe->coff + 2);
     pe->characteristics = rd16(file + pe->coff + 18);
     pe->entry = rd32(file + pe->opt + 16);
-    pe->image_base = rd32(file + pe->opt + 28);
+    pe->image_base = pe->pe64 ? rd64(file + pe->opt + 24) : rd32(file + pe->opt + 28);
     pe->image_size = ALIGN_UP(rd32(file + pe->opt + 56), 4096u);
     pe->headers_size = rd32(file + pe->opt + 60);
-    pe->dir_count = MIN(rd32(file + pe->opt + 92), 16u);
-    pe->dirs = pe->opt + 96;
+    pe->dir_count = MIN(rd32(file + pe->opt + (pe->pe64 ? 108 : 92)), 16u);
+    pe->dirs = pe->opt + (pe->pe64 ? 112 : 96);
     return pe->image_size > 0 && pe->image_size < 512u * 1024 * 1024;
 }
 
@@ -71,6 +81,12 @@ bool w32_is_pe(const uint8_t *file, size_t size)
 {
     struct pe_info pe;
     return parse_headers(file, size, &pe);
+}
+
+bool w32_is_pe64(const uint8_t *file, size_t size)
+{
+    struct pe_info pe;
+    return parse_headers(file, size, &pe) && pe.pe64;
 }
 
 static void dir_of(const struct pe_info *pe, int index, uint32_t *rva, uint32_t *size)
@@ -130,6 +146,19 @@ static void *builtin_ordinal(const char *module, uint32_t ordinal)
     SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def)
         if (!strcmp(def->name, module) && def->ordinals && ordinal < def->ordinal_count && def->ordinals[ordinal])
             return builtin_lookup(module, def->ordinals[ordinal]);
+    return NULL;
+}
+
+void *w32_builtin_lookup(const char *module, const char *symbol)
+{
+    return builtin_lookup(module, symbol);
+}
+
+const char *w32_builtin_ordinal_name(const char *module, uint32_t ordinal)
+{
+    SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def)
+        if (!strcmp(def->name, module) && def->ordinals && ordinal < def->ordinal_count)
+            return def->ordinals[ordinal];
     return NULL;
 }
 
@@ -208,10 +237,10 @@ static struct w32_image *load_builtin(const char *name)
     return img;
 }
 
-static uint32_t pick_base(uint32_t preferred, uint32_t size, bool relocatable)
+static uint32_t pick_base(uint64_t preferred, uint32_t size, bool relocatable)
 {
-    if (vmm_range_free(preferred, size))
-        return preferred;
+    if (preferred >= VMM_USER_START && preferred + size <= VMM_USER_END && vmm_range_free((uint32_t)preferred, size))
+        return (uint32_t)preferred;
     if (!relocatable)
         return 0;
     for (uint32_t base = 0x10000000u; base < 0xb0000000u; base += 0x10000u)
@@ -221,7 +250,7 @@ static uint32_t pick_base(uint32_t preferred, uint32_t size, bool relocatable)
     return 0;
 }
 
-static bool apply_relocations(const struct pe_info *pe, uint8_t *mem, uint32_t delta)
+static bool apply_relocations(const struct pe_info *pe, uint8_t *mem, uint64_t delta)
 {
     uint32_t rva, size;
     dir_of(pe, DIR_RELOC, &rva, &size);
@@ -241,8 +270,15 @@ static bool apply_relocations(const struct pe_info *pe, uint8_t *mem, uint32_t d
                 continue;
             switch (entry >> 12) {
             case 3: {
-                uint32_t v = rd32(mem + target) + delta;
+                uint32_t v = rd32(mem + target) + (uint32_t)delta;
                 memcpy(mem + target, &v, 4);
+                break;
+            }
+            case 10: {
+                if (target + 8 > pe->image_size)
+                    break;
+                uint64_t v = rd64(mem + target) + delta;
+                memcpy(mem + target, &v, 8);
                 break;
             }
             case 2: {
@@ -251,7 +287,7 @@ static bool apply_relocations(const struct pe_info *pe, uint8_t *mem, uint32_t d
                 break;
             }
             case 1: {
-                uint16_t v = (uint16_t)(rd16(mem + target) + (delta >> 16));
+                uint16_t v = (uint16_t)(rd16(mem + target) + (uint16_t)(delta >> 16));
                 memcpy(mem + target, &v, 2);
                 break;
             }
@@ -266,9 +302,13 @@ static bool apply_relocations(const struct pe_info *pe, uint8_t *mem, uint32_t d
 
 static void *export_lookup(struct w32_image *img, const char *name, uint32_t ordinal, int depth);
 
-static void *resolve(struct w32_image *dll, const char *module, const char *symbol, uint32_t ordinal)
+static void *resolve(struct w32_image *dll, const char *module, const char *symbol, uint32_t ordinal, bool pe64)
 {
     void *fn = NULL;
+    if (pe64 && dll->builtin)
+        return w64_stub(dll->name, symbol, ordinal);
+    if (pe64 != dll->pe64 && !dll->builtin)
+        return pe64 ? w64_stub(module, symbol, ordinal) : missing_stub(module, symbol ? symbol : "?");
     if (dll->builtin) {
         fn = symbol ? builtin_lookup(dll->name, symbol) : builtin_ordinal(dll->name, ordinal);
     } else {
@@ -292,7 +332,8 @@ static void *export_lookup(struct w32_image *img, const char *name, uint32_t ord
     const uint8_t *mem = (const uint8_t *)img->base;
     uint32_t lfanew = rd32(mem + 0x3c);
     uint32_t opt = lfanew + 24;
-    uint32_t rva = rd32(mem + opt + 96), size = rd32(mem + opt + 100);
+    uint32_t dirs = opt + (img->pe64 ? 112 : 96);
+    uint32_t rva = rd32(mem + dirs), size = rd32(mem + dirs + 4);
     if (!rva || rva + 40 > img->size)
         return NULL;
     const uint8_t *dir = mem + rva;
@@ -326,6 +367,9 @@ static void *export_lookup(struct w32_image *img, const char *name, uint32_t ord
         struct w32_image *target = w32_load(forward, NULL, &err);
         if (!target)
             return NULL;
+        if (img->pe64 && target->builtin)
+            return w64_stub(target->name, dot[1] == '#' ? NULL : dot + 1,
+                            dot[1] == '#' ? (uint32_t)str_to_long(dot + 2, NULL, 10) : 0);
         return dot[1] == '#' ? export_lookup(target, NULL, (uint32_t)str_to_long(dot + 2, NULL, 10), depth + 1)
                              : (target->builtin ? builtin_lookup(target->name, dot + 1)
                                                 : export_lookup(target, dot + 1, 0, depth + 1));
@@ -355,20 +399,23 @@ static int resolve_imports(struct w32_image *img, const struct pe_info *pe, cons
         }
         if (!lookup)
             lookup = iat;
+        uint32_t step = pe->pe64 ? 8 : 4;
         for (uint32_t i = 0;; i++) {
-            uint32_t entry = rd32(mem + lookup + i * 4);
+            uint64_t entry = pe->pe64 ? rd64(mem + lookup + i * step) : rd32(mem + lookup + i * step);
             if (!entry)
                 break;
+            bool by_ordinal = pe->pe64 ? entry >> 63 : entry >> 31;
             void *fn;
-            if (entry & 0x80000000u) {
-                fn = resolve(dll, dll_name, NULL, entry & 0xffff);
+            if (by_ordinal) {
+                fn = resolve(dll, dll_name, NULL, (uint32_t)entry & 0xffff, pe->pe64);
             } else {
-                if (entry + 2 >= img->size)
+                uint32_t hint = (uint32_t)entry & 0x7fffffffu;
+                if (hint + 2 >= img->size)
                     return ERROR_INVALID_DATA;
-                fn = resolve(dll, dll_name, (const char *)mem + entry + 2, 0);
+                fn = resolve(dll, dll_name, (const char *)mem + hint + 2, 0, pe->pe64);
             }
-            uint32_t addr = (uint32_t)fn;
-            memcpy(mem + iat + i * 4, &addr, 4);
+            uint64_t addr = (uint32_t)fn;
+            memcpy(mem + iat + i * step, &addr, step);
         }
     }
     return 0;
@@ -422,14 +469,18 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         return NULL;
     }
     str_copy(img->path, path, sizeof(img->path));
+    img->pe64 = pe.pe64;
     img->base = base;
     img->size = pe.image_size;
     img->memory = memory;
     img->entry = pe.entry ? base + pe.entry : 0;
     img->dll = pe.characteristics & 0x2000;
     if (base != pe.image_base) {
-        uint32_t delta = base - pe.image_base;
-        memcpy(mem + pe.opt + 28, &base, 4);
+        uint64_t delta = base - pe.image_base, base64 = base;
+        if (pe.pe64)
+            memcpy(mem + pe.opt + 24, &base64, 8);
+        else
+            memcpy(mem + pe.opt + 28, &base, 4);
         apply_relocations(&pe, mem, delta);
         klog("win32: %s relocated to 0x%08x", name, base);
     }
@@ -529,8 +580,14 @@ int w32_init_modules(void)
         img->initialized = true;
         if (!img->entry)
             continue;
-        uint32_t args[3] = {img->base, 1, 0};
-        uint32_t ok = w32_call((void *)img->entry, 3, args);
+        uint32_t ok;
+        if (img->pe64) {
+            uint64_t args[3] = {img->base, 1, 0};
+            ok = (uint32_t)arch_w64_call(img->entry, 3, args);
+        } else {
+            uint32_t args[3] = {img->base, 1, 0};
+            ok = w32_call((void *)img->entry, 3, args);
+        }
         if (w32->exiting)
             return -1;
         if (!ok) {

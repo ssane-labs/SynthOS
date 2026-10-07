@@ -29,6 +29,8 @@ void w32_set_error(DWORD error)
 {
     if (w32 && w32->teb)
         memcpy(w32->teb + 0x34, &error, 4);
+    if (w32 && w32->teb64)
+        memcpy(w32->teb64 + 0x68, &error, 4);
 }
 
 DWORD w32_error(void)
@@ -223,7 +225,7 @@ long w32_console_read(char *buf, size_t n)
 uint32_t w32_call(void *fn, int argc, const uint32_t *args)
 {
     if (!w32->jump.active)
-        return arch_w32_call(fn, argc, args, w32->stack + w32->stack_size - 16, &w32->jump);
+        return arch_w32_call(fn, argc, args, w32->stack + w32->stack_size - (w32->win64 ? 4096 : 16), &w32->jump);
     typedef uint32_t WINAPI (*f0)(void);
     typedef uint32_t WINAPI (*f1)(uint32_t);
     typedef uint32_t WINAPI (*f2)(uint32_t, uint32_t);
@@ -505,6 +507,7 @@ static void setup_tls(struct w32_image *img)
 }
 
 static size_t image_reserve;
+static bool image_win64;
 
 static size_t choose_arena(void)
 {
@@ -565,6 +568,11 @@ static void cleanup(void)
 static int run(struct exec_ctx *ctx)
 {
     w32->ctx = ctx;
+    w32->win64 = image_win64;
+    if (w32->win64 && !arch_long_supported()) {
+        ksnprintf(w32->message, sizeof(w32->message), "is a 64-bit program and this processor has no 64-bit mode");
+        return 1;
+    }
     str_copy(w32->cwd, ctx->sh->cwd, sizeof(w32->cwd));
     w32->default_attr = theme_attr(ROLE_TEXT);
     w32->console_attr = w32->default_attr;
@@ -590,7 +598,7 @@ static int run(struct exec_ctx *ctx)
     }
     build_command_line(ctx);
     build_environment(ctx);
-    if (!w32->stack || !build_teb_peb() || !w32_threads_start())
+    if (!w32->stack || !build_teb_peb() || !w32_threads_start() || (w32->win64 && !w64_setup()))
         return E_NOMEM;
 
     int error = 0;
@@ -602,19 +610,40 @@ static int run(struct exec_ctx *ctx)
     }
     w32->main = main;
     put32(w32->peb, 0x08, main->base);
+    bool entered_long = false;
+    if (w32->win64) {
+        if (!main->pe64) {
+            ksnprintf(w32->message, sizeof(w32->message), "cannot mix 32-bit and 64-bit code");
+            return 1;
+        }
+        w64_set_image(main->base);
+        entered_long = !arch_long_active();
+        if (!arch_long_enter()) {
+            ksnprintf(w32->message, sizeof(w32->message), "cannot switch the processor to 64-bit mode");
+            return 1;
+        }
+    }
 
     arch_set_fault_handler(on_fault);
     arch_set_tick_hook(on_tick);
-    if (w32_init_modules() == 0 && !w32->exiting)
-        setup_tls(main);
+    if (w32_init_modules() == 0 && !w32->exiting) {
+        if (w32->win64)
+            w64_setup_tls(main);
+        else
+            setup_tls(main);
+    }
     uint32_t code = w32->exit_code;
     if (!w32->exiting) {
-        code = w32_call((void *)main->entry, 0, NULL);
+        code = w32->win64 ? w64_run_main(main->entry) : w32_call((void *)main->entry, 0, NULL);
         if (!w32->exiting)
             w32->exit_code = code;
     }
     arch_set_tick_hook(NULL);
     arch_set_fault_handler(NULL);
+    if (w32->win64)
+        w64_cleanup();
+    if (entered_long)
+        arch_long_leave();
     if (w32->threads)
         arch_w32_set_teb((uint32_t)w32->threads->teb);
     w32_threads_end();
@@ -707,6 +736,8 @@ static int run_nested(struct exec_ctx *ctx)
     __asm__ volatile("fldcw %0" : : "m"(fpu_cw));
     w32 = parent;
     arch_w32_set_teb((uint32_t)parent->teb);
+    if (parent->teb64)
+        arch_w64_set_teb((uint32_t)parent->teb64);
     arch_set_fault_handler(on_fault);
     arch_set_tick_hook(on_tick);
     return rc;
@@ -718,12 +749,13 @@ static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
     if (!vmm_available())
         return E_NOSYS;
     image_reserve = size * 3 + 256 * 1024;
+    image_win64 = w32_is_pe64(image, size);
     return w32 ? run_nested(ctx) : run_process(ctx);
 }
 
 static const struct binfmt pe_format = {
     .name = "pe",
-    .description = "Windows program (Win32 PE)",
+    .description = "Windows program (Win32/Win64 PE)",
     .extensions = ".exe",
     .probe = pe_probe,
     .run = pe_run,

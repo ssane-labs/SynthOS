@@ -148,6 +148,7 @@ struct w32_thread {
     int suspended;
     int irq_depth;
     uint32_t exit_code;
+    uint8_t *teb64;
     void *fls[64];
     uint8_t fpu_area[528];
     struct w32_thread *next;
@@ -161,6 +162,7 @@ struct w32_image {
     uint32_t entry;
     void *memory;
     const struct w32_module_def *builtin;
+    bool pe64;
     bool dll;
     bool initialized;
     int refs;
@@ -180,6 +182,10 @@ struct w32_process {
     uint32_t arena_size;
     uint8_t *teb;
     uint8_t *peb;
+    uint8_t *teb64;
+    uint8_t *peb64;
+    void *w64;
+    bool win64;
     uint8_t *stack;
     uint32_t stack_size;
     struct w32_image *images;
@@ -261,6 +267,18 @@ WCHAR w32_towlower(WCHAR c);
 long w32_console_read(char *buf, size_t n);
 
 struct w32_image *w32_find_module(const char *name);
+bool w32_is_pe64(const uint8_t *file, size_t size);
+void *w64_stub(const char *module, const char *symbol, uint32_t ordinal);
+void *w64_lookup(const char *module, const char *symbol, uint32_t ordinal, bool create_missing);
+void *w32_builtin_lookup(const char *module, const char *symbol);
+const char *w32_builtin_ordinal_name(const char *module, uint32_t ordinal);
+bool w64_setup(void);
+void w64_set_image(uint32_t base);
+void w64_setup_tls(struct w32_image *img);
+void w64_tls_callbacks(uint32_t reason);
+uint8_t *w64_make_teb(uint32_t stack, uint32_t size, uint32_t tid);
+uint32_t w64_run_main(uint32_t entry);
+void w64_cleanup(void);
 struct w32_image *w32_load(const char *name, const char *search_dir, int *error);
 void *w32_get_proc(struct w32_image *image, const char *name, uint32_t ordinal);
 int w32_init_modules(void);

@@ -3,7 +3,7 @@
 # usage: tests/run.sh build/serial/synthos.img
 
 image=${1:-build/serial/synthos.img}
-qemu=${QEMU:-qemu-system-i386}
+qemu=${QEMU:-qemu-system-x86_64}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp "$image" "$work/disk.img"
@@ -214,6 +214,16 @@ ping -c 1 localhost | grep loss
 1 packets sent, 1 received
 lsusb
 QEMU USB Keyboard
+hello64 a b | grep longjmp
+longjmp returned 42
+hello64 | grep 'pointer size'
+pointer size 8, long long 123456789012345, hex fedcba9876
+hello64 | grep threads
+threads 2000, tls 5 6 7
+hello64 > /tmp/h64.txt; echo rc64=$?; grep -c . /tmp/h64.txt
+rc64=7
+hello64 | grep math; winhello after64 | grep 'arg 1'
+arg 1: after64
 cat '/mnt/hdb/Long Name Note.txt'
 hello from fat
 mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'

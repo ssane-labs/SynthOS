@@ -91,7 +91,10 @@ static void switch_to(struct w32_thread *next)
     arch_fpu_save(fpu_of(cur));
     w32->current = next;
     w32->teb = next->teb;
+    w32->teb64 = next->teb64;
     arch_w32_set_teb((uint32_t)next->teb);
+    if (next->teb64)
+        arch_w64_set_teb((uint32_t)next->teb64);
     arch_load_teb_selector();
     arch_switch(&cur->esp, next->esp);
     arch_fpu_restore(fpu_of(cur));
@@ -152,6 +155,8 @@ static NORETURN void finish(uint32_t code)
 {
     struct w32_thread *t = w32->current;
     run_tls_callbacks(3);
+    if (w32->win64)
+        w64_tls_callbacks(3);
     t->done = true;
     t->exit_code = code;
     if (--w32->live_threads <= 0)
@@ -228,7 +233,7 @@ HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DW
     t->stack = heap_alloc_aligned(&w32->heap, t->stack_size, 4096);
     t->id = w32->next_tid;
     w32->next_tid += 4;
-    if (!t->stack || !(t->teb = make_teb(t))) {
+    if (!t->stack || !(t->teb = make_teb(t)) || (w32->win64 && !(t->teb64 = w64_make_teb((uint32_t)t->stack, t->stack_size, t->id)))) {
         w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
         return NULL;
     }

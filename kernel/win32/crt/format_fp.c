@@ -24,6 +24,11 @@ struct out {
 };
 
 static W32_STATE int exponent_digits = 3;
+int crt_slots64;
+
+#define ARG_INT(ap) (crt_slots64 ? (int)va_arg(*(ap), uint64_t) : va_arg(*(ap), int))
+#define ARG_UINT(ap) (crt_slots64 ? (unsigned)va_arg(*(ap), uint64_t) : va_arg(*(ap), unsigned))
+#define ARG_PTR(ap) (crt_slots64 ? (void *)(uintptr_t)va_arg(*(ap), uint64_t) : va_arg(*(ap), void *))
 
 static void out_chars(struct out *o, const char *s, size_t n)
 {
@@ -447,7 +452,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
                 break;
         }
         if (FC(i) == '*') {
-            width = va_arg(*ap, int);
+            width = ARG_INT(ap);
             if (width < 0) {
                 flags |= F_LEFT;
                 width = -width;
@@ -461,7 +466,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
             i++;
             prec = 0;
             if (FC(i) == '*') {
-                prec = va_arg(*ap, int);
+                prec = ARG_INT(ap);
                 i++;
             } else {
                 while (FC(i) >= '0' && FC(i) <= '9')
@@ -490,6 +495,8 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
                 break;
             case 'z':
             case 't':
+                if (crt_slots64)
+                    len = L_LL;
                 i++;
                 break;
             case 'I':
@@ -499,6 +506,8 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
                 } else if (FC(i + 1) == '3' && FC(i + 2) == '2') {
                     i += 3;
                 } else {
+                    if (crt_slots64)
+                        len = L_LL;
                     i++;
                 }
                 break;
@@ -513,7 +522,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
         switch (conv) {
         case 'd':
         case 'i': {
-            int64_t v = len == L_LL ? va_arg(*ap, int64_t) : (int64_t)va_arg(*ap, int);
+            int64_t v = len == L_LL ? va_arg(*ap, int64_t) : (int64_t)ARG_INT(ap);
             if (len == L_H)
                 v = (short)v;
             else if (len == L_HH)
@@ -525,7 +534,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
         case 'o':
         case 'x':
         case 'X': {
-            uint64_t v = len == L_LL ? va_arg(*ap, uint64_t) : (uint64_t)va_arg(*ap, unsigned);
+            uint64_t v = len == L_LL ? va_arg(*ap, uint64_t) : (uint64_t)ARG_UINT(ap);
             if (len == L_H)
                 v = (uint16_t)v;
             else if (len == L_HH)
@@ -534,13 +543,16 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
             break;
         }
         case 'p':
-            emit_int(o, (uintptr_t)va_arg(*ap, void *), false, 16, 'X', 8, width, flags & ~F_ALT);
+            if (crt_slots64)
+                emit_int(o, va_arg(*ap, uint64_t), false, 16, 'X', 16, width, flags & ~F_ALT);
+            else
+                emit_int(o, (uintptr_t)va_arg(*ap, void *), false, 16, 'X', 8, width, flags & ~F_ALT);
             break;
         case 'c':
         case 'C': {
             bool wide = conv == 'c' ? (wide_fmt ? len != L_H : len == L_L || len == L_W)
                                     : (wide_fmt ? len == L_L || len == L_W : len != L_H);
-            int v = va_arg(*ap, int);
+            int v = ARG_INT(ap);
             WCHAR wc[2] = {(WCHAR)v, 0};
             char nc[2] = {(char)v, 0};
             if (!(flags & F_LEFT))
@@ -558,7 +570,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
         case 'Z': {
             bool wide = conv == 's' ? (wide_fmt ? len != L_H : len == L_L || len == L_W)
                                     : (wide_fmt ? len == L_L || len == L_W : len != L_H);
-            void *p = va_arg(*ap, void *);
+            void *p = ARG_PTR(ap);
             if (!p)
                 emit_text(o, wide ? NULL : "(null)", wide ? (const WCHAR[]){'(', 'n', 'u', 'l', 'l', ')', 0} : NULL,
                           prec, width, flags);
@@ -577,7 +589,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
             emit_float(o, va_arg(*ap, double), (char)conv, prec, width, flags);
             break;
         case 'n': {
-            void *p = va_arg(*ap, void *);
+            void *p = ARG_PTR(ap);
             if (len == L_H)
                 *(short *)p = (short)o->count;
             else if (len == L_LL)
@@ -1168,6 +1180,8 @@ static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_li
                 break;
             case 'z':
             case 't':
+                if (crt_slots64)
+                    len = L_LL;
                 i++;
                 break;
             case 'I':
@@ -1177,6 +1191,8 @@ static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_li
                 } else if (FC(i + 1) == '3' && FC(i + 2) == '2') {
                     i += 3;
                 } else {
+                    if (crt_slots64)
+                        len = L_LL;
                     i++;
                 }
                 break;
@@ -1189,7 +1205,7 @@ static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_li
             break;
         if (conv == 'n') {
             if (!suppress)
-                store_int(va_arg(*ap, void *), len, (uint64_t)src->consumed);
+                store_int(ARG_PTR(ap), len, (uint64_t)src->consumed);
             continue;
         }
         if (conv != 'c' && conv != '[' && conv != 'C') {
@@ -1243,7 +1259,7 @@ static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_li
             if (!suppress) {
                 uint64_t v = conv == 'd' || conv == 'i' ? (uint64_t)crt_strtoi64(buf, NULL, base)
                                                         : crt_strtoui64(buf, NULL, base);
-                store_int(va_arg(*ap, void *), conv == 'p' ? L_NONE : len, v);
+                store_int(ARG_PTR(ap), conv == 'p' ? (crt_slots64 ? L_LL : L_NONE) : len, v);
                 assigned++;
             }
             break;
@@ -1277,9 +1293,9 @@ static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_li
             any_input = true;
             if (!suppress) {
                 if (len == L_L || len == L_LL)
-                    *va_arg(*ap, double *) = d;
+                    *(double *)ARG_PTR(ap) = d;
                 else
-                    *va_arg(*ap, float *) = (float)d;
+                    *(float *)ARG_PTR(ap) = (float)d;
                 assigned++;
             }
             break;
@@ -1315,7 +1331,7 @@ static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_li
             bool lower = conv == 'c' || conv == 's' || conv == '[';
             bool wide = lower ? (wide_fmt ? len != L_H : len == L_L || len == L_W)
                               : (wide_fmt ? len == L_L || len == L_W : len != L_H);
-            void *dst = suppress ? NULL : va_arg(*ap, void *);
+            void *dst = suppress ? NULL : ARG_PTR(ap);
             int n = 0, c = sget(src);
             while (c >= 0 && n < width) {
                 if ((conv == 's' || conv == 'S') && is_space(c))
