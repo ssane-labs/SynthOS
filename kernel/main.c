@@ -116,6 +116,7 @@ static void mount_filesystems(const struct boot_info *bi)
     boot_step(err == 0, "Devices mounted at /dev");
     hal_fs_init();
     mount_storage();
+    automount_init();
 #if CONFIG_WIN32
     win32_install();
 #endif

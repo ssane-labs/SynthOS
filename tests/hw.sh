@@ -1,5 +1,5 @@
 #!/bin/sh
-# Boots the serial image on several emulated machines (BIOS/UEFI, IDE/AHCI/NVMe/USB, i486)
+# Boots the serial image on several emulated machines (BIOS/UEFI, IDE/AHCI/NVMe/USB/xHCI, i486)
 # and checks that the shell works, a Windows program runs and /home survives a reboot.
 # usage: tests/hw.sh build/serial/synthos.img
 
@@ -17,6 +17,7 @@ disk_args() {
     ahci) echo "-M q35 -drive format=raw,file=$work/disk.img,if=none,id=d -device ide-hd,drive=d,bus=ide.0" ;;
     nvme) echo "-drive format=raw,file=$work/disk.img,if=none,id=d -device nvme,serial=synth,drive=d,bootindex=0" ;;
     usb) echo "-drive format=raw,file=$work/disk.img,if=none,id=d -device piix3-usb-uhci -device usb-storage,drive=d,bootindex=0" ;;
+    xhci) echo "-drive format=raw,file=$work/disk.img,if=none,id=d -device qemu-xhci,id=x -device usb-storage,bus=x.0,drive=d,bootindex=0 -device usb-kbd,bus=x.0" ;;
     esac
 }
 
@@ -43,7 +44,7 @@ check() {
     fi
 }
 
-for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:ide:486 uefi:ide:any uefi:ahci:any uefi:nvme:any; do
+for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:any bios:ide:486 uefi:ide:any uefi:ahci:any uefi:nvme:any uefi:xhci:any; do
     fw=${config%%:*}
     rest=${config#*:}
     disk=${rest%%:*}

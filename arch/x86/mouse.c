@@ -1,6 +1,7 @@
 #include <synth/hal.h>
 
 #include "io.h"
+#include "usb.h"
 
 #define QUEUE_SIZE 64
 
@@ -10,6 +11,7 @@ static uint8_t packet[4];
 static int packet_len;
 static int packet_size = 3;
 static bool present;
+static volatile bool usb_mouse;
 
 static bool wait_write(void)
 {
@@ -55,6 +57,40 @@ static void mouse_irq(struct regs *r)
     i8042_drain();
 }
 
+static void queue_event(const struct pointer_event *ev)
+{
+    unsigned last = tail - 1;
+    volatile struct pointer_event *prev = &queue[last % QUEUE_SIZE];
+    if (tail != head && prev->buttons == ev->buttons && !ev->wheel && !prev->wheel &&
+        prev->absolute == ev->absolute) {
+        prev->dx += ev->dx;
+        prev->dy += ev->dy;
+        prev->x = ev->x;
+        prev->y = ev->y;
+        return;
+    }
+    if (tail - head < QUEUE_SIZE)
+        queue[tail++ % QUEUE_SIZE] = *ev;
+}
+
+void mouse_report(int dx, int dy, int wheel, unsigned buttons)
+{
+    usb_mouse = true;
+    struct pointer_event ev = {.dx = dx, .dy = dy, .wheel = wheel, .buttons = buttons};
+    uint32_t flags = cpu_irq_save();
+    queue_event(&ev);
+    cpu_irq_restore(flags);
+}
+
+void mouse_absolute(int x, int y, int wheel, unsigned buttons)
+{
+    usb_mouse = true;
+    struct pointer_event ev = {.wheel = wheel, .buttons = buttons, .absolute = true, .x = x, .y = y};
+    uint32_t flags = cpu_irq_save();
+    queue_event(&ev);
+    cpu_irq_restore(flags);
+}
+
 void mouse_byte(uint8_t data)
 {
     if (packet_len == 0 && !(data & 0x08))
@@ -65,19 +101,12 @@ void mouse_byte(uint8_t data)
     packet_len = 0;
     if (packet[0] & 0xc0)
         return;
-    struct pointer_event ev;
+    struct pointer_event ev = {0};
     ev.dx = packet[1] - ((packet[0] << 4) & 0x100);
     ev.dy = -(packet[2] - ((packet[0] << 3) & 0x100));
     ev.buttons = packet[0] & 0x07;
     ev.wheel = packet_size == 4 ? (int8_t)(packet[3] << 4) >> 4 : 0;
-    unsigned last = tail - 1;
-    if (tail != head && queue[last % QUEUE_SIZE].buttons == ev.buttons && !ev.wheel && !queue[last % QUEUE_SIZE].wheel) {
-        queue[last % QUEUE_SIZE].dx += ev.dx;
-        queue[last % QUEUE_SIZE].dy += ev.dy;
-        return;
-    }
-    if (tail - head < QUEUE_SIZE)
-        queue[tail++ % QUEUE_SIZE] = ev;
+    queue_event(&ev);
 }
 
 void mouse_init(void)
@@ -112,13 +141,13 @@ bool hal_pointer_read(struct pointer_event *ev)
 {
     if (head == tail)
         return false;
-    cpu_cli();
+    uint32_t flags = cpu_irq_save();
     *ev = queue[head++ % QUEUE_SIZE];
-    cpu_sti();
+    cpu_irq_restore(flags);
     return true;
 }
 
 bool hal_pointer_present(void)
 {
-    return present;
+    return present || usb_mouse;
 }

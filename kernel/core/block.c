@@ -5,6 +5,26 @@
 #include <synth/string.h>
 
 static struct blockdev *devices;
+static void (*listener)(struct blockdev *dev, bool added);
+
+void block_set_listener(void (*fn)(struct blockdev *dev, bool added))
+{
+    listener = fn;
+}
+
+void block_unregister(struct blockdev *dev)
+{
+    for (struct blockdev *d = devices; d; d = d->next)
+        if ((d == dev || d->parent == dev) && listener)
+            listener(d, false);
+    for (struct blockdev **link = &devices; *link;) {
+        if (*link == dev || (*link)->parent == dev)
+            *link = (*link)->next;
+        else
+            link = &(*link)->next;
+    }
+    klog("block: %s removed", dev->name);
+}
 
 void block_register(struct blockdev *dev)
 {
@@ -14,6 +34,8 @@ void block_register(struct blockdev *dev)
     dev->next = NULL;
     *link = dev;
     klog("block: %s, %u sectors%s%s", dev->name, (unsigned)dev->sectors, dev->model[0] ? ", " : "", dev->model);
+    if (listener)
+        listener(dev, true);
 }
 
 struct blockdev *block_add_partition(struct blockdev *parent, const char *name, uint32_t offset, uint32_t sectors)

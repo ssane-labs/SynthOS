@@ -1,6 +1,7 @@
 #include <synth/keys.h>
 
 #include "io.h"
+#include "usb.h"
 
 #define BUFFER_SIZE 128
 
@@ -144,6 +145,13 @@ static void handle(uint8_t sc)
         super_used |= super;
         push(key);
     }
+}
+
+void keyboard_scancode(uint8_t code)
+{
+    uint32_t flags = cpu_irq_save();
+    handle(code);
+    cpu_irq_restore(flags);
 }
 
 void i8042_drain(void)

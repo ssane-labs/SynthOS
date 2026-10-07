@@ -547,3 +547,29 @@ COMMAND(displays, "screens", "system", "displays", "list displays and the resolu
     }
     return 0;
 }
+
+COMMAND(lsusb, "usb", "system", "lsusb", "list USB devices")
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    static const char *const speeds[] = {"?", "12 Mb/s", "1.5 Mb/s", "480 Mb/s", "5 Gb/s", "10 Gb/s"};
+    struct usb_info list[32];
+    int n = hal_usb_devices(list, (int)ARRAY_SIZE(list));
+    if (!n) {
+        sh_puts(sh, "no USB devices\n");
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        const struct usb_info *u = &list[i];
+        sh_printf(sh, "%s port %d%*s ", u->host, u->port, u->depth * 2, "");
+        sh_role(sh, ROLE_ACCENT);
+        sh_printf(sh, "%04x:%04x ", u->vendor, u->product);
+        sh_role(sh, ROLE_TEXT);
+        sh_printf(sh, "%-32s", u->name);
+        sh_role(sh, ROLE_MUTED);
+        sh_printf(sh, " %-8s %s\n", u->speed >= 0 && u->speed < (int)ARRAY_SIZE(speeds) ? speeds[u->speed] : "?",
+                  u->driver[0] ? u->driver : "-");
+        sh_role(sh, ROLE_TEXT);
+    }
+    return 0;
+}

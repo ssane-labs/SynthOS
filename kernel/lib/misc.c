@@ -27,6 +27,9 @@ const char *err_str(int code)
         [-E_XDEV] = "cross-device operation",
         [-E_FAULT] = "bad address",
         [-E_INTR] = "interrupted",
+        [-E_TIMEDOUT] = "timed out",
+        [-E_PIPE] = "endpoint stalled",
+        [-E_NODEV] = "no such device",
     };
     int idx = -code;
     if (idx >= 0 && idx < (int)ARRAY_SIZE(messages) && messages[idx])

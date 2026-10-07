@@ -68,6 +68,7 @@ struct fs_type {
     const char *description;
     int (*mount)(const char *source, struct vnode **root);
     int (*statfs)(struct vnode *root, uint64_t *total, uint64_t *free);
+    int (*label)(struct vnode *root, char *out, size_t cap);
 };
 
 #define FS_TYPE(object) SYNTH_REGISTER(synth_fs, struct fs_type, object)
@@ -126,6 +127,15 @@ void vfs_closedir(struct vdir *dir);
 int vfs_read_all(const char *path, char **data, size_t *size);
 int vfs_write_all(const char *path, const void *data, size_t size);
 int vfs_copy(const char *from, const char *to);
+
+struct volume {
+    char label[48];
+    char path[PATH_MAX_LEN];
+    char source[16];
+};
+
+int vfs_volumes(struct volume *out, int max);
+int vfs_eject(const char *path);
 
 int ramdisk_unpack(const void *data, size_t size, const char *dest);
 

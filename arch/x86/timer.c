@@ -1,16 +1,29 @@
 #include <synth/hal.h>
 
 #include "io.h"
+#include "usb.h"
 
 #define PIT_FREQUENCY 1193182u
 
 static volatile uint64_t ticks;
 static uint32_t tick_hz = 1000;
 
+static void (*hooks[4])(void);
+static int hook_count;
+
+void timer_hook(void (*fn)(void))
+{
+    if (hook_count < (int)ARRAY_SIZE(hooks))
+        hooks[hook_count++] = fn;
+}
+
 static void pit_tick(struct regs *r)
 {
     UNUSED(r);
     ticks++;
+    if (ticks * 1000u / tick_hz % 2 == 0)
+        for (int i = 0; i < hook_count; i++)
+            hooks[i]();
 }
 
 static void pit_divisor(uint32_t divisor)

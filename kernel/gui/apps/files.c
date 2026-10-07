@@ -277,6 +277,11 @@ static const char *display_name(const char *path)
         return "SynthOS HD";
     if (!strcmp(path, TRASH))
         return "Trash";
+    static struct volume volumes[6];
+    int n = vfs_volumes(volumes, (int)ARRAY_SIZE(volumes));
+    for (int i = 0; i < n; i++)
+        if (!strcmp(path, volumes[i].path))
+            return volumes[i].label;
     return path_basename(path);
 }
 
@@ -817,7 +822,33 @@ static void frame(struct ui *ui, void *data)
     int y = BAR_H + 4;
     update_favorites();
     sidebar_section(ui, w, f, &y, "Favorites", favorites, ARRAY_SIZE(favorites));
-    sidebar_section(ui, w, f, &y, "Locations", locations, ARRAY_SIZE(locations));
+    sidebar_section(ui, w, f, &y, "Locations", locations, 1);
+    y -= 10;
+    struct volume volumes[6];
+    int volume_count = vfs_volumes(volumes, (int)ARRAY_SIZE(volumes));
+    for (int i = 0; i < volume_count; i++) {
+        struct rect r = {10, y, SIDEBAR_W - 20, 28};
+        bool here = str_starts(f->path, volumes[i].path) &&
+                    (f->path[strlen(volumes[i].path)] == 0 || f->path[strlen(volumes[i].path)] == '/');
+        if (ui_sidebar_item(ui, (struct rect){r.x, r.y, r.w - 26, r.h}, SYM_USB, volumes[i].label,
+                            !strcmp(f->path, volumes[i].path)))
+            navigate(w, f, volumes[i].path, true);
+        if (ui_symbol_button(ui, (struct rect){r.x + r.w - 24, r.y + 4, 20, 20}, SYM_EJECT, false)) {
+            char path[PATH_MAX_LEN];
+            str_copy(path, volumes[i].path, sizeof(path));
+            if (here)
+                navigate(w, f, user_home(), true);
+            gui_eject(path);
+        }
+        y += 28;
+    }
+    for (size_t i = 1; i < ARRAY_SIZE(locations); i++) {
+        struct rect r = {10, y, SIDEBAR_W - 20, 28};
+        if (ui_sidebar_item(ui, r, locations[i].sym, locations[i].label, !strcmp(f->path, locations[i].path)))
+            navigate(w, f, locations[i].path, true);
+        y += 28;
+    }
+    y += 10;
 
     int bx = mx + 12;
     if (ui_symbol_button(ui, (struct rect){bx, 12, 28, 28}, SYM_LEFT, false))

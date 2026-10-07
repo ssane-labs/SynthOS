@@ -24,7 +24,12 @@ struct blockdev *block_list(void);
 int block_read(struct blockdev *dev, uint32_t lba, uint32_t count, void *buf);
 int block_write(struct blockdev *dev, uint32_t lba, uint32_t count, const void *buf);
 
+void block_unregister(struct blockdev *dev);
+void block_set_listener(void (*listener)(struct blockdev *dev, bool added));
+
 int sfs_format(struct blockdev *dev);
+bool fat_detect(struct blockdev *dev);
+void automount_init(void);
 bool sfs_detect(struct blockdev *dev);
 
 #endif

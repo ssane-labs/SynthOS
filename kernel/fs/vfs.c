@@ -544,3 +544,31 @@ int vfs_copy(const char *from, const char *to)
     vfs_closedir(&d);
     return err;
 }
+
+int vfs_volumes(struct volume *out, int max)
+{
+    int n = 0;
+    for (struct mount *m = mounts; m && n < max; m = m->next) {
+        if (strncmp(m->path, "/mnt/", 5) != 0)
+            continue;
+        struct volume *v = &out[n++];
+        str_copy(v->path, m->path, sizeof(v->path));
+        str_copy(v->source, m->source, sizeof(v->source));
+        v->label[0] = 0;
+        if (m->fs->label)
+            m->fs->label(m->root, v->label, sizeof(v->label));
+        if (!v->label[0])
+            str_copy(v->label, strncmp(m->source, "usb", 3) == 0 ? "USB Drive" : m->source, sizeof(v->label));
+    }
+    return n;
+}
+
+int vfs_eject(const char *path)
+{
+    if (strncmp(path, "/mnt/", 5) != 0)
+        return E_PERM;
+    int err = vfs_umount(path);
+    if (!err)
+        vfs_unlink(path);
+    return err;
+}

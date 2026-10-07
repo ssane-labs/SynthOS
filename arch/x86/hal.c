@@ -8,6 +8,7 @@
 #include <synth/vmm.h>
 
 #include "io.h"
+#include "usb.h"
 
 #define BOOT_MAGIC 0x5359424fu
 #define KERNEL_MAGIC 0x4b4e5953u
@@ -35,6 +36,7 @@ int hal_key_read(int timeout_ms)
 {
     uint64_t end = timeout_ms > 0 ? hal_ticks_ms() + (uint64_t)timeout_ms : 0;
     for (;;) {
+        usb_service();
         int key = keyboard_read();
         if (key == KEY_NONE)
             key = serial_key();
@@ -146,6 +148,7 @@ void hal_fs_init(void)
     ata_init();
     ahci_init();
     nvme_init();
+    usb_init();
     if (attach_boot_disk() || (bootinfo->flags & BOOT_UEFI) || !(bootinfo->drive & 0x80))
         return;
     bios_init();

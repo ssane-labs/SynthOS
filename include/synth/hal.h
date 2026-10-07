@@ -57,6 +57,8 @@ struct pointer_event {
     int dy;
     int wheel;
     unsigned buttons;
+    bool absolute;
+    int x, y;
 };
 
 struct framebuffer;
@@ -78,6 +80,18 @@ int hal_screen_modes(int index, struct display_mode *out, int max);
 bool hal_screen_open(int index, int width, int height, struct framebuffer *fb);
 void hal_screen_close(int index);
 int hal_key_read(int timeout_ms);
+
+struct usb_info {
+    char name[48];
+    char driver[16];
+    char host[12];
+    uint16_t vendor, product;
+    int speed;
+    int port;
+    int depth;
+};
+
+int hal_usb_devices(struct usb_info *out, int max);
 uint64_t hal_ticks_ms(void);
 void hal_sleep_ms(uint32_t ms);
 void hal_rtc(struct rtc_time *t);

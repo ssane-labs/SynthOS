@@ -59,6 +59,24 @@ static inline void cpu_halt(void)
     __asm__ volatile("sti; hlt" ::: "memory");
 }
 
+static inline uint32_t cpu_irq_save(void)
+{
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void cpu_irq_restore(uint32_t flags)
+{
+    if (flags & 0x200)
+        cpu_sti();
+}
+
+static inline void cpu_barrier(void)
+{
+    __asm__ volatile("lock; orl $0, (%%esp)" : : : "memory");
+}
+
 static inline uint64_t cpu_rdtsc(void)
 {
     uint32_t lo, hi;

@@ -80,6 +80,7 @@ static bool is_uefi(void)
     return (x86_boot_info()->flags & BOOT_UEFI) != 0;
 }
 
+#ifndef CONFIG_SERIAL_CONSOLE
 static void found_pci(const struct pci_device *d, void *ctx)
 {
     UNUSED(ctx);
@@ -118,6 +119,7 @@ static void found_pci(const struct pci_device *d, void *ctx)
     }
     output_count++;
 }
+#endif
 
 static void probe(void)
 {

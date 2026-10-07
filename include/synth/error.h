@@ -23,6 +23,9 @@ enum {
     E_XDEV = -18,
     E_FAULT = -19,
     E_INTR = -20,
+    E_TIMEDOUT = -21,
+    E_PIPE = -22,
+    E_NODEV = -23,
 };
 
 const char *err_str(int code);

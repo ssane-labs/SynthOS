@@ -127,6 +127,7 @@ enum symbol_id {
     SYM_NEWFOLDER,
     SYM_USB,
     SYM_BATTERY,
+    SYM_EJECT,
     SYM_COUNT,
 };
 
@@ -473,6 +474,7 @@ void gui_app_launch(const struct gui_app *app, const char *arg);
 bool gui_open_file(const char *path);
 void gui_message(const char *title, const char *text);
 void gui_notify(const char *title, const char *text);
+bool gui_eject(const char *path);
 void gui_terminal_run(const char *command);
 void gui_terminal_show(void);
 bool gui_active(void);

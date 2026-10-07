@@ -46,7 +46,11 @@ struct desktop_icon {
     char label[64];
     char path[PATH_MAX_LEN];
     enum icon_id icon;
+    bool volume;
 };
+
+static struct volume known_volumes[8];
+static int known_count = -1;
 
 static struct desktop_icon icons[MAX_ICONS];
 static int icon_count;
@@ -278,13 +282,35 @@ static void scan_desktop(void)
     int n = 0;
     str_copy(fresh[n].label, "SynthOS HD", sizeof(fresh[n].label));
     str_copy(fresh[n].path, "/", sizeof(fresh[n].path));
+    fresh[n].volume = false;
     fresh[n++].icon = ICON_COMPUTER;
+    struct volume volumes[8];
+    int volume_count = vfs_volumes(volumes, (int)ARRAY_SIZE(volumes));
+    for (int i = 0; i < volume_count && n < MAX_ICONS; i++, n++) {
+        memset(&fresh[n], 0, sizeof(fresh[n]));
+        str_copy(fresh[n].label, volumes[i].label, sizeof(fresh[n].label));
+        str_copy(fresh[n].path, volumes[i].path, sizeof(fresh[n].path));
+        fresh[n].icon = ICON_USB;
+        fresh[n].volume = true;
+    }
+    if (known_count >= 0) {
+        for (int i = 0; i < volume_count; i++) {
+            bool seen = false;
+            for (int k = 0; k < known_count; k++)
+                seen |= !strcmp(volumes[i].path, known_volumes[k].path);
+            if (!seen)
+                gui_notify(volumes[i].label, "The drive is connected and ready to use.");
+        }
+    }
+    memcpy(known_volumes, volumes, sizeof(volumes[0]) * (size_t)volume_count);
+    known_count = volume_count;
     struct vdir d;
     if (vfs_opendir(dir, &d) == 0) {
         struct vfs_dirent ent;
         while (n < MAX_ICONS && vfs_readdir(&d, &ent) == 0) {
             if (ent.name[0] == '.')
                 continue;
+            memset(&fresh[n], 0, sizeof(fresh[n]));
             str_copy(fresh[n].label, ent.name, sizeof(fresh[n].label));
             path_join(dir, ent.name, fresh[n].path, sizeof(fresh[n].path));
             fresh[n].icon = icon_for(ent.name, ent.type == VN_DIR);
@@ -343,6 +369,7 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
 }
 
 static void desktop_pick(struct window *owner, int index);
+static void volume_pick(struct window *owner, int index);
 
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
 {
@@ -361,11 +388,43 @@ void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
     }
     if (hit >= 0 && button == BUTTON_LEFT && clicks >= 2)
         gui_open_file(icons[hit].path);
-    if (button == BUTTON_RIGHT) {
+    if (button == BUTTON_RIGHT && hit >= 0 && icons[hit].volume) {
+        static const char *const items[] = {"Open", "", "Eject"};
+        ui_menu(NULL, x, y, items, ARRAY_SIZE(items), volume_pick);
+    } else if (button == BUTTON_RIGHT) {
         static const char *const items[] = {"New Folder", "Open Desktop in Files", "", "Change Wallpaper…",
                                             "Open Terminal"};
         ui_menu(NULL, x, y, items, ARRAY_SIZE(items), desktop_pick);
     }
+}
+
+bool gui_eject(const char *path)
+{
+    char label[48] = "";
+    for (int i = 0; i < known_count; i++)
+        if (!strcmp(known_volumes[i].path, path))
+            str_copy(label, known_volumes[i].label, sizeof(label));
+    int err = vfs_eject(path);
+    if (err) {
+        gui_notify("Eject failed", err_str(err));
+        return false;
+    }
+    gui_notify(label[0] ? label : "Drive", "Ejected. You can now remove the drive safely.");
+    scan_desktop();
+    return true;
+}
+
+static void volume_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    if (selected_icon < 0 || selected_icon >= icon_count || !icons[selected_icon].volume)
+        return;
+    char path[PATH_MAX_LEN];
+    str_copy(path, icons[selected_icon].path, sizeof(path));
+    if (index == 0)
+        gui_open_file(path);
+    else if (index == 2)
+        gui_eject(path);
 }
 
 static void desktop_pick(struct window *owner, int index)

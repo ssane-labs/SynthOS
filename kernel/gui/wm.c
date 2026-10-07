@@ -1205,12 +1205,20 @@ void wm_pointer(const struct pointer_event *ev)
 {
     int old_x = mouse_x, old_y = mouse_y;
     struct rect old = cursor_rect();
-    accel_x += ev->dx * mouse_speed;
-    accel_y += ev->dy * mouse_speed;
-    int dx = accel_x / 5, dy = accel_y / 5;
-    accel_x -= dx * 5;
-    accel_y -= dy * 5;
-    clamp_mouse(mouse_x + dx, mouse_y + dy);
+    if (ev->absolute) {
+        struct rect all = screens[0].area;
+        for (int i = 1; i < screen_count; i++)
+            all = rect_union(all, screens[i].area);
+        clamp_mouse(all.x + (int)((int64_t)ev->x * (all.w - 1) / 65535),
+                    all.y + (int)((int64_t)ev->y * (all.h - 1) / 65535));
+    } else {
+        accel_x += ev->dx * mouse_speed;
+        accel_y += ev->dy * mouse_speed;
+        int dx = accel_x / 5, dy = accel_y / 5;
+        accel_x -= dx * 5;
+        accel_y -= dy * 5;
+        clamp_mouse(mouse_x + dx, mouse_y + dy);
+    }
     if (old_x != mouse_x || old_y != mouse_y) {
         wm_damage_z(old, Z_CURSOR);
         wm_damage_z(cursor_rect(), Z_CURSOR);

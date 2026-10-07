@@ -7,6 +7,10 @@ qemu=${QEMU:-qemu-system-i386}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp "$image" "$work/disk.img"
+dd if=/dev/zero of="$work/fat.img" bs=1k count=1440 2>/dev/null
+mkfs.fat -n SYNTHTEST "$work/fat.img" >/dev/null
+echo "hello from fat" > "$work/note.txt"
+mcopy -i "$work/fat.img" "$work/note.txt" "::/Long Name Note.txt"
 
 # each case: a command line, then the text expected somewhere in the output
 cat > "$work/cases" <<'EOF'
@@ -154,12 +158,21 @@ passwd -p topsecret bob
 password for bob updated
 userdel bob
 user bob deleted
+lsusb
+QEMU USB Keyboard
+cat '/mnt/hdb/Long Name Note.txt'
+hello from fat
+mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'
+saved
+mv '/mnt/hdb/Long Name Note.txt' /mnt/hdb/n.txt; cat /mnt/hdb/n.txt | tr a-z A-Z
+HELLO FROM FAT
 EOF
 
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"
 echo "shutdown" >> "$work/input"
 
-timeout 60 "$qemu" -drive format=raw,file="$work/disk.img" -m 64 -display none -serial stdio \
+timeout 60 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
+    -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -display none -serial stdio \
     < "$work/input" > "$work/output" 2>&1
 
 pass=0
@@ -172,6 +185,11 @@ while IFS= read -r command && IFS= read -r expected; do
         printf '  FAIL  %s\n        expected: %s\n' "$command" "$expected"
     fi
 done < "$work/cases"
+
+if command -v mdir >/dev/null && ! mdir -i "$work/fat.img" "::/My Folder" | grep -q "Mixed Case.txt"; then
+    fail=$((fail + 1))
+    echo "  FAIL  FAT image written by SynthOS is not readable on the host"
+fi
 
 if [ "$fail" -ne 0 ]; then
     echo "--- output ---"
