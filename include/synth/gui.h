@@ -177,6 +177,8 @@ void gfx_blit(struct canvas *c, int x, int y, const struct canvas *src, struct r
 void gfx_blit_alpha(struct canvas *c, int x, int y, const struct canvas *src, struct rect from, int alpha);
 void gfx_blit_round(struct canvas *c, struct rect dst, const struct canvas *src, int radius, bool blend_alpha);
 void gfx_scale(struct canvas *c, struct rect dst, const struct canvas *src, int alpha);
+void gfx_scale_fast(struct canvas *c, struct rect dst, const struct canvas *src, int alpha);
+void gfx_row_scaled(struct canvas *c, int y, int x0, int x1, const struct canvas *src, int sy, int alpha);
 void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int h);
 void gfx_icon(struct canvas *c, int x, int y, enum icon_id id, int size);
 void gfx_icon_alpha(struct canvas *c, int x, int y, enum icon_id id, int size, int alpha);
@@ -340,6 +342,7 @@ struct window {
     int z;
     struct glass *glass;
     struct canvas thumb;
+    bool anim_hold;
 };
 
 #define TITLE_HEIGHT 28
@@ -447,6 +450,7 @@ uint32_t ui_row_text(bool selected);
 bool ui_scrollbar(struct ui *ui, struct rect r, int *pos, int content, int view);
 bool ui_sidebar_item(struct ui *ui, struct rect r, enum symbol_id sym, const char *label, bool selected);
 void ui_sidebar_header(struct ui *ui, struct rect r, const char *label);
+void ui_sidebar_panel(struct ui *ui, int width, int height, uint32_t back);
 struct rect ui_group(struct ui *ui, int x, int y, int w, int rows, int row_h);
 void ui_group_label(struct ui *ui, struct rect row, const char *label, const char *detail, bool last);
 void ui_settings_icon(struct canvas *c, int x, int y, int size, enum symbol_id sym, uint32_t color);

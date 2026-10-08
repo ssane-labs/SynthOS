@@ -702,9 +702,9 @@ static bool matches(struct settings *s, int i)
 
 static void sidebar(struct ui *ui, struct settings *s, int H)
 {
-    ui_search(ui, (struct rect){12, 44, SIDEBAR_W - 24, 28}, &s->search, "Search");
+    ui_search(ui, (struct rect){18, 44, SIDEBAR_W - 30, 28}, &s->search, "Search");
     const struct user *me = user_current();
-    struct rect card = {10, 82, SIDEBAR_W - 20, 52};
+    struct rect card = {14, 82, SIDEBAR_W - 26, 52};
     if (ui->c) {
         if (s->pane == P_USERS)
             gfx_round(ui->c, card, 8, style.dark ? ALPHA(0xffffffffu, 34) : ALPHA(0, 24));
@@ -723,7 +723,7 @@ static void sidebar(struct ui *ui, struct settings *s, int H)
     for (int i = 0; i < P_COUNT; i++) {
         if (!matches(s, i))
             continue;
-        struct rect r = {10, y, SIDEBAR_W - 20, 28};
+        struct rect r = {14, y, SIDEBAR_W - 26, 28};
         if (y + 28 > H)
             break;
         bool clicked = false;
@@ -754,9 +754,8 @@ static void frame(struct ui *ui, void *data)
     struct window *w = ui->win;
     int W = w->surface.w, H = w->surface.h;
     if (ui->c) {
-        gfx_clear(ui->c, (struct rect){0, 0, SIDEBAR_W, H}, style.sidebar);
         gfx_clear(ui->c, (struct rect){SIDEBAR_W, 0, W - SIDEBAR_W, H}, style.window);
-        gfx_fill(ui->c, (struct rect){SIDEBAR_W, 0, 1, H}, style.separator);
+        ui_sidebar_panel(ui, SIDEBAR_W, H, style.window);
     }
     sidebar(ui, s, H);
     int cx = SIDEBAR_W + 1;

@@ -87,6 +87,10 @@ theme matrix; theme current
 matrix
 config prompt minimal; config prompt
 %{prompt.symbol}
+config animations off; config animations
+off
+config animations on; wmbench
+desktop is not running
 which ls hello
 hello: /bin/hello.sx
 formats | grep -c DOS

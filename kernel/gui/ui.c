@@ -590,6 +590,38 @@ bool ui_sidebar_item(struct ui *ui, struct rect r, enum symbol_id sym, const cha
     return clicked;
 }
 
+void ui_sidebar_panel(struct ui *ui, int width, int height, uint32_t back)
+{
+    if (!ui->c)
+        return;
+    struct canvas *c = ui->c;
+    gfx_clear(c, (struct rect){0, 0, width, height}, back);
+    struct rect r = {8, 8, width - 8, height - 16};
+    int radius = 12;
+    uint32_t panel = style.sidebar;
+    unsigned pa = panel >> 24;
+    struct rect area = rect_intersect(r, c->clip);
+    for (int y = area.y; y < area.y + area.h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        bool corner_row = y < r.y + radius || y >= r.y + r.h - radius;
+        for (int x = area.x; x < area.x + area.w; x++) {
+            int cov = corner_row && (x < r.x + radius || x >= r.x + r.w - radius) ? gfx_corner_coverage(r, radius, x, y)
+                                                                                 : 256;
+            if (cov >= 256) {
+                row[x] = panel;
+            } else if (cov > 0) {
+                unsigned a = (pa * (unsigned)cov + 255u * (256u - (unsigned)cov)) >> 8;
+                uint32_t mix = color_mix(back | 0xff000000u, panel | 0xff000000u, cov * 255 / 256);
+                row[x] = (mix & 0x00ffffffu) | a << 24;
+            }
+        }
+    }
+    gfx_round_frame_gradient(c, r, radius, ALPHA(0xffffffffu, style.dark ? 70 : 200),
+                             ALPHA(0xffffffffu, style.dark ? 20 : 90));
+    gfx_round_frame(c, (struct rect){r.x - 1, r.y - 1, r.w + 2, r.h + 2}, radius + 1,
+                    style.dark ? ALPHA(0, 120) : ALPHA(0, 22));
+}
+
 void ui_sidebar_header(struct ui *ui, struct rect r, const char *label)
 {
     if (ui->c)

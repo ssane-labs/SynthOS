@@ -333,41 +333,87 @@ static void shadow_init(void)
     shadow_falloff[0] = 255;
 }
 
+struct shadow_table {
+    int radius, size, strength, n;
+    uint8_t *alpha;
+};
+
+static struct shadow_table shadow_tables[6];
+static int shadow_next;
+
+static const struct shadow_table *shadow_lookup(int radius, int size, int strength)
+{
+    for (int i = 0; i < (int)ARRAY_SIZE(shadow_tables); i++) {
+        struct shadow_table *t = &shadow_tables[i];
+        if (t->alpha && t->radius == radius && t->size == size && t->strength == strength)
+            return t;
+    }
+    struct shadow_table *t = &shadow_tables[shadow_next++ % (int)ARRAY_SIZE(shadow_tables)];
+    kfree(t->alpha);
+    int n = radius + size + 1;
+    t->alpha = kmalloc((size_t)n * (size_t)n);
+    if (!t->alpha)
+        return NULL;
+    t->radius = radius;
+    t->size = size;
+    t->strength = strength;
+    t->n = n;
+    for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++) {
+            int d16;
+            if (!x && !y)
+                d16 = 0;
+            else if (!x)
+                d16 = (y - radius) * 16;
+            else if (!y)
+                d16 = (x - radius) * 16;
+            else
+                d16 = (int)isqrt((uint32_t)((x * x + y * y) * 256)) - radius * 16;
+            if (d16 < 0)
+                d16 = 0;
+            t->alpha[y * n + x] =
+                d16 >= size * 16 ? 0 : (uint8_t)((unsigned)strength * shadow_falloff[d16 * 256 / (size * 16)] / 255);
+        }
+    return t;
+}
+
 void gfx_drop_shadow(struct canvas *c, struct rect r, int radius, int size, int strength, int dy)
 {
     if (size <= 0 || strength <= 0)
         return;
     shadow_init();
     struct rect s = {r.x, r.y + dy, r.w, r.h};
-    radius = MIN(radius, MIN(r.w, r.h) / 2);
+    radius = MAX(0, MIN(radius, MIN(r.w, r.h) / 2));
     struct rect outer = {s.x - size, s.y - size, s.w + 2 * size, s.h + 2 * size};
     struct rect area = rect_intersect(outer, c->clip);
+    if (rect_empty(area))
+        return;
+    const struct shadow_table *t = shadow_lookup(radius, size, MIN(strength, 255));
+    if (!t)
+        return;
     struct rect skip = rect_inset(r, radius);
+    struct rect body = {r.x, r.y + radius, r.w, r.h - 2 * radius};
+    int n = t->n;
     for (int y = area.y; y < area.y + area.h; y++) {
         int dy0 = y < s.y + radius ? s.y + radius - y : y >= s.y + s.h - radius ? y - (s.y + s.h - radius - 1) : 0;
-        bool skip_row = y >= skip.y && y < skip.y + skip.h;
+        if (dy0 >= n)
+            continue;
+        const uint8_t *trow = t->alpha + dy0 * n;
+        bool body_row = y >= body.y && y < body.y + body.h;
+        int sx0 = body_row ? r.x : skip.x, sx1 = body_row ? r.x + r.w : skip.x + skip.w;
+        bool skip_row = body_row || (y >= r.y && y < r.y + r.h);
+        uint32_t *row = c->px + y * c->stride;
         for (int x = area.x; x < area.x + area.w; x++) {
-            if (skip_row && x >= skip.x && x < skip.x + skip.w) {
-                x = skip.x + skip.w - 1;
+            if (skip_row && x >= sx0 && x < sx1) {
+                x = sx1 - 1;
                 continue;
             }
             int dx0 = x < s.x + radius ? s.x + radius - x : x >= s.x + s.w - radius ? x - (s.x + s.w - radius - 1) : 0;
-            int d16;
-            if (!dx0 && !dy0)
-                d16 = 0;
-            else if (!dx0)
-                d16 = (dy0 - radius) * 16;
-            else if (!dy0)
-                d16 = (dx0 - radius) * 16;
-            else
-                d16 = (int)isqrt((uint32_t)((dx0 * dx0 + dy0 * dy0) * 256)) - radius * 16;
-            if (d16 < 0)
-                d16 = 0;
-            if (d16 >= size * 16)
+            if (dx0 >= n)
                 continue;
-            unsigned a = (unsigned)strength * shadow_falloff[d16 * 256 / (size * 16)] / 255;
+            unsigned a = trow[dx0];
             if (a)
-                put_a(c, x, y, 0, a);
+                row[x] = over(row[x], 0, a);
         }
     }
 }
@@ -560,6 +606,39 @@ void gfx_scale(struct canvas *c, struct rect dst, const struct canvas *src, int 
     draw_scaled(c, dst, src->px, src->w, src->h, src->stride, alpha);
 }
 
+void gfx_row_scaled(struct canvas *c, int y, int x0, int x1, const struct canvas *src, int sy, int alpha)
+{
+    if (y < c->clip.y || y >= c->clip.y + c->clip.h || x1 <= x0 || sy < 0 || sy >= src->h || alpha <= 0)
+        return;
+    int a0 = MAX(x0, c->clip.x), a1 = MIN(x1, c->clip.x + c->clip.w);
+    if (a1 <= a0)
+        return;
+    uint32_t step = (uint32_t)(((uint64_t)src->w << 16) / (uint32_t)(x1 - x0));
+    uint32_t fx = step * (uint32_t)(a0 - x0) + step / 2;
+    const uint32_t *s = src->px + sy * src->stride;
+    uint32_t *d = c->px + y * c->stride;
+    for (int x = a0; x < a1; x++, fx += step) {
+        uint32_t p = s[MIN((int)(fx >> 16), src->w - 1)];
+        unsigned a = (p >> 24) * (unsigned)alpha / 255;
+        if (a >= 255)
+            d[x] = p;
+        else if (a)
+            d[x] = over(d[x], p, a);
+    }
+}
+
+void gfx_scale_fast(struct canvas *c, struct rect dst, const struct canvas *src, int alpha)
+{
+    if (dst.w <= 0 || dst.h <= 0)
+        return;
+    struct rect area = rect_intersect(dst, c->clip);
+    uint32_t step = (uint32_t)(((uint64_t)src->h << 16) / (uint32_t)dst.h);
+    for (int y = area.y; y < area.y + area.h; y++) {
+        int sy = (int)((step * (uint32_t)(y - dst.y) + step / 2) >> 16);
+        gfx_row_scaled(c, y, dst.x, dst.x + dst.w, src, MIN(sy, src->h - 1), alpha);
+    }
+}
+
 void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int h)
 {
     struct rect dst = rect_intersect((struct rect){x, y, w, h}, c->clip);
@@ -616,20 +695,58 @@ const uint32_t *gfx_icon_pixels(enum icon_id id)
     return (unsigned)id < ICON_COUNT && load_icon(id) ? icon_px[id][0] : NULL;
 }
 
+struct scaled_icon {
+    int id, size;
+    uint32_t *px;
+};
+
+static struct scaled_icon scaled_icons[48];
+static int scaled_next;
+
+static const uint32_t *icon_at_size(enum icon_id id, int size)
+{
+    for (int level = 0; level < 3; level++)
+        if (size == ICON_SIZE >> level && icon_px[id][level])
+            return icon_px[id][level];
+    if (size <= 0 || size > 256)
+        return NULL;
+    for (size_t i = 0; i < ARRAY_SIZE(scaled_icons); i++)
+        if (scaled_icons[i].px && scaled_icons[i].id == (int)id && scaled_icons[i].size == size)
+            return scaled_icons[i].px;
+    struct scaled_icon *e = &scaled_icons[scaled_next++ % (int)ARRAY_SIZE(scaled_icons)];
+    kfree(e->px);
+    e->px = kzalloc((size_t)size * (size_t)size * 4);
+    if (!e->px)
+        return NULL;
+    e->id = (int)id;
+    e->size = size;
+    int level = size <= 20 && icon_px[id][2] ? 2 : size <= 40 && icon_px[id][1] ? 1 : 0;
+    int src = ICON_SIZE >> level;
+    struct canvas tmp = canvas_make(e->px, size, size);
+    draw_scaled(&tmp, (struct rect){0, 0, size, size}, icon_px[id][level], src, src, src, 255);
+    return e->px;
+}
+
 void gfx_icon_alpha(struct canvas *c, int x, int y, enum icon_id id, int size, int alpha)
 {
     if ((unsigned)id >= ICON_COUNT || !load_icon(id))
         return;
-    if (alpha >= 255) {
-        for (int level = 0; level < 3; level++)
-            if (size == ICON_SIZE >> level && icon_px[id][level]) {
-                gfx_image(c, x, y, icon_px[id][level], size, size);
-                return;
-            }
+    const uint32_t *px = icon_at_size(id, size);
+    if (!px)
+        return;
+    struct rect dst = rect_intersect((struct rect){x, y, size, size}, c->clip);
+    for (int row = dst.y; row < dst.y + dst.h; row++) {
+        const uint32_t *srow = px + (row - y) * size - x;
+        uint32_t *d = c->px + row * c->stride;
+        for (int col = dst.x; col < dst.x + dst.w; col++) {
+            uint32_t p = srow[col];
+            unsigned a = (p >> 24) * (unsigned)alpha / 255;
+            if (a >= 255)
+                d[col] = p;
+            else if (a)
+                d[col] = over(d[col], p, a);
+        }
     }
-    int level = size <= 20 && icon_px[id][2] ? 2 : size <= 40 && icon_px[id][1] ? 1 : 0;
-    int s = ICON_SIZE >> level;
-    draw_scaled(c, (struct rect){x, y, size, size}, icon_px[id][level], s, s, s, alpha);
 }
 
 void gfx_icon(struct canvas *c, int x, int y, enum icon_id id, int size)

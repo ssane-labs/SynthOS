@@ -87,28 +87,78 @@ def drop_shadow(img, mask, offset=6, blur=8, alpha=90):
     return out
 
 
-BODY = (26, 26, 230, 230)
+BODY = (24, 24, 232, 232)
 
 
-def app_base(top, bottom, glyph=None):
-    """Squircle app icon body with gradient, top sheen, inner rim and soft shadow."""
+def diagonal_light(strong=255, weak=60, back=170):
+    """Rim light for a liquid-glass edge: bright top-left, softer bottom-right, dim sides."""
+    img = Image.new("L", (S, S), 0)
+    px = img.load()
+    for y in range(S):
+        for x in range(S):
+            t = ((x + y) / (2 * S - 2)) * 2 - 1
+            v = strong if t < -0.35 else back if t > 0.45 else weak
+            if -0.35 <= t < 0:
+                v = int(strong + (weak - strong) * (t + 0.35) / 0.35)
+            elif 0 <= t <= 0.45:
+                v = int(weak + (back - weak) * t / 0.45)
+            px[x, y] = v
+    return img
+
+
+LIGHT = None
+
+
+def glass_layer(g, depth=6, highlight=90):
+    """Turns a flat glyph layer into a raised glass piece: soft shadow, top sheen and a lit rim."""
+    alpha = g.getchannel("A")
+    out = blank()
+    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    shadow.putalpha(alpha.point(lambda v: v * 70 // 255))
+    shadow = shadow.transform((S, S), Image.AFFINE, (1, 0, 0, 0, 1, -depth)).filter(ImageFilter.GaussianBlur(5))
+    out.alpha_composite(shadow)
+    out.alpha_composite(g)
+    sheen = gradient((S, S), (255, 255, 255, highlight), (255, 255, 255, 0))
+    out.alpha_composite(Image.composite(sheen, blank(), alpha))
+    inner = alpha.filter(ImageFilter.MinFilter(5))
+    edge = ImageChops.subtract(alpha, inner)
+    edge = ImageChops.multiply(edge, LIGHT)
+    rim = Image.new("RGBA", (S, S), (255, 255, 255, 255))
+    rim.putalpha(edge.point(lambda v: v * 150 // 255))
+    out.alpha_composite(rim)
+    return out
+
+
+def app_base(top, bottom, glyph=None, glassy=True):
+    """Squircle app icon: deep gradient body, soft inner glow, raised glass glyph and a liquid-glass rim."""
+    global LIGHT
+    if LIGHT is None:
+        LIGHT = diagonal_light()
     mask = squircle_mask(BODY)
     layer = blank()
     layer.paste(gradient((S, S), top, bottom), (0, 0), mask)
+    glow = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(glow).ellipse([-40, -120, S + 40, 140], fill=70)
+    glow = glow.filter(ImageFilter.GaussianBlur(30))
+    white = Image.new("RGBA", (S, S), (255, 255, 255, 255))
+    white.putalpha(ImageChops.multiply(glow, mask))
+    layer.alpha_composite(white)
     if glyph:
         g = blank()
         glyph(g, ImageDraw.Draw(g))
+        if glassy:
+            g = glass_layer(g)
         layer.alpha_composite(Image.composite(g, blank(), mask))
-    band = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(band).rectangle([0, 0, S, 118], fill=255)
-    sheen = gradient((S, S), (255, 255, 255, 56), (255, 255, 255, 0))
-    layer.alpha_composite(Image.composite(sheen, blank(), ImageChops.multiply(mask, band)))
-    inner = squircle_mask((BODY[0] + 3, BODY[1] + 3, BODY[2] - 3, BODY[3] - 3))
-    edge = ImageChops.subtract(mask, inner).point(lambda v: v * 80 // 255)
+    inner = mask.filter(ImageFilter.MinFilter(7))
+    edge = ImageChops.multiply(ImageChops.subtract(mask, inner), LIGHT)
     rim = Image.new("RGBA", (S, S), (255, 255, 255, 255))
-    rim.putalpha(edge)
+    rim.putalpha(edge.point(lambda v: v * 200 // 255))
     layer.alpha_composite(rim)
-    return drop_shadow(layer, mask, 6, 7, 80)
+    dark = Image.new("RGBA", (S, S), (0, 0, 0, 255))
+    outer = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(3)))
+    dark.putalpha(outer.point(lambda v: v * 40 // 255))
+    layer.alpha_composite(dark)
+    return drop_shadow(layer, mask, 5, 6, 70)
 
 
 def page_base(emblem=None):
@@ -166,18 +216,19 @@ def rr(d, box, r, fill=None, outline=None, width=1):
 
 def files_icon():
     def glyph(img, d):
-        rr(d, (64, 92, 192, 178), 14, fill=(255, 255, 255, 255))
-        rr(d, (64, 78, 120, 104), 10, fill=(255, 255, 255, 255))
-        d.line([(76, 112), (180, 112)], fill=(30, 125, 240, 160), width=6)
-    return app_base((112, 200, 255, 255), (22, 118, 240, 255), glyph)
+        rr(d, (58, 96, 198, 186), 18, fill=(255, 255, 255, 250))
+        rr(d, (58, 76, 124, 110), 12, fill=(255, 255, 255, 250))
+        rr(d, (58, 110, 198, 186), 18, fill=(214, 236, 255, 255))
+        rr(d, (102, 132, 154, 142), 5, fill=(40, 130, 240, 255))
+    return app_base((110, 200, 255, 255), (16, 104, 236, 255), glyph)
 
 
 def terminal_icon():
     def glyph(img, d):
-        rr(d, (48, 56, 208, 200), 14, fill=(24, 24, 26, 255), outline=(0, 0, 0, 120), width=3)
-        f = font(MONO_BOLD, 66)
-        d.text((64, 66), ">_", font=f, fill=(235, 235, 240, 255))
-    return app_base((214, 214, 220, 255), (150, 150, 158, 255), glyph)
+        f = font(MONO_BOLD, 74)
+        d.text((62, 72), ">", font=f, fill=(255, 255, 255, 255))
+        rr(d, (116, 150, 180, 164), 6, fill=(255, 255, 255, 255))
+    return app_base((74, 76, 84, 255), (22, 22, 26, 255), glyph)
 
 
 def gear_shape(d, cx, cy, r_out, r_in, teeth, fill, hole_r=0, hole=None):
@@ -193,87 +244,81 @@ def gear_shape(d, cx, cy, r_out, r_in, teeth, fill, hole_r=0, hole=None):
 
 def settings_icon():
     def glyph(img, d):
-        gear_shape(d, 128, 128, 82, 66, 18, (226, 226, 232, 255))
-        d.ellipse([70, 70, 186, 186], fill=(152, 152, 160, 255))
-        gear_shape(d, 128, 128, 50, 38, 10, (234, 234, 240, 255))
-        d.ellipse([110, 110, 146, 146], fill=(120, 120, 128, 255))
-    return app_base((146, 146, 154, 255), (90, 90, 98, 255), glyph)
+        gear_shape(d, 128, 128, 84, 68, 16, (238, 238, 244, 255))
+        d.ellipse([74, 74, 182, 182], fill=(0, 0, 0, 0))
+        d.ellipse([86, 86, 170, 170], fill=(238, 238, 244, 255))
+        d.ellipse([110, 110, 146, 146], fill=(0, 0, 0, 0))
+    return app_base((170, 172, 182, 255), (92, 94, 104, 255), glyph)
 
 
 def calc_icon():
     def glyph(img, d):
-        rr(d, (60, 50, 196, 92), 10, fill=(70, 70, 74, 255))
-        f = font(INTER_BOLD, 34)
-        d.text((150, 52), "42", font=f, fill=(240, 240, 240, 255))
         for row in range(3):
-            for col in range(4):
-                x, y = 66 + col * 34, 108 + row * 34
-                color = (255, 159, 10, 255) if col == 3 else (165, 165, 170, 255) if row == 0 else (92, 92, 96, 255)
-                d.ellipse([x, y, x + 26, y + 26], fill=color)
-    return app_base((60, 60, 64, 255), (28, 28, 30, 255), glyph)
+            for col in range(3):
+                x, y = 62 + col * 46, 62 + row * 46
+                color = (255, 159, 10, 255) if col == 2 else (120, 120, 128, 255) if row == 0 else (88, 88, 94, 255)
+                d.ellipse([x, y, x + 38, y + 38], fill=color)
+        f = font(INTER_BOLD, 30)
+        d.text((112, 64), "\u00d7", font=f, fill=(255, 255, 255, 255))
+    return app_base((84, 84, 92, 255), (26, 26, 30, 255), glyph)
 
 
 def notepad_icon():
     def glyph(img, d):
-        rr(d, (62, 44, 194, 212), 8, fill=(255, 255, 255, 255))
-        for i in range(7):
-            y = 70 + i * 18
-            d.line([(78, y), (178 - (i % 3) * 18, y)], fill=(150, 160, 175, 255), width=5)
-        d.line([(150, 196), (206, 84)], fill=(255, 176, 32, 255), width=16)
-        d.polygon([(142, 212), (144, 192), (156, 198)], fill=(60, 60, 60, 255))
-    return app_base((190, 215, 245, 255), (120, 160, 220, 255), glyph)
+        rr(d, (54, 54, 202, 202), 14, fill=(255, 255, 255, 255))
+        d.rectangle([54, 54, 202, 92], fill=(255, 204, 0, 255))
+        rr(d, (54, 54, 202, 70), 14, fill=(255, 214, 10, 255))
+        for i in range(4):
+            y = 118 + i * 22
+            d.line([(72, y), (184 - (i % 2) * 34, y)], fill=(196, 196, 204, 255), width=5)
+    return app_base((255, 238, 160, 255), (250, 196, 40, 255), glyph)
 
 
 def paint_icon():
     def glyph(img, d):
-        d.ellipse([46, 70, 206, 196], fill=(245, 222, 186, 255))
-        d.ellipse([134, 148, 164, 176], fill=(0, 0, 0, 0))
-        for (x, y, c) in [(74, 104, (255, 59, 48)), (108, 86, (255, 204, 0)), (148, 88, (52, 199, 89)),
-                          (176, 112, (0, 122, 255)), (80, 140, (175, 82, 222))]:
-            d.ellipse([x, y, x + 26, y + 26], fill=c + (255,))
-        d.line([(120, 182), (200, 52)], fill=(120, 80, 40, 255), width=12)
-        d.polygon([(110, 200), (114, 176), (130, 186)], fill=(30, 30, 30, 255))
-    return app_base((255, 255, 255, 255), (220, 224, 232, 255), glyph)
+        d.ellipse([46, 64, 210, 200], fill=(255, 255, 255, 250))
+        d.ellipse([132, 146, 166, 178], fill=(0, 0, 0, 0))
+        for (x, y, c) in [(70, 102, (255, 59, 48)), (104, 80, (255, 204, 0)), (146, 82, (52, 199, 89)),
+                          (176, 110, (0, 122, 255)), (78, 142, (175, 82, 222))]:
+            d.ellipse([x, y, x + 28, y + 28], fill=c + (255,))
+    return app_base((255, 150, 120, 255), (236, 60, 110, 255), glyph)
 
 
 def monitor_icon():
     def glyph(img, d):
-        rr(d, (50, 58, 206, 198), 12, fill=(10, 14, 12, 255))
-        for i in range(1, 4):
-            d.line([(50, 58 + i * 35), (206, 58 + i * 35)], fill=(40, 70, 50, 255), width=2)
-        pts = [(56, 168), (84, 150), (106, 160), (128, 104), (150, 130), (172, 88), (200, 110)]
-        d.line(pts, fill=(52, 230, 110, 255), width=7, joint="curve")
-    return app_base((180, 180, 188, 255), (110, 110, 118, 255), glyph)
+        pts = [(56, 170), (84, 150), (106, 162), (130, 100), (152, 132), (174, 84), (202, 110)]
+        d.line(pts, fill=(80, 245, 140, 255), width=12, joint="curve")
+        for x, y in pts[1:-1]:
+            d.ellipse([x - 7, y - 7, x + 7, y + 7], fill=(160, 255, 190, 255))
+    return app_base((44, 52, 58, 255), (12, 16, 18, 255), glyph)
 
 
 def browser_icon():
     def glyph(img, d):
-        white = (255, 255, 255, 235)
-        d.ellipse([58, 58, 198, 198], outline=white, width=8)
-        d.ellipse([98, 58, 158, 198], outline=white, width=7)
-        d.line([(128, 58), (128, 198)], fill=white, width=7)
-        d.line([(60, 128), (196, 128)], fill=white, width=7)
-        d.arc([58, 20, 198, 110], 35, 145, fill=white, width=7)
-        d.arc([58, 146, 198, 236], 215, 325, fill=white, width=7)
-    return app_base((90, 200, 250, 255), (20, 110, 220, 255), glyph)
+        white = (255, 255, 255, 255)
+        d.ellipse([54, 54, 202, 202], outline=white, width=9)
+        for a in range(0, 360, 30):
+            r = math.radians(a)
+            r0, r1 = (62, 70) if a % 90 else (56, 74)
+            d.line([(128 + r0 * math.cos(r), 128 + r0 * math.sin(r)), (128 + r1 * math.cos(r), 128 + r1 * math.sin(r))],
+                   fill=white, width=4)
+        d.polygon([(128, 128), (176, 80), (140, 140)], fill=(255, 70, 60, 255))
+        d.polygon([(128, 128), (80, 176), (116, 116)], fill=white)
+        d.ellipse([120, 120, 136, 136], fill=white)
+    return app_base((96, 210, 255, 255), (12, 96, 230, 255), glyph)
 
 
 def mines_icon():
     def glyph(img, d):
-        for row in range(4):
-            for col in range(4):
-                x, y = 46 + col * 42, 46 + row * 42
-                c = (120, 200, 90, 255) if (row + col) % 2 else (100, 182, 74, 255)
-                d.rectangle([x, y, x + 42, y + 42], fill=c)
-        cx, cy = 118, 140
+        cx, cy = 122, 138
         for a in range(0, 360, 45):
             r = math.radians(a)
-            d.line([(cx, cy), (cx + 46 * math.cos(r), cy + 46 * math.sin(r))], fill=(25, 25, 30, 255), width=10)
-        d.ellipse([cx - 34, cy - 34, cx + 34, cy + 34], fill=(25, 25, 30, 255))
-        d.ellipse([cx - 20, cy - 20, cx - 4, cy - 4], fill=(230, 230, 240, 255))
-        d.line([(178, 60), (178, 128)], fill=(40, 40, 40, 255), width=6)
-        d.polygon([(181, 60), (214, 76), (181, 92)], fill=(255, 59, 48, 255))
-    return app_base((140, 210, 110, 255), (60, 150, 60, 255), glyph)
+            d.line([(cx, cy), (cx + 52 * math.cos(r), cy + 52 * math.sin(r))], fill=(30, 34, 40, 255), width=12)
+        d.ellipse([cx - 38, cy - 38, cx + 38, cy + 38], fill=(30, 34, 40, 255))
+        d.ellipse([cx - 22, cy - 22, cx - 4, cy - 4], fill=(230, 236, 244, 255))
+        d.line([(182, 56), (182, 126)], fill=(255, 255, 255, 255), width=7)
+        d.polygon([(186, 56), (222, 74), (186, 92)], fill=(255, 59, 48, 255))
+    return app_base((150, 226, 110, 255), (40, 150, 70, 255), glyph)
 
 
 def launchpad_icon():
@@ -281,9 +326,9 @@ def launchpad_icon():
         colors = [(255, 69, 58), (255, 159, 10), (255, 214, 10), (48, 209, 88), (100, 210, 255), (10, 132, 255),
                   (191, 90, 242), (255, 55, 95), (172, 142, 104)]
         for i, c in enumerate(colors):
-            x, y = 60 + (i % 3) * 48, 60 + (i // 3) * 48
-            rr(d, (x, y, x + 38, y + 38), 10, fill=c + (255,))
-    return app_base((80, 80, 90, 255), (40, 40, 48, 255), glyph)
+            x, y = 58 + (i % 3) * 50, 58 + (i // 3) * 50
+            rr(d, (x, y, x + 40, y + 40), 12, fill=c + (255,))
+    return app_base((250, 250, 252, 255), (206, 210, 222, 255), glyph)
 
 
 def logo_glyph(d, cx, cy, r, color=None):
@@ -493,20 +538,34 @@ def user_icon():
 
 
 def trash_icon(full=False):
+    global LIGHT
+    if LIGHT is None:
+        LIGHT = diagonal_light()
     img = blank()
     body = Image.new("L", (S * 4, S * 4), 0)
-    ImageDraw.Draw(body).polygon([(60 * 4, 60 * 4), (196 * 4, 60 * 4), (182 * 4, 232 * 4), (74 * 4, 232 * 4)], fill=255)
+    ImageDraw.Draw(body).rounded_rectangle([64 * 4, 62 * 4, 192 * 4, 234 * 4], radius=22 * 4, fill=255)
     body = body.resize((S, S), Image.LANCZOS)
-    img.paste(gradient((S, S), (238, 240, 244, 230), (196, 200, 210, 230)), (0, 0), body)
+    glass = gradient((S, S), (236, 244, 252, 150), (188, 204, 222, 190), horizontal=True)
+    img.paste(glass, (0, 0), body)
     d = ImageDraw.Draw(img)
-    for i in range(7):
-        x = 78 + i * 17
-        d.line([(x, 70), (x + (i - 3) * 2, 226)], fill=(150, 156, 170, 255), width=4)
     if full:
-        for (x, y, c) in [(80, 36, (255, 255, 255)), (120, 30, (250, 245, 220)), (150, 42, (230, 240, 255))]:
-            rr(d, (x, y, x + 46, y + 40), 4, fill=c + (255,), outline=(180, 180, 190, 255), width=2)
-    rr(d, (50, 50, 206, 70), 8, fill=(220, 224, 232, 255), outline=(140, 146, 160, 255), width=3)
-    return drop_shadow(img, img.getchannel("A"), 4, 6, 60)
+        for (x, y, c) in [(80, 118, (255, 255, 255)), (112, 96, (250, 240, 210)), (134, 130, (220, 236, 255)),
+                          (92, 160, (240, 240, 246))]:
+            rr(d, (x, y, x + 50, y + 44), 6, fill=c + (235,))
+    for i in range(5):
+        x = 88 + i * 20
+        d.line([(x, 84), (x, 214)], fill=(255, 255, 255, 120), width=6)
+    edge = ImageChops.multiply(ImageChops.subtract(body, body.filter(ImageFilter.MinFilter(7))), LIGHT)
+    rim = Image.new("RGBA", (S, S), (255, 255, 255, 255))
+    rim.putalpha(edge.point(lambda v: v * 230 // 255))
+    img.alpha_composite(rim)
+    outline = Image.new("RGBA", (S, S), (90, 100, 120, 255))
+    outline.putalpha(ImageChops.subtract(body, body.filter(ImageFilter.MinFilter(3))).point(lambda v: v * 90 // 255))
+    img.alpha_composite(outline)
+    rr(d, (52, 46, 204, 68), 11, fill=(226, 232, 242, 245))
+    rr(d, (52, 46, 204, 56), 9, fill=(250, 252, 255, 255))
+    rr(d, (106, 34, 150, 48), 6, fill=(214, 222, 234, 255))
+    return drop_shadow(img, img.getchannel("A"), 4, 6, 55)
 
 
 def trash_full_icon():

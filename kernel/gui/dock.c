@@ -1,6 +1,7 @@
 #include <synth/config.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
+#include <synth/hal.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -9,8 +10,8 @@
 #include "internal.h"
 
 #define MAX_ITEMS 28
-#define PAD 7
-#define GAP 5
+#define PAD 8
+#define GAP 6
 #define BOTTOM 6
 #define TOOLTIP_H 30
 #define SEPARATOR_W 13
@@ -43,6 +44,9 @@ static bool magnify = true;
 static bool autohide;
 static int hover_x = -1, hover_item = -1, pressed_item = -1;
 static bool revealed;
+static int mag, mag_x = -1;
+static const struct gui_app *bounce_app;
+static uint64_t bounce_start;
 static struct glass glass;
 static struct rect dock_rect, zone;
 static bool started;
@@ -121,10 +125,10 @@ static void layout(void)
         int w = items[i].kind == DI_SEPARATOR ? SEPARATOR_W : base_size;
         int center = x + w / 2;
         int size = base_size;
-        if (hover_x >= 0 && items[i].kind != DI_SEPARATOR && big > base_size) {
-            int d = (hover_x > center ? hover_x - center : center - hover_x) * 256 / (base_size * 5 / 2);
+        if (mag > 0 && mag_x >= 0 && items[i].kind != DI_SEPARATOR && big > base_size) {
+            int d = (mag_x > center ? mag_x - center : center - mag_x) * 256 / (base_size * 5 / 2);
             if (d < 256)
-                size = base_size + (big - base_size) * (65536 - d * d) / 65536;
+                size = base_size + (big - base_size) * (65536 - d * d) / 65536 * mag / 256;
         }
         items[i].size = size;
         x += w + GAP;
@@ -179,10 +183,60 @@ static const char *item_label(const struct item *it)
     }
 }
 
+static int bounce_offset(const struct item *it)
+{
+    if (!bounce_app || it->kind != DI_APP || it->app != bounce_app)
+        return 0;
+    uint64_t t = hal_ticks_ms() - bounce_start;
+    if (t >= 1000)
+        return 0;
+    int phase = (int)(t % 500) * 1024 / 500, height = t < 500 ? base_size / 2 : base_size / 4;
+    return height * 4 * phase / 1024 * (1024 - phase) / 1024;
+}
+
 static struct rect icon_rect(const struct item *it)
 {
-    int bottom = dock_rect.y + PAD + base_size;
+    int bottom = dock_rect.y + PAD + base_size - bounce_offset(it);
     return (struct rect){it->x, bottom - it->size, it->size, it->size};
+}
+
+struct rect dock_window_rect(struct window *w)
+{
+    if (!started)
+        return (struct rect){0, 0, 0, 0};
+    for (int i = 0; i < count; i++)
+        if (items[i].kind == DI_WINDOW && items[i].win == w)
+            return icon_rect(&items[i]);
+    return (struct rect){0, 0, 0, 0};
+}
+
+void dock_bounce(const struct gui_app *app)
+{
+    bounce_app = app;
+    bounce_start = hal_ticks_ms();
+}
+
+bool dock_animate(void)
+{
+    if (!started)
+        return false;
+    bool busy = false;
+    int target = hover_x >= 0 ? 256 : 0;
+    if (mag != target) {
+        int step = (target - mag) / 3;
+        mag = step ? mag + step : target;
+        if (hover_x >= 0)
+            mag_x = hover_x;
+        layout();
+        busy = true;
+    }
+    if (bounce_app) {
+        if (hal_ticks_ms() - bounce_start >= 1000)
+            bounce_app = NULL;
+        wm_damage_z(zone, Z_DOCK);
+        busy = true;
+    }
+    return busy;
 }
 
 void dock_paint(struct canvas *c, int screen)
@@ -190,7 +244,10 @@ void dock_paint(struct canvas *c, int screen)
     if (!started || screen != 0 || rect_empty(rect_intersect(zone, c->clip)))
         return;
     struct glass_look look;
-    glass_look_for(&look, GLASS_DOCK, MIN(20, base_size * 2 / 5));
+    int radius = dock_rect.h * 2 / 5;
+    glass_look_for(&look, GLASS_DOCK, radius);
+    if (style.glass == GLASS_LIQUID)
+        gfx_drop_shadow(c, dock_rect, radius, 16, style.dark ? 90 : 40, 5);
     glass_draw(c, &glass, &look);
     for (int i = 0; i < count; i++) {
         struct item *it = &items[i];
@@ -217,8 +274,11 @@ void dock_paint(struct canvas *c, int screen)
         } else {
             gfx_icon_alpha(c, r.x, r.y, item_icon(it), r.w, alpha);
         }
-        if (it->running)
-            gfx_circle(c, r.x + r.w / 2, dock_rect.y + dock_rect.h - 4, 2, style.dark ? RGB(230, 230, 235) : RGB(40, 40, 46));
+        if (it->running) {
+            int cx = r.x + r.w / 2, cy = dock_rect.y + dock_rect.h - 4;
+            gfx_circle(c, cx, cy, 2, style.dark ? RGB(236, 236, 240) : RGB(30, 30, 36));
+            gfx_circle(c, cx, cy, 1, style.dark ? RGB(255, 255, 255) : RGB(70, 70, 80));
+        }
     }
     if (hover_item >= 0 && hover_item < count && pressed_item < 0) {
         const char *label = item_label(&items[hover_item]);
@@ -226,9 +286,10 @@ void dock_paint(struct canvas *c, int screen)
             struct rect r = icon_rect(&items[hover_item]);
             int w = gfx_text_width(&font_sans, label) + 22;
             struct rect tip = {r.x + r.w / 2 - w / 2, r.y - TOOLTIP_H, w, 24};
-            gfx_drop_shadow(c, tip, 8, 8, 60, 2);
-            gfx_round(c, tip, 8, style.dark ? RGBA(50, 50, 54, 240) : RGBA(250, 250, 252, 240));
-            gfx_round_frame(c, tip, 8, style.dark ? ALPHA(0xffffffffu, 40) : ALPHA(0, 30));
+            gfx_drop_shadow(c, tip, 12, 10, 50, 3);
+            gfx_round(c, tip, 12, style.dark ? RGBA(46, 46, 52, 235) : RGBA(252, 252, 254, 235));
+            gfx_round_frame_gradient(c, tip, 12, style.dark ? ALPHA(0xffffffffu, 60) : ALPHA(0xffffffffu, 255),
+                                     style.dark ? ALPHA(0xffffffffu, 16) : ALPHA(0, 26));
             gfx_text_box(c, tip, &font_sans, label, style.text, ALIGN_CENTER);
         }
     }
@@ -318,10 +379,12 @@ static void activate(int i)
     struct item *it = &items[i];
     switch (it->kind) {
     case DI_APP:
-        if (wm_app_window_count(it->app) > 0)
+        if (wm_app_window_count(it->app) > 0) {
             wm_focus_app(it->app);
-        else
+        } else {
+            dock_bounce(it->app);
             gui_app_launch(it->app, NULL);
+        }
         break;
     case DI_LAUNCHPAD: launchpad_toggle(); break;
     case DI_WINDOW:
@@ -387,6 +450,8 @@ void dock_hover(int x, int y)
         return;
     hover_x = nx;
     hover_item = item;
+    if (nx >= 0 && mag > 0)
+        mag_x = nx;
     layout();
 }
 
@@ -405,6 +470,9 @@ void dock_start(void)
     glass = (struct glass){0};
     glass.z = Z_DOCK;
     hover_x = hover_item = pressed_item = -1;
+    mag = 0;
+    mag_x = -1;
+    bounce_app = NULL;
     revealed = false;
     started = true;
     build();
@@ -419,10 +487,6 @@ void dock_stop(void)
     glass_unregister(&glass);
 }
 
-void dock_minimize_target(struct window *w)
-{
-    UNUSED(w);
-}
 
 static void get_size(char *buf, size_t cap)
 {

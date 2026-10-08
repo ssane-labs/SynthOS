@@ -125,6 +125,7 @@ struct cpu_info {
     bool sse;
     bool pae;
     bool long_mode;
+    bool emulated;
     uint32_t family;
 };
 

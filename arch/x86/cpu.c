@@ -163,6 +163,12 @@ static void detect_cpu(void)
     info.tsc = edx & (1u << 4);
     info.sse = (edx & (1u << 25)) && (edx & (1u << 24));
     info.pae = edx & (1u << 6);
+    if (ecx & (1u << 31)) {
+        eax = 0x40000000u;
+        __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+        info.emulated = ebx == 0x54474354u && ecx == 0x43544743u && edx == 0x47435447u;
+        memcpy_unrolled = info.emulated;
+    }
     eax = 0x80000000u;
     __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
     if (eax >= 0x80000001u) {

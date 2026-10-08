@@ -1,3 +1,4 @@
+#include <synth/command.h>
 #include <synth/error.h>
 #include <synth/fbcon.h>
 #include <synth/fmt.h>
@@ -10,7 +11,7 @@
 #include "internal.h"
 
 #define MAX_DIRTY 32
-#define RADIUS 12
+#define RADIUS 20
 #define DOUBLE_CLICK_MS 400
 #define EDGE 6
 #define SHADOW 34
@@ -341,6 +342,245 @@ void wm_focus(struct window *w)
     chrome_changed();
 }
 
+enum anim_kind {
+    ANIM_OPEN,
+    ANIM_CLOSE,
+    ANIM_MINIMIZE,
+    ANIM_RESTORE,
+};
+
+struct ghost {
+    enum anim_kind kind;
+    struct canvas snap;
+    struct rect frame, target, drawn;
+    int margin, ms;
+    unsigned flags;
+    uint64_t start;
+    struct window *win;
+    struct ghost *next;
+};
+
+static struct ghost *ghosts;
+static bool animations = true;
+
+static void draw_window(struct canvas *c, struct window *w);
+
+static bool snapshot(struct window *w, struct canvas *snap, int margin)
+{
+    struct rect f = w->frame;
+    struct rect r = {f.x - margin, f.y - margin, f.w + 2 * margin, f.h + 2 * margin};
+    if (!canvas_alloc(snap, r.w, r.h))
+        return false;
+    memset(snap->px, 0, (size_t)r.w * (size_t)r.h * 4);
+    struct canvas c = *snap;
+    c.px = snap->px - (r.x + r.y * snap->stride);
+    c.clip = r;
+    unsigned saved = w->flags;
+    if (!margin)
+        w->flags |= WIN_NOSHADOW;
+    glass_freeze(true);
+    draw_window(&c, w);
+    glass_freeze(false);
+    w->flags = saved;
+    return true;
+}
+
+static int ghost_margin(const struct window *w)
+{
+    return w->flags & WIN_NOSHADOW ? 0 : SHADOW + SHADOW_DY;
+}
+
+static int ghost_ms(enum anim_kind kind, unsigned flags)
+{
+    bool small = flags & WIN_POPUP && !(flags & WIN_OVERLAY);
+    switch (kind) {
+    case ANIM_OPEN: return small ? 150 : 260;
+    case ANIM_CLOSE: return small ? 120 : 200;
+    case ANIM_MINIMIZE: return 430;
+    case ANIM_RESTORE: return 380;
+    }
+    return 200;
+}
+
+static struct ghost *ghost_new(enum anim_kind kind, struct window *w)
+{
+    if (!animations || !screen_count)
+        return NULL;
+    struct ghost *g = kzalloc(sizeof(*g));
+    if (!g)
+        return NULL;
+    g->kind = kind;
+    g->frame = w->frame;
+    g->flags = w->flags;
+    g->margin = kind == ANIM_MINIMIZE || kind == ANIM_RESTORE ? 0 : ghost_margin(w);
+    g->ms = ghost_ms(kind, w->flags);
+    g->start = hal_ticks_ms();
+    g->next = ghosts;
+    ghosts = g;
+    return g;
+}
+
+static void ghost_free(struct ghost *g)
+{
+    if (g->win && wm_window_alive(g->win)) {
+        g->win->anim_hold = false;
+        wm_damage_z(outer_rect(g->win), g->win->z);
+    }
+    wm_damage_z(g->drawn, Z_CURSOR);
+    canvas_free(&g->snap);
+    kfree(g);
+}
+
+static void ghost_forget(struct window *w)
+{
+    for (struct ghost *g = ghosts; g; g = g->next)
+        if (g->win == w) {
+            g->win = NULL;
+            g->start = 0;
+        }
+}
+
+static void hold_window(struct window *w, enum anim_kind kind, struct rect target)
+{
+    if (w->anim_hold)
+        return;
+    struct ghost *g = ghost_new(kind, w);
+    if (!g)
+        return;
+    g->win = w;
+    g->target = target;
+    w->anim_hold = true;
+    int m = MAX(g->margin, glass_margin());
+    wm_damage_z((struct rect){w->frame.x - m, w->frame.y - m, w->frame.w + 2 * m, w->frame.h + 2 * m}, Z_CURSOR);
+}
+
+static void release_window(struct window *w, enum anim_kind kind, struct rect target)
+{
+    if (w->anim_hold || !visible(w))
+        return;
+    struct ghost *g = ghost_new(kind, w);
+    if (!g)
+        return;
+    g->target = target;
+    if (!snapshot(w, &g->snap, g->margin)) {
+        ghosts = g->next;
+        kfree(g);
+    }
+}
+
+static struct rect ghost_rect(const struct ghost *g, int t, int *alpha)
+{
+    struct rect f = g->frame;
+    int m = g->margin;
+    struct rect full = {f.x - m, f.y - m, f.w + 2 * m, f.h + 2 * m};
+    bool overlay = g->flags & WIN_OVERLAY, popup = g->flags & WIN_POPUP && !overlay;
+    int from = overlay ? 1090 : popup ? 965 : 900;
+    int e = g->kind == ANIM_OPEN ? (popup ? ease_out(t) : ease_spring(t)) : ease_out(t);
+    int scale = g->kind == ANIM_OPEN ? lerp_i(from, 1024, e) : lerp_i(1024, overlay ? 1090 : popup ? 975 : 930, e);
+    *alpha = g->kind == ANIM_OPEN ? MIN(255, ease_out(t) * 255 / 1024 * 3 / 2) : 255 - e * 255 / 1024;
+    int cx = f.x + f.w / 2, cy = popup ? f.y : f.y + f.h / 2;
+    int w = full.w * scale / 1024, h = full.h * scale / 1024;
+    int x = cx - (cx - full.x) * scale / 1024, y = cy - (cy - full.y) * scale / 1024;
+    (void)w;
+    return (struct rect){x, y, w, h};
+}
+
+static void genie_edges(const struct ghost *g, int t, int *top, int *bottom)
+{
+    struct rect f = g->frame, d = g->target;
+    if (g->kind == ANIM_RESTORE)
+        t = 1024 - t;
+    int eb = ease_in_out(MIN(1024, t * 8 / 5));
+    int et = ease_in_out(t < 300 ? 0 : (t - 300) * 1024 / 724);
+    *top = lerp_i(f.y, d.y, et);
+    *bottom = lerp_i(f.y + f.h, d.y + d.h, eb);
+}
+
+static struct rect ghost_bounds(const struct ghost *g)
+{
+    int t = anim_progress(g->start, g->ms);
+    if (g->kind == ANIM_MINIMIZE || g->kind == ANIM_RESTORE) {
+        int top, bottom;
+        genie_edges(g, t, &top, &bottom);
+        int x0 = MIN(g->frame.x, g->target.x), x1 = MAX(g->frame.x + g->frame.w, g->target.x + g->target.w);
+        return (struct rect){x0, top, x1 - x0, MAX(bottom - top, 1)};
+    }
+    int alpha;
+    return ghost_rect(g, t, &alpha);
+}
+
+static void draw_genie(struct canvas *c, struct ghost *g, int t)
+{
+    struct rect f = g->frame, d = g->target;
+    int top, bottom;
+    genie_edges(g, t, &top, &bottom);
+    int tt = g->kind == ANIM_RESTORE ? 1024 - t : t;
+    int span = MAX(d.y + d.h - f.y, 1);
+    int h = MAX(bottom - top, 1);
+    int alpha = 255 - tt * 60 / 1024;
+    int y0 = MAX(top, c->clip.y), y1 = MIN(bottom, c->clip.y + c->clip.h);
+    for (int y = y0; y < y1; y++) {
+        int u = (y - f.y) * 1024 / span;
+        int k = ease_in_out(CLAMP(u + tt * 2 - 1024, 0, 1024));
+        int left = lerp_i(f.x, d.x, k), right = lerp_i(f.x + f.w, d.x + d.w, k);
+        int sy = (y - top) * g->snap.h / h;
+        gfx_row_scaled(c, y, left, right, &g->snap, sy, alpha);
+    }
+}
+
+static void draw_ghosts(struct canvas *c)
+{
+    for (struct ghost *g = ghosts; g; g = g->next) {
+        if (!g->snap.px) {
+            struct window *w = g->win;
+            if (!w || !wm_window_alive(w))
+                continue;
+            g->frame = w->frame;
+            g->flags = w->flags;
+            if (w->glass && style.glass != GLASS_SOLID) {
+                struct glass_look look;
+                glass_look_for(&look, w->flags & WIN_OVERLAY ? GLASS_OVERLAY : w->flags & WIN_POPUP ? GLASS_MENU : GLASS_WINDOW,
+                               w->radius);
+                glass_prepare(c, w->glass, &look);
+            }
+            if (!snapshot(w, &g->snap, g->margin))
+                continue;
+            g->start = hal_ticks_ms();
+        }
+        int t = anim_progress(g->start, g->ms);
+        if (g->kind == ANIM_MINIMIZE || g->kind == ANIM_RESTORE) {
+            draw_genie(c, g, t);
+        } else {
+            int alpha;
+            struct rect r = ghost_rect(g, t, &alpha);
+            gfx_scale_fast(c, r, &g->snap, alpha);
+        }
+    }
+}
+
+static void wm_animate(void)
+{
+    for (struct ghost **pp = &ghosts; *pp;) {
+        struct ghost *g = *pp;
+        bool waiting = !g->snap.px && g->win && wm_window_alive(g->win);
+        if (!g->snap.px && !waiting) {
+            *pp = g->next;
+            ghost_free(g);
+            continue;
+        }
+        struct rect now = ghost_bounds(g);
+        wm_damage_z(rect_union(g->drawn, now), Z_CURSOR);
+        g->drawn = now;
+        if (!waiting && anim_progress(g->start, g->ms) >= 1024) {
+            *pp = g->next;
+            ghost_free(g);
+            continue;
+        }
+        pp = &g->next;
+    }
+    dock_animate();
+}
+
 static bool alloc_surface(struct window *w)
 {
     struct rect c = wm_client_rect(w);
@@ -439,8 +679,10 @@ struct window *wm_open(const char *title, enum icon_id icon, int cw, int ch, con
     }
     link_top(w);
     restack();
-    if (!(flags & WIN_HIDDEN))
+    if (!(flags & WIN_HIDDEN)) {
         wm_focus(w);
+        hold_window(w, ANIM_OPEN, w->frame);
+    }
     damage_window(w);
     chrome_changed();
     return w;
@@ -455,7 +697,7 @@ struct window *wm_popup(int x, int y, int pw, int ph, const struct window_ops *o
     w->data = data;
     w->flags = WIN_POPUP | WIN_GLASS;
     w->owner = owner;
-    w->radius = 10;
+    w->radius = 12;
     struct rect s = wm_screen_rect(wm_screen_at(x, y));
     w->frame = (struct rect){CLAMP(x, s.x + 4, MAX(s.x + 4, s.x + s.w - pw - 4)),
                              CLAMP(y, s.y + 2, MAX(s.y + 2, s.y + s.h - ph - 4)), pw, ph};
@@ -470,6 +712,7 @@ struct window *wm_popup(int x, int y, int pw, int ph, const struct window_ops *o
     }
     link_top(w);
     restack();
+    hold_window(w, ANIM_OPEN, w->frame);
     damage_window(w);
     return w;
 }
@@ -503,6 +746,8 @@ void wm_destroy(struct window *w)
     }
     if (!wm_window_alive(w))
         return;
+    release_window(w, ANIM_CLOSE, w->frame);
+    ghost_forget(w);
     wm_damage(outer_rect(w));
     unlink(w);
     restack();
@@ -556,6 +801,7 @@ static void lose_focus(struct window *w)
 
 void wm_hide(struct window *w)
 {
+    release_window(w, ANIM_CLOSE, w->frame);
     w->flags |= WIN_HIDDEN;
     wm_damage(outer_rect(w));
     lose_focus(w);
@@ -564,9 +810,15 @@ void wm_hide(struct window *w)
 
 void wm_show(struct window *w)
 {
+    bool minimized = w->flags & WIN_MINIMIZED, hidden = w->flags & WIN_HIDDEN;
+    struct rect from = minimized ? dock_window_rect(w) : w->frame;
     w->flags &= ~(WIN_HIDDEN | WIN_MINIMIZED);
     canvas_free(&w->thumb);
     wm_focus(w);
+    if (minimized && !rect_empty(from))
+        hold_window(w, ANIM_RESTORE, from);
+    else if (hidden)
+        hold_window(w, ANIM_OPEN, w->frame);
     wm_damage(outer_rect(w));
     chrome_changed();
 }
@@ -597,10 +849,22 @@ static void make_thumb(struct window *w)
 void wm_minimize(struct window *w)
 {
     make_thumb(w);
+    struct canvas snap = {0};
+    bool animate = animations && !w->anim_hold && snapshot(w, &snap, 0);
     w->flags |= WIN_MINIMIZED;
     wm_damage(outer_rect(w));
     lose_focus(w);
     chrome_changed();
+    struct rect to = animate ? dock_window_rect(w) : (struct rect){0, 0, 0, 0};
+    struct ghost *g = !rect_empty(to) ? ghost_new(ANIM_MINIMIZE, w) : NULL;
+    if (g) {
+        g->margin = 0;
+        g->snap = snap;
+        g->target = to;
+        g->frame = w->frame;
+    } else {
+        canvas_free(&snap);
+    }
 }
 
 void wm_invalidate(struct window *w)
@@ -852,13 +1116,15 @@ static void compose(int index, struct rect area)
     c->clip = rect_intersect(area, s->area);
     desktop_paint(c, index, c->clip);
     for (struct window *w = bottom; w; w = w->above)
-        if (visible(w) && !floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
+        if (visible(w) && !w->anim_hold && !floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);
     menubar_paint(c, index);
     dock_paint(c, index);
     for (struct window *w = bottom; w; w = w->above)
-        if (visible(w) && floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
+        if (visible(w) && !w->anim_hold && floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);
+    if (ghosts)
+        draw_ghosts(c);
     draw_cursor(c);
 }
 
@@ -1280,6 +1546,8 @@ void wm_cycle(void)
 
 void wm_timers(void)
 {
+    if (ghosts || screen_count)
+        wm_animate();
     uint64_t now = hal_ticks_ms();
     for (struct window *w = bottom; w;) {
         struct window *next = w->above;
@@ -1534,3 +1802,59 @@ static int set_natural(struct shell *sh, const char *value)
 static const struct setting s_natural = {"naturalscroll", "on|off", "invert the scroll wheel", get_natural,
                                          set_natural};
 SETTING(s_natural);
+
+static void get_animations(char *buf, size_t cap)
+{
+    str_copy(buf, animations ? "on" : "off", cap);
+}
+
+static int set_animations(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    animations = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_animations = {"animations", "on|off", "animate windows, menus and the Dock",
+                                            get_animations, set_animations};
+SETTING(s_animations);
+
+bool wm_animations(void)
+{
+    return animations;
+}
+
+COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redraws (and an open/close animation)")
+{
+    if (!screen_count)
+        return sh_error(sh, "wmbench", "the desktop is not running");
+    long frames = 20;
+    if (argc > 1 && (!str_parse_long(argv[1], &frames) || frames < 1))
+        return command_usage(sh, command_find("wmbench"));
+    uint64_t t0 = hal_ticks_ms();
+    for (long i = 0; i < frames; i++) {
+        wm_damage_all();
+        wm_render();
+    }
+    uint64_t full = hal_ticks_ms() - t0;
+    struct rect area = wm_work_area(0);
+    t0 = hal_ticks_ms();
+    long anim = 0;
+    struct window *w = top && framed(top) ? top : NULL;
+    if (w) {
+        struct rect f = w->frame;
+        for (long i = 0; i < frames; i++) {
+            wm_damage_z((struct rect){f.x - 46, f.y - 46, f.w + 92, f.h + 92}, Z_CURSOR);
+            wm_render();
+            anim++;
+        }
+    }
+    uint64_t part = hal_ticks_ms() - t0;
+    sh_printf(sh, "full screen %dx%d: %u ms per frame\n", area.w, area.h + MENUBAR_HEIGHT,
+              (unsigned)(full / (uint64_t)frames));
+    if (anim)
+        sh_printf(sh, "front window area: %u ms per frame\n", (unsigned)(part / (uint64_t)anim));
+    return 0;
+}

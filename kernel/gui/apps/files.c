@@ -659,10 +659,10 @@ static void draw_row(struct canvas *c, struct rect row, int index, bool sel, voi
 static void sidebar_section(struct ui *ui, struct window *w, struct files *f, int *y, const char *title,
                             const struct place *places, int n)
 {
-    ui_sidebar_header(ui, (struct rect){20, *y, SIDEBAR_W - 30, 20}, title);
+    ui_sidebar_header(ui, (struct rect){24, *y, SIDEBAR_W - 34, 20}, title);
     *y += 22;
     for (int i = 0; i < n; i++) {
-        struct rect r = {10, *y, SIDEBAR_W - 20, 28};
+        struct rect r = {14, *y, SIDEBAR_W - 26, 28};
         if (ui_sidebar_item(ui, r, places[i].sym, places[i].label, !strcmp(f->path, places[i].path)))
             navigate(w, f, places[i].path, true);
         *y += 28;
@@ -813,11 +813,9 @@ static void frame(struct ui *ui, void *data)
     int W = w->surface.w, H = w->surface.h;
     int mx = SIDEBAR_W;
     if (ui->c) {
-        gfx_clear(ui->c, (struct rect){0, 0, mx, H}, style.sidebar);
         gfx_clear(ui->c, (struct rect){mx, 0, W - mx, H}, style.content);
-        gfx_fill(ui->c, (struct rect){mx, 0, 1, H}, style.separator);
-        gfx_clear(ui->c, (struct rect){mx + 1, 0, W - mx - 1, BAR_H}, style.window);
-        gfx_fill(ui->c, (struct rect){mx + 1, BAR_H - 1, W - mx - 1, 1}, style.separator);
+        ui_sidebar_panel(ui, mx, H, style.content);
+        gfx_fill(ui->c, (struct rect){mx + 8, BAR_H - 1, W - mx - 8, 1}, style.separator);
     }
     int y = BAR_H + 4;
     update_favorites();
@@ -827,7 +825,7 @@ static void frame(struct ui *ui, void *data)
     struct volume volumes[6];
     int volume_count = vfs_volumes(volumes, (int)ARRAY_SIZE(volumes));
     for (int i = 0; i < volume_count; i++) {
-        struct rect r = {10, y, SIDEBAR_W - 20, 28};
+        struct rect r = {14, y, SIDEBAR_W - 26, 28};
         bool here = str_starts(f->path, volumes[i].path) &&
                     (f->path[strlen(volumes[i].path)] == 0 || f->path[strlen(volumes[i].path)] == '/');
         if (ui_sidebar_item(ui, (struct rect){r.x, r.y, r.w - 26, r.h}, SYM_USB, volumes[i].label,
@@ -843,7 +841,7 @@ static void frame(struct ui *ui, void *data)
         y += 28;
     }
     for (size_t i = 1; i < ARRAY_SIZE(locations); i++) {
-        struct rect r = {10, y, SIDEBAR_W - 20, 28};
+        struct rect r = {14, y, SIDEBAR_W - 26, 28};
         if (ui_sidebar_item(ui, r, locations[i].sym, locations[i].label, !strcmp(f->path, locations[i].path)))
             navigate(w, f, locations[i].path, true);
         y += 28;

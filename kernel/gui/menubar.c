@@ -119,17 +119,36 @@ void menubar_paint(struct canvas *c, int screen)
     struct rect bar = bar_rect(screen);
     if (rect_empty(rect_intersect(bar, c->clip)))
         return;
-    struct glass_look look;
-    glass_look_for(&look, GLASS_MENUBAR, 0);
-    glass_draw(c, &bars[screen], &look);
-    gfx_fill(c, (struct rect){bar.x, bar.y + bar.h - 1, bar.w, 1}, style.dark ? ALPHA(0, 120) : ALPHA(0, 22));
     uint32_t ink = style.text;
+    if (style.glass == GLASS_LIQUID) {
+        static uint32_t inks[MAX_SCREENS];
+        struct rect probe = rect_intersect(bar, c->clip);
+        if (probe.w >= bar.w / 2 || !inks[screen]) {
+            unsigned sum = 0, n = 0;
+            for (int y = probe.y; y < probe.y + probe.h; y += 4)
+                for (int x = probe.x; x < probe.x + probe.w; x += 12) {
+                    uint32_t p = c->px[y * c->stride + x];
+                    sum += ((p >> 16 & 0xff) * 77 + (p >> 8 & 0xff) * 151 + (p & 0xff) * 28) >> 8;
+                    n++;
+                }
+            inks[screen] = n && sum / n < 120 ? RGB(250, 250, 252) : RGB(24, 24, 28);
+        }
+        ink = inks[screen];
+        bool light_ink = ink == RGB(250, 250, 252);
+        gfx_gradient(c, bar, light_ink ? ALPHA(0, 40) : ALPHA(0xffffffffu, 70), ALPHA(0xffffffffu, 0));
+    } else {
+        struct glass_look look;
+        glass_look_for(&look, GLASS_MENUBAR, 0);
+        glass_draw(c, &bars[screen], &look);
+        gfx_fill(c, (struct rect){bar.x, bar.y + bar.h - 1, bar.w, 1}, style.dark ? ALPHA(0, 120) : ALPHA(0, 22));
+    }
     struct rect area = bar;
     for (int i = 0; i < title_count; i++) {
         struct rect r = titles[i].r;
         r.x += bar.x - bar_rect(0).x;
         if (i == open_title && screen == 0)
-            gfx_round(c, (struct rect){r.x, r.y + 2, r.w, r.h - 4}, 5, style.dark ? ALPHA(0xffffffffu, 46) : ALPHA(0, 28));
+            gfx_round(c, (struct rect){r.x, r.y + 2, r.w, r.h - 4}, (r.h - 4) / 2,
+                      ink == RGB(250, 250, 252) ? ALPHA(0xffffffffu, 60) : ALPHA(0, 30));
         if (titles[i].kind == T_LOGO)
             gfx_symbol(c, r.x + (r.w - 16) / 2, r.y + 4, SYM_LOGO, 16, ink);
         else

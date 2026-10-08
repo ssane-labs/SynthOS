@@ -2,9 +2,35 @@
 
 #if defined(__i386__) || defined(__x86_64__)
 
+bool memcpy_unrolled;
+
+static void copy_blocks(uint32_t *d, const uint32_t *s, size_t blocks)
+{
+    while (blocks--) {
+        uint32_t a = s[0], b = s[1], c = s[2], e = s[3], f = s[4], g = s[5], h = s[6], i = s[7];
+        d[0] = a;
+        d[1] = b;
+        d[2] = c;
+        d[3] = e;
+        d[4] = f;
+        d[5] = g;
+        d[6] = h;
+        d[7] = i;
+        d += 8;
+        s += 8;
+    }
+}
+
 void *memcpy(void *dst, const void *src, size_t n)
 {
     void *d = dst;
+    if (memcpy_unrolled && n >= 64 && !(((uintptr_t)dst | (uintptr_t)src) & 3)) {
+        size_t blocks = n / 32;
+        copy_blocks(d, src, blocks);
+        d = (uint8_t *)d + blocks * 32;
+        src = (const uint8_t *)src + blocks * 32;
+        n -= blocks * 32;
+    }
     size_t words = n / sizeof(long), rest = n % sizeof(long);
 #if defined(__x86_64__)
     __asm__ volatile("rep movsq" : "+D"(d), "+S"(src), "+c"(words) : : "memory");
