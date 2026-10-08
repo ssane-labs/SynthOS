@@ -702,11 +702,6 @@ static int crt_resetstkoflw(void)
     return 1;
 }
 
-static void crt_unlock_file(void *f)
-{
-    UNUSED(f);
-}
-
 static unsigned long crt_threadid(void)
 {
     return 0x1004;
@@ -796,7 +791,7 @@ static const struct w32_export crt_exports[] = {
     W32_AS("_purecall", crt_purecall), W32_AS("_invalid_parameter", crt_invalid_parameter),
     W32_AS("_invalid_parameter_noinfo", crt_invalid_parameter),
     W32_AS("_invalid_parameter_noinfo_noreturn", crt_invalid_parameter), W32_AS("_lock", crt_lock),
-    W32_AS("_unlock", crt_lock), W32_AS("_lock_file", crt_unlock_file), W32_AS("_unlock_file", crt_unlock_file),
+    W32_AS("_unlock", crt_lock), W32_AS("_lock_file", crt_lock_file), W32_AS("_unlock_file", crt_unlock_file),
     W32_AS("__setusermatherr", crt_setusermatherr), W32_AS("__lconv_init", crt_zero),
     W32_AS("_configthreadlocale", crt_configthreadlocale), W32_AS("_get_current_locale", crt_get_current_locale),
     W32_AS("_controlfp", crt_controlfp), W32_AS("_control87", crt_controlfp),

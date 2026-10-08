@@ -10,6 +10,7 @@
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/time.h>
+#include <synth/vfs.h>
 #include <synth/vmm.h>
 
 static const char *const categories[] = {"files", "text", "shell", "system", "custom", "dev"};
@@ -346,9 +347,15 @@ static void sort_u32(uint32_t *a, uint32_t n)
     }
 }
 
-COMMAND(prof, NULL, "dev", "prof command [args...]",
+COMMAND(prof, NULL, "dev", "prof [-o file] command [args...]",
         "run a command and list where the CPU spent its time (addresses for addr2line)")
 {
+    const char *report = NULL;
+    if (argc > 3 && !strcmp(argv[1], "-o")) {
+        report = argv[2];
+        argc -= 2;
+        argv += 2;
+    }
     if (argc < 2)
         return command_usage(sh, command_find("prof"));
     uint32_t cap = 1u << 18;
@@ -359,7 +366,13 @@ COMMAND(prof, NULL, "dev", "prof command [args...]",
     int rc = run_argv(sh, argc - 1, argv + 1);
     uint32_t n = hal_profile_stop();
     sort_u32(buf, n);
-    sh_printf(sh, "prof: %u samples\n", n);
+    char *text = kmalloc(8192);
+    size_t len = 0;
+    if (!text) {
+        kfree(buf);
+        return rc;
+    }
+    len += (size_t)ksnprintf(text + len, 8192 - len, "prof: %u samples\n", n);
     for (int k = 0; k < 60; k++) {
         uint32_t best = 0, at = 0;
         for (uint32_t i = 0, j; i < n; i = j) {
@@ -372,11 +385,17 @@ COMMAND(prof, NULL, "dev", "prof command [args...]",
         }
         if (!best)
             break;
-        sh_printf(sh, "prof %08x %u\n", buf[at], best);
+        len += (size_t)ksnprintf(text + len, 8192 - len, "prof %08x %u\n", buf[at], best);
         for (uint32_t i = at; i < at + best; i++)
             buf[i] = 0xffffffffu;
     }
     kfree(buf);
+    char path[PATH_MAX_LEN];
+    if (report && sh_resolve(sh, report, path, sizeof(path)) == 0)
+        vfs_write_all(path, text, len);
+    else
+        sh_puts(sh, text);
+    kfree(text);
     return rc;
 }
 

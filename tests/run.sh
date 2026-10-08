@@ -267,6 +267,16 @@ browse -n /mnt/hdb/page.html | wc
       17      23     125
 EOF
 
+apps="$(dirname "$(dirname "$image")")/rootfs/apps"
+if [ -f "$apps/winbench.exe" ]; then
+    cat >> "$work/cases" <<EOF
+cp /apps/winbench.exe /mnt/hdb/wb.exe; cp /mnt/hdb/wb.exe /mnt/hdb/wb2.exe; sha256sum /mnt/hdb/wb2.exe
+$(sha256sum "$apps/winbench.exe" | cut -c1-64)  /mnt/hdb/wb2.exe
+winbench /tmp /tmp/wb.txt; grep total /tmp/wb.txt
+(check 0 0 0)
+EOF
+fi
+
 server=""
 if command -v openssl >/dev/null; then
     port=$((20000 + $$ % 20000))

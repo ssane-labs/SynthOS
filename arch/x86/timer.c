@@ -69,11 +69,14 @@ void pit_advance_ms(uint32_t ms)
 
 uint64_t hal_ticks_ms(void)
 {
-    uint64_t t;
-    cpu_cli();
-    t = ticks;
-    cpu_sti();
-    return t * 1000u / tick_hz;
+    const volatile uint32_t *half = (const volatile uint32_t *)&ticks;
+    uint32_t hi, lo;
+    do {
+        hi = half[1];
+        lo = half[0];
+    } while (hi != half[1]);
+    uint64_t t = (uint64_t)hi << 32 | lo;
+    return tick_hz == 1000 ? t : t * 1000u / tick_hz;
 }
 
 void hal_sleep_ms(uint32_t ms)

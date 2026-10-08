@@ -1,4 +1,5 @@
-/* Times the things typical programs do: console output, C and Win32 file I/O, the heap and API calls. */
+/* Times the things typical programs do: console output, C and Win32 file I/O, the heap and API calls.
+   usage: winbench [directory] [report-file] */
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +7,7 @@
 
 static DWORD start_ms;
 static DWORD total_ms;
+static FILE *report;
 
 static void begin(void)
 {
@@ -17,12 +19,15 @@ static void end(const char *name, double amount, const char *unit)
     DWORD ms = GetTickCount() - start_ms;
     total_ms += ms;
     double rate = amount * 1000.0 / (ms ? ms : 1);
-    fprintf(stderr, "%-22s %6lu ms  %10.0f %s/s\n", name, (unsigned long)ms, rate, unit);
+    fprintf(report, "%-22s %6lu ms  %10.0f %s/s\n", name, (unsigned long)ms, rate, unit);
 }
 
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : ".";
+    report = argc > 2 ? fopen(argv[2], "w") : stderr;
+    if (!report)
+        report = stderr;
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s\\winbench.tmp", dir);
     static char block[64 * 1024];
@@ -116,7 +121,7 @@ int main(int argc, char **argv)
     }
     end("FindFirstFile x 50", files, "entries");
 
-    fprintf(stderr, "total %lu ms (check %ld %lu %lu)\n", (unsigned long)total_ms, got & 1, (unsigned long)(sum & 1),
+    fprintf(report, "total %lu ms (check %ld %lu %lu)\n", (unsigned long)total_ms, got & 1, (unsigned long)(sum & 1),
             (unsigned long)(acc & 0));
     return 0;
 }

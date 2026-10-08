@@ -78,6 +78,8 @@ int crt_ungetc(int c, CRT_FILE *f);
 int crt_fflush(CRT_FILE *f);
 void crt_stream_sink(void *ctx, const char *s, size_t n);
 void crt_stream_done(CRT_FILE *f);
+void crt_lock_file(CRT_FILE *f);
+void crt_unlock_file(CRT_FILE *f);
 
 int crt_vformat(crt_sink sink, void *ctx, const char *fmt, va_list ap);
 int crt_vwformat(crt_wsink sink, void *ctx, const WCHAR *fmt, va_list ap);

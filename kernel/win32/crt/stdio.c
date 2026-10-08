@@ -36,6 +36,7 @@ struct cstream {
     int nungot;
     bool eof;
     bool err;
+    int locked;
     char *tmpname;
 };
 
@@ -666,10 +667,34 @@ static int write_bytes(struct cstream *st, const char *s, size_t n)
     return 0;
 }
 
+static struct cstream *valid_stream(CRT_FILE *f)
+{
+    if (f >= crt_iob && f < crt_iob + 3)
+        return &std_streams[f - crt_iob];
+    for (int i = 0; i < CRT_MAX_FILES; i++)
+        if (files[i] && &files[i]->pub == f)
+            return &files[i]->st;
+    return NULL;
+}
+
+void crt_lock_file(CRT_FILE *f)
+{
+    struct cstream *st = valid_stream(f);
+    if (st)
+        st->locked++;
+}
+
+void crt_unlock_file(CRT_FILE *f)
+{
+    struct cstream *st = valid_stream(f);
+    if (st && st->locked && !--st->locked)
+        crt_stream_done(f);
+}
+
 void crt_stream_done(CRT_FILE *f)
 {
     struct cstream *st = stream_of(f);
-    if (!st->wlen)
+    if (!st->wlen || st->locked)
         return;
     if (st->bufmode == IONBF || (!st->user_mode && tty_stream(st)) ||
         (st->bufmode == IOLBF && memchr(st->buf, '\n', st->wlen)))
