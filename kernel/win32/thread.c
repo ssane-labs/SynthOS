@@ -7,7 +7,7 @@
 
 #include "win32.h"
 
-#define INFINITE 0xffffffffu
+
 #define WAIT_OBJECT_0 0u
 #define WAIT_TIMEOUT 0x102u
 #define WAIT_FAILED 0xffffffffu

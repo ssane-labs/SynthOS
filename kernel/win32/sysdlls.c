@@ -297,6 +297,28 @@ static uint32_t WINAPI com_not_registered(uint32_t a, uint32_t b, uint32_t c, ui
     return REGDB_E_CLASSNOTREG;
 }
 
+static uint32_t WINAPI com_ok9(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g,
+                               uint32_t h, uint32_t i)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    UNUSED(e);
+    UNUSED(f);
+    UNUSED(g);
+    UNUSED(h);
+    UNUSED(i);
+    return 0;
+}
+
+static uint32_t WINAPI com_notimpl8(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g,
+                                    uint32_t h)
+{
+    UNUSED(h);
+    return com_ok9(a, b, c, d, e, f, g, 0, 0) | E_NOTIMPL;
+}
+
 static uint32_t WINAPI not_implemented2(uint32_t a, uint32_t b)
 {
     UNUSED(a);
@@ -323,9 +345,9 @@ static const struct w32_export ole32_exports[] = {
     W32_AS("CoInitialize", w32_zero1),
     W32_AS("CoInitializeEx", w32_zero2),
     W32_AS("CoUninitialize", w32_zero0),
-    W32_AS("CoInitializeSecurity", w32_zero6),
+    W32_AS("CoInitializeSecurity", com_ok9),
     W32_AS("CoCreateInstance", com_not_registered),
-    W32_AS("CoSetProxyBlanket", not_implemented2),
+    W32_AS("CoSetProxyBlanket", com_notimpl8),
     W32_AS("ProgIDFromCLSID", not_implemented2),
     W32_AS("CLSIDFromProgID", not_implemented2),
     W32_AS("StringFromCLSID", not_implemented2),
@@ -397,8 +419,74 @@ static const char *const oleaut32_ordinals[] = {
     [8] = "VariantInit",    [9] = "VariantClear",      [200] = "GetErrorInfo",
 };
 
+static BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(const WCHAR *text, DWORD revision, void **sd,
+                                                                       ULONG *size)
+{
+    UNUSED(text);
+    UNUSED(revision);
+    uint8_t *d = w32_zalloc(20);
+    if (!d)
+        return FALSE;
+    d[0] = 1;
+    d[2] = 0x04;
+    d[3] = 0x80;
+    *sd = d;
+    if (size)
+        *size = 20;
+    return TRUE;
+}
+
+static LONG WINAPI reg_not_found5(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    UNUSED(e);
+    return ERROR_FILE_NOT_FOUND;
+}
+
+static LONG WINAPI reg_not_found3(uint32_t a, uint32_t b, uint32_t c)
+{
+    return reg_not_found5(a, b, c, 0, 0);
+}
+
+static LONG WINAPI reg_not_found4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+{
+    return reg_not_found5(a, b, c, d, 0);
+}
+
+static BOOL WINAPI report_event(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g,
+                                uint32_t h, uint32_t i)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    UNUSED(e);
+    UNUSED(f);
+    UNUSED(g);
+    UNUSED(h);
+    UNUSED(i);
+    return TRUE;
+}
+
+static const struct w32_export advapi_extra_exports[] = {
+    W32_FN(ConvertStringSecurityDescriptorToSecurityDescriptorW),
+    W32_AS("ConvertStringSecurityDescriptorToSecurityDescriptorA", ConvertStringSecurityDescriptorToSecurityDescriptorW),
+    W32_AS("RegConnectRegistryW", reg_not_found3),
+    W32_AS("RegDeleteKeyExW", reg_not_found4),
+    W32_AS("RegLoadKeyW", reg_not_found3),
+    W32_AS("RegSaveKeyW", reg_not_found3),
+    W32_AS("ReportEventW", report_event),
+    W32_AS("ReportEventA", report_event),
+    W32_AS("RegisterEventSourceW", w32_one2),
+    W32_AS("DeregisterEventSource", w32_one1),
+};
+
 W32_EXPORTS(version_module, "version.dll", version_exports);
 W32_EXPORTS(bcrypt_module, "bcrypt.dll", bcrypt_exports);
+W32_EXPORTS(advapi_extra_module, "advapi32.dll", advapi_extra_exports);
 W32_EXPORTS(crypt32_module, "crypt32.dll", crypt32_exports);
 W32_EXPORTS(iphlpapi_module, "iphlpapi.dll", iphlpapi_exports);
 W32_EXPORTS(rpcrt4_module, "rpcrt4.dll", rpcrt4_exports);

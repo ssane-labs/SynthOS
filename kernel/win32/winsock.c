@@ -1,3 +1,4 @@
+#include <synth/fmt.h>
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/net.h>
@@ -47,6 +48,24 @@ struct wsock {
     int id;
     int type;
     DWORD recv_timeout, send_timeout;
+    HANDLE port;
+    uintptr_t key;
+};
+
+#define STATUS_PENDING 0x103u
+#define STATUS_CANCELLED 0xc0000120u
+#define STATUS_CONNECTION_RESET 0xc000020du
+#define WSA_IO_PENDING 997
+#define MAX_PENDING 64
+
+struct pending {
+    bool used;
+    UINT s;
+    char *buf;
+    ULONG len;
+    uint32_t *ov;
+    struct sockaddr_in *from;
+    int *fromlen;
 };
 
 struct sockaddr_in {
@@ -90,6 +109,7 @@ struct hostent {
 };
 
 static W32_STATE struct wsock socks[NET_MAX_SOCKETS];
+static W32_STATE struct pending pending[MAX_PENDING];
 static W32_STATE int started;
 static W32_STATE char ntoa_buffer[16];
 static W32_STATE struct hostent host;
@@ -218,7 +238,7 @@ static UINT WINAPI socket(int family, int type, int protocol)
         fail(id);
         return INVALID_SOCKET;
     }
-    socks[id] = (struct wsock){true, false, id, type, 0, 0};
+    socks[id] = (struct wsock){true, false, id, type, 0, 0, NULL, 0};
     return handle_of(id);
 }
 
@@ -275,7 +295,7 @@ static UINT WINAPI accept(UINT s, struct sockaddr_in *addr, int *len)
         uint16_t port;
         int c = net_accept(w->id, &ip, &port);
         if (c >= 0) {
-            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout};
+            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0};
             fill_addr(addr, len, ip, port);
             return handle_of(c);
         }
@@ -794,9 +814,90 @@ struct wsabuf {
     char *buf;
 };
 
+static void complete(UINT s, uint32_t *ov, DWORD bytes, uint32_t status)
+{
+    ov[0] = status;
+    ov[1] = bytes;
+    struct wsock *w = s >= SOCKET_BASE && s < SOCKET_BASE + NET_MAX_SOCKETS ? &socks[s - SOCKET_BASE] : NULL;
+    if (w && w->port)
+        w32_port_post(w->port, bytes, w->key, ov);
+}
+
+static long recv_now(struct wsock *w, char *buf, ULONG len, struct sockaddr_in *from, int *fromlen)
+{
+    if (!from)
+        return net_recv(w->id, buf, len);
+    uint32_t ip;
+    uint16_t port;
+    long n = net_recvfrom(w->id, buf, len, &ip, &port);
+    if (n >= 0)
+        fill_addr(from, fromlen, ip, port);
+    return n;
+}
+
+static int overlapped_recv(UINT s, struct wsock *w, char *buf, ULONG len, DWORD *got, uint32_t *ov,
+                           struct sockaddr_in *from, int *fromlen)
+{
+    long n = recv_now(w, buf, len, from, fromlen);
+    if (n >= 0) {
+        if (got)
+            *got = (DWORD)n;
+        complete(s, ov, (DWORD)n, 0);
+        return 0;
+    }
+    if (n != E_AGAIN)
+        return fail((int)n);
+    for (int i = 0; i < MAX_PENDING; i++)
+        if (!pending[i].used) {
+            pending[i] = (struct pending){true, s, buf, len, ov, from, fromlen};
+            ov[0] = STATUS_PENDING;
+            w32_set_error(WSA_IO_PENDING);
+            return SOCKET_ERROR;
+        }
+    return fail(E_NOMEM);
+}
+
+void w32_winsock_poll(void)
+{
+    net_poll();
+    for (int i = 0; i < MAX_PENDING; i++) {
+        struct pending *p = &pending[i];
+        if (!p->used)
+            continue;
+        struct wsock *w = sock_of(p->s);
+        long n = w ? recv_now(w, p->buf, p->len, p->from, p->fromlen) : E_BADF;
+        if (n == E_AGAIN)
+            continue;
+        p->used = false;
+        complete(p->s, p->ov, n > 0 ? (DWORD)n : 0, n >= 0 ? 0 : STATUS_CONNECTION_RESET);
+    }
+}
+
+bool w32_winsock_cancel(UINT s, uint32_t *ov)
+{
+    bool found = false;
+    for (int i = 0; i < MAX_PENDING; i++) {
+        struct pending *p = &pending[i];
+        if (p->used && p->s == s && (!ov || p->ov == ov)) {
+            p->used = false;
+            complete(p->s, p->ov, 0, STATUS_CANCELLED);
+            found = true;
+        }
+    }
+    return found;
+}
+
+bool w32_socket_associate(uintptr_t s, HANDLE port, uintptr_t key)
+{
+    if (s < SOCKET_BASE || s >= SOCKET_BASE + NET_MAX_SOCKETS || !socks[s - SOCKET_BASE].used)
+        return false;
+    socks[s - SOCKET_BASE].port = port;
+    socks[s - SOCKET_BASE].key = key;
+    return true;
+}
+
 static int WINAPI WSASend(UINT s, struct wsabuf *bufs, DWORD count, DWORD *sent, DWORD flags, void *ov, void *cb)
 {
-    UNUSED(ov);
     UNUSED(cb);
     DWORD total = 0;
     for (DWORD i = 0; i < count; i++) {
@@ -807,16 +908,21 @@ static int WINAPI WSASend(UINT s, struct wsabuf *bufs, DWORD count, DWORD *sent,
     }
     if (sent)
         *sent = total;
+    if (ov)
+        complete(s, ov, total, 0);
     return 0;
 }
 
 static int WINAPI WSARecv(UINT s, struct wsabuf *bufs, DWORD count, DWORD *got, DWORD *flags, void *ov, void *cb)
 {
-    UNUSED(ov);
     UNUSED(cb);
     UNUSED(flags);
     if (!count)
         return 0;
+    if (ov) {
+        struct wsock *w = sock_of(s);
+        return w ? overlapped_recv(s, w, bufs[0].buf, bufs[0].len, got, ov, NULL, NULL) : SOCKET_ERROR;
+    }
     int n = recv(s, bufs[0].buf, (int)bufs[0].len, 0);
     if (n < 0)
         return SOCKET_ERROR;
@@ -825,10 +931,248 @@ static int WINAPI WSARecv(UINT s, struct wsabuf *bufs, DWORD count, DWORD *got, 
     return 0;
 }
 
-static int WINAPI WSAUnsupported(void)
+static int WINAPI WSAUnsupported3(UINT s, uint32_t a, uint32_t b)
 {
+    UNUSED(s);
+    UNUSED(a);
+    UNUSED(b);
     w32_set_error(WSAEOPNOTSUPP);
     return SOCKET_ERROR;
+}
+
+static int WINAPI WSAUnsupported4(UINT s, uint32_t a, uint32_t b, uint32_t c)
+{
+    UNUSED(c);
+    return WSAUnsupported3(s, a, b);
+}
+
+static BOOL WINAPI ext_unsupported8(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g,
+                                    uint32_t h)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    UNUSED(e);
+    UNUSED(f);
+    UNUSED(g);
+    UNUSED(h);
+    w32_set_error(WSAEOPNOTSUPP);
+    return FALSE;
+}
+
+static BOOL WINAPI ext_unsupported7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
+{
+    return ext_unsupported8(a, b, c, d, e, f, g, 0);
+}
+
+static BOOL WINAPI ConnectEx(UINT s, const struct sockaddr_in *name, int len, const char *buf, DWORD buflen,
+                             DWORD *sent, uint32_t *ov)
+{
+    struct wsock *w = sock_of(s);
+    if (!w)
+        return FALSE;
+    bool nb = w->nonblocking;
+    w->nonblocking = false;
+    int r = connect(s, name, len);
+    w->nonblocking = nb;
+    if (r)
+        return FALSE;
+    DWORD n = 0;
+    if (buf && buflen) {
+        int k = send(s, buf, (int)buflen, 0);
+        if (k > 0)
+            n = (DWORD)k;
+    }
+    if (sent)
+        *sent = n;
+    if (ov)
+        complete(s, ov, n, 0);
+    return TRUE;
+}
+
+static BOOL WINAPI ext_unsupported4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+{
+    return ext_unsupported8(a, b, c, d, 0, 0, 0, 0);
+}
+
+static int WINAPI WSAIoctl(UINT s, DWORD code, const void *in, DWORD in_len, void *out, DWORD out_len, DWORD *bytes,
+                           void *ov, void *cb)
+{
+    UNUSED(s);
+    UNUSED(ov);
+    UNUSED(cb);
+    if (code == 0xc8000006u && in && in_len >= 16 && out && out_len >= 4) {
+        static const uint8_t accept_ex[4] = {0xb5, 0x36, 0x7c, 0xb9}, connect_ex[4] = {0xb9, 0x07, 0xa2, 0x25};
+        void *fn = !memcmp(in, accept_ex, 4)    ? (void *)ext_unsupported8
+                   : !memcmp(in, connect_ex, 4) ? (void *)ConnectEx
+                                                : (void *)ext_unsupported4;
+        const uint8_t *g = in;
+        if (g[0] == 0x16 && g[1] == 0x96)
+            fn = (void *)ext_unsupported4;
+        if (g[0] == 0xe3 && g[1] == 0x7f)
+            fn = (void *)ext_unsupported7;
+        memcpy(out, &fn, 4);
+        if (bytes)
+            *bytes = 4;
+        return 0;
+    }
+    w32_set_error(WSAEOPNOTSUPP);
+    return SOCKET_ERROR;
+}
+
+static int WINAPI WSASendTo(UINT s, struct wsabuf *bufs, DWORD count, DWORD *sent, DWORD flags,
+                            const struct sockaddr_in *to, int tolen, void *ov, void *cb)
+{
+    UNUSED(cb);
+    DWORD total = 0;
+    for (DWORD i = 0; i < count; i++) {
+        int n = sendto(s, bufs[i].buf, (int)bufs[i].len, (int)flags, to, tolen);
+        if (n < 0)
+            return SOCKET_ERROR;
+        total += (DWORD)n;
+    }
+    if (sent)
+        *sent = total;
+    if (ov)
+        complete(s, ov, total, 0);
+    return 0;
+}
+
+static int WINAPI WSARecvFrom(UINT s, struct wsabuf *bufs, DWORD count, DWORD *got, DWORD *flags,
+                              struct sockaddr_in *from, int *fromlen, void *ov, void *cb)
+{
+    UNUSED(cb);
+    UNUSED(flags);
+    if (!count)
+        return 0;
+    if (ov) {
+        struct wsock *w = sock_of(s);
+        return w ? overlapped_recv(s, w, bufs[0].buf, bufs[0].len, got, ov, from, fromlen) : SOCKET_ERROR;
+    }
+    int n = recvfrom(s, bufs[0].buf, (int)bufs[0].len, 0, from, fromlen);
+    if (n < 0)
+        return SOCKET_ERROR;
+    if (got)
+        *got = (DWORD)n;
+    return 0;
+}
+
+static int WINAPI WSAConnect(UINT s, const struct sockaddr_in *addr, int len, void *a, void *b, void *c, void *d)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    return connect(s, addr, len);
+}
+
+static int WINAPI WSAStringToAddressW(const WCHAR *text, int family, void *info, struct sockaddr_in *addr, int *len)
+{
+    UNUSED(info);
+    char buf[64];
+    size_t n = 0;
+    while (text && text[n] && n < sizeof(buf) - 1) {
+        buf[n] = (char)text[n];
+        n++;
+    }
+    buf[n] = 0;
+    uint16_t port = 0;
+    char *colon = strchr(buf, ':');
+    if (colon) {
+        *colon = 0;
+        port = (uint16_t)str_to_long(colon + 1, NULL, 10);
+    }
+    struct sockaddr_in a = {0};
+    if (family != 2 || !len || *len < (int)sizeof(a) || inet_pton(2, buf, &a.addr) != 1) {
+        w32_set_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
+    a.family = 2;
+    a.port = net_htons(port);
+    *addr = a;
+    *len = sizeof(a);
+    return 0;
+}
+
+static int WINAPI getnameinfo(const struct sockaddr_in *sa, int salen, char *host, DWORD hostlen, char *serv,
+                              DWORD servlen, int flags)
+{
+    UNUSED(salen);
+    UNUSED(flags);
+    if (!sa || sa->family != 2)
+        return WSAEAFNOSUPPORT;
+    if (host && hostlen && !inet_ntop(2, &sa->addr, host, hostlen))
+        return WSAEINVAL;
+    if (serv && servlen)
+        ksnprintf(serv, servlen, "%u", (unsigned)net_htons(sa->port));
+    return 0;
+}
+
+static int WINAPI GetNameInfoW(const struct sockaddr_in *sa, int salen, WCHAR *host, DWORD hostlen, WCHAR *serv,
+                               DWORD servlen, int flags)
+{
+    char h[64], sv[16];
+    int r = getnameinfo(sa, salen, host ? h : NULL, sizeof(h), serv ? sv : NULL, sizeof(sv), flags);
+    if (r)
+        return r;
+    for (DWORD i = 0; host && i < hostlen; i++)
+        if (!(host[i] = (WCHAR)(uint8_t)h[i]))
+            break;
+    for (DWORD i = 0; serv && i < servlen; i++)
+        if (!(serv[i] = (WCHAR)(uint8_t)sv[i]))
+            break;
+    return 0;
+}
+
+struct protoent {
+    char *name;
+    char **aliases;
+    int16_t proto;
+};
+
+static W32_STATE struct protoent proto_entry;
+static W32_STATE char proto_name[8];
+
+static struct protoent *protocol(const char *name, int number)
+{
+    static const struct {
+        const char *name;
+        int number;
+    } table[] = {{"ip", 0}, {"icmp", 1}, {"tcp", 6}, {"udp", 17}};
+    for (size_t i = 0; i < ARRAY_SIZE(table); i++)
+        if ((name && !str_casecmp(name, table[i].name)) || (!name && number == table[i].number)) {
+            str_copy(proto_name, table[i].name, sizeof(proto_name));
+            proto_entry = (struct protoent){proto_name, serv_aliases, (int16_t)table[i].number};
+            return &proto_entry;
+        }
+    w32_set_error(11001);
+    return NULL;
+}
+
+static struct protoent *WINAPI getprotobyname(const char *name)
+{
+    return protocol(name, -1);
+}
+
+static struct protoent *WINAPI getprotobynumber(int number)
+{
+    return protocol(NULL, number);
+}
+
+static struct servent *WINAPI getservbyport(int port, const char *proto)
+{
+    UNUSED(port);
+    UNUSED(proto);
+    w32_set_error(11004);
+    return NULL;
+}
+
+static int WINAPI WSADuplicateSocketW(UINT s, DWORD pid, void *info)
+{
+    UNUSED(pid);
+    UNUSED(info);
+    return WSAUnsupported3(s, 0, 0);
 }
 
 void w32_winsock_cleanup(void)
@@ -859,8 +1203,10 @@ static const struct w32_export winsock_exports[] = {
     W32_FN(inet_ntop),      W32_FN(gethostname),      W32_FN(gethostbyname),   W32_FN(gethostbyaddr),
     W32_FN(getaddrinfo),    W32_FN(freeaddrinfo),     W32_FN(GetAddrInfoW),    W32_FN(FreeAddrInfoW),
     W32_FN(getservbyname),  W32_FN(WSASend),          W32_FN(WSARecv),
-    W32_AS("WSAAsyncSelect", WSAUnsupported),         W32_AS("WSAEventSelect", WSAUnsupported),
-    W32_AS("WSAIoctl", WSAUnsupported),
+    W32_AS("WSAAsyncSelect", WSAUnsupported4),        W32_AS("WSAEventSelect", WSAUnsupported3),
+    W32_FN(WSAIoctl),       W32_FN(WSASendTo),        W32_FN(WSARecvFrom),     W32_FN(WSAConnect),
+    W32_FN(WSAStringToAddressW), W32_FN(getnameinfo), W32_FN(GetNameInfoW),    W32_FN(getprotobyname),
+    W32_FN(getprotobynumber), W32_FN(getservbyport),  W32_FN(WSADuplicateSocketW),
 };
 
 static const char *const winsock_ordinals[] = {
@@ -870,7 +1216,8 @@ static const char *const winsock_ordinals[] = {
     [13] = "listen",         [14] = "ntohl",         [15] = "ntohs",         [16] = "recv",
     [17] = "recvfrom",       [18] = "select",        [19] = "send",          [20] = "sendto",
     [21] = "setsockopt",     [22] = "shutdown",      [23] = "socket",        [51] = "gethostbyaddr",
-    [52] = "gethostbyname",  [55] = "getservbyname", [57] = "gethostname",   [111] = "WSAGetLastError",
+    [52] = "gethostbyname",  [53] = "getprotobyname", [54] = "getprotobynumber", [55] = "getservbyname",
+    [56] = "getservbyport", [57] = "gethostname",   [111] = "WSAGetLastError",
     [112] = "WSASetLastError", [115] = "WSAStartup", [116] = "WSACleanup",   [151] = "__WSAFDIsSet",
 };
 

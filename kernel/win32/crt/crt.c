@@ -378,11 +378,40 @@ static int crt_setusermatherr(void *fn)
     return 0;
 }
 
+static unsigned x87_to_abstract(uint16_t cw)
+{
+    static const unsigned masks[6] = {0x10, 0x80000, 0x08, 0x04, 0x02, 0x01};
+    unsigned a = 0;
+    for (int i = 0; i < 6; i++)
+        if (cw & (1u << i))
+            a |= masks[i];
+    unsigned pc = (cw >> 8) & 3, rc = (cw >> 10) & 3;
+    a |= pc == 0 ? 0x20000 : pc == 2 ? 0x10000 : 0;
+    a |= rc << 8;
+    return a;
+}
+
+static uint16_t abstract_to_x87(unsigned a, uint16_t cw)
+{
+    static const unsigned masks[6] = {0x10, 0x80000, 0x08, 0x04, 0x02, 0x01};
+    cw &= (uint16_t)~0x0f3f;
+    for (int i = 0; i < 6; i++)
+        if (a & masks[i])
+            cw |= (uint16_t)(1u << i);
+    unsigned pc = a & 0x30000;
+    cw |= (uint16_t)((pc == 0x20000 ? 0 : pc == 0x10000 ? 2 : 3) << 8);
+    cw |= (uint16_t)(((a >> 8) & 3) << 10);
+    return cw;
+}
+
 static unsigned crt_controlfp(unsigned value, unsigned mask)
 {
-    static W32_STATE unsigned cw = 0x9001f;
-    cw = (cw & ~mask) | (value & mask);
-    return cw;
+    uint16_t cw;
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    unsigned cur = (x87_to_abstract(cw) & ~mask) | (value & mask);
+    uint16_t ncw = abstract_to_x87(cur, cw);
+    __asm__ volatile("fldcw %0" : : "m"(ncw));
+    return cur;
 }
 
 static int crt_controlfp_s(unsigned *cur, unsigned value, unsigned mask)
@@ -391,6 +420,16 @@ static int crt_controlfp_s(unsigned *cur, unsigned value, unsigned mask)
     if (cur)
         *cur = v;
     return 0;
+}
+
+static int crt_control87_2(unsigned value, unsigned mask, unsigned *x87, unsigned *sse)
+{
+    unsigned v = crt_controlfp(value, mask);
+    if (x87)
+        *x87 = v;
+    if (sse)
+        *sse = v & ~0x30000u;
+    return 1;
 }
 
 static void crt_fpreset(void)
@@ -804,7 +843,7 @@ static const struct w32_export crt_exports[] = {
     W32_AS("__setusermatherr", crt_setusermatherr), W32_AS("__lconv_init", crt_zero),
     W32_AS("_configthreadlocale", crt_configthreadlocale), W32_AS("_get_current_locale", crt_get_current_locale),
     W32_AS("_controlfp", crt_controlfp), W32_AS("_control87", crt_controlfp),
-    W32_AS("__control87_2", crt_controlfp_s), W32_AS("_controlfp_s", crt_controlfp_s),
+    W32_AS("__control87_2", crt_control87_2), W32_AS("_controlfp_s", crt_controlfp_s),
     W32_AS("_fpreset", crt_fpreset), W32_AS("_clearfp", crt_clearfp), W32_AS("_statusfp", crt_clearfp),
     W32_AS("malloc", crt_malloc), W32_AS("calloc", crt_calloc), W32_AS("realloc", crt_realloc),
     W32_AS("_recalloc", crt_recalloc), W32_AS("free", crt_free), W32_AS("_msize", crt_msize),

@@ -143,6 +143,10 @@ bool w32_handle_close(HANDLE h)
         kfree(o->find);
     kfree(o->path);
     o->path = NULL;
+    if (o->type == WH_PIPE)
+        w32_pipe_release(o);
+    kfree(o->port);
+    o->port = NULL;
     o->due = 0;
     o->type = WH_FREE;
     o->file = NULL;

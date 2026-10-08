@@ -490,14 +490,162 @@ static BOOL WINAPI CancelWaitableTimer(HANDLE h)
     return o != NULL;
 }
 
+#define PORT_SLOTS 256
+
+struct w32_completion {
+    DWORD bytes;
+    uintptr_t key;
+    void *overlapped;
+};
+
+struct w32_port {
+    struct w32_completion queue[PORT_SLOTS];
+    unsigned head, tail;
+};
+
+static struct w32_port *port_of(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    return o && o->type == WH_PORT ? o->port : NULL;
+}
+
 static HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, uintptr_t key, DWORD threads)
 {
-    UNUSED(file);
-    UNUSED(port);
-    UNUSED(key);
     UNUSED(threads);
-    w32_set_error(ERROR_CALL_NOT_IMPLEMENTED);
-    return NULL;
+    if (port && port_of(port)) {
+        if (file != INVALID_HANDLE_VALUE)
+            w32_socket_associate((uintptr_t)file, port, key);
+        return port;
+    }
+    if (file != INVALID_HANDLE_VALUE && port) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    HANDLE h = w32_handle_new(WH_PORT);
+    struct w32_object *o = w32_handle_get(h);
+    if (!o)
+        return NULL;
+    o->port = kzalloc(sizeof(struct w32_port));
+    if (!o->port) {
+        w32_handle_close(h);
+        return NULL;
+    }
+    return h;
+}
+
+static BOOL WINAPI PostQueuedCompletionStatus(HANDLE h, DWORD bytes, uintptr_t key, void *ov)
+{
+    struct w32_port *p = port_of(h);
+    if (!p || p->tail - p->head >= PORT_SLOTS) {
+        w32_set_error(p ? ERROR_NOT_ENOUGH_MEMORY : ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    p->queue[p->tail++ % PORT_SLOTS] = (struct w32_completion){bytes, key, ov};
+    return TRUE;
+}
+
+void w32_port_post(HANDLE port, DWORD bytes, uintptr_t key, void *ov)
+{
+    PostQueuedCompletionStatus(port, bytes, key, ov);
+}
+
+static bool port_wait(struct w32_port *p, DWORD ms)
+{
+    uint64_t deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
+    w32_winsock_poll();
+    while (p->head == p->tail) {
+        if (ms == 0 || (ms != INFINITE && hal_ticks_ms() >= deadline))
+            return false;
+        w32_block();
+        w32_winsock_poll();
+    }
+    return true;
+}
+
+static BOOL WINAPI GetOverlappedResult(HANDLE h, uint32_t *ov, DWORD *bytes, BOOL wait)
+{
+    UNUSED(h);
+    while (ov[0] == 0x103u && wait) {
+        w32_winsock_poll();
+        if (ov[0] == 0x103u)
+            w32_block();
+    }
+    if (ov[0] == 0x103u) {
+        w32_set_error(996);
+        return FALSE;
+    }
+    if (bytes)
+        *bytes = ov[1];
+    if (ov[0]) {
+        w32_set_error(ov[0] == 0xc0000120u ? 995 : 64);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI CancelIoEx(HANDLE h, uint32_t *ov)
+{
+    if (w32_winsock_cancel((UINT)(uintptr_t)h, ov))
+        return TRUE;
+    w32_set_error(1168);
+    return FALSE;
+}
+
+static BOOL WINAPI CancelIo(HANDLE h)
+{
+    return CancelIoEx(h, NULL);
+}
+
+static BOOL WINAPI GetQueuedCompletionStatus(HANDLE h, DWORD *bytes, uintptr_t *key, void **ov, DWORD ms)
+{
+    struct w32_port *p = port_of(h);
+    if (ov)
+        *ov = NULL;
+    if (!p) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (!port_wait(p, ms)) {
+        w32_set_error(258);
+        return FALSE;
+    }
+    struct w32_completion c = p->queue[p->head++ % PORT_SLOTS];
+    if (bytes)
+        *bytes = c.bytes;
+    if (key)
+        *key = c.key;
+    if (ov)
+        *ov = c.overlapped;
+    return TRUE;
+}
+
+static BOOL WINAPI GetQueuedCompletionStatusEx(HANDLE h, uint32_t *entries, ULONG count, ULONG *removed, DWORD ms,
+                                               BOOL alertable)
+{
+    UNUSED(alertable);
+    struct w32_port *p = port_of(h);
+    if (removed)
+        *removed = 0;
+    if (!p) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (!port_wait(p, ms)) {
+        w32_set_error(258);
+        return FALSE;
+    }
+    ULONG n = 0;
+    while (n < count && p->head != p->tail) {
+        struct w32_completion c = p->queue[p->head++ % PORT_SLOTS];
+        entries[n * 4] = (uint32_t)c.key;
+        entries[n * 4 + 1] = (uint32_t)c.overlapped;
+        entries[n * 4 + 2] = 0;
+        entries[n * 4 + 3] = c.bytes;
+        n++;
+    }
+    if (removed)
+        *removed = n;
+    return TRUE;
 }
 
 static BOOL WINAPI not_implemented5(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
@@ -526,9 +674,53 @@ static BOOL WINAPI not_implemented2(uint32_t a, uint32_t b)
     return not_implemented5(a, b, 0, 0, 0);
 }
 
-static BOOL WINAPI not_implemented1(uint32_t a)
+static BOOL WINAPI true7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
 {
-    return not_implemented5(a, 0, 0, 0, 0);
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    UNUSED(e);
+    UNUSED(f);
+    UNUSED(g);
+    return TRUE;
+}
+
+static BOOL WINAPI false7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    UNUSED(e);
+    UNUSED(f);
+    UNUSED(g);
+    w32_set_error(ERROR_CALL_NOT_IMPLEMENTED);
+    return FALSE;
+}
+
+static BOOL WINAPI false8(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g, uint32_t h)
+{
+    UNUSED(h);
+    return false7(a, b, c, d, e, f, g);
+}
+
+static BOOL WINAPI false6(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f)
+{
+    return false7(a, b, c, d, e, f, 0);
+}
+
+static void *WINAPI no_pointer1(uint32_t a)
+{
+    UNUSED(a);
+    w32_set_error(ERROR_CALL_NOT_IMPLEMENTED);
+    return NULL;
+}
+
+static void *WINAPI no_pointer2(uint32_t a, uint32_t b)
+{
+    UNUSED(b);
+    return no_pointer1(a);
 }
 
 static HANDLE WINAPI no_handle7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
@@ -658,38 +850,37 @@ static const struct w32_export vista_exports[] = {
     W32_FN(SetWaitableTimer),
     W32_FN(CancelWaitableTimer),
     W32_FN(CreateIoCompletionPort),
-    W32_AS("GetQueuedCompletionStatus", not_implemented5),
-    W32_AS("GetQueuedCompletionStatusEx", w32_zero6),
-    W32_AS("PostQueuedCompletionStatus", not_implemented4),
-    W32_AS("GetOverlappedResult", not_implemented4),
-    W32_AS("CancelIoEx", not_implemented2),
-    W32_AS("CancelIo", not_implemented1),
+    W32_FN(GetQueuedCompletionStatus),
+    W32_FN(GetQueuedCompletionStatusEx),
+    W32_FN(PostQueuedCompletionStatus),
+    W32_FN(GetOverlappedResult),
+    W32_FN(CancelIoEx),
+    W32_FN(CancelIo),
     W32_AS("CreateNamedPipeW", no_handle8),
     W32_AS("CreateNamedPipeA", no_handle8),
     W32_AS("ConnectNamedPipe", not_implemented2),
     W32_AS("WaitNamedPipeW", not_implemented2),
-    W32_AS("PeekNamedPipe", w32_zero6),
     W32_AS("SetNamedPipeHandleState", not_implemented4),
-    W32_AS("GetNamedPipeHandleStateW", w32_zero6),
-    W32_AS("DeviceIoControl", no_handle8),
+    W32_AS("GetNamedPipeHandleStateW", false7),
+    W32_AS("DeviceIoControl", false8),
     W32_AS("CreateFileMappingW", no_pointer6),
     W32_AS("CreateFileMappingA", no_pointer6),
     W32_AS("OpenFileMappingW", no_pointer3),
     W32_AS("MapViewOfFile", no_pointer5),
     W32_AS("UnmapViewOfFile", w32_one1),
     W32_AS("FlushViewOfFile", w32_one2),
-    W32_AS("RegisterWaitForSingleObject", not_implemented5),
+    W32_AS("RegisterWaitForSingleObject", false6),
     W32_AS("UnregisterWait", w32_one1),
     W32_AS("UnregisterWaitEx", w32_one2),
-    W32_AS("ConvertThreadToFiberEx", no_pointer3),
-    W32_AS("ConvertThreadToFiber", no_pointer3),
+    W32_AS("ConvertThreadToFiberEx", no_pointer2),
+    W32_AS("ConvertThreadToFiber", no_pointer1),
     W32_AS("CreateFiberEx", no_pointer5),
     W32_AS("CreateFiber", no_pointer3),
     W32_AS("SwitchToFiber", w32_zero1),
     W32_AS("DeleteFiber", w32_zero1),
     W32_AS("ConvertFiberToThread", w32_one0),
     W32_FN(InitializeProcThreadAttributeList),
-    W32_AS("UpdateProcThreadAttribute", w32_one6),
+    W32_AS("UpdateProcThreadAttribute", true7),
     W32_AS("DeleteProcThreadAttributeList", w32_zero1),
     W32_AS("PssCaptureSnapshot", pss_failed4),
     W32_AS("PssQuerySnapshot", pss_failed4),

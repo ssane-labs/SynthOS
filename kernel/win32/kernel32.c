@@ -7,6 +7,9 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/log.h>
+#include <synth/path.h>
+#include <synth/shell.h>
+#include <synth/stream.h>
 #include <synth/string.h>
 #include <synth/time.h>
 #include <synth/vmm.h>
@@ -175,6 +178,7 @@ static HMODULE load_library(const char *name)
     path_dirname(w32->main->path, dir, sizeof(dir));
     struct w32_image *img = w32_load(name, dir, &err);
     if (!img) {
+        w32->message[0] = 0;
         w32_set_error((DWORD)err);
         return NULL;
     }
@@ -998,8 +1002,39 @@ static void build_cmdline(const char *app, const char *cmdline, char *out, size_
         str_copy(out, app, cap);
 }
 
-static int spawn_now(const char *app, const char *cmdline, DWORD *exit_code)
+struct spawn_args {
+    char *app;
+    char *cmdline;
+    DWORD exit_code;
+    struct stream *in, *out, *err;
+};
+
+static int run_cmd(struct spawn_args *a, const char *rest)
 {
+    struct shell *sh = w32->ctx->sh;
+    struct stream *in = sh->in, *out = sh->out, *err = sh->err;
+    char saved[PATH_MAX_LEN];
+    str_copy(saved, sh->cwd, sizeof(saved));
+    str_copy(sh->cwd, w32->cwd, sizeof(sh->cwd));
+    if (a->in)
+        sh->in = a->in;
+    if (a->out)
+        sh->out = a->out;
+    if (a->err)
+        sh->err = a->err;
+    int rc = shell_exec(sh, rest);
+    sh->in = in;
+    sh->out = out;
+    sh->err = err;
+    str_copy(sh->cwd, saved, sizeof(sh->cwd));
+    a->exit_code = rc < 0 ? 1 : (DWORD)rc;
+    return 0;
+}
+
+static int spawn_now(struct spawn_args *a)
+{
+    const char *app = a->app, *cmdline = a->cmdline;
+    DWORD *exit_code = &a->exit_code;
     char line[1024];
     build_cmdline(app, cmdline, line, sizeof(line));
     char *argv[32];
@@ -1026,6 +1061,17 @@ static int spawn_now(const char *app, const char *cmdline, DWORD *exit_code)
     argv[argc] = NULL;
     if (!argc)
         return ERROR_INVALID_PARAMETER;
+    const char *base = path_basename(argv[0]);
+    if ((!str_casecmp(base, "cmd") || !str_casecmp(base, "cmd.exe")) && argc > 1 &&
+        (!str_casecmp(argv[1], "/c") || !str_casecmp(argv[1], "/k"))) {
+        char rest[1024] = "";
+        for (int i = 2; i < argc; i++) {
+            if (i > 2)
+                str_append(rest, " ", sizeof(rest));
+            str_append(rest, argv[i], sizeof(rest));
+        }
+        return run_cmd(a, rest);
+    }
     char path[PATH_MAX_LEN];
     if (w32_path(app ? app : argv[0], path, sizeof(path)) != 0 || !vfs_exists(path)) {
         if (exec_find(w32->ctx->sh, path_basename(argv[0]), path, sizeof(path)) != 0) {
@@ -1036,7 +1082,8 @@ static int spawn_now(const char *app, const char *cmdline, DWORD *exit_code)
                 return ERROR_FILE_NOT_FOUND;
         }
     }
-    struct exec_ctx ctx = {w32->ctx->sh, path, argc, argv, w32->ctx->in, w32->ctx->out, w32->ctx->err};
+    struct exec_ctx ctx = {w32->ctx->sh, path, argc, argv, a->in ? a->in : w32->ctx->in,
+                           a->out ? a->out : w32->ctx->out, a->err ? a->err : w32->ctx->err};
     char *image;
     size_t size;
     if (vfs_read_all(path, &image, &size) != 0)
@@ -1050,27 +1097,31 @@ static int spawn_now(const char *app, const char *cmdline, DWORD *exit_code)
     return 0;
 }
 
-struct spawn_args {
-    char *app;
-    char *cmdline;
-    DWORD exit_code;
-};
-
 static uint32_t spawn_thunk(void *arg)
 {
-    struct spawn_args *a = arg;
-    return (uint32_t)spawn_now(a->app, a->cmdline, &a->exit_code);
+    return (uint32_t)spawn_now(arg);
 }
 
-static int spawn(const char *app, const char *cmdline, DWORD *exit_code)
+static int spawn(const char *app, const char *cmdline, const uint32_t *startup, DWORD *exit_code)
 {
     struct spawn_args *a = kzalloc(sizeof(*a));
     if (!a)
         return ERROR_NOT_ENOUGH_MEMORY;
     a->app = app ? kstrdup(app) : NULL;
     a->cmdline = cmdline ? kstrdup(cmdline) : NULL;
+    if (startup && (startup[11] & 0x100)) {
+        a->in = w32_handle_stream((HANDLE)startup[14]);
+        a->out = w32_handle_stream((HANDLE)startup[15]);
+        a->err = w32_handle_stream((HANDLE)startup[16]);
+    }
     int err = (int)w32_kernel_call(spawn_thunk, a);
     *exit_code = a->exit_code;
+    if (a->in)
+        stream_close(a->in);
+    if (a->out)
+        stream_close(a->out);
+    if (a->err)
+        stream_close(a->err);
     kfree(a->app);
     kfree(a->cmdline);
     kfree(a);
@@ -1086,10 +1137,10 @@ static HANDLE new_object(enum w32_object_type type, uint32_t value)
     return h;
 }
 
-static BOOL create_process(const char *app, const char *cmdline, uint32_t *info)
+static BOOL create_process(const char *app, const char *cmdline, const void *startup, uint32_t *info)
 {
     DWORD code = 0;
-    int err = spawn(app, cmdline, &code);
+    int err = spawn(app, cmdline, startup, &code);
     if (err) {
         w32_set_error((DWORD)err);
         return FALSE;
@@ -1113,8 +1164,7 @@ static BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmdline, void *psa, void *ts
     UNUSED(flags);
     UNUSED(env);
     UNUSED(dir);
-    UNUSED(startup);
-    return create_process(app, cmdline, info);
+    return create_process(app, cmdline, startup, info);
 }
 
 static BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmdline, void *psa, void *tsa, BOOL inherit, DWORD flags,
@@ -1126,9 +1176,8 @@ static BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmdline, void *psa, void *
     UNUSED(flags);
     UNUSED(env);
     UNUSED(dir);
-    UNUSED(startup);
     char *a = w32_narrow(app), *c = w32_narrow(cmdline);
-    BOOL ok = create_process(a, c, info);
+    BOOL ok = create_process(a, c, startup, info);
     w32_free(a);
     w32_free(c);
     return ok;
@@ -1151,7 +1200,7 @@ static UINT WINAPI WinExec(LPCSTR cmdline, UINT show)
 {
     UNUSED(show);
     DWORD code;
-    return spawn(NULL, cmdline, &code) == 0 ? 33 : 2;
+    return spawn(NULL, cmdline, NULL, &code) == 0 ? 33 : 2;
 }
 
 static DWORD format_message(DWORD flags, DWORD id, char *out, size_t cap)

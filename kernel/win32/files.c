@@ -182,6 +182,8 @@ long w32_handle_read(HANDLE h, void *buf, size_t n)
         return w32_console_read(buf, n);
     case WH_FILE:
         return vfs_read(o->file, buf, n);
+    case WH_PIPE:
+        return o->pipe && !o->value ? w32_pipe_read(o->pipe, buf, n, true) : E_BADF;
     case WH_NULL:
         return 0;
     default:
@@ -203,6 +205,8 @@ long w32_handle_write(HANDLE h, const void *buf, size_t n)
         if (o->append)
             vfs_seek(o->file, 0, VFS_SEEK_END);
         return vfs_write(o->file, buf, n);
+    case WH_PIPE:
+        return o->pipe && o->value ? w32_pipe_write(o->pipe, buf, n) : E_BADF;
     case WH_NULL:
         return (long)n;
     default:
@@ -323,6 +327,8 @@ static DWORD WINAPI GetFileType(HANDLE h)
         return stream_is_console(w32->ctx->err) ? 2 : 3;
     case WH_NULL:
         return 2;
+    case WH_PIPE:
+        return 3;
     default:
         return 1;
     }

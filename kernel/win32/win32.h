@@ -106,6 +106,8 @@ enum w32_object_type {
     WH_THREAD,
     WH_PROCESS,
     WH_TIMER,
+    WH_PIPE,
+    WH_PORT,
 };
 
 struct w32_find {
@@ -136,6 +138,8 @@ struct w32_object {
     struct w32_thread *thread;
     uint64_t due;
     char *path;
+    struct w32_pipe *pipe;
+    struct w32_port *port;
 };
 
 struct w32_thread {
@@ -173,6 +177,7 @@ struct w32_image {
 };
 
 #define W32_TLS_MODULES 32
+#define INFINITE 0xffffffffu
 
 struct w32_tls_module {
     uint32_t base, start, size, zero, callbacks;
@@ -234,6 +239,17 @@ struct w32_process {
 
 extern struct w32_process *w32;
 
+struct w32_pipe;
+struct stream;
+void w32_pipe_release(struct w32_object *o);
+long w32_pipe_write(struct w32_pipe *p, const void *data, size_t n);
+long w32_pipe_read(struct w32_pipe *p, void *out, size_t n, bool wait);
+size_t w32_pipe_available(struct w32_pipe *p);
+struct stream *w32_handle_stream(HANDLE h);
+void w32_port_post(HANDLE port, DWORD bytes, uintptr_t key, void *ov);
+void w32_winsock_poll(void);
+bool w32_winsock_cancel(UINT s, uint32_t *ov);
+bool w32_socket_associate(uintptr_t s, HANDLE port, uintptr_t key);
 void w32_tls_register(struct w32_image *img);
 void w32_tls_callbacks(uint32_t base, DWORD reason);
 void w32_set_error(DWORD error);
