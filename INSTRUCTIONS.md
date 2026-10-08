@@ -11,28 +11,38 @@
 
 ## 1. Текущее состояние
 
-SynthOS 0.1.0 «Neon» — рабочая база:
+SynthOS 0.1.0 «Neon» — рабочая система:
 
 * свой загрузчик для **BIOS** (MBR + stage2, LBA или CHS, карта памяти E820/E801/88h) и свой
   загрузчик для **UEFI** (`BOOTX64.EFI`) — один и тот же образ грузится на старых и новых ПК;
-* 32-битное ядро x86 (от **i486** и 4–5 МБ ОЗУ), страничная память, null-страница защищена;
-* **графический рабочий стол**: свой композитный оконный менеджер (тени, перетаскивание, изменение
-  размера, развёртывание), панель задач с часами, меню «Пуск», значки, обои, сглаженные шрифты;
-  приложения — Терминал (вся оболочка в окне), Проводник, Блокнот, Paint, Калькулятор, Настройки,
-  Системный монитор, Сапёр; мышь PS/2 с колёсиком; режимы VBE (BIOS) и GOP (UEFI) до 1920×1200;
-* консоль: VGA-текст или графический фреймбуфер UEFI, **свой шрифт 8×16 с кириллицей** (CP437/CP866),
-  темы; клавиатура PS/2, таймер, RTC, COM-порт;
-* диски: IDE/ATA, **AHCI (SATA)**, **NVMe**, а на BIOS-машинах — любой диск через BIOS (USB-флешки);
-* файловые системы: ramfs (корень), devfs, своя дисковая **SynthFS** (`/home` сохраняется);
+* 32-битное ядро x86 (от **i486**), страничная память, **PAE** (ОЗУ и устройства выше 4 ГБ),
+  переход в **long mode** на время работы 64-битных программ; сэмплирующий профилировщик `prof`;
+* **рабочий стол в стиле macOS**: композитный оконный менеджер со строкой меню, Dock, Launchpad,
+  поиском, «стеклом» с размытием, тенями и сглаженными шрифтами; вход по паролю, блокировка экрана,
+  несколько мониторов с разными разрешениями; приложения — Браузер, Терминал, Файлы, Блокнот, Paint,
+  Калькулятор, Системный монитор, Сапёр, Системные настройки;
+* консоль: VGA-текст или графический фреймбуфер, **свой шрифт 8×16 с кириллицей** (CP437/CP866), темы;
+* устройства: клавиатура и мышь PS/2, **USB** (xHCI, хабы, клавиатуры, мыши, флешки), диски
+  IDE/ATA (**bus-master DMA**), **AHCI**, **NVMe**, на BIOS-машинах — любой диск через BIOS;
+  сетевые карты **e1000/e1000e, RTL8139, RTL8169**;
+* файловые системы: ramfs (корень), devfs, своя дисковая **SynthFS** (`/home` сохраняется),
+  **FAT12/16/32** с длинными именами (флешки и разделы монтируются сами в `/mnt/…`);
   структура каталогов в стиле Windows: `C:\Windows`, `C:\Program Files`, `C:\Users\<имя>`;
-* оболочка с 86 командами, скриптами, пайпами, подсветкой синтаксиса и автодополнением;
-* **запуск программ Windows** (32-битные консольные `.exe`/`.dll`): свой загрузчик PE и свои
-  kernel32, msvcrt, user32, advapi32, shell32, ntdll — C и C++ (STL, исключения), файлы, консоль
-  с цветами, DLL, MessageBox, вложенный запуск;
+* **сеть**: свой TCP/IP, DHCP, DNS, сокеты; **TLS 1.3 и 1.2** (AES-GCM, ChaCha20-Poly1305, X25519,
+  P-256/P-384, RSA/ECDSA) с проверкой цепочки сертификатов по корням Mozilla; HTTP/HTTPS-клиент
+  с редиректами и cookies; команды `wget`, `browse`, `ping`, `nslookup`, `httpd`, `certs`;
+* **Браузер**: HTML-движок (текст, ссылки, списки, таблицы, формы GET/POST, кодировки), история,
+  загрузки в `~/Downloads`, страницы `file://`; тот же движок выводит страницы текстом в терминале;
+* оболочка со 108 командами, скриптами, пайпами, подсветкой синтаксиса и автодополнением;
+* **запуск программ Windows**: 32-битные (PE32) и **64-битные (PE32+)** `.exe`/`.dll`, консольные и
+  **оконные** (окна, GDI, элементы управления, диалоги из ресурсов), потоки и синхронизация,
+  Winsock, **WinINet/WinHTTP/URLDownloadToFile** с HTTPS, msvcrt и **UCRT**, C++ с исключениями
+  (в 64-битных — табличная раскрутка x64 SEH);
+* пользователи с паролями (`useradd`, `passwd`, `su`, `lock`), у каждого свой `/home`;
 * виртуальная машина **SX** для своих программ + ассемблер/дизассемблер внутри ОС;
 * эмулятор **MS-DOS** (8086/186) для `.COM` и `.EXE`;
-* редактор `edit`, пейджер `more`, игра `snake`;
-* автотесты: `make test` (66 проверок) и `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB, i486).
+* автотесты: `make test` (136 проверок), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI, i486;
+  29 проверок), `make test-crypto` (криптография против эталонов).
 
 ---
 
@@ -58,15 +68,16 @@ Linux здесь нужен **только как среда сборки** (к�
    `git clone <адрес репозитория> ~/SynthOS` или `cp -r /mnt/c/путь/SynthOS ~/SynthOS`.
 4. QEMU из WSL открывает окно через WSLg (Windows 11 — из коробки). Если окна нет — установите
    QEMU для Windows (qemu.org) и запускайте образ оттуда:
-   `qemu-system-i386 -drive format=raw,file=synthos.img -m 64`.
+   `qemu-system-x86_64 -drive format=raw,file=synthos.img -m 256`.
 
 ### Linux (Ubuntu / Debian / Mint)
 
 ```sh
 sudo apt install -y build-essential nasm qemu-system-x86 git \
-    gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 dosfstools mtools ovmf
+    gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+    dosfstools mtools ovmf openssl python3-pil socat
 ```
-(Fedora: `sudo dnf install gcc make nasm qemu-system-x86 mingw32-gcc mingw32-gcc-c++ mingw64-gcc dosfstools mtools edk2-ovmf`;
+(`openssl` нужен тестам HTTPS, `python3-pil` и `socat` — скриншотам; Fedora: `sudo dnf install gcc make nasm qemu-system-x86 mingw32-gcc mingw32-gcc-c++ mingw64-gcc dosfstools mtools edk2-ovmf`;
 Arch: `sudo pacman -S base-devel nasm qemu-full mingw-w64-gcc dosfstools mtools edk2-ovmf`.)
 
 ### macOS
@@ -82,12 +93,13 @@ Makefile сам найдёт кросс-компилятор `i686-elf-gcc`.
 
 ```sh
 cd SynthOS
-make              # собрать build/vga/synthos.img (загрузочный образ диска 16 МБ, BIOS + UEFI)
-make run          # запустить в QEMU как старый ПК с BIOS (окно с VGA-экраном)
+make              # собрать build/vga/synthos.img (загрузочный образ диска 32 МБ, BIOS + UEFI)
+make run          # запустить в QEMU как ПК с BIOS (окно с экраном, 256 МБ, сетевая карта e1000)
 make run-uefi     # запустить в QEMU как современный ПК с UEFI (графическая консоль)
 make run-serial   # запустить с консолью в текущем терминале через COM-порт
 make test         # собрать вариант с COM-консолью и прогнать автотесты
-make test-hw      # прогнать образ на 8 разных «машинах» (BIOS/UEFI, IDE/AHCI/NVMe/USB, i486)
+make test-hw      # прогнать образ на 10 разных «машинах» (BIOS/UEFI, IDE/AHCI/NVMe/USB/xHCI, i486)
+make test-crypto  # проверить SHA-2, AES-GCM, ChaCha20, X25519, RSA, ECDSA на хосте
 make clean        # удалить build/
 ```
 
@@ -97,7 +109,10 @@ make clean        # удалить build/
 * Файлы в `/home` хранятся в самом образе. Чтобы начать «с чистого диска» — `make clean && make`.
 * Отключение подсистем для маленьких машин (`config.mk` или командная строка):
   `make CONFIG_DOS=0 CONFIG_SXVM=0 CONFIG_EDITOR=0`.
-* Дополнительные флаги QEMU: `make run QEMU_FLAGS="-m 128"`.
+* Дополнительные флаги QEMU: `make run QEMU_FLAGS="-smp 2 -device qemu-xhci -device usb-kbd"`.
+* Сеть в QEMU работает сразу (user-mode, адрес по DHCP). Сертификаты HTTPS проверяются по корням
+  из `/etc/certs` (генерируются `tools/mkcerts.sh`); свои корни — файлы `.pem` в `/home/certs`
+  и команда `certs reload`.
 
 ### На реальном компьютере
 
@@ -110,14 +125,14 @@ make clean        # удалить build/
 
 Где сохраняется `/home`: на диске, с которого загрузилась система, если это IDE, SATA (AHCI)
 или NVMe; при загрузке через BIOS — на любом диске, который видит BIOS (включая USB-флешку).
-При загрузке через UEFI с USB-флешки `/home` пока живёт в памяти (драйвера USB нет).
+При загрузке через UEFI с USB-флешки `/home` хранится на ней же через свой драйвер xHCI.
 Чужие диски система не трогает: раздел используется, только если на диске лежит именно
 загрузочный образ SynthOS (сигнатура в MBR + заголовок ядра).
 
-Требования к железу: процессор x86 от i486, 5 МБ ОЗУ (C++-программам Windows — от 6 МБ),
-клавиатура PS/2 или USB-клавиатура с эмуляцией PS/2 (её дают почти все BIOS/UEFI, на ноутбуках
-встроенная клавиатура обычно подключена именно так). Видео: VGA (BIOS) или любой
-фреймбуфер GOP (UEFI) ниже 4 ГБ.
+Требования к железу: процессор x86 от i486 и 6 МБ ОЗУ (программам Windows — от 8 МБ; программы,
+собранные MinGW «под i686», используют инструкции CMOV и требуют Pentium Pro и новее; 64-битным
+программам нужен процессор x86-64), клавиатура PS/2 или USB. Видео: VGA (BIOS) или любой
+фреймбуфер GOP (UEFI). Сеть: Intel e1000/e1000e или Realtek RTL8139/RTL8169.
 
 ---
 
@@ -128,10 +143,12 @@ make clean        # удалить build/
 ```text
 Мышь                      окна: перетаскивать за заголовок, края — менять размер,
                           двойной щелчок по заголовку — развернуть; правая кнопка — контекстное меню
-Win или Ctrl+Esc          меню «Пуск»;  Alt+Tab — следующее окно;  Alt+F4 — закрыть окно
+Win или Ctrl+Esc          Launchpad (все приложения);  Ctrl+Space — поиск
+Alt+Tab, Alt+F4           следующее окно, закрыть окно; меню приложения — в строке меню сверху
 launch                    список приложений;  launch paint, launch files /home, launch файл.bmp
 desktop off / exit        не запускать стол при загрузке (config save) / выйти в текстовый режим
 desktop (или startx)      снова запустить рабочий стол из текстового режима
+lock, logout              заблокировать экран, сменить пользователя
 ```
 
 Команды оболочки:
@@ -141,15 +158,30 @@ help / help ls            список команд / справка по ком
 ls -l, cd, tree, find     файлы; edit файл — редактор; more файл — просмотр
 cd "C:\Program Files"     пути Windows понимаются напрямую; drives, winpath — карта дисков
 theme, prompt, color      оформление; config — все настройки; config save — сохранить
-config codepage 866       кириллица (CP866) — работает и в VGA, и в UEFI
 hello, fib 20, snake      программы SX из /bin
 hello.com, box.com        программы DOS из /dos
-winhello, wincpp, windll  программы Windows из /apps (= C:\Program Files)
+winhello, wincpp, hello64 программы Windows из /apps (= C:\Program Files)
+windialog, wingdi         оконные программы Windows
 asm файл.sasm             собрать свою программу; dis файл.sx — дизассемблировать
 ```
 
-Про Windows-программы подробно — `more /docs/windows.txt` внутри ОС, про рабочий стол —
-`more /docs/desktop.txt`.
+Интернет:
+
+```text
+launch browser [адрес]    браузер: строка адреса (или слова для поиска), ссылки мышью или Tab/Enter,
+                          формы, Backspace — назад, Ctrl+L — к адресу, загрузки — в ~/Downloads
+browse https://…          страница текстом в терминале, ссылки пронумерованы
+wget [-O файл] https://…  скачать файл;  -k — не проверять сертификат
+ifconfig, dhcp, ping, nslookup, netstat     сеть;  httpd [порт] [папка] — свой веб-сервер
+certs [list|reload]       доверенные корневые сертификаты;  cookies [clear] — cookies сайтов
+```
+
+Скорость и отладка: `time команда`, `prof [-o файл] команда` (где процессор проводит время;
+адреса переводятся в функции `tools/profsym.py build/vga/kernel.elf < файл`), `winbench [папка]`
+(файлы, консоль, куча, вызовы API), `bench`.
+
+Про Windows-программы подробно — `more /docs/windows.txt` внутри ОС, про интернет —
+`more /docs/internet.txt`, про рабочий стол — `more /docs/desktop.txt`.
 
 Скрипты: файл `.sh` с командами оболочки (`if … end`, `while … end`, `for x in … end`,
 `func имя … end`). Стартовый скрипт пользователя — `/home/.synthrc`.
@@ -163,47 +195,53 @@ asm файл.sasm             собрать свою программу; dis ф
 Makefile, config.mk       сборка и параметры (размер образа, включаемые подсистемы)
 arch/x86/boot/            stage1.asm (MBR, LBA/CHS), stage2.asm (A20, E820/E801, ядро), layout.inc
 arch/x86/efi/             UEFI-загрузчик: loader.c (BOOTX64.EFI), trampoline.asm (выход из long mode)
-arch/x86/                 entry.asm, isr.asm, linker.ld, cpu.c (GDT/IDT/PIC, CPUID/FPU), timer.c,
-                          keyboard.c, serial.c, vga.c (+ загрузка шрифта), paging.c (страничная память),
-                          mouse.c (PS/2 мышь), vbe.c (графический режим через BIOS VBE),
-                          ata.c, ahci.c, nvme.c, pci.c, bios.c + biosthunk.asm (вызов BIOS из ядра),
-                          biosdisk.c, win32.asm (вход в код Windows-программ), hal.c (x86_main + HAL)
+arch/x86/                 entry.asm, isr.asm, linker.ld, cpu.c (GDT/IDT/PIC, CPUID, long mode),
+                          long.asm (переходы 32↔64 бит, шлюзы вызовов Win64, x64 SEH), timer.c (PIT и
+                          профилировщик), paging.c (страницы, PAE), keyboard.c, mouse.c, serial.c,
+                          vga.c, vbe.c, display.c, ata.c (PIO и DMA), ahci.c, nvme.c, pci.c,
+                          xhci.c, usb.c, usbhub.c, usbhid.c, usbstor.c, e1000.c, realtek.c,
+                          bios.c + biosthunk.asm, biosdisk.c, win32.asm, hal.c (x86_main + HAL)
 include/synth/            заголовки: hal.h, console.h, theme.h, vfs.h, shell.h, command.h, exec.h,
-                          winpath.h, vmm.h, fbcon.h, font.h, arch_win32.h …
+                          net.h, tls.h, crypto.h, http.h, html.h, gui.h, users.h, vmm.h …
 kernel/main.c             kmain: порядок инициализации
-kernel/core/              console, fbcon (графическая консоль), font8x16 (шрифт), theme, input, stream,
-                          codepage, winpath (пути C:\…), block, time, log
-kernel/lib/               libc.c (mem*/str*), strutil.c, fmt.c (printf), path.c, misc.c
+kernel/core/              console, fbcon, font8x16, theme, input, stream, codepage, winpath (пути C:\…),
+                          block, users, time, log
+kernel/lib/               libc.c (mem*/str*), strutil.c, fmt.c (printf), path.c, lz4.c, sha256.c, misc.c
 kernel/mm/heap.c          аллокатор (корзины по размеру, кучи-экземпляры для процессов)
-kernel/win32/             подсистема Windows: pe.c (загрузчик PE), process.c (процесс, TEB/PEB,
-                          вложенный запуск), kernel32.c, files.c, console.c, locale.c, text.c (кодировки),
-                          user32.c, system.c (advapi32, shell32, ntdll), stubs.c
-kernel/win32/crt/         msvcrt: crt.c (старт, выход, окружение), stdio.c, format_fp.c (printf/scanf),
-                          stdlib.c (строки, ctype, conio), math_fp.c (x87), time.c
-kernel/fs/                vfs.c, ramfs.c, devfs.c, sfs.c (SynthFS), ramdisk.c
+kernel/fs/                vfs.c, ramfs.c, devfs.c, sfs.c (SynthFS), fat.c (FAT12/16/32), automount.c, ramdisk.c
+kernel/net/               core.c (Ethernet, ARP, IPv4, ICMP, UDP), tcp.c, socket.c, dhcp.c, dns.c,
+                          tls.c (TLS 1.3/1.2), x509.c (сертификаты, корни), http.c (клиент, cookies),
+                          html.c (разбор HTML для браузера и browse)
+kernel/crypto/            hash.c (SHA-2, HMAC, HKDF), aes.c (AES, GCM), chacha.c (ChaCha20-Poly1305),
+                          x25519.c, pk.c (RSA, P-256/P-384, ECDSA), random.c (DRBG)
+kernel/win32/             pe.c (PE32/PE32+), process.c, thread.c, kernel32.c, files.c, console.c, locale.c,
+                          text.c, user32.c, window.c, gdi.c, controls.c, dialog.c, resource.c,
+                          winsock.c, inet.c (wininet, winhttp, urlmon), system.c, stubs.c;
+                          win64*.c — 64-битные программы (таблицы, GUI, сокеты, SEH, математика)
+kernel/win32/crt/         msvcrt: crt.c, stdio.c, format_fp.c (printf/scanf), stdlib.c, math_fp.c,
+                          time.c; ucrt.c — функции UCRT (__stdio_common_*, api-ms-win-crt-*)
 kernel/shell/             parse, run, script, shell, lineedit, interactive, prompt, settings, calc, command, state
-kernel/cmds/              files.c, text.c, shell.c, system.c, custom.c — встроенные команды
+kernel/cmds/              files.c, text.c, shell.c, system.c, custom.c, users.c, paths.c, net.c,
+                          browse.c — встроенные команды
 kernel/apps/              edit.c, more.c
-kernel/gui/               рабочий стол: gfx.c (рисование, сглаживание, текст), wm.c (оконный менеджер,
-                          композитинг, мышь), desktop.c (обои, значки, панель задач, меню «Пуск»,
-                          цикл событий gui_run), ui.c (виджеты: кнопки, списки, поля, меню, диалоги),
-                          terminal.c (окно терминала), image.c (BMP), uifont.c и icons.c — сгенерированы
-kernel/gui/apps/          приложения: files, notepad, paint, calc_fp, settings, monitor, mines
+kernel/gui/               gfx.c (рисование, сглаживание, текст), wm.c (окна, композитинг, мышь),
+                          glass.c (размытие), desktop.c (цикл событий, значки), menubar.c, dock.c,
+                          spotlight.c (поиск и Launchpad), lock.c (вход и блокировка), wallpaper.c,
+                          ui.c (виджеты), terminal.c, image.c (BMP); uifont.c и icons.c — сгенерированы
+kernel/gui/apps/          browser, files, notepad, paint, calc_fp, settings, monitor, mines
 kernel/exec/              exec.c (поиск/запуск), script.c (формат .sh)
 kernel/vm/                vm.c (интерпретатор SX), asm.c, opcodes.c, commands.c (asm/dis)
 kernel/dos/               cpu.c (8086/186), dos.c (память/загрузчик/процессы), int21.c, bios.c
 programs/sx/              программы SX (*.sasm) + synth.inc — попадают в /bin и /home/src
 programs/dos/             DOS-программы (*.asm → /dos/*.com, exe/*.asm → /dos/*.exe)
-programs/win32/           Windows-программы (*.c, *.cpp → /apps/*.exe, dll/*.c → /apps/*.dll),
+programs/win32/           32-битные Windows-программы (*.c, *.cpp, *.rc → /apps/*.exe, dll/*.c → /apps/*.dll)
+programs/win64/           64-битные (hello64, cpp64, winnet64; hello64u — сборка с UCRT)
                           prebuilt/ — готовые .exe для сборки без MinGW
-rootfs/                   содержимое корневой ФС: /etc (synthrc, motd, themes), /docs, /home, /bin (*.sh)
-tools/mkrd.c              упаковщик rootfs в ramdisk (формат SRD1)
-tools/sasm.c              ассемблер SX для хоста (использует kernel/vm/asm.c)
-tools/mkfont.py           генератор шрифта 8×16 (нужен только для изменения шрифта, требует Pillow)
-tools/mkuifont.py         сглаженные шрифты интерфейса из DejaVu → kernel/gui/uifont.c
-tools/mkicons.py          значки 32×32 и 16×16 → kernel/gui/icons.c
-tests/run.sh              автотесты через COM-порт; tests/hw.sh — матрица «железа»;
-                          tests/shot.sh — скриншоты VGA через QEMU
+rootfs/                   корневая ФС: /etc (synthrc, motd, themes, certs/mozilla.pem), /docs, /home, /bin
+tools/                    mkrd.c (ramdisk), sasm.c (ассемблер SX), mkfont.py, mkuifont.py, mkicons.py,
+                          lz4pack.py, mkcerts.sh (корни Mozilla), profsym.py (адреса prof → функции)
+tests/                    run.sh (автотесты), hw.sh (матрица железа), crypto/ (векторы криптографии),
+                          shot.sh (скриншоты VGA через QEMU)
 ```
 
 ---
@@ -270,6 +308,13 @@ BINFMT(fmt);
 находятся через `pci_foreach()`, регистры отображаются `vmm_map_phys()`, физический адрес буфера
 для DMA — `vmm_phys()` (память из `kmalloc_pages` физически непрерывна).
 
+### Новый сетевой драйвер
+
+Заполнить `struct netdev` (`send`, `receive`, `link`, MAC-адрес) и вызвать `net_register()` из
+`hal_net_init()` (см. `arch/x86/e1000.c`, `realtek.c`). Стек сам получит адрес по DHCP; приём —
+опросом из `net_poll()`, который вызывается в цикле ожидания ядра. Программы ядра работают через
+`net_socket`, `net_connect`, `net_send`/`net_recv` (TCP) и `net_sendto`/`net_recvfrom` (UDP) из `synth/net.h`, HTTPS — через `http_fetch()` из `synth/http.h`.
+
 ### Новая функция Windows API
 
 Функции пишутся как обычные C-функции с соглашением `WINAPI` (stdcall) для kernel32/user32/…
@@ -290,6 +335,14 @@ W32_EXPORTS(my_module, "kernel32.dll", my_exports);
 Глобальное состояние модуля помечается `W32_STATE` (оно сохраняется при вложенном запуске), а
 сброс на старте процесса — в `.attach` таблицы. Каких функций не хватает программе — видно сразу:
 она остановится с сообщением `… is not supported yet`.
+
+64-битные программы (`kernel/win32/win64*.c`) вызывают те же 32-битные реализации: по умолчанию
+аргументы обрезаются до 32 бит, а функции с указателями на структуры, `va_list`, `FILE*`, 64-битными
+значениями или плавающей точкой описываются флагами в таблице `W64_EXPORTS`:
+`W64_FLAG("fprintf", W64F_FMT | W64F_FILE)`, `W64_MATH("sqrt", M_D_D)`, своя обёртка —
+`W64_FN("WSAStartup", h_wsa_startup)` с сигнатурой `uint64_t h(uint64_t *a, const uint64_t *f, void *t)`
+(`a` — целые аргументы, `f` — регистры xmm, `t` — 32-битная функция, вызываемая через `T32(...)`).
+Для обратных вызовов в 64-битный код — `arch_w64_call(fn, argc, args)`.
 
 ### Новое приложение рабочего стола
 
@@ -349,8 +402,9 @@ DOS переносятся без изменений (эмулятор DOS тр�
   Справочник — `rootfs/docs/sx.txt`, примеры — `hello`, `guess`, `snake`.
 * DOS: `programs/dos/имя.asm` (nasm, `org 0x100`) → `/dos/имя.com`;
   `programs/dos/exe/имя.asm` → `/dos/имя.exe`.
-* Windows: `programs/win32/имя.c` или `.cpp` → `/apps/имя.exe` (собирается
-  `i686-w64-mingw32-gcc`, C++ — со `-static`), `programs/win32/dll/имя.c` → `/apps/имя.dll`.
+* Windows: `programs/win32/имя.c` или `.cpp` (+ `имя.rc` с ресурсами) → `/apps/имя.exe`
+  (собирается `i686-w64-mingw32-gcc`, C++ — со `-static`), `programs/win32/dll/имя.c` →
+  `/apps/имя.dll`; 64-битные — `programs/win64/имя.c` (`x86_64-w64-mingw32-gcc`).
   Готовые `.exe` можно просто положить в `/home` — они запустятся по имени.
 * Скрипты и любые файлы — в `rootfs/` (каталог копируется в корень ОС).
 
@@ -374,49 +428,54 @@ DOS переносятся без изменений (эмулятор DOS тр�
 
 ## 8. Тестирование
 
-* `make test` — собирает образ с консолью на COM-порту, запускает QEMU без окна, вводит команды из
-  `tests/run.sh` и проверяет вывод. Новый тест = две строки в списке: команда и ожидаемый фрагмент.
-* `make test-hw` — тот же образ на 8 конфигурациях: BIOS и UEFI (нужен пакет `ovmf`), диски IDE,
-  AHCI, NVMe, USB, процессор 486; проверяются оболочка, запуск Windows-программы и сохранение
-  `/home` после перезагрузки (~3–4 минуты).
-* `tests/shot.sh build/vga/synthos.img out.png 2 <клавиши QEMU…>` — запускает VGA-образ, нажимает
-  клавиши (`l s ret`, `shift-apostrophe`, `up`…) и сохраняет скриншот (нужны `socat` и Python PIL).
+* `make test` — собирает образ с консолью на COM-порту, запускает QEMU без окна (с сетевой картой
+  и вторым FAT-диском), вводит команды из `tests/run.sh` и проверяет вывод. Новый тест = две строки
+  в списке: команда и ожидаемый фрагмент. Если на хосте есть `openssl` и `python3`, тест поднимает
+  свои HTTPS-серверы (TLS 1.3 и 1.2 с тестовым корневым сертификатом) и сервер cookies.
+* `make test-hw` — тот же образ на 10 конфигурациях: BIOS и UEFI (нужен пакет `ovmf`), диски IDE,
+  AHCI, NVMe, USB (UHCI через BIOS и свой xHCI), процессор 486; проверяются оболочка, запуск
+  Windows-программы и сохранение `/home` после перезагрузки (~3 минуты).
+* `make test-crypto` — собирает криптографию ядра для хоста и сверяет с эталонами из Python-пакета `cryptography`.
+* `tests/shot.sh build/vga/synthos.img out.png 12 <клавиши QEMU…>` — запускает VGA-образ, нажимает
+  клавиши (`l s ret`, `shift-apostrophe`, `sleep:5` — пауза) и сохраняет скриншот через
+  `AFTER` секунд после последней клавиши (нужны `socat` и Python PIL; `QEMU_EXTRA` — доп. флаги).
+* Скорость: `time`, `prof -o файл команда` + `tools/profsym.py`, `winbench`. Профилировщик видит
+  только код, который выполняется с включёнными прерываниями; в QEMU без KVM инструкции x87 и
+  переходы между страницами заметно дороже, чем на настоящем процессоре.
 
 ---
 
 ## 9. Дорожная карта (идеи, по приоритету)
 
-1. **USB:** контроллеры xHCI/EHCI, клавиатура USB HID и флешки (USB Mass Storage) — чтобы не
-   зависеть от эмуляции PS/2 и сохранять `/home` на флешке при загрузке через UEFI.
-2. **FAT12/16/32** — чтение/запись флешек и разделов Windows (`mount fat ...`), раздел UEFI.
-3. **Windows дальше:** окна Windows-программ на рабочем столе (user32/GDI поверх `kernel/gui`), потоки (`CreateThread`), сеть
-   (ws2_32), UCRT (`api-ms-win-crt-*` с новыми именами функций), 64-битные программы
-   (ядро x86-64 или режим совместимости).
-4. **Многозадачность:** процессы, планировщик, фоновые задачи (`cmd &`), `ps`/`kill`.
-5. **PAE** — память и устройства выше 4 ГБ.
+1. **Многозадачность:** процессы с вытеснением, фоновые задачи (`cmd &`), `ps`/`kill`; сейчас рабочий
+   стол кооперативный, а сетевые загрузки в браузере блокируют интерфейс.
+2. **Браузер дальше:** картинки (PNG/JPEG/GIF), CSS-раскладка, gzip, HTTP/2; JavaScript — отдельный
+   большой проект.
+3. **Windows дальше:** DirectX/OpenGL, COM, реестр с данными, сервисы; драйверы `.sys` не
+   поддерживаются (вместо них — свои драйверы в `arch/`).
+4. **Звук:** AC'97/HDA, `PlaySound`, `waveOut`.
+5. **Wi-Fi и IPv6.**
 6. **Язык высокого уровня** для SX (мини-C или свой скриптовый язык) с компилятором внутри ОС.
-7. **Эмулятор DOS:** 386-инструкции, EMS/XMS, звук PC-speaker, мышь INT 33h, графика 13h.
-8. **Порты:** ARM (Raspberry Pi), RISC-V, графические калькуляторы — через новый `arch/`.
-9. **Сеть:** драйвер NE2000/virtio-net/e1000, стек TCP/IP, `ping`, `wget`.
-10. **Рабочий стол дальше:** перетаскивание файлов между окнами, просмотр картинок PNG/JPEG,
-    шрифты с кириллицей в интерфейсе, несколько рабочих столов, программы SX с окнами.
+7. **Эмулятор DOS:** 386-инструкции, EMS/XMS, мышь INT 33h, графика 13h; эмуляция CMOV на i486
+   для Windows-программ, собранных под i686.
+8. **Порты:** ARM (Raspberry Pi), RISC-V — через новый `arch/`.
 
 ---
 
 ## 10. Для Claude в новом чате
 
 1. Прочитать этот файл, затем `docs/ARCHITECTURE.md` и `CLAUDE.md`.
-2. Проверить окружение: `make && make test` — должно быть `tests: 66 passed, 0 failed`;
-   при наличии `ovmf` — `make test-hw` (`hardware tests: 23 passed, 0 failed`).
-3. Визуальная проверка: `tests/shot.sh build/vga/synthos.img /tmp/shot.png 4 f e t c h ret`
-   (после загрузки открыт рабочий стол, клавиши попадают в окно терминала). Мышь в QEMU можно
-   двигать через монитор: `mouse_move dx dy`, `mouse_button 1` (сдвиг за раз не больше ~500).
+2. Проверить окружение: `make && make test` — должно быть `tests: 136 passed, 0 failed`;
+   при наличии `ovmf` — `make test-hw` (`hardware tests: 29 passed, 0 failed`);
+   при наличии Python-пакета `cryptography` — `make test-crypto`.
+3. Визуальная проверка: `tests/shot.sh build/vga/synthos.img /tmp/shot.png 12 f e t c h ret`
+   (после загрузки открыт рабочий стол, клавиши попадают в окно терминала; `launch <app>` открывает
+   приложения). Мышь в QEMU можно двигать через монитор: `mouse_move dx dy`, `mouse_button 1`.
 4. Соблюдать правила из раздела 7, расширять через макросы из раздела 6, добавлять тесты в
-   `tests/run.sh` для всего нового.
-5. Известные ограничения: нет драйверов USB (флешки и USB-клавиатуры работают через BIOS/эмуляцию
-   PS/2); ядро 32-битное без PAE (видит до ~3.75 ГБ ОЗУ, устройства выше 4 ГБ недоступны, кроме
-   перемещаемых BAR на шине 0); Windows — только 32-битные консольные программы без потоков и окон;
-   эмулятор DOS — только 8086/186 и текстовый режим; рабочий стол кооперативный (пока команда в
-терминале работает, остальные окна ждут её завершения, кроме программ, читающих клавиатуру);
-одна задача одновременно (но программа может
-   запускать другие); пользователь один (root).
+   `tests/run.sh` для всего нового. Образ ядра должен оставаться меньше 3.5 МБ (`kernel_end <
+   0x380000`, проверяет `linker.ld`): большие таблицы — в куче, а не в `.bss`.
+5. Известные ограничения: рабочий стол и программы кооперативные (пока команда или загрузка
+   страницы работает, остальные окна ждут); одна программа Windows за раз (она может запускать
+   другие); ядро 32-битное, 64-битный код выполняется только внутри программ Win64; эмулятор DOS —
+   8086/186 и текстовый режим; браузер не загружает картинки, CSS и JavaScript; драйверы Windows
+   (`.sys`) не поддерживаются.

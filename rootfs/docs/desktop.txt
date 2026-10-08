@@ -13,7 +13,8 @@ Mouse
   wheel                     scroll the list or text under the pointer
 
 Keyboard
-  Win or Ctrl+Esc           start menu (arrows + Enter to pick an app)
+  Win or Ctrl+Esc           Launchpad: all apps, type to filter
+  Ctrl+Space                search apps and files
   Alt+Tab                   next window
   Alt+F4                    close the active window
   Ctrl+C / Ctrl+X / Ctrl+V  clipboard in Files, Notepad, Calculator, text fields
@@ -28,15 +29,22 @@ Commands
   config desktop off        boot into text mode; config save remembers it
   config wallpaper aurora   synthwave, aurora, solid or a .bmp file
   theme nord                themes color the desktop too
+  lock, logout              lock the screen, switch user
+  displays                  monitors and their resolutions
+
+The menu bar at the top shows the menus of the active app; the Dock at the
+bottom starts apps and shows the running ones.
 
 Apps
+  Browser         web pages over HTTP and HTTPS (more /docs/internet.txt)
   Terminal        the SynthOS shell in a window (closing only hides it)
   Files           browse, open, copy, cut, paste, rename, delete, new folder
   Notepad         text editor: selection, clipboard, auto-indent, line numbers
   Paint           pencil, brush, eraser, line, rectangle, ellipse, fill,
                   color picker; opens and saves 24-bit BMP files
   Calculator      keyboard or mouse, %, 1/x, x^2, square root
-  Settings        theme, wallpaper, startup, terminal options, about
+  System Settings appearance, wallpaper, Dock, displays, network, users,
+                  lock screen, terminal, mouse, about
   System Monitor  memory graph, disks, open windows (End task), kernel log
   Minesweeper     three levels; left click opens, right click flags
 

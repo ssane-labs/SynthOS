@@ -20,7 +20,7 @@ LD        = $(CROSS)ld
 OBJCOPY   = $(CROSS)objcopy
 NASM     ?= nasm
 HOSTCC   ?= cc
-QEMU     ?= qemu-system-i386
+QEMU     ?= qemu-system-x86_64
 
 ARCH_FLAGS := $(if $(CROSS),,-m32) -march=i486 -mtune=i686 -mno-sse -mno-mmx -mno-80387
 CFLAGS := $(ARCH_FLAGS) -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
@@ -262,11 +262,11 @@ tools: $(TOOLS)
 programs: $(SX_BIN) $(DOS_BIN) $(W32_BIN)
 
 run: $(IMAGE)
-	$(QEMU) -drive format=raw,file=$(IMAGE) -m 64 $(QEMU_FLAGS)
+	$(QEMU) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_FLAGS)
 
 run-serial:
 	@$(MAKE) --no-print-directory SERIAL=1
-	$(QEMU) -drive format=raw,file=$(BUILD)/serial/synthos.img -m 64 -nographic $(QEMU_FLAGS)
+	$(QEMU) -drive format=raw,file=$(BUILD)/serial/synthos.img -m 256 -nographic $(QEMU_FLAGS)
 
 test:
 	@$(MAKE) --no-print-directory SERIAL=1

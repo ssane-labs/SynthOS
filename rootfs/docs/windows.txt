@@ -1,19 +1,30 @@
 WINDOWS PROGRAMS
 ================
 
-SynthOS runs 32-bit Windows console programs (.exe and .dll, PE32) natively
-on the processor: no emulation, no Wine. Windows API calls are answered by
-built-in versions of kernel32, msvcrt, user32, advapi32, shell32 and ntdll.
+SynthOS runs 32-bit and 64-bit Windows programs (.exe and .dll, PE32 and
+PE32+), console and windowed, natively on the processor: no emulation, no
+Wine. Windows API calls are answered by built-in versions of kernel32, user32,
+gdi32, msvcrt, the Universal CRT, ws2_32, wininet, winhttp, urlmon, advapi32,
+shell32 and ntdll.
 
   winhello a b         samples live in C:\Program Files (= /apps)
   wincalc, wincpp      C runtime, scanf/printf with floats, C++ with
   winfiles, wincolor   exceptions and STL, file API, console colors
   windll, wintest      DLL loading, crash and Ctrl+C handling, MessageBox
+  winwindow, wingdi    windows and GDI drawing on the desktop
+  windialog            a dialog from a .rc resource file
+  winthread, winsock   threads; sockets
+  winnet URL           WinINet download (also https://)
+  hello64, cpp64       64-bit programs; winnet64 URL - WinHTTP and urlmon
+  winbench [dir]       timing of console, file, heap and API work
   echo $?              exit code of the program
 
 Building your own (on any PC with MinGW):
   i686-w64-mingw32-gcc -O2 -o app.exe app.c
   i686-w64-mingw32-g++ -O2 -static -o app.exe app.cpp
+  x86_64-w64-mingw32-gcc -O2 -o app64.exe app.c      (64-bit)
+Programs built for i686 use CMOV and need a Pentium Pro or newer;
+64-bit programs need an x86-64 processor.
 Put the file in programs/win32/ before 'make' or copy it to /home.
 
 Drives and folders
@@ -33,14 +44,21 @@ What works
   Files and folders, find first/next, current directory, temp files
   Console: colors, cursor, screen buffer info, raw keyboard input,
            code pages (SetConsoleOutputCP 65001 / 866 / 1251)
-  C runtime: stdio, printf/scanf with floating point, strings, math,
-             time, qsort, conio (_getch, _kbhit), system()
-  Memory: heaps, VirtualAlloc, TLS, structured exceptions (RaiseException)
+  C runtime: msvcrt and UCRT - stdio, printf/scanf with floating point,
+             strings, math, time, qsort, conio (_getch, _kbhit), system()
+  Memory: heaps, VirtualAlloc, TLS, memory above 4 GB with PAE
+  Exceptions: SEH (32-bit), table-based unwinding (64-bit), C++ try/catch
   DLLs: implicit imports, LoadLibrary/GetProcAddress, DllMain
+  Windows: window classes, messages, timers, painting with GDI (pens,
+           brushes, fonts, bitmaps, DIB sections), buttons, edit boxes,
+           list boxes, dialogs and string tables from resources
+  Threads: CreateThread, events, mutexes, semaphores, critical sections,
+           SRW locks, condition variables, thread-local storage
+  Network: Winsock (TCP, UDP, select, getaddrinfo), WinINet, WinHTTP and
+           URLDownloadToFile with HTTPS and certificate checks
   Starting other programs: system(), CreateProcess, ShellExecute,
            even another Windows program from a Windows program
-  MessageBox appears as a text-mode dialog; the registry is empty
 
 Not yet
-  64-bit programs, windows and graphics (GDI), threads, networking.
+  Drivers (.sys), DirectX/OpenGL, COM, sound, registry contents.
   A missing function stops the program with the name of the function.

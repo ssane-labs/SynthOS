@@ -32,8 +32,9 @@ struct item {
     bool running;
 };
 
-static const char *const pinned[] = {"Files",      "Launchpad", "Terminal",       "Notepad",     "Calculator",
-                                     "Paint",      "System Monitor", "Minesweeper", "System Settings"};
+static const char *const pinned[] = {"Files",       "Launchpad",      "Browser",     "Terminal",
+                                     "Notepad",     "Calculator",     "Paint",       "System Monitor",
+                                     "Minesweeper", "System Settings"};
 
 static struct item items[MAX_ITEMS];
 static int count;

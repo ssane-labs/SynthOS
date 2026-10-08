@@ -1,0 +1,36 @@
+INTERNET
+========
+
+The network card gets an address by DHCP when SynthOS starts
+(Intel e1000/e1000e, Realtek RTL8139/RTL8169; QEMU's default card works).
+
+  ifconfig                 address, mask, gateway, DNS of each card
+  dhcp                     ask for an address again
+  ping example.com         check that a host answers
+  nslookup example.com     look up an address
+  netstat                  open connections
+
+Web
+  launch browser [url]     the desktop Browser
+  browse URL|file.html     show a page as text, links numbered at the end
+  wget -O file URL         download a file;  wget -O - URL  prints it
+  httpd [port] [dir]       serve a folder over HTTP until Ctrl+C
+
+Browser
+  Type an address, or a few words to search with DuckDuckGo, and press Enter.
+  Click links, or press Tab to move between links and fields and Enter to
+  open one. Clicking a text field asks for its value; the form is sent when
+  all its fields are filled. Backspace or Alt+Left goes back, Ctrl+L focuses
+  the address bar, Ctrl+R reloads, Ctrl+S saves the page. Files that are not
+  pages are saved to ~/Downloads. file:///path shows local files and folders.
+  Pages are shown as text and links: scripts, style sheets and pictures are
+  not loaded.
+
+Security
+  HTTPS uses TLS 1.3 or TLS 1.2 and checks the server certificate against
+  the trusted roots in /etc/certs (the Mozilla list). To trust another
+  root, copy its .pem file to /home/certs and run 'certs reload'.
+  certs list               show the trusted roots
+  wget -k URL              skip the certificate check (not recommended)
+  cookies                  how many cookies sites have set; cookies clear
+  Cookies live in memory and are forgotten at shutdown.
