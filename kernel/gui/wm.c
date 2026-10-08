@@ -347,6 +347,7 @@ enum anim_kind {
     ANIM_CLOSE,
     ANIM_MINIMIZE,
     ANIM_RESTORE,
+    ANIM_MORPH,
 };
 
 struct ghost {
@@ -398,6 +399,7 @@ static int ghost_ms(enum anim_kind kind, unsigned flags)
     case ANIM_CLOSE: return small ? 120 : 200;
     case ANIM_MINIMIZE: return 430;
     case ANIM_RESTORE: return 380;
+    case ANIM_MORPH: return 240;
     }
     return 200;
 }
@@ -473,7 +475,20 @@ static struct rect ghost_rect(const struct ghost *g, int t, int *alpha)
     struct rect f = g->frame;
     int m = g->margin;
     struct rect full = {f.x - m, f.y - m, f.w + 2 * m, f.h + 2 * m};
+    if (g->kind == ANIM_MORPH) {
+        int e = ease_out(t);
+        struct rect a = g->target;
+        struct rect now = {lerp_i(a.x, f.x, e), lerp_i(a.y, f.y, e), lerp_i(a.w, f.w, e), lerp_i(a.h, f.h, e)};
+        *alpha = 255;
+        return (struct rect){now.x - m, now.y - m, now.w + 2 * m, now.h + 2 * m};
+    }
     bool overlay = g->flags & WIN_OVERLAY, popup = g->flags & WIN_POPUP && !overlay;
+    if (popup && (g->flags & WIN_PASSIVE)) {
+        int e = ease_out(t);
+        int shift = g->kind == ANIM_OPEN ? (f.w + 24) * (1024 - e) / 1024 : (f.w + 24) * e / 1024;
+        *alpha = g->kind == ANIM_OPEN ? MIN(255, e * 255 / 1024 * 2) : 255 - e * 255 / 1024;
+        return (struct rect){full.x + shift, full.y, full.w, full.h};
+    }
     int from = overlay ? 1090 : popup ? 965 : 900;
     int e = g->kind == ANIM_OPEN ? (popup ? ease_out(t) : ease_spring(t)) : ease_out(t);
     int scale = g->kind == ANIM_OPEN ? lerp_i(from, 1024, e) : lerp_i(1024, overlay ? 1090 : popup ? 975 : 930, e);
@@ -921,10 +936,35 @@ void wm_resize_client(struct window *w, int cw, int ch)
     set_frame(w, f);
 }
 
+static void morph(struct window *w, struct rect from)
+{
+    if (!animations || w->anim_hold || !visible(w))
+        return;
+    struct ghost *g = ghost_new(ANIM_MORPH, w);
+    if (!g)
+        return;
+    g->margin = 0;
+    if (!snapshot(w, &g->snap, 0)) {
+        ghosts = g->next;
+        kfree(g);
+        return;
+    }
+    g->target = from;
+    g->win = w;
+    w->anim_hold = true;
+}
+
 void wm_toggle_maximize(struct window *w)
 {
     if (!(w->flags & WIN_RESIZABLE))
         return;
+    struct rect from = w->frame;
+    struct ghost *g = ghosts;
+    morph(w, from);
+    if (ghosts != g && ghosts->kind == ANIM_MORPH)
+        g = ghosts;
+    else
+        g = NULL;
     if (w->flags & WIN_MAXIMIZED) {
         w->flags &= ~WIN_MAXIMIZED;
         set_frame(w, w->restore);
@@ -934,6 +974,8 @@ void wm_toggle_maximize(struct window *w)
         struct rect work = wm_work_area(wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + 8));
         set_frame(w, (struct rect){work.x + 4, work.y + 4, work.w - 8, work.h - 8});
     }
+    if (g)
+        g->frame = w->frame;
 }
 
 void wm_foreach(void (*fn)(struct window *w, void *ctx), void *ctx)

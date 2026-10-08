@@ -31,9 +31,14 @@ Commands
   theme nord                themes color the desktop too
   lock, logout              lock the screen, switch user
   displays                  monitors and their resolutions
+  config animations off     no window and Dock animations (for very slow PCs)
+  wmbench                   how many milliseconds a desktop frame takes
 
 The menu bar at the top shows the menus of the active app; the Dock at the
-bottom starts apps and shows the running ones.
+bottom starts apps and shows the running ones. Panels are made of "liquid
+glass": they bend the picture behind them at the edges and light up near
+the pointer. System Settings > Appearance > Transparency switches to
+Frosted or Solid if you prefer a calmer look (or a faster one).
 
 Apps
   Browser         web pages over HTTP and HTTPS (more /docs/internet.txt)
