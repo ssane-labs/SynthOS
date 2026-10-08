@@ -245,7 +245,57 @@ static int common_vfwscanf(uint64_t options, void *f, const WCHAR *fmt, void *lo
     return ((file_fmt)lookup("vfwscanf"))(f, fmt, ap);
 }
 
+static int fpe_flt_rounds(void)
+{
+    return 1;
+}
+
+static intptr_t cwait(int *status, intptr_t pid, int action)
+{
+    UNUSED(status);
+    UNUSED(pid);
+    UNUSED(action);
+    crt_set_errno(10);
+    return -1;
+}
+
+static unsigned set_abort_behavior(unsigned flags, unsigned mask)
+{
+    UNUSED(flags);
+    UNUSED(mask);
+    return 0;
+}
+
+static intptr_t no_spawn(int a, const void *b, const void *c, const void *d)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    crt_set_errno(CRT_ENOSYS);
+    return -1;
+}
+
+static int except_handler4_common(void *cookie, void *check, void *record, void *frame, void *context, void *dc)
+{
+    UNUSED(cookie);
+    UNUSED(check);
+    UNUSED(record);
+    UNUSED(frame);
+    UNUSED(context);
+    UNUSED(dc);
+    return 1;
+}
+
 static const struct w32_export ucrt_exports[] = {
+    W32_AS("__fpe_flt_rounds", fpe_flt_rounds),
+    W32_AS("_cwait", cwait),
+    W32_AS("_set_abort_behavior", set_abort_behavior),
+    W32_AS("_wspawnv", no_spawn),
+    W32_AS("_wspawnve", no_spawn),
+    W32_AS("_wexecv", no_spawn),
+    W32_AS("_wexecve", no_spawn),
+    W32_AS("_except_handler4_common", except_handler4_common),
     W32_AS("_setjmp3", crt_setjmp3),
     W32_AS("_setjmp", crt_setjmp3),
     W32_AS("setjmp", crt_setjmp3),

@@ -586,6 +586,15 @@ static int crt_putenv_s(const char *name, const char *value)
     return r ? CRT_EINVAL : 0;
 }
 
+static int crt_wputenv_s(const WCHAR *name, const WCHAR *value)
+{
+    char *n = w32_narrow(name), *v = w32_narrow(value ? value : (const WCHAR *)L"");
+    int r = n && v ? crt_putenv_s(n, v) : CRT_EINVAL;
+    w32_free(n);
+    w32_free(v);
+    return r;
+}
+
 static uint32_t system_thunk(void *arg)
 {
     struct shell *sh = w32->ctx->sh;
@@ -804,7 +813,7 @@ static const struct w32_export crt_exports[] = {
     W32_AS("_heapchk", crt_heapchk), W32_AS("_heapmin", crt_heapmin), W32_AS("_get_heap_handle", crt_get_heap_handle),
     W32_AS("getenv", crt_getenv), W32_AS("_wgetenv", crt_wgetenv), W32_AS("getenv_s", crt_getenv_s),
     W32_AS("_dupenv_s", crt_dupenv_s), W32_AS("_putenv", crt_putenv), W32_AS("putenv", crt_putenv),
-    W32_AS("_wputenv", crt_wputenv), W32_AS("_putenv_s", crt_putenv_s), W32_AS("system", crt_system),
+    W32_AS("_wputenv", crt_wputenv), W32_AS("_putenv_s", crt_putenv_s), W32_AS("_wputenv_s", crt_wputenv_s), W32_AS("system", crt_system),
     W32_AS("_wsystem", crt_wsystem), W32_AS("_getpid", crt_getpid), W32_AS("getpid", crt_getpid),
     W32_AS("_sleep", crt_sleep), W32_AS("_beep", crt_beep), W32_AS("setlocale", crt_setlocale),
     W32_AS("_wsetlocale", crt_wsetlocale), W32_AS("localeconv", crt_localeconv), W32_AS("_getmbcp", crt_getmbcp),

@@ -515,6 +515,181 @@ CI_WRAP2(m_pow)
 CI_WRAP2(m_fmod)
 CI_WRAP2(m_atan2)
 
+static long double sqrt_l(long double x)
+{
+    __asm__("fsqrt" : "+t"(x));
+    return x;
+}
+
+static double m_log1p(double x)
+{
+    if (x == -1.0) {
+        crt_set_errno(CRT_ERANGE);
+        return -__builtin_inf();
+    }
+    if (x < -1.0) {
+        crt_set_errno(CRT_EDOM);
+        return __builtin_nan("");
+    }
+    long double r, v = x;
+    if (v > -0.29 && v < 0.41)
+        __asm__("fldln2; fxch; fyl2xp1" : "=t"(r) : "0"(v));
+    else
+        return m_log(1.0 + x);
+    return (double)r;
+}
+
+static double m_expm1(double x)
+{
+    if (x > 700.0)
+        return m_exp(x);
+    long double v = (long double)x * 1.44269504088896340736L, r;
+    if (v > -1.0L && v < 1.0L) {
+        __asm__("f2xm1" : "=t"(r) : "0"(v));
+        return (double)r;
+    }
+    return m_exp(x) - 1.0;
+}
+
+static double m_asinh(double x)
+{
+    long double v = x < 0 ? -(long double)x : x;
+    double r = v < 1e-9L ? (double)v : m_log1p((double)(v + v * v / (1.0L + sqrt_l(1.0L + v * v))));
+    return x < 0 ? -r : r;
+}
+
+static double m_acosh(double x)
+{
+    if (x < 1.0) {
+        crt_set_errno(CRT_EDOM);
+        return __builtin_nan("");
+    }
+    long double v = x;
+    return m_log((double)(v + sqrt_l(v * v - 1.0L)));
+}
+
+static double m_atanh(double x)
+{
+    if (x <= -1.0 || x >= 1.0) {
+        crt_set_errno(x == 1.0 || x == -1.0 ? CRT_ERANGE : CRT_EDOM);
+        return x == 1.0 ? __builtin_inf() : x == -1.0 ? -__builtin_inf() : __builtin_nan("");
+    }
+    return 0.5 * m_log1p(2.0 * x / (1.0 - x));
+}
+
+static long double erfc_tail(long double x)
+{
+    long double f = x;
+    for (int n = 80; n >= 1; n--)
+        f = x + (n / 2.0L) / f;
+    long double e = m_exp((double)(-x * x));
+    return e / (f * 1.77245385090551602730L);
+}
+
+static long double erf_series(long double x)
+{
+    long double sum = x, term = x, x2 = x * x;
+    for (int n = 1; n < 200; n++) {
+        term *= -x2 / n;
+        long double add = term / (2 * n + 1);
+        sum += add;
+        if (add < 1e-25L && add > -1e-25L)
+            break;
+    }
+    return sum * 1.12837916709551257390L;
+}
+
+static double m_erf(double x)
+{
+    if (is_nan(x))
+        return x;
+    long double v = x < 0 ? -(long double)x : x;
+    long double r = v < 2.5L ? erf_series(v) : v > 6.0L ? 1.0L : 1.0L - erfc_tail(v);
+    return (double)(x < 0 ? -r : r);
+}
+
+static double m_erfc(double x)
+{
+    if (is_nan(x))
+        return x;
+    if (x < 2.5)
+        return (double)(1.0L - (x < 0 ? -erf_series(-(long double)x) : erf_series(x)));
+    if (x > 27.0)
+        return 0.0;
+    return (double)erfc_tail(x);
+}
+
+static double m_fma(double x, double y, double z)
+{
+    return (double)((long double)x * y + z);
+}
+
+static short m_dclass(double x)
+{
+    if (is_nan(x))
+        return 2;
+    if (is_inf(x))
+        return 1;
+    if (x == 0.0)
+        return 0;
+    return (x < 2.2250738585072014e-308 && x > -2.2250738585072014e-308) ? -2 : -1;
+}
+
+static short m_fdclass(float x)
+{
+    return m_dclass(x);
+}
+
+static double m_except1(uint32_t flags, int op, double arg, double res, uint32_t cw, void *ctx)
+{
+    UNUSED(flags);
+    UNUSED(op);
+    UNUSED(arg);
+    UNUSED(cw);
+    UNUSED(ctx);
+    return res;
+}
+
+__asm__(".intel_syntax noprefix\n"
+        ".text\n"
+        "crt_sse2_unary:\n"
+        "  sub esp, 12\n"
+        "  movsd qword ptr [esp], xmm0\n"
+        "  call ecx\n"
+        "  fstp qword ptr [esp]\n"
+        "  movsd xmm0, qword ptr [esp]\n"
+        "  add esp, 12\n"
+        "  ret\n"
+        "crt_sse2_binary:\n"
+        "  sub esp, 20\n"
+        "  movsd qword ptr [esp], xmm0\n"
+        "  movsd qword ptr [esp+8], xmm1\n"
+        "  call ecx\n"
+        "  fstp qword ptr [esp]\n"
+        "  movsd xmm0, qword ptr [esp]\n"
+        "  add esp, 20\n"
+        "  ret\n"
+        ".att_syntax\n");
+
+#define SSE_UNARY(name, fn) __asm__(".text\n" #name ":\n\tmovl $" #fn ", %ecx\n\tjmp crt_sse2_unary\n")
+#define SSE_BINARY(name, fn) __asm__(".text\n" #name ":\n\tmovl $" #fn ", %ecx\n\tjmp crt_sse2_binary\n")
+
+SSE_UNARY(crt_sse2_sin, m_sin_ci);
+SSE_UNARY(crt_sse2_cos, m_cos_ci);
+SSE_UNARY(crt_sse2_tan, m_tan_ci);
+SSE_UNARY(crt_sse2_sqrt, m_sqrt_ci);
+SSE_UNARY(crt_sse2_exp, m_exp_ci);
+SSE_UNARY(crt_sse2_log, m_log_ci);
+SSE_UNARY(crt_sse2_log10, m_log10_ci);
+SSE_UNARY(crt_sse2_asin, m_asin_ci);
+SSE_UNARY(crt_sse2_acos, m_acos_ci);
+SSE_UNARY(crt_sse2_atan, m_atan_ci);
+SSE_BINARY(crt_sse2_pow, m_pow_ci);
+SSE_BINARY(crt_sse2_atan2, m_atan2_ci);
+
+extern char crt_sse2_sin[], crt_sse2_cos[], crt_sse2_tan[], crt_sse2_sqrt[], crt_sse2_exp[], crt_sse2_log[],
+    crt_sse2_log10[], crt_sse2_asin[], crt_sse2_acos[], crt_sse2_atan[], crt_sse2_pow[], crt_sse2_atan2[];
+
 extern char crt_ftol[], crt_ci_sin[], crt_ci_cos[], crt_ci_tan[], crt_ci_sqrt[], crt_ci_exp[], crt_ci_log[],
     crt_ci_log10[], crt_ci_asin[], crt_ci_acos[], crt_ci_atan[], crt_ci_sinh[], crt_ci_cosh[], crt_ci_tanh[],
     crt_ci_pow[], crt_ci_fmod[], crt_ci_atan2[];
@@ -544,7 +719,16 @@ static const struct w32_export math_exports[] = {
     W32_AS("_CIlog10", crt_ci_log10), W32_AS("_CIasin", crt_ci_asin), W32_AS("_CIacos", crt_ci_acos),
     W32_AS("_CIatan", crt_ci_atan), W32_AS("_CIsinh", crt_ci_sinh), W32_AS("_CIcosh", crt_ci_cosh),
     W32_AS("_CItanh", crt_ci_tanh), W32_AS("_CIpow", crt_ci_pow), W32_AS("_CIfmod", crt_ci_fmod),
-    W32_AS("_CIatan2", crt_ci_atan2),
+    W32_AS("_CIatan2", crt_ci_atan2), W32_AS("log1p", m_log1p), W32_AS("expm1", m_expm1),
+    W32_AS("asinh", m_asinh), W32_AS("acosh", m_acosh), W32_AS("atanh", m_atanh), W32_AS("erf", m_erf),
+    W32_AS("erfc", m_erfc), W32_AS("fma", m_fma), W32_AS("_dclass", m_dclass), W32_AS("_fdclass", m_fdclass),
+    W32_AS("_dtest", m_dclass), W32_AS("_except1", m_except1),
+    W32_AS("_libm_sse2_sin_precise", crt_sse2_sin), W32_AS("_libm_sse2_cos_precise", crt_sse2_cos),
+    W32_AS("_libm_sse2_tan_precise", crt_sse2_tan), W32_AS("_libm_sse2_sqrt_precise", crt_sse2_sqrt),
+    W32_AS("_libm_sse2_exp_precise", crt_sse2_exp), W32_AS("_libm_sse2_log_precise", crt_sse2_log),
+    W32_AS("_libm_sse2_log10_precise", crt_sse2_log10), W32_AS("_libm_sse2_asin_precise", crt_sse2_asin),
+    W32_AS("_libm_sse2_acos_precise", crt_sse2_acos), W32_AS("_libm_sse2_atan_precise", crt_sse2_atan),
+    W32_AS("_libm_sse2_pow_precise", crt_sse2_pow), W32_AS("_libm_sse2_atan2_precise", crt_sse2_atan2),
 };
 
 CRT_EXPORTS(crt_math_module, math_exports);

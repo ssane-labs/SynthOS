@@ -141,13 +141,65 @@ void w32_preempt(void)
         switch_to(next);
 }
 
+static bool tls_attach(uint8_t *teb, int index)
+{
+    void **slots;
+    memcpy(&slots, teb + 0x2c, 4);
+    if (!slots) {
+        slots = w32_zalloc(sizeof(void *) * W32_TLS_MODULES);
+        if (!slots)
+            return false;
+        memcpy(teb + 0x2c, &slots, 4);
+    }
+    const struct w32_tls_module *m = &w32->tls_mods[index];
+    uint8_t *block = w32_zalloc(m->size + m->zero + 16);
+    if (!block)
+        return false;
+    memcpy(block, (const void *)m->start, m->size);
+    slots[index] = block;
+    return true;
+}
+
+void w32_tls_register(struct w32_image *img)
+{
+    const uint8_t *mem = (const uint8_t *)img->base;
+    uint32_t opt = *(const uint32_t *)(mem + 0x3c) + 24;
+    uint32_t rva = *(const uint32_t *)(mem + opt + 96 + 9 * 8);
+    if (!rva || w32->tls_mod_count >= W32_TLS_MODULES)
+        return;
+    const uint32_t *dir = (const uint32_t *)(mem + rva);
+    int index = w32->tls_mod_count++;
+    w32->tls_mods[index] = (struct w32_tls_module){img->base, dir[0], dir[1] - dir[0], dir[4], dir[3]};
+    if (dir[2])
+        *(uint32_t *)dir[2] = (uint32_t)index;
+    struct w32_thread *t = w32->threads;
+    if (t)
+        do
+            tls_attach(t->teb, index);
+        while ((t = t->next) != w32->threads);
+}
+
+void w32_tls_callbacks(uint32_t base, DWORD reason)
+{
+    for (int i = 0; i < w32->tls_mod_count && !w32->exiting; i++) {
+        const struct w32_tls_module *m = &w32->tls_mods[i];
+        if ((base && m->base != base) || !m->callbacks)
+            continue;
+        for (const uint32_t *cb = (const uint32_t *)m->callbacks; *cb; cb++) {
+            uint32_t args[3] = {m->base, reason, 0};
+            w32_call((void *)*cb, 3, args);
+        }
+    }
+}
+
 static void run_tls_callbacks(DWORD reason)
 {
-    if (!w32->tls_callbacks)
-        return;
-    for (const uint32_t *cb = (const uint32_t *)w32->tls_callbacks; *cb; cb++) {
-        typedef void WINAPI (*tls_fn)(uint32_t, DWORD, void *);
-        ((tls_fn)*cb)(w32->main ? w32->main->base : 0, reason, NULL);
+    for (int i = 0; i < w32->tls_mod_count; i++) {
+        const struct w32_tls_module *m = &w32->tls_mods[i];
+        for (const uint32_t *cb = (const uint32_t *)m->callbacks; cb && *cb; cb++) {
+            typedef void WINAPI (*tls_fn)(uint32_t, DWORD, void *);
+            ((tls_fn)*cb)(m->base, reason, NULL);
+        }
     }
 }
 
@@ -201,16 +253,9 @@ static uint8_t *make_teb(struct w32_thread *t)
     memcpy(teb + 0x24, &t->id, 4);
     memcpy(teb + 0x30, w32->teb + 0x30, 4);
     memcpy(teb + 0xe10, w32->threads->teb + 0xe10, 64 * 4);
-    if (w32->tls_size || w32->tls_zero) {
-        uint8_t *block = w32_zalloc(w32->tls_size + w32->tls_zero + 16);
-        void **slots = w32_zalloc(sizeof(void *) * 64);
-        if (!block || !slots)
+    for (int i = 0; i < w32->tls_mod_count; i++)
+        if (!tls_attach(teb, i))
             return NULL;
-        memcpy(block, (const void *)w32->tls_start, w32->tls_size);
-        slots[w32->tls_index] = block;
-        v = (uint32_t)slots;
-        memcpy(teb + 0x2c, &v, 4);
-    }
     return teb;
 }
 
@@ -527,6 +572,7 @@ static bool signaled(HANDLE h, struct w32_object *o)
     case WH_SEMAPHORE: return o->value > 0;
     case WH_MUTEX: return !o->value || o->owner == w32_thread_id();
     case WH_THREAD: return o->thread->done;
+    case WH_TIMER: return o->due && hal_ticks_ms() >= o->due;
     default: return true;
     }
 }
@@ -537,6 +583,8 @@ static void acquire(struct w32_object *o)
         return;
     if (o->type == WH_EVENT && !o->manual)
         o->value = 0;
+    else if (o->type == WH_TIMER && !o->manual)
+        o->due = 0;
     else if (o->type == WH_SEMAPHORE)
         o->value--;
     else if (o->type == WH_MUTEX) {

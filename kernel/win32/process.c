@@ -141,6 +141,9 @@ bool w32_handle_close(HANDLE h)
         vfs_close(o->file);
     if (o->find)
         kfree(o->find);
+    kfree(o->path);
+    o->path = NULL;
+    o->due = 0;
     o->type = WH_FREE;
     o->file = NULL;
     o->find = NULL;
@@ -280,11 +283,15 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
 {
     if (!w32 || !w32->jump.active)
         panic("CPU exception %d at %08x (address %08x)", vector, eip, address);
+    char where[96] = "";
+    for (struct w32_image *img = w32->images; img; img = img->next)
+        if (!img->builtin && eip >= img->base && eip - img->base < img->size)
+            ksnprintf(where, sizeof(where), " (%s+0x%x)", img->name, eip - img->base);
     if (vector == 14)
-        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08x (address 0x%08x)", fault_name(vector),
-                  eip, address);
+        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08x%s (address 0x%08x)", fault_name(vector),
+                  eip, where, address);
     else
-        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08x", fault_name(vector), eip);
+        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08x%s", fault_name(vector), eip, where);
     uint32_t code = vector == 0 ? 0xc0000094u : vector == 6 ? 0xc000001du : vector == 3 ? 0x80000003u
                   : vector == 16 || vector == 19 ? 0xc0000090u : STATUS_ACCESS_VIOLATION;
     w32->exiting = true;
@@ -479,37 +486,6 @@ static bool build_teb_peb(void)
     return true;
 }
 
-static void setup_tls(struct w32_image *img)
-{
-    const uint8_t *mem = (const uint8_t *)img->base;
-    uint32_t opt = *(const uint32_t *)(mem + 0x3c) + 24;
-    uint32_t rva = *(const uint32_t *)(mem + opt + 96 + 9 * 8);
-    if (!rva)
-        return;
-    const uint32_t *dir = (const uint32_t *)(mem + rva);
-    uint32_t start = dir[0], end = dir[1], index_addr = dir[2], callbacks = dir[3], zero = dir[4];
-    uint32_t size = end - start;
-    uint8_t *block = w32_zalloc(size + zero + 16);
-    void **slots = w32_zalloc(sizeof(void *) * 64);
-    if (!block || !slots)
-        return;
-    memcpy(block, (const void *)start, size);
-    slots[0] = block;
-    put32(w32->teb, 0x2c, (uint32_t)slots);
-    if (index_addr)
-        *(uint32_t *)index_addr = 0;
-    w32->tls_start = start;
-    w32->tls_size = size;
-    w32->tls_zero = zero;
-    w32->tls_callbacks = callbacks;
-    w32->tls_index = 0;
-    for (const uint32_t *cb = (const uint32_t *)callbacks; cb && *cb; cb++) {
-        uint32_t args[3] = {img->base, 1, 0};
-        w32_call((void *)*cb, 3, args);
-        if (w32->exiting)
-            return;
-    }
-}
 
 static size_t image_reserve;
 static bool image_win64;
@@ -636,7 +612,7 @@ static int run(struct exec_ctx *ctx)
         if (w32->win64)
             w64_setup_tls(main);
         else
-            setup_tls(main);
+            w32_tls_callbacks(main->base, 1);
     }
     uint32_t code = w32->exit_code;
     if (!w32->exiting) {

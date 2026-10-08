@@ -1180,6 +1180,17 @@ static int crt_ungetch(int c)
     return c;
 }
 
+static unsigned short crt_getwche(void)
+{
+    return (unsigned short)crt_getche();
+}
+
+static unsigned short crt_ungetwch(unsigned short c)
+{
+    crt_ungetch(c);
+    return c;
+}
+
 static int crt_cputs(const char *s)
 {
     w32_console_write(WH_STDOUT, s, strlen(s));
@@ -1300,6 +1311,7 @@ static const struct w32_export stdlib_exports[] = {
     W32_AS("_kbhit", crt_kbhit), W32_AS("kbhit", crt_kbhit), W32_AS("_getch", crt_getch),
     W32_AS("getch", crt_getch), W32_AS("_getche", crt_getche), W32_AS("getche", crt_getche),
     W32_AS("_putch", crt_putch), W32_AS("putch", crt_putch), W32_AS("_ungetch", crt_ungetch),
+    W32_AS("_getwche", crt_getwche), W32_AS("_ungetwch", crt_ungetwch),
     W32_AS("_cputs", crt_cputs), W32_AS("_cgets", crt_cgets), W32_AS("_getwch", crt_getwch),
     W32_AS("_putwch", crt_putwch), W32_AS("_cputws", crt_cputws),
 };

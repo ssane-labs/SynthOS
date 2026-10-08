@@ -394,7 +394,8 @@ static int resolve_imports(struct w32_image *img, const struct pe_info *pe, cons
         int err = 0;
         struct w32_image *dll = w32_load(dll_name, search_dir, &err);
         if (!dll) {
-            ksnprintf(w32->message, sizeof(w32->message), "required library %s was not found", dll_name);
+            if (!w32->message[0])
+                ksnprintf(w32->message, sizeof(w32->message), "required library %s was not found", dll_name);
             return ERROR_MOD_NOT_FOUND;
         }
         if (!lookup)
@@ -492,6 +493,8 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         *error = err2;
         return NULL;
     }
+    if (!pe.pe64)
+        w32_tls_register(img);
     if (img->dll && init_count < (int)ARRAY_SIZE(init_order))
         init_order[init_count++] = img;
     else if (!img->dll)
@@ -578,7 +581,9 @@ int w32_init_modules(void)
         if (img->initialized)
             continue;
         img->initialized = true;
-        if (!img->entry)
+        if (!img->pe64)
+            w32_tls_callbacks(img->base, 1);
+        if (!img->entry || w32->exiting)
             continue;
         uint32_t ok;
         if (img->pe64) {

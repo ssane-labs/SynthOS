@@ -1233,6 +1233,29 @@ static char *crt_strerror(int e)
     return "Unknown error";
 }
 
+static int crt_strerror_s(char *buf, size_t size, int e)
+{
+    if (!buf || !size)
+        return CRT_EINVAL;
+    str_copy(buf, crt_strerror(e), size);
+    return 0;
+}
+
+static char *sys_errlist[CRT_ENOTEMPTY + 1];
+
+static char **crt_sys_errlist(void)
+{
+    for (int i = 0; i <= CRT_ENOTEMPTY; i++)
+        sys_errlist[i] = crt_strerror(i);
+    return sys_errlist;
+}
+
+static int *crt_sys_nerr(void)
+{
+    static int n = CRT_ENOTEMPTY + 1;
+    return &n;
+}
+
 static void crt_perror(const char *s)
 {
     crt_flush_all();
@@ -1494,6 +1517,35 @@ static int do_fstat(int fd, uint8_t *out, bool size64, bool time64)
     }
     fill_stat(out, &st, mode, size64, time64);
     return 0;
+}
+
+static int to_stat64i32(int r, const uint8_t *full, uint8_t *o)
+{
+    if (r < 0)
+        return r;
+    memcpy(o, full, 20);
+    memcpy(o + 20, full + 24, 4);
+    memset(o + 24, 0, 24);
+    memcpy(o + 24, full + 32, 24);
+    return r;
+}
+
+static int crt_stat64i32(const char *p, uint8_t *o)
+{
+    uint8_t full[56];
+    return to_stat64i32(do_stat(p, full, true, true), full, o);
+}
+
+static int crt_wstat64i32(const WCHAR *p, uint8_t *o)
+{
+    uint8_t full[56];
+    return to_stat64i32(do_wstat(p, full, true, true), full, o);
+}
+
+static int crt_fstat64i32(int fd, uint8_t *o)
+{
+    uint8_t full[56];
+    return to_stat64i32(do_fstat(fd, full, true, true), full, o);
 }
 
 static int crt_stat32(const char *p, uint8_t *o) { return do_stat(p, o, false, false); }
@@ -1770,6 +1822,8 @@ static const struct w32_export stdio_exports[] = {
     W32_AS("_filbuf", crt_filbuf), W32_AS("_flsbuf", crt_flsbuf), W32_AS("_getw", crt_getw),
     W32_AS("_putw", crt_putw), W32_AS("tmpnam", crt_tmpnam), W32_AS("_tempnam", crt_tempnam),
     W32_AS("tmpfile", crt_tmpfile), W32_AS("strerror", crt_strerror), W32_AS("perror", crt_perror),
+    W32_AS("strerror_s", crt_strerror_s), W32_AS("__sys_errlist", crt_sys_errlist), W32_AS("__sys_nerr", crt_sys_nerr),
+    W32_AS("_stat64i32", crt_stat64i32), W32_AS("_wstat64i32", crt_wstat64i32), W32_AS("_fstat64i32", crt_fstat64i32),
     W32_AS("remove", crt_remove), W32_AS("_wremove", crt_wremove), W32_AS("rename", crt_rename),
     W32_AS("_wrename", crt_wrename), W32_AS("_unlink", crt_unlink), W32_AS("unlink", crt_unlink),
     W32_AS("_wunlink", crt_wremove), W32_AS("_mkdir", crt_mkdir), W32_AS("mkdir", crt_mkdir),

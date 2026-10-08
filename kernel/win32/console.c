@@ -557,7 +557,11 @@ static BOOL WINAPI PeekConsoleInputW(HANDLE h, uint8_t *rec, DWORD n, DWORD *rea
 
 static BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, DWORD *count)
 {
-    UNUSED(h);
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || o->type != WH_STDIN) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
     *count = peek_key() ? 1 : 0;
     return TRUE;
 }

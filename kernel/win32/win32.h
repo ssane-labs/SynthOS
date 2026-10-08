@@ -105,6 +105,7 @@ enum w32_object_type {
     WH_NULL,
     WH_THREAD,
     WH_PROCESS,
+    WH_TIMER,
 };
 
 struct w32_find {
@@ -133,6 +134,8 @@ struct w32_object {
     uint32_t owner;
     uint32_t max;
     struct w32_thread *thread;
+    uint64_t due;
+    char *path;
 };
 
 struct w32_thread {
@@ -167,6 +170,12 @@ struct w32_image {
     bool initialized;
     int refs;
     struct w32_image *next;
+};
+
+#define W32_TLS_MODULES 32
+
+struct w32_tls_module {
+    uint32_t base, start, size, zero, callbacks;
 };
 
 #define W32_MAX_HANDLES 256
@@ -219,11 +228,14 @@ struct w32_process {
     struct w32_thread *current;
     int live_threads;
     uint32_t next_tid;
-    uint32_t tls_start, tls_size, tls_zero, tls_callbacks, tls_index;
+    struct w32_tls_module tls_mods[W32_TLS_MODULES];
+    int tls_mod_count;
 };
 
 extern struct w32_process *w32;
 
+void w32_tls_register(struct w32_image *img);
+void w32_tls_callbacks(uint32_t base, DWORD reason);
 void w32_set_error(DWORD error);
 DWORD w32_error(void);
 DWORD w32_error_from_vfs(int err);

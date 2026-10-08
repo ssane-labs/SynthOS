@@ -144,6 +144,7 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
     }
     o->file = f;
     o->append = append;
+    o->path = kstrdup(path);
     w32_set_error(exists && (disposition == CREATE_ALWAYS || disposition == OPEN_ALWAYS) ? ERROR_ALREADY_EXISTS : 0);
     return h;
 }
