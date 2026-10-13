@@ -56,6 +56,8 @@ long w32_pipe_read(struct w32_pipe *p, void *out, size_t n, bool wait)
 {
     while (p->rpos == p->len && p->writers > 0 && wait && w32)
         w32_block();
+    if (p->rpos == p->len && p->writers > 0)
+        return 0;
     size_t k = MIN(n, p->len - p->rpos);
     memcpy(out, p->buf + p->rpos, k);
     p->rpos += k;
@@ -115,15 +117,33 @@ static BOOL WINAPI PeekNamedPipe(HANDLE h, void *buf, DWORD size, DWORD *read, D
     return TRUE;
 }
 
+struct pipe_end {
+    struct w32_pipe *pipe;
+    bool write;
+};
+
 static long stream_pipe_write(struct stream *s, const void *buf, size_t n)
 {
-    long r = w32_pipe_write(s->ctx, buf, n);
+    struct pipe_end *e = s->ctx;
+    long r = w32_pipe_write(e->pipe, buf, n);
     return r < 0 ? (long)n : r;
 }
 
 static long stream_pipe_read(struct stream *s, void *buf, size_t n)
 {
-    return w32_pipe_read(s->ctx, buf, n, false);
+    struct pipe_end *e = s->ctx;
+    return w32_pipe_read(e->pipe, buf, n, true);
+}
+
+static void stream_pipe_close(struct stream *s)
+{
+    struct pipe_end *e = s->ctx;
+    if (e->write)
+        e->pipe->writers--;
+    else
+        e->pipe->readers--;
+    pipe_drop(e->pipe);
+    kfree(e);
 }
 
 static long stream_file_write(struct stream *s, const void *buf, size_t n)
@@ -140,7 +160,7 @@ static long stream_file_read(struct stream *s, void *buf, size_t n)
     return vfs_read(o->file, buf, n);
 }
 
-static const struct stream_ops pipe_stream_ops = {stream_pipe_read, stream_pipe_write, NULL};
+static const struct stream_ops pipe_stream_ops = {stream_pipe_read, stream_pipe_write, stream_pipe_close};
 static const struct stream_ops file_stream_ops = {stream_file_read, stream_file_write, NULL};
 static long null_read(struct stream *s, void *buf, size_t n)
 {
@@ -171,7 +191,21 @@ struct stream *w32_handle_stream(HANDLE h)
     if (!s)
         return NULL;
     s->ops = ops;
-    s->ctx = ops == &pipe_stream_ops ? (void *)o->pipe : (void *)o;
+    s->ctx = o;
+    if (ops == &pipe_stream_ops) {
+        struct pipe_end *e = kzalloc(sizeof(*e));
+        if (!e) {
+            kfree(s);
+            return NULL;
+        }
+        e->pipe = o->pipe;
+        e->write = o->value != 0;
+        if (e->write)
+            o->pipe->writers++;
+        else
+            o->pipe->readers++;
+        s->ctx = e;
+    }
     return s;
 }
 

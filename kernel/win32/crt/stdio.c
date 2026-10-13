@@ -443,7 +443,10 @@ static int crt_open_osfhandle(intptr_t h, int flags)
         crt_set_errno(CRT_EBADF);
         return -1;
     }
-    return fd_alloc((HANDLE)h, (uint32_t)flags | (flags & CRT_O_BINARY ? 0 : CRT_O_TEXT), 3);
+    uint32_t mode = (uint32_t)flags;
+    if (!(flags & (CRT_O_TEXT | CRT_O_BINARY)))
+        mode |= crt_fmode & CRT_O_BINARY ? CRT_O_BINARY : CRT_O_TEXT;
+    return fd_alloc((HANDLE)h, mode, 3);
 }
 
 static int crt_locking(int fd, int mode, long n)
@@ -1589,6 +1592,60 @@ static int crt_chmod(const char *path, int mode)
     return crt_access(path, mode);
 }
 
+static int crt_wchmod(const WCHAR *path, int mode)
+{
+    char *p = w32_narrow(path);
+    int r = crt_chmod(p, mode);
+    w32_free(p);
+    return r;
+}
+
+static int crt_freopen_s(CRT_FILE **out, const char *path, const char *mode, CRT_FILE *f)
+{
+    CRT_FILE *r = crt_freopen(path, mode, f);
+    if (out)
+        *out = r;
+    return r ? 0 : crt_errno_value ? crt_errno_value : CRT_EINVAL;
+}
+
+static int crt_maxstdio = 512;
+
+static int crt_getmaxstdio(void)
+{
+    return crt_maxstdio;
+}
+
+static int crt_setmaxstdio(int n)
+{
+    if (n < 20 || n > 8192)
+        return -1;
+    crt_maxstdio = n;
+    return n;
+}
+
+static char *crt_fullpath(char *buf, const char *path, size_t size)
+{
+    DWORD(WINAPI * full)(LPCSTR, DWORD, LPSTR, LPSTR *) =
+        (DWORD(WINAPI *)(LPCSTR, DWORD, LPSTR, LPSTR *))w32_builtin_lookup("kernel32.dll", "GetFullPathNameA");
+    if (!path || !full)
+        return NULL;
+    bool own = !buf;
+    if (own) {
+        size = PATH_MAX_LEN;
+        buf = w32_alloc(size);
+        if (!buf)
+            return NULL;
+    }
+    DWORD n = full(path, (DWORD)size, buf, NULL);
+    if (!n || n >= size) {
+        if (own)
+            w32_free(buf);
+        crt_set_errno(n ? 34 : CRT_EINVAL);
+        return NULL;
+    }
+    return buf;
+}
+
 static int crt_umask(int mode)
 {
     UNUSED(mode);
@@ -1790,7 +1847,7 @@ static int crt_vscanf(const char *fmt, va_list ap)
 }
 
 static const struct w32_export stdio_exports[] = {
-    W32_AS("_iob", crt_iob), W32_AS("__iob_func", crt_iob_func), W32_AS("__acrt_iob_func", crt_acrt_iob_func),
+    W32_AS("_iob", crt_iob), W32_AS("__iob_func", crt_iob_func), W32_AS("__p__iob", crt_iob_func), W32_AS("__acrt_iob_func", crt_acrt_iob_func),
     W32_AS("_open", CDECL_open), W32_AS("_wopen", crt_wopen), W32_AS("_sopen", crt_sopen),
     W32_AS("_wsopen", crt_wopen), W32_AS("_sopen_s", crt_sopen_s), W32_AS("_creat", crt_creat),
     W32_AS("_close", crt_close), W32_AS("_read", crt_read), W32_AS("_write", crt_write),
@@ -1802,7 +1859,8 @@ static const struct w32_export stdio_exports[] = {
     W32_AS("_get_osfhandle", crt_get_osfhandle), W32_AS("_open_osfhandle", crt_open_osfhandle),
     W32_AS("_locking", crt_locking), W32_AS("fopen", crt_fopen), W32_AS("_wfopen", crt_wfopen),
     W32_AS("fopen_s", crt_fopen_s), W32_AS("_wfopen_s", crt_wfopen_s), W32_AS("_fsopen", crt_fsopen),
-    W32_AS("_fdopen", crt_fdopen), W32_AS("freopen", crt_freopen), W32_AS("fclose", crt_fclose),
+    W32_AS("_fdopen", crt_fdopen), W32_AS("freopen", crt_freopen), W32_AS("freopen_s", crt_freopen_s), W32_AS("_getmaxstdio", crt_getmaxstdio),
+    W32_AS("_setmaxstdio", crt_setmaxstdio), W32_AS("_fullpath", crt_fullpath), W32_AS("fclose", crt_fclose),
     W32_AS("_fcloseall", crt_fcloseall), W32_AS("fflush", crt_fflush), W32_AS("_flushall", crt_flushall),
     W32_AS("fwrite", crt_fwrite), W32_AS("fread", crt_fread), W32_AS("fputc", crt_fputc),
     W32_AS("putc", crt_fputc), W32_AS("_fputc_nolock", crt_fputc), W32_AS("_putc_nolock", crt_fputc),
@@ -1837,7 +1895,7 @@ static const struct w32_export stdio_exports[] = {
     W32_AS("_wstat64", crt_wstat64), W32_AS("_fstat", crt_fstat32), W32_AS("_fstat32", crt_fstat32),
     W32_AS("_fstati64", crt_fstati64), W32_AS("_fstat32i64", crt_fstati64), W32_AS("_fstat64", crt_fstat64),
     W32_AS("_access", crt_access), W32_AS("access", crt_access), W32_AS("_waccess", crt_waccess),
-    W32_AS("_access_s", crt_access_s), W32_AS("_chmod", crt_chmod), W32_AS("_umask", crt_umask),
+    W32_AS("_access_s", crt_access_s), W32_AS("_chmod", crt_chmod), W32_AS("_wchmod", crt_wchmod), W32_AS("_umask", crt_umask),
     W32_AS("_findfirst", crt_findfirst), W32_AS("_findfirst32", crt_findfirst),
     W32_AS("_findfirsti64", crt_findfirsti64), W32_AS("_findfirst64", crt_findfirst64),
     W32_AS("_findfirst64i32", crt_findfirst64i32), W32_AS("_findnext", crt_findnext),

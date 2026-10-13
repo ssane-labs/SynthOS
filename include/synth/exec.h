@@ -11,6 +11,8 @@ struct exec_ctx {
     struct stream *in;
     struct stream *out;
     struct stream *err;
+    const char *env;
+    const char *cwd;
 };
 
 struct binfmt {

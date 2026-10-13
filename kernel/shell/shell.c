@@ -36,6 +36,24 @@ struct shell *shell_create(void)
     str_copy(sh->cwd, "/", sizeof(sh->cwd));
     sh_set(sh, "HOME", "/home");
     sh_set(sh, "PATH", "/bin:/apps:/dos:/home/bin");
+    char *extra;
+    size_t extra_len;
+    if (vfs_read_all("/home/.paths", &extra, &extra_len) == 0) {
+        char path[1024];
+        str_copy(path, sh_get(sh, "PATH"), sizeof(path));
+        for (char *line = extra; line < extra + extra_len;) {
+            char *nl = memchr(line, '\n', (size_t)(extra + extra_len - line));
+            if (nl)
+                *nl = 0;
+            if (*line && !strstr(path, line)) {
+                str_append(path, ":", sizeof(path));
+                str_append(path, line, sizeof(path));
+            }
+            line = nl ? nl + 1 : extra + extra_len;
+        }
+        sh_set(sh, "PATH", path);
+        kfree(extra);
+    }
     sh_set(sh, "PATHEXT", ".sx;.com;.exe;.sh");
     sh_set(sh, "USER", CONFIG_USER);
     sh_set(sh, "HOSTNAME", CONFIG_HOSTNAME);

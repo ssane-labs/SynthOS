@@ -50,12 +50,15 @@ struct wsock {
     DWORD recv_timeout, send_timeout;
     HANDLE port;
     uintptr_t key;
+    HANDLE event;
+    long mask;
 };
 
 #define STATUS_PENDING 0x103u
 #define STATUS_CANCELLED 0xc0000120u
 #define STATUS_CONNECTION_RESET 0xc000020du
 #define WSA_IO_PENDING 997
+#define WAIT_TIMEOUT 258u
 #define MAX_PENDING 64
 
 struct pending {
@@ -238,7 +241,7 @@ static UINT WINAPI socket(int family, int type, int protocol)
         fail(id);
         return INVALID_SOCKET;
     }
-    socks[id] = (struct wsock){true, false, id, type, 0, 0, NULL, 0};
+    socks[id] = (struct wsock){true, false, id, type, 0, 0, NULL, 0, NULL, 0};
     return handle_of(id);
 }
 
@@ -295,7 +298,7 @@ static UINT WINAPI accept(UINT s, struct sockaddr_in *addr, int *len)
         uint16_t port;
         int c = net_accept(w->id, &ip, &port);
         if (c >= 0) {
-            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0};
+            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0, NULL, 0};
             fill_addr(addr, len, ip, port);
             return handle_of(c);
         }
@@ -581,6 +584,113 @@ static int WINAPI select(int nfds, struct fd_set *r, struct fd_set *wr, struct f
             filter(ex, has_error);
             return n;
         }
+        w32_block();
+    }
+}
+
+enum { FD_READ = 1, FD_WRITE = 2, FD_OOB = 4, FD_ACCEPT = 8, FD_CONNECT = 16, FD_CLOSE = 32 };
+
+static long sock_events(struct wsock *w)
+{
+    long ev = 0;
+    if (net_readable(w->id))
+        ev |= FD_READ | FD_ACCEPT;
+    if (write_ready(w->id))
+        ev |= FD_WRITE | FD_CONNECT;
+    if (net_error(w->id))
+        ev |= FD_CLOSE | FD_READ;
+    return ev & w->mask;
+}
+
+static HANDLE WINAPI WSACreateEvent(void)
+{
+    HANDLE h = w32_handle_new(WH_EVENT);
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->manual = true;
+    return h;
+}
+
+static BOOL WINAPI WSASetEvent(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || o->type != WH_EVENT)
+        return FALSE;
+    o->value = 1;
+    return TRUE;
+}
+
+static BOOL WINAPI WSAResetEvent(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || o->type != WH_EVENT)
+        return FALSE;
+    o->value = 0;
+    return TRUE;
+}
+
+static BOOL WINAPI WSACloseEvent(HANDLE h)
+{
+    for (int i = 0; i < NET_MAX_SOCKETS; i++)
+        if (socks[i].used && socks[i].event == h)
+            socks[i].event = NULL;
+    return w32_handle_close(h);
+}
+
+static int WINAPI WSAEventSelect(UINT s, HANDLE event, long mask)
+{
+    struct wsock *w = sock_of(s);
+    if (!w)
+        return SOCKET_ERROR;
+    w->event = event;
+    w->mask = event ? mask : 0;
+    if (event)
+        w->nonblocking = true;
+    return 0;
+}
+
+struct network_events {
+    long events;
+    int errors[10];
+};
+
+static int WINAPI WSAEnumNetworkEvents(UINT s, HANDLE event, struct network_events *out)
+{
+    struct wsock *w = sock_of(s);
+    if (!w || !out)
+        return SOCKET_ERROR;
+    net_poll();
+    memset(out, 0, sizeof(*out));
+    out->events = sock_events(w);
+    if (net_error(w->id) && (out->events & FD_CLOSE))
+        out->errors[5] = WSAECONNRESET;
+    if (event)
+        WSAResetEvent(event);
+    return 0;
+}
+
+static DWORD WINAPI WSAWaitForMultipleEvents(DWORD count, const HANDLE *events, BOOL all, DWORD timeout, BOOL alertable)
+{
+    UNUSED(alertable);
+    uint64_t start = hal_ticks_ms();
+    for (;;) {
+        net_poll();
+        for (int i = 0; i < NET_MAX_SOCKETS; i++)
+            if (socks[i].used && socks[i].event && sock_events(&socks[i]))
+                WSASetEvent(socks[i].event);
+        DWORD set = 0, first = WAIT_TIMEOUT;
+        for (DWORD i = 0; i < count; i++) {
+            struct w32_object *o = w32_handle_get(events[i]);
+            if (o && o->type == WH_EVENT && o->value) {
+                set++;
+                if (first == WAIT_TIMEOUT)
+                    first = i;
+            }
+        }
+        if (set && (!all || set == count))
+            return first;
+        if (timeout != 0xffffffffu && hal_ticks_ms() - start >= timeout)
+            return WAIT_TIMEOUT;
         w32_block();
     }
 }
@@ -1203,7 +1313,13 @@ static const struct w32_export winsock_exports[] = {
     W32_FN(inet_ntop),      W32_FN(gethostname),      W32_FN(gethostbyname),   W32_FN(gethostbyaddr),
     W32_FN(getaddrinfo),    W32_FN(freeaddrinfo),     W32_FN(GetAddrInfoW),    W32_FN(FreeAddrInfoW),
     W32_FN(getservbyname),  W32_FN(WSASend),          W32_FN(WSARecv),
-    W32_AS("WSAAsyncSelect", WSAUnsupported4),        W32_AS("WSAEventSelect", WSAUnsupported3),
+    W32_FN(WSACreateEvent),
+    W32_FN(WSASetEvent),
+    W32_FN(WSAResetEvent),
+    W32_FN(WSACloseEvent),
+    W32_FN(WSAEnumNetworkEvents),
+    W32_FN(WSAWaitForMultipleEvents),
+    W32_AS("WSAAsyncSelect", WSAUnsupported4),        W32_FN(WSAEventSelect),
     W32_FN(WSAIoctl),       W32_FN(WSASendTo),        W32_FN(WSARecvFrom),     W32_FN(WSAConnect),
     W32_FN(WSAStringToAddressW), W32_FN(getnameinfo), W32_FN(GetNameInfoW),    W32_FN(getprotobyname),
     W32_FN(getprotobynumber), W32_FN(getservbyport),  W32_FN(WSADuplicateSocketW),

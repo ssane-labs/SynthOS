@@ -170,8 +170,8 @@ static const struct w32_export advapi32_exports[] = {
     W32_AS("RegEnumValueW", RegEnumKeyExA), W32_FN(RegQueryInfoKeyA), W32_AS("RegQueryInfoKeyW", RegQueryInfoKeyA),
     W32_FN(GetUserNameA), W32_FN(GetUserNameW), W32_AS("SystemFunction036", RtlGenRandom),
     W32_FN(CryptAcquireContextA), W32_AS("CryptAcquireContextW", CryptAcquireContextA), W32_FN(CryptGenRandom),
-    W32_AS("CryptReleaseContext", w32_one2), W32_AS("OpenProcessToken", w32_zero3),
-    W32_AS("OpenThreadToken", w32_zero4), W32_AS("GetTokenInformation", w32_zero5),
+    W32_AS("CryptReleaseContext", w32_one2),
+
     W32_AS("LookupPrivilegeValueA", w32_zero3), W32_AS("LookupPrivilegeValueW", w32_zero3),
     W32_AS("AdjustTokenPrivileges", w32_zero6), W32_AS("RegisterEventSourceA", w32_zero2),
     W32_AS("RegisterEventSourceW", w32_zero2), W32_AS("DeregisterEventSource", w32_one1),

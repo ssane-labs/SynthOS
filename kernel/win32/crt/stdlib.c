@@ -1050,6 +1050,38 @@ static size_t crt_mbstowcs(WCHAR *out, const char *s, size_t n)
     return k;
 }
 
+static size_t crt_wcstombs(char *out, const WCHAR *w, size_t n);
+
+static int crt_mbstowcs_s(size_t *done, WCHAR *out, size_t cap, const char *s, size_t count)
+{
+    if (!s || (out && !cap)) {
+        crt_set_errno(CRT_EINVAL);
+        return CRT_EINVAL;
+    }
+    size_t limit = out ? MIN(cap - 1, count) : 0;
+    size_t n = crt_mbstowcs(out, s, limit);
+    if (out)
+        out[MIN(n, cap - 1)] = 0;
+    if (done)
+        *done = (out ? MIN(n, cap - 1) : crt_mbstowcs(NULL, s, 0)) + 1;
+    return 0;
+}
+
+static int crt_wcstombs_s(size_t *done, char *out, size_t cap, const WCHAR *w, size_t count)
+{
+    if (!w || (out && !cap)) {
+        crt_set_errno(CRT_EINVAL);
+        return CRT_EINVAL;
+    }
+    size_t limit = out ? MIN(cap - 1, count) : 0;
+    size_t n = crt_wcstombs(out, w, limit);
+    if (out)
+        out[MIN(n, cap - 1)] = 0;
+    if (done)
+        *done = (out ? MIN(n, cap - 1) : crt_wcstombs(NULL, w, 0)) + 1;
+    return 0;
+}
+
 static size_t crt_wcstombs(char *out, const WCHAR *w, size_t n)
 {
     size_t len = w32_wcslen(w);
@@ -1303,7 +1335,7 @@ static const struct w32_export stdlib_exports[] = {
     W32_AS("_byteswap_uint64", bswap64), W32_AS("qsort", crt_qsort), W32_AS("qsort_s", crt_qsort_s),
     W32_AS("bsearch", crt_bsearch), W32_AS("_lfind", crt_lfind), W32_AS("mblen", crt_mblen),
     W32_AS("mbtowc", crt_mbtowc), W32_AS("wctomb", crt_wctomb), W32_AS("mbstowcs", crt_mbstowcs),
-    W32_AS("wcstombs", crt_wcstombs), W32_AS("btowc", crt_btowc), W32_AS("wctob", crt_wctob),
+    W32_AS("wcstombs", crt_wcstombs), W32_AS("mbstowcs_s", crt_mbstowcs_s), W32_AS("wcstombs_s", crt_wcstombs_s), W32_AS("btowc", crt_btowc), W32_AS("wctob", crt_wctob),
     W32_AS("mbrtowc", crt_mbrtowc), W32_AS("wcrtomb", crt_wcrtomb), W32_AS("mbrlen", crt_mbrlen),
     W32_AS("mbsinit", crt_mbsinit), W32_AS("_ismbblead", crt_ismbblead), W32_AS("_ismbbtrail", crt_ismbblead),
     W32_AS("_mbschr", crt_mbschr), W32_AS("_mbsrchr", crt_mbsrchr), W32_AS("_mbslen", strlen),

@@ -152,7 +152,7 @@ COMMAND(run, "start", "shell", "run program [args...]", "run a program file (.sx
     }
     if (err)
         return sh_fs_error(sh, "run", argv[1], err);
-    struct exec_ctx ctx = {sh, path, argc - 1, argv + 1, sh->in, sh->out, sh->err};
+    struct exec_ctx ctx = {sh, path, argc - 1, argv + 1, sh->in, sh->out, sh->err, NULL, NULL};
     int rc = exec_program(&ctx);
     if (rc < 0)
         return sh_fs_error(sh, "run", argv[1], rc);

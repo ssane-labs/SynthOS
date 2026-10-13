@@ -420,8 +420,23 @@ static HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD pid)
 {
     UNUSED(access);
     UNUSED(inherit);
-    if (pid == 0x1000 || pid == 0)
+    if (pid == 0x1000 || pid == 0x100 || pid == 0)
         return W32_PSEUDO_PROCESS;
+    for (int i = 0; i < W32_MAX_HANDLES; i++) {
+        struct w32_object *o = &w32->handles[i];
+        if (o->type == WH_PROCESS && o->max == pid) {
+            HANDLE h = w32_handle_new(WH_PROCESS);
+            struct w32_object *n = w32_handle_get(h);
+            if (n) {
+                n->value = o->value;
+                n->max = pid;
+                n->child = o->child;
+                if (n->child)
+                    n->child->refs++;
+            }
+            return h;
+        }
+    }
     w32_set_error(ERROR_INVALID_PARAMETER);
     return NULL;
 }
@@ -759,12 +774,6 @@ static void *WINAPI no_pointer5(uint32_t a, uint32_t b, uint32_t c, uint32_t d, 
     return no_pointer3(a, b, c);
 }
 
-static void *WINAPI no_pointer6(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f)
-{
-    UNUSED(f);
-    return no_pointer5(a, b, c, d, e);
-}
-
 static uint32_t WINAPI pss_failed4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
     UNUSED(a);
@@ -863,12 +872,7 @@ static const struct w32_export vista_exports[] = {
     W32_AS("SetNamedPipeHandleState", not_implemented4),
     W32_AS("GetNamedPipeHandleStateW", false7),
     W32_AS("DeviceIoControl", false8),
-    W32_AS("CreateFileMappingW", no_pointer6),
-    W32_AS("CreateFileMappingA", no_pointer6),
     W32_AS("OpenFileMappingW", no_pointer3),
-    W32_AS("MapViewOfFile", no_pointer5),
-    W32_AS("UnmapViewOfFile", w32_one1),
-    W32_AS("FlushViewOfFile", w32_one2),
     W32_AS("RegisterWaitForSingleObject", false6),
     W32_AS("UnregisterWait", w32_one1),
     W32_AS("UnregisterWaitEx", w32_one2),

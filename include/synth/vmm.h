@@ -23,6 +23,17 @@ uint32_t vmm_long_mode_root(void);
 uint32_t vmm_pae_root(void);
 uint32_t vmm_phys(const void *ptr);
 
+struct vmm_space;
+struct vmm_space *vmm_space_create(void);
+struct vmm_space *vmm_space_current(void);
+void vmm_space_switch(struct vmm_space *s);
+void vmm_space_destroy(struct vmm_space *s);
+void vmm_space_set_commit(uintptr_t start, size_t size);
+void vmm_release(uintptr_t start, size_t size);
+bool vmm_commit_fault(uintptr_t address);
+void vmm_set_commit_hook(bool (*fn)(uintptr_t address));
+int vmm_commit_range(uintptr_t start, size_t size);
+
 void *kmalloc_pages(size_t size);
 void *kmalloc_pages_uninit(size_t size);
 void kfree_pages(void *ptr);

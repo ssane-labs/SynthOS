@@ -20,6 +20,8 @@ cat > "$work/page.html" <<'EOF'
 <pre>  keep   spaces</pre><p>Caf&eacute; &mdash; &#x41;&#66;</p></body></html>
 EOF
 mcopy -i "$work/fat.img" "$work/page.html" ::/page.html
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.writestr('pkg/readme.txt','zipped hello '*20); z.writestr('pkg/sub/a.txt','A'); z.close()" "$work/t.zip" &&
+    mcopy -i "$work/fat.img" "$work/t.zip" ::/t.zip
 
 # each case: a command line, then the text expected somewhere in the output
 cat > "$work/cases" <<'EOF'
@@ -259,6 +261,12 @@ mv '/mnt/hdb/Long Name Note.txt' /mnt/hdb/n.txt; cat /mnt/hdb/n.txt | tr a-z A-Z
 HELLO FROM FAT
 browse /mnt/hdb/page.html | grep link
 A bold word and a link[1].
+unzip -l /mnt/hdb/t.zip
+pkg/sub/a.txt
+unzip -q -d /tmp/z /mnt/hdb/t.zip; cat /tmp/z/pkg/sub/a.txt /tmp/z/pkg/readme.txt
+Azipped hello zipped
+pkg list
+Git for Windows
 browse /mnt/hdb/page.html | grep next
    1. file:///mnt/hdb/next.html
 browse -n /mnt/hdb/page.html | grep third

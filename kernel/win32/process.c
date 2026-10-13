@@ -7,6 +7,7 @@
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/log.h>
+#include <synth/stream.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
 #include <synth/winpath.h>
@@ -139,12 +140,21 @@ bool w32_handle_close(HANDLE h)
         return true;
     if (o->file)
         vfs_close(o->file);
+    if (o->delete_on_close && o->path)
+        vfs_unlink(o->path);
+    o->delete_on_close = false;
     if (o->find)
         kfree(o->find);
     kfree(o->path);
     o->path = NULL;
     if (o->type == WH_PIPE)
         w32_pipe_release(o);
+    if (o->section)
+        w32_section_release(o->section);
+    o->section = NULL;
+    if (o->child)
+        w32_child_release(o->child);
+    o->child = NULL;
     kfree(o->port);
     o->port = NULL;
     o->due = 0;
@@ -287,6 +297,7 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
 {
     if (!w32 || !w32->jump.active)
         panic("CPU exception %d at %08x (address %08x)", vector, eip, address);
+    w32_trace_dump();
     char where[96] = "";
     for (struct w32_image *img = w32->images; img; img = img->next)
         if (!img->builtin && eip >= img->base && eip - img->base < img->size)
@@ -366,8 +377,36 @@ static void build_command_line(struct exec_ctx *ctx)
         w32->wargv[i] = w32_widen(w32->argv[i]);
 }
 
+static void inherit_environment(const char *src)
+{
+    size_t len = 0;
+    int count = 0;
+    while (src[len]) {
+        len += strlen(src + len) + 1;
+        count++;
+    }
+    char *block = w32_zalloc(len + 2);
+    memcpy(block, src, len);
+    w32->env_block = block;
+    w32->environ = w32_zalloc(sizeof(char *) * (size_t)(count + 1));
+    w32->wenviron = w32_zalloc(sizeof(WCHAR *) * (size_t)(count + 1));
+    int n = 0;
+    for (char *p = block; *p && n < count; p += strlen(p) + 1, n++) {
+        w32->environ[n] = p;
+        w32->wenviron[n] = w32_widen(p);
+    }
+    size_t wn = w32_cp_to_wide(block, (int)len + 1, NULL, 0, 1);
+    w32->env_block_w = w32_alloc((wn + 1) * sizeof(WCHAR));
+    w32_cp_to_wide(block, (int)len + 1, w32->env_block_w, wn, 1);
+    w32->env_block_w[wn] = 0;
+}
+
 static void build_environment(struct exec_ctx *ctx)
 {
+    if (ctx->env && ctx->env[0]) {
+        inherit_environment(ctx->env);
+        return;
+    }
     struct shell *sh = ctx->sh;
     const char *user = sh_get(sh, "USER") ? sh_get(sh, "USER") : "root";
     const char *host = sh_get(sh, "HOSTNAME") ? sh_get(sh, "HOSTNAME") : "synth";
@@ -452,8 +491,14 @@ static bool build_teb_peb(void)
     w32->peb = heap_alloc_aligned(&w32->heap, 4096, 4096);
     uint8_t *params = w32_zalloc(0x300);
     uint8_t *ldr = w32_zalloc(0x40);
-    if (!w32->teb || !w32->peb || !params || !ldr)
+    uint8_t *loader_lock = w32_zalloc(0x18);
+    uint32_t *heaps = w32_zalloc(16 * 4);
+    if (!w32->teb || !w32->peb || !params || !ldr || !loader_lock || !heaps)
         return false;
+    memset(w32->teb, 0, 4096);
+    memset(w32->peb, 0, 4096);
+    put32(loader_lock, 0x04, 0xffffffffu);
+    heaps[0] = (uint32_t)&w32->heap;
     uint32_t stack_top = (uint32_t)w32->stack + w32->stack_size;
     put32(w32->teb, 0x00, 0xffffffffu);
     put32(w32->teb, 0x04, stack_top);
@@ -473,6 +518,10 @@ static bool build_teb_peb(void)
     put32(w32->peb, 0x10, (uint32_t)params);
     put32(w32->peb, 0x18, (uint32_t)&w32->heap);
     put32(w32->peb, 0x64, 1);
+    put32(w32->peb, 0x88, 1);
+    put32(w32->peb, 0x8c, 16);
+    put32(w32->peb, 0x90, (uint32_t)heaps);
+    put32(w32->peb, 0xa0, (uint32_t)loader_lock);
     put32(w32->peb, 0xa4, 10);
     put32(w32->peb, 0xa8, 0);
     put32(w32->peb, 0xac, 19045);
@@ -494,41 +543,6 @@ static bool build_teb_peb(void)
 static size_t image_reserve;
 static bool image_win64;
 
-static size_t choose_arena(void)
-{
-    struct heap_stats hs;
-    heap_get_stats(&hs);
-    size_t size = hs.largest_free / 4 * 3;
-    if (hs.largest_free > image_reserve && hs.largest_free - image_reserve < size)
-        size = hs.largest_free - image_reserve;
-    if (size > ARENA_MAX)
-        size = ARENA_MAX;
-    return size & ~(size_t)0xffff;
-}
-
-static bool high_arena(void)
-{
-    size_t pages = vmm_high_pages() / 4 * 3;
-    uint32_t size = (uint32_t)MIN((uint64_t)pages * 4096, (uint64_t)ARENA_HIGH_MAX) & ~0xffffu;
-    if (size < 64u * 1024 * 1024)
-        return false;
-    uint32_t *frames = kmalloc(size / 4096 * sizeof(uint32_t));
-    if (!frames)
-        return false;
-    if (!vmm_frames_alloc(frames, size / 4096)) {
-        kfree(frames);
-        return false;
-    }
-    if (vmm_map_frames(ARENA_BASE, frames, size / 4096) != 0) {
-        vmm_frames_free(frames, size / 4096);
-        kfree(frames);
-        return false;
-    }
-    w32->arena_frames = frames;
-    w32->arena_size = size;
-    return true;
-}
-
 static void cleanup(void)
 {
     w32_winsock_cleanup();
@@ -539,16 +553,12 @@ static void cleanup(void)
     for (int i = 0; i < W32_MAX_HANDLES; i++)
         if (w32->handles[i].type != WH_FREE)
             w32_handle_close((HANDLE)(uintptr_t)(HANDLE_BASE + i * 4));
+    w32_vm_cleanup();
     w32_unload_all();
-    if (w32->arena) {
-        vmm_unmap(w32->arena_base, w32->arena_size);
-        kfree_pages(w32->arena);
-    }
-    if (w32->arena_frames) {
-        vmm_unmap(w32->arena_base, w32->arena_size);
-        vmm_frames_free(w32->arena_frames, w32->arena_size / 4096);
-        kfree(w32->arena_frames);
-    }
+    vmm_release(w32->arena_base, w32->arena_size);
+    vmm_space_set_commit(0, 0);
+    kfree_pages(w32->stack);
+    w32->stack = NULL;
 }
 
 static int run(struct exec_ctx *ctx)
@@ -559,25 +569,19 @@ static int run(struct exec_ctx *ctx)
         ksnprintf(w32->message, sizeof(w32->message), "is a 64-bit program and this processor has no 64-bit mode");
         return 1;
     }
-    str_copy(w32->cwd, ctx->sh->cwd, sizeof(w32->cwd));
+    str_copy(w32->cwd, ctx->cwd ? ctx->cwd : ctx->sh->cwd, sizeof(w32->cwd));
     w32->default_attr = theme_attr(ROLE_TEXT);
     w32->console_attr = w32->default_attr;
     w32->output_cp = w32->input_cp = codepage_current();
     w32->input_mode = 0x1f7;
     w32->output_mode = 0x7;
     w32->arena_base = ARENA_BASE;
-    if (!high_arena()) {
-        w32->arena_size = (uint32_t)choose_arena();
-        if (w32->arena_size < ARENA_MIN)
-            return E_NOMEM;
-        w32->arena = kmalloc_pages_uninit(w32->arena_size);
-        if (!w32->arena || vmm_map(ARENA_BASE, w32->arena, w32->arena_size) != 0)
-            return E_NOMEM;
-    }
+    w32->arena_size = ARENA_HIGH_MAX;
+    vmm_space_set_commit(ARENA_BASE, w32->arena_size);
     heap_create(&w32->heap, (void *)ARENA_BASE, w32->arena_size, false);
 
-    w32->stack_size = MIN(STACK_SIZE, w32->arena_size / 4 & ~0xffffu);
-    w32->stack = heap_alloc_aligned(&w32->heap, w32->stack_size, 4096);
+    w32->stack_size = STACK_SIZE;
+    w32->stack = kmalloc_pages_uninit(w32->stack_size);
     for (int i = 0; i < 3; i++) {
         w32->handles[i].type = (enum w32_object_type)(WH_STDIN + i);
         w32->handles[i].refs = 1 << 20;
@@ -612,6 +616,7 @@ static int run(struct exec_ctx *ctx)
 
     arch_set_fault_handler(on_fault);
     arch_set_tick_hook(on_tick);
+    vmm_set_commit_hook(w32_vm_committed);
     if (w32_init_modules() == 0 && !w32->exiting) {
         if (w32->win64)
             w64_setup_tls(main);
@@ -661,28 +666,193 @@ uint32_t w32_kernel_call(uint32_t (*fn)(void *), void *arg)
     return r;
 }
 
-static void map_process(struct w32_process *p, bool on)
+static struct w32_process *ring;
+static uint32_t next_pid = 0x2000;
+
+static size_t state_size(void)
 {
-    for (struct w32_image *img = p->images; img; img = img->next)
-        if (img->memory) {
-            if (on)
-                vmm_map(img->base, img->memory, img->size);
-            else
-                vmm_unmap(img->base, img->size);
+    return (size_t)(__stop_w32state - __start_w32state);
+}
+
+struct w32_process *w32_ring_next(struct w32_process *p)
+{
+    return p ? p->ring_next : NULL;
+}
+
+static void ring_add(struct w32_process *p)
+{
+    if (!ring) {
+        p->ring_next = p;
+        ring = p;
+        return;
+    }
+    p->ring_next = ring->ring_next;
+    ring->ring_next = p;
+}
+
+static void ring_remove(struct w32_process *p)
+{
+    if (!ring || !p->ring_next)
+        return;
+    if (p->ring_next == p) {
+        ring = NULL;
+    } else {
+        struct w32_process *q = ring;
+        while (q->ring_next != p)
+            q = q->ring_next;
+        q->ring_next = p->ring_next;
+        if (ring == p)
+            ring = q;
+    }
+    p->ring_next = NULL;
+}
+
+void w32_process_enter(struct w32_process *p)
+{
+    if (p == w32)
+        return;
+    if (w32) {
+        if (!w32->state)
+            w32->state = kmalloc(state_size());
+        if (w32->state)
+            memcpy(w32->state, __start_w32state, state_size());
+    }
+    vmm_space_switch(p->space);
+    if (p->state)
+        memcpy(__start_w32state, p->state, state_size());
+    w32 = p;
+}
+
+void w32_child_release(struct w32_child *c)
+{
+    if (c && --c->refs <= 0)
+        kfree(c);
+}
+
+static void finish_child(struct w32_process *p, uint32_t code)
+{
+    if (p->child) {
+        p->child->done = true;
+        p->child->exit_code = code;
+        p->child->proc = NULL;
+        w32_child_release(p->child);
+        p->child = NULL;
+    }
+    if (p->spawn_ctx) {
+        struct exec_ctx *c = p->spawn_ctx;
+        if (p->own_streams & 1)
+            stream_close(c->in);
+        if (p->own_streams & 2)
+            stream_close(c->out);
+        if (p->own_streams & 4)
+            stream_close(c->err);
+        p->own_streams = 0;
+    }
+    p->dead = true;
+}
+
+static void free_process(struct w32_process *p)
+{
+    ring_remove(p);
+    vmm_space_destroy(p->space);
+    kfree(p->boot_stack);
+    kfree(p->boot);
+    kfree(p->state);
+    if (p->spawn_ctx) {
+        for (int i = 0; i < p->spawn_ctx->argc; i++)
+            kfree(p->spawn_ctx->argv[i]);
+        kfree(p->spawn_ctx->argv);
+        kfree((char *)p->spawn_ctx->path);
+        kfree((char *)p->spawn_ctx->env);
+        kfree((char *)p->spawn_ctx->cwd);
+        kfree(p->spawn_ctx);
+    }
+    kfree(p);
+}
+
+void w32_reap(void)
+{
+    bool again = true;
+    while (again && ring) {
+        again = false;
+        struct w32_process *p = ring;
+        do {
+            if (p->dead && p != w32) {
+                free_process(p);
+                again = true;
+                break;
+            }
+            p = p->ring_next;
+        } while (p != ring);
+    }
+}
+
+static void kill_process(struct w32_process *p, uint32_t code)
+{
+    struct w32_process *self = w32;
+    w32_process_enter(p);
+    w32->exiting = true;
+    cleanup();
+    w32_threads_end();
+    finish_child(p, code);
+    w32_process_enter(self);
+}
+
+static void kill_children(struct w32_process *parent)
+{
+    bool again = true;
+    while (again) {
+        again = false;
+        for (struct w32_process *p = ring; p; p = p->ring_next) {
+            if (p != parent && !p->dead && p->parent == parent) {
+                kill_children(p);
+                kill_process(p, 1);
+                again = true;
+                break;
+            }
+            if (p->ring_next == ring)
+                break;
         }
-    if (on && p->arena_frames)
-        vmm_map_frames(p->arena_base, p->arena_frames, p->arena_size / 4096);
-    else if (on)
-        vmm_map(p->arena_base, p->arena, p->arena_size);
-    else
-        vmm_unmap(p->arena_base, p->arena_size);
+    }
+}
+
+void w32_terminate_child(struct w32_child *c, uint32_t code)
+{
+    if (!c || c->done || !c->proc)
+        return;
+    struct w32_process *p = c->proc;
+    if (p == w32) {
+        w32_exit(code);
+        return;
+    }
+    kill_children(p);
+    kill_process(p, code);
+}
+
+static int exit_status(int rc, bool started)
+{
+    if (!started)
+        return rc;
+    uint32_t code = (uint32_t)rc;
+    return code <= 255 ? (int)code : (code & 0xff) ? (int)(code & 0xff) : 255;
 }
 
 static int run_process(struct exec_ctx *ctx)
 {
-    w32 = kzalloc(sizeof(*w32));
-    if (!w32)
+    struct w32_process *parent = w32;
+    struct w32_process *p = kzalloc(sizeof(*p));
+    if (!p)
         return E_NOMEM;
+    p->space = vmm_space_create();
+    if (!p->space) {
+        kfree(p);
+        return E_NOMEM;
+    }
+    struct vmm_space *outer = vmm_space_current();
+    p->parent = parent;
+    w32 = p;
+    ring_add(p);
+    vmm_space_switch(p->space);
     uint8_t saved_attr = con_attr();
     int rc = run(ctx);
     bool started = w32->main != NULL;
@@ -692,32 +862,31 @@ static int run_process(struct exec_ctx *ctx)
     if (w32->message[0])
         sh_error(ctx->sh, path_basename(ctx->path), "%s", w32->message);
     cleanup();
-    kfree(w32);
-    w32 = NULL;
+    kill_children(p);
+    vmm_space_switch(outer);
+    ring_remove(p);
+    w32 = parent;
+    w32_reap();
+    vmm_space_destroy(p->space);
+    kfree(p->state);
+    kfree(p);
     line_len = line_pos = 0;
-    if (!started)
-        return rc;
-    uint32_t code = (uint32_t)rc;
-    return code <= 255 ? (int)code : (code & 0xff) ? (int)(code & 0xff) : 255;
+    return exit_status(rc, started);
 }
 
 static int run_nested(struct exec_ctx *ctx)
 {
-    uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
-    if (sp >= VMM_USER_START && sp < VMM_USER_END)
-        return sh_error(ctx->sh, path_basename(ctx->path), "cannot start a Windows program from here");
     struct w32_process *parent = w32;
-    size_t state_size = (size_t)(__stop_w32state - __start_w32state);
-    uint8_t *state = kmalloc(state_size);
+    uint8_t *state = kmalloc(state_size());
     if (!state)
         return E_NOMEM;
-    memcpy(state, __start_w32state, state_size);
+    memcpy(state, __start_w32state, state_size());
     uint16_t fpu_cw;
     __asm__ volatile("fnstcw %0" : "=m"(fpu_cw));
-    map_process(parent, false);
+    parent->frozen = true;
     int rc = run_process(ctx);
-    map_process(parent, true);
-    memcpy(__start_w32state, state, state_size);
+    parent->frozen = false;
+    memcpy(__start_w32state, state, state_size());
     kfree(state);
     __asm__ volatile("fldcw %0" : : "m"(fpu_cw));
     w32 = parent;
@@ -727,6 +896,66 @@ static int run_nested(struct exec_ctx *ctx)
     arch_set_fault_handler(on_fault);
     arch_set_tick_hook(on_tick);
     return rc;
+}
+
+#define BOOT_STACK (64u * 1024)
+
+static void child_entry(void)
+{
+    struct w32_process *p = w32;
+    arch_set_irq_depth(0);
+    image_win64 = false;
+    image_reserve = 0;
+    int rc = run(p->spawn_ctx);
+    bool started = w32->main != NULL;
+    if (w32->message[0])
+        stream_printf(p->spawn_ctx->err, "%s: %s\n", path_basename(p->spawn_ctx->path), w32->message);
+    cleanup();
+    kill_children(p);
+    finish_child(p, (uint32_t)exit_status(rc, started));
+    w32_leave_forever();
+}
+
+struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own)
+{
+    struct w32_process *p = kzalloc(sizeof(*p));
+    struct w32_child *c = kzalloc(sizeof(*c));
+    struct w32_thread *boot = kzalloc(sizeof(*boot));
+    uint8_t *stack = kmalloc(BOOT_STACK);
+    uint8_t *state = kmalloc(state_size());
+    struct vmm_space *space = vmm_space_create();
+    if (!p || !c || !boot || !stack || !state || !space) {
+        kfree(p);
+        kfree(c);
+        kfree(boot);
+        kfree(stack);
+        kfree(state);
+        vmm_space_destroy(space);
+        return NULL;
+    }
+    memcpy(state, __start_w32state, state_size());
+    next_pid += 8;
+    c->refs = 2;
+    c->pid = next_pid;
+    c->proc = p;
+    p->space = space;
+    p->state = state;
+    p->boot_stack = stack;
+    p->boot = boot;
+    p->child = c;
+    p->parent = w32;
+    p->spawn_ctx = ctx;
+    p->own_streams = own;
+    boot->proc = p;
+    boot->boot = true;
+    boot->id = 0x104;
+    boot->next = boot;
+    w32_thread_frame(boot, child_entry, stack + BOOT_STACK);
+    p->threads = p->current = boot;
+    p->live_threads = 1;
+    ring_add(p);
+    w32_switch_thread(boot);
+    return c;
 }
 
 static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
@@ -747,3 +976,22 @@ static const struct binfmt pe_format = {
     .run = pe_run,
 };
 BINFMT(pe_format);
+
+static void get_trace(char *buf, size_t cap)
+{
+    str_copy(buf, w32_trace ? "on" : "off", cap);
+}
+
+static int set_trace(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    w32_trace = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_trace = {"w32trace", "on|off",
+                                       "remember the last Windows API calls and log them when a program crashes",
+                                       get_trace, set_trace};
+SETTING(s_trace);

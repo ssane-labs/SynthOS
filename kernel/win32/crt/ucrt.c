@@ -276,6 +276,26 @@ static intptr_t no_spawn(int a, const void *b, const void *c, const void *d)
     return -1;
 }
 
+static W32_STATE int fpecode;
+static W32_STATE int lc_codepage;
+static W32_STATE void *xcptinfo;
+
+static int *crt_fpecode(void)
+{
+    return &fpecode;
+}
+
+static void **crt_pxcptinfoptrs(void)
+{
+    return &xcptinfo;
+}
+
+static int crt_isleadbyte(int c)
+{
+    UNUSED(c);
+    return 0;
+}
+
 static int except_handler4_common(void *cookie, void *check, void *record, void *frame, void *context, void *dc)
 {
     UNUSED(cookie);
@@ -294,6 +314,12 @@ static const struct w32_export ucrt_exports[] = {
     W32_AS("_wspawnv", no_spawn),
     W32_AS("_wspawnve", no_spawn),
     W32_AS("_wexecv", no_spawn),
+    W32_AS("_execl", no_spawn),
+    W32_AS("_execlp", no_spawn),
+    W32_AS("__fpecode", crt_fpecode),
+    W32_AS("__pxcptinfoptrs", crt_pxcptinfoptrs),
+    W32_AS("__lc_codepage", &lc_codepage),
+    W32_AS("isleadbyte", crt_isleadbyte),
     W32_AS("_wexecve", no_spawn),
     W32_AS("_except_handler4_common", except_handler4_common),
     W32_AS("_setjmp3", crt_setjmp3),

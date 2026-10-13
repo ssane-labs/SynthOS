@@ -276,6 +276,8 @@ void x86_interrupt(struct regs *r)
     if (r->vector < 32) {
         uint32_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if (r->vector == 14 && !(r->error & 1) && vmm_commit_fault(cr2))
+            return;
         if (fault_handler && r->vector != 8 && r->vector != 18)
             fault_handler((int)r->vector, r->eip, cr2);
         panic("CPU exception %u (%s) at %08x err=%x cr2=%08x eax=%08x ebx=%08x ecx=%08x edx=%08x esp=%08x",

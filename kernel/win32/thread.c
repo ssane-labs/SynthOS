@@ -1,9 +1,12 @@
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/hal.h>
+#include <synth/heap.h>
 #include <synth/input.h>
+#include <synth/log.h>
 #include <synth/shell.h>
 #include <synth/string.h>
+#include <synth/vmm.h>
 
 #include "win32.h"
 
@@ -39,25 +42,53 @@ uint32_t w32_thread_id(void)
 
 bool w32_threads_start(void)
 {
-    struct w32_thread *t = w32_zalloc(sizeof(*t));
-    if (!t)
-        return false;
+    struct w32_thread *t = w32->threads;
+    if (!t) {
+        t = kzalloc(sizeof(*t));
+        if (!t)
+            return false;
+        t->stack = w32->stack;
+        t->stack_size = w32->stack_size;
+        t->next = t;
+        w32->threads = w32->current = t;
+        w32->live_threads = 1;
+    }
     t->id = 0x104;
     t->teb = w32->teb;
-    t->stack = w32->stack;
-    t->stack_size = w32->stack_size;
-    t->next = t;
-    w32->threads = w32->current = t;
-    w32->live_threads = 1;
+    t->proc = w32;
     w32->next_tid = 0x108;
     return true;
 }
 
 void w32_threads_end(void)
 {
+    struct w32_thread *t = w32->threads;
+    if (t) {
+        do {
+            struct w32_thread *next = t->next;
+            if (!t->boot) {
+                if (t->stack != w32->stack)
+                    kfree_pages(t->stack);
+                kfree(t);
+            }
+            t = next;
+        } while (t != w32->threads);
+    }
     w32->threads = w32->current = NULL;
     w32->live_threads = 0;
     arch_set_irq_depth(0);
+}
+
+void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_top)
+{
+    arch_fpu_save((uint8_t *)(((uintptr_t)t->fpu_area + 15) & ~(uintptr_t)15));
+    uint32_t *sp = (uint32_t *)(((uint32_t)stack_top - 64) & ~15u);
+    *--sp = 0;
+    *--sp = (uint32_t)entry;
+    for (int i = 0; i < 4; i++)
+        *--sp = 0;
+    *--sp = 0x202;
+    t->esp = (uint32_t)sp;
 }
 
 void w32_idle(int ms)
@@ -82,6 +113,21 @@ static struct w32_thread *pick(struct w32_thread *cur, bool active_only)
     return NULL;
 }
 
+static struct w32_thread *pick_other(bool active_only)
+{
+    for (struct w32_process *p = w32_ring_next(w32); p && p != w32; p = w32_ring_next(p)) {
+        if (p->dead || p->frozen || !p->current)
+            continue;
+        struct w32_thread *t = p->current;
+        do {
+            if (!t->done && !t->suspended && (!active_only || !t->waiting))
+                return t;
+            t = t->next;
+        } while (t != p->current);
+    }
+    return NULL;
+}
+
 static void switch_to(struct w32_thread *next)
 {
     struct w32_thread *cur = w32->current;
@@ -89,38 +135,72 @@ static void switch_to(struct w32_thread *next)
         return;
     cur->irq_depth = arch_irq_depth();
     arch_fpu_save(fpu_of(cur));
+    if (next->proc && next->proc != w32)
+        w32_process_enter(next->proc);
     w32->current = next;
     w32->teb = next->teb;
     w32->teb64 = next->teb64;
-    arch_w32_set_teb((uint32_t)next->teb);
+    if (next->teb)
+        arch_w32_set_teb((uint32_t)next->teb);
     if (next->teb64)
         arch_w64_set_teb((uint32_t)next->teb64);
     arch_load_teb_selector();
     arch_switch(&cur->esp, next->esp);
     arch_fpu_restore(fpu_of(cur));
     arch_set_irq_depth(cur->irq_depth);
+    w32_reap();
+}
+
+void w32_switch_thread(struct w32_thread *t)
+{
+    switch_to(t);
+}
+
+NORETURN void w32_leave_forever(void)
+{
+    struct w32_thread *next = pick_other(true);
+    if (!next)
+        next = pick_other(false);
+    if (!next)
+        panic("win32: no process left to run");
+    w32_process_enter(next->proc);
+    w32->current = next;
+    w32->teb = next->teb;
+    w32->teb64 = next->teb64;
+    if (next->teb)
+        arch_w32_set_teb((uint32_t)next->teb);
+    arch_load_teb_selector();
+    static uint32_t dead_esp;
+    arch_switch(&dead_esp, next->esp);
+    panic("win32: a finished process was resumed");
 }
 
 void w32_yield(void)
 {
-    if (w32 && w32->current && w32->live_threads > 1) {
-        struct w32_thread *next = pick(w32->current, true);
-        if (next)
-            switch_to(next);
-    }
+    if (!w32 || !w32->current)
+        return;
+    struct w32_thread *next = w32->live_threads > 1 ? pick(w32->current, true) : NULL;
+    if (!next)
+        next = pick_other(true);
+    if (next)
+        switch_to(next);
 }
 
 void w32_block(void)
 {
     struct w32_thread *cur = w32->current;
-    if (!cur || w32->live_threads <= 1) {
+    if (!cur) {
         w32_idle(1);
     } else {
         cur->waiting = true;
-        struct w32_thread *next = pick(cur, true);
+        struct w32_thread *next = w32->live_threads > 1 ? pick(cur, true) : NULL;
+        if (!next)
+            next = pick_other(true);
         if (!next) {
             w32_idle(1);
-            next = pick(cur, false);
+            next = w32->live_threads > 1 ? pick(cur, false) : NULL;
+            if (!next)
+                next = pick_other(false);
         }
         if (next)
             switch_to(next);
@@ -132,11 +212,19 @@ void w32_block(void)
 
 void w32_preempt(void)
 {
-    if (!w32 || !w32->current || w32->live_threads <= 1)
+    static unsigned turn;
+    if (!w32 || !w32->current)
         return;
-    struct w32_thread *next = pick(w32->current, true);
+    struct w32_thread *next = NULL;
+    if (++turn % 2 == 0)
+        next = pick_other(true);
+    if (!next && w32->live_threads > 1) {
+        next = pick(w32->current, true);
+        if (!next)
+            next = pick(w32->current, false);
+    }
     if (!next)
-        next = pick(w32->current, false);
+        next = pick_other(true);
     if (next)
         switch_to(next);
 }
@@ -269,13 +357,14 @@ static struct w32_thread *thread_of(HANDLE h)
 
 HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id)
 {
-    struct w32_thread *t = w32_zalloc(sizeof(*t));
+    struct w32_thread *t = kzalloc(sizeof(*t));
     if (!t) {
         w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
         return NULL;
     }
     t->stack_size = (uint32_t)MIN(MAX(ALIGN_UP(stack, 4096), DEFAULT_STACK), MAX_STACK);
-    t->stack = heap_alloc_aligned(&w32->heap, t->stack_size, 4096);
+    t->stack = kmalloc_pages_uninit(t->stack_size);
+    t->proc = w32;
     t->id = w32->next_tid;
     w32->next_tid += 4;
     if (!t->stack || !(t->teb = make_teb(t)) || (w32->win64 && !(t->teb64 = w64_make_teb((uint32_t)t->stack, t->stack_size, t->id)))) {
@@ -285,14 +374,7 @@ HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DW
     t->start = start;
     t->param = param;
     t->suspended = (flags & CREATE_SUSPENDED) ? 1 : 0;
-    arch_fpu_save(fpu_of(t));
-    uint32_t *sp = (uint32_t *)(((uint32_t)t->stack + t->stack_size - 64) & ~15u);
-    *--sp = 0;
-    *--sp = (uint32_t)thread_entry;
-    for (int i = 0; i < 4; i++)
-        *--sp = 0;
-    *--sp = 0x202;
-    t->esp = (uint32_t)sp;
+    w32_thread_frame(t, thread_entry, t->stack + t->stack_size);
     HANDLE h = w32_handle_new(WH_THREAD);
     struct w32_object *o = w32_handle_get(h);
     if (!o)
@@ -572,6 +654,7 @@ static bool signaled(HANDLE h, struct w32_object *o)
     case WH_SEMAPHORE: return o->value > 0;
     case WH_MUTEX: return !o->value || o->owner == w32_thread_id();
     case WH_THREAD: return o->thread->done;
+    case WH_PROCESS: return !o->child || o->child->done;
     case WH_TIMER: return o->due && hal_ticks_ms() >= o->due;
     default: return true;
     }

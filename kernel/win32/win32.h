@@ -108,6 +108,10 @@ enum w32_object_type {
     WH_TIMER,
     WH_PIPE,
     WH_PORT,
+    WH_SECTION,
+    WH_TOKEN,
+    WH_KEY,
+    WH_JOB,
 };
 
 struct w32_find {
@@ -133,6 +137,7 @@ struct w32_object {
     uint32_t value;
     bool append;
     bool manual;
+    bool delete_on_close;
     uint32_t owner;
     uint32_t max;
     struct w32_thread *thread;
@@ -140,6 +145,16 @@ struct w32_object {
     char *path;
     struct w32_pipe *pipe;
     struct w32_port *port;
+    struct w32_section *section;
+    struct w32_child *child;
+};
+
+struct w32_child {
+    int refs;
+    bool done;
+    uint32_t exit_code;
+    uint32_t pid;
+    struct w32_process *proc;
 };
 
 struct w32_thread {
@@ -158,6 +173,8 @@ struct w32_thread {
     uint8_t *teb64;
     void *fls[64];
     uint8_t fpu_area[528];
+    struct w32_process *proc;
+    bool boot;
     struct w32_thread *next;
 };
 
@@ -187,8 +204,11 @@ struct w32_tls_module {
 #define W32_TLS_SLOTS 64
 #define W32_ATEXIT_MAX 64
 
+struct vmm_space;
+
 struct w32_process {
     struct exec_ctx *ctx;
+    struct vmm_space *space;
     struct heap heap;
     void *arena;
     uint32_t *arena_frames;
@@ -235,13 +255,39 @@ struct w32_process {
     uint32_t next_tid;
     struct w32_tls_module tls_mods[W32_TLS_MODULES];
     int tls_mod_count;
+    struct w32_vm *vm;
+    struct w32_process *ring_next;
+    struct w32_process *parent;
+    uint8_t *state;
+    struct w32_child *child;
+    uint8_t *boot_stack;
+    struct w32_thread *boot;
+    struct exec_ctx *spawn_ctx;
+    unsigned own_streams;
+    bool dead;
+    bool frozen;
 };
 
 extern struct w32_process *w32;
 
+void w32_process_enter(struct w32_process *p);
+struct w32_process *w32_ring_next(struct w32_process *p);
+void w32_reap(void);
+struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own);
+void w32_child_release(struct w32_child *c);
+void w32_terminate_child(struct w32_child *c, uint32_t code);
+void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_top);
+void w32_switch_thread(struct w32_thread *t);
+extern bool w32_trace;
+void w32_trace_dump(void);
+bool w32_vm_committed(uintptr_t address);
+void w32_vm_cleanup(void);
+NORETURN void w32_leave_forever(void);
+
 struct w32_pipe;
 struct stream;
 void w32_pipe_release(struct w32_object *o);
+void w32_section_release(struct w32_section *s);
 long w32_pipe_write(struct w32_pipe *p, const void *data, size_t n);
 long w32_pipe_read(struct w32_pipe *p, void *out, size_t n, bool wait);
 size_t w32_pipe_available(struct w32_pipe *p);
@@ -344,5 +390,96 @@ uint32_t WINAPI w32_one3(uint32_t, uint32_t, uint32_t);
 uint32_t WINAPI w32_one4(uint32_t, uint32_t, uint32_t, uint32_t);
 uint32_t WINAPI w32_one5(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 uint32_t WINAPI w32_one6(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+uint32_t WINAPI w32_zero7();
+uint32_t WINAPI w32_zero8();
+uint32_t WINAPI w32_zero9();
+uint32_t WINAPI w32_zero10();
+uint32_t WINAPI w32_zero11();
+uint32_t WINAPI w32_zero12();
+uint32_t WINAPI w32_zero13();
+uint32_t WINAPI w32_zero14();
+uint32_t WINAPI w32_one7();
+uint32_t WINAPI w32_one8();
+uint32_t WINAPI w32_one9();
+uint32_t WINAPI w32_one10();
+uint32_t WINAPI w32_one11();
+uint32_t WINAPI w32_one12();
+uint32_t WINAPI w32_one13();
+uint32_t WINAPI w32_one14();
+uint32_t WINAPI w32_fail0();
+uint32_t WINAPI w32_fail1();
+uint32_t WINAPI w32_fail2();
+uint32_t WINAPI w32_fail3();
+uint32_t WINAPI w32_fail4();
+uint32_t WINAPI w32_fail5();
+uint32_t WINAPI w32_fail6();
+uint32_t WINAPI w32_fail7();
+uint32_t WINAPI w32_fail8();
+uint32_t WINAPI w32_fail9();
+uint32_t WINAPI w32_fail10();
+uint32_t WINAPI w32_fail11();
+uint32_t WINAPI w32_fail12();
+uint32_t WINAPI w32_fail13();
+uint32_t WINAPI w32_fail14();
+uint32_t WINAPI w32_status0();
+uint32_t WINAPI w32_status1();
+uint32_t WINAPI w32_status2();
+uint32_t WINAPI w32_status3();
+uint32_t WINAPI w32_status4();
+uint32_t WINAPI w32_status5();
+uint32_t WINAPI w32_status6();
+uint32_t WINAPI w32_status7();
+uint32_t WINAPI w32_status8();
+uint32_t WINAPI w32_status9();
+uint32_t WINAPI w32_status10();
+uint32_t WINAPI w32_status11();
+uint32_t WINAPI w32_status12();
+uint32_t WINAPI w32_status13();
+uint32_t WINAPI w32_status14();
+uint32_t WINAPI w32_notimpl0();
+uint32_t WINAPI w32_notimpl1();
+uint32_t WINAPI w32_notimpl2();
+uint32_t WINAPI w32_notimpl3();
+uint32_t WINAPI w32_notimpl4();
+uint32_t WINAPI w32_notimpl5();
+uint32_t WINAPI w32_notimpl6();
+uint32_t WINAPI w32_notimpl7();
+uint32_t WINAPI w32_notimpl8();
+uint32_t WINAPI w32_notimpl9();
+uint32_t WINAPI w32_notimpl10();
+uint32_t WINAPI w32_notimpl11();
+uint32_t WINAPI w32_notimpl12();
+uint32_t WINAPI w32_notimpl13();
+uint32_t WINAPI w32_notimpl14();
+uint32_t WINAPI w32_neg0();
+uint32_t WINAPI w32_neg1();
+uint32_t WINAPI w32_neg2();
+uint32_t WINAPI w32_neg3();
+uint32_t WINAPI w32_neg4();
+uint32_t WINAPI w32_neg5();
+uint32_t WINAPI w32_neg6();
+uint32_t WINAPI w32_neg7();
+uint32_t WINAPI w32_neg8();
+uint32_t WINAPI w32_neg9();
+uint32_t WINAPI w32_neg10();
+uint32_t WINAPI w32_neg11();
+uint32_t WINAPI w32_neg12();
+uint32_t WINAPI w32_neg13();
+uint32_t WINAPI w32_neg14();
+uint32_t WINAPI w32_secerr0();
+uint32_t WINAPI w32_secerr1();
+uint32_t WINAPI w32_secerr2();
+uint32_t WINAPI w32_secerr3();
+uint32_t WINAPI w32_secerr4();
+uint32_t WINAPI w32_secerr5();
+uint32_t WINAPI w32_secerr6();
+uint32_t WINAPI w32_secerr7();
+uint32_t WINAPI w32_secerr8();
+uint32_t WINAPI w32_secerr9();
+uint32_t WINAPI w32_secerr10();
+uint32_t WINAPI w32_secerr11();
+uint32_t WINAPI w32_secerr12();
+uint32_t WINAPI w32_secerr13();
+uint32_t WINAPI w32_secerr14();
 
 #endif

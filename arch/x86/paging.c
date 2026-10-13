@@ -400,3 +400,178 @@ uint32_t vmm_pae_root(void)
 {
     return pae ? (uint32_t)pdpt : (uint32_t)page_dir;
 }
+
+#define PTE_OWNED 0x200u
+
+struct vmm_space {
+    void *tables[2048];
+    uint32_t commit_start, commit_end;
+};
+
+static struct vmm_space boot_space;
+static struct vmm_space *current_space = &boot_space;
+
+static uint32_t user_first(void)
+{
+    return VMM_USER_START >> shift();
+}
+
+static uint32_t user_last(void)
+{
+    return VMM_USER_END >> shift();
+}
+
+static void reload_cr3(void)
+{
+    uint32_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+}
+
+struct vmm_space *vmm_space_create(void)
+{
+    return kzalloc(sizeof(struct vmm_space));
+}
+
+struct vmm_space *vmm_space_current(void)
+{
+    return current_space;
+}
+
+void vmm_space_switch(struct vmm_space *s)
+{
+    if (!s)
+        s = &boot_space;
+    if (!enabled || s == current_space)
+        return;
+    for (uint32_t i = user_first(); i < user_last(); i++) {
+        current_space->tables[i] = tables[i];
+        tables[i] = s->tables[i];
+        set_pde(i, tables[i] ? phys_of(tables[i]) | PTE_PRESENT | PTE_WRITE | PTE_USER : 0);
+    }
+    current_space = s;
+    reload_cr3();
+}
+
+static uint64_t pte_get(void *t, uint32_t v)
+{
+    return pae ? ((uint64_t *)t)[(v >> 12) & 511] : ((uint32_t *)t)[(v >> 12) & 1023];
+}
+
+static void free_frame(uint64_t pte)
+{
+    uint64_t phys = pte & 0x000ffffffffff000ull;
+    if (phys >> 32 || phys >= (uint64_t)heap_phys + heap_bytes || phys < heap_phys) {
+        uint32_t pfn = (uint32_t)(phys >> 12);
+        vmm_frames_free(&pfn, 1);
+    } else {
+        kfree_pages((void *)(uintptr_t)(KERNEL_HEAP_VIRT + (uint32_t)phys - heap_phys));
+    }
+}
+
+static void release_tables(void **set, uint32_t start, uint32_t end, bool drop_tables)
+{
+    uint32_t span = 1u << shift();
+    for (uint32_t i = start >> shift(); i < (end + span - 1) >> shift() && i < user_last(); i++) {
+        void *t = set[i];
+        if (!t)
+            continue;
+        uint32_t base = i << shift();
+        for (uint32_t v = MAX(base, start); v < MIN(base + span, end) && v >= base; v += 4096u) {
+            uint64_t e = pte_get(t, v);
+            if ((e & PTE_PRESENT) && (e & PTE_OWNED)) {
+                free_frame(e);
+                if (pae)
+                    ((uint64_t *)t)[(v >> 12) & 511] = 0;
+                else
+                    ((uint32_t *)t)[(v >> 12) & 1023] = 0;
+            }
+        }
+        bool early = (uint8_t *)t >= (uint8_t *)early_tables && (uint8_t *)t < (uint8_t *)early_tables + sizeof(early_tables);
+        if (drop_tables && !early) {
+            kfree_pages(t);
+            set[i] = NULL;
+        }
+    }
+}
+
+void vmm_space_destroy(struct vmm_space *s)
+{
+    if (!s || s == &boot_space || s == current_space)
+        return;
+    release_tables(s->tables, VMM_USER_START, VMM_USER_END, true);
+    kfree(s);
+}
+
+void vmm_space_set_commit(uintptr_t start, size_t size)
+{
+    current_space->commit_start = (uint32_t)start;
+    current_space->commit_end = (uint32_t)(start + size);
+}
+
+void vmm_release(uintptr_t start, size_t size)
+{
+    release_tables(tables, (uint32_t)start, (uint32_t)(start + size), false);
+    flush_range((uint32_t)start, size);
+}
+
+static bool (*commit_hook)(uintptr_t address);
+
+void vmm_set_commit_hook(bool (*fn)(uintptr_t address))
+{
+    commit_hook = fn;
+}
+
+bool vmm_commit_fault(uintptr_t address)
+{
+    uint32_t v = (uint32_t)address & ~4095u;
+    if (!enabled || pte_present(v))
+        return false;
+    if ((v < current_space->commit_start || v >= current_space->commit_end) && !(commit_hook && commit_hook(v)))
+        return false;
+    if (!ensure_table(v, PTE_USER))
+        return false;
+    uint64_t phys;
+    uint32_t pfn;
+    if (pae && vmm_frames_alloc(&pfn, 1)) {
+        phys = (uint64_t)pfn << 12;
+    } else {
+        void *page = kmalloc_pages_uninit(4096);
+        if (!page)
+            return false;
+        phys = phys_of(page);
+    }
+    set_pte(v, phys, PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_OWNED);
+    invlpg(v);
+    memset((void *)(uintptr_t)v, 0, 4096);
+    return true;
+}
+
+int vmm_commit_range(uintptr_t start, size_t size)
+{
+    uint32_t v0 = (uint32_t)start & ~4095u;
+    for (uint32_t v = v0; v < start + size; v += 4096u) {
+        if (pte_present(v))
+            continue;
+        if (!ensure_table(v, PTE_USER)) {
+            vmm_release(v0, v - v0);
+            return -1;
+        }
+        uint64_t phys;
+        uint32_t pfn;
+        if (pae && vmm_frames_alloc(&pfn, 1)) {
+            phys = (uint64_t)pfn << 12;
+        } else {
+            void *page = kmalloc_pages_uninit(4096);
+            if (!page) {
+                vmm_release(v0, v - v0);
+                return -1;
+            }
+            phys = phys_of(page);
+        }
+        set_pte(v, phys, PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_OWNED);
+        invlpg(v);
+        memset((void *)(uintptr_t)v, 0, 4096);
+    }
+    return 0;
+}
