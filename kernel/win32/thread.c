@@ -904,17 +904,99 @@ static BOOL WINAPI SleepConditionVariableSRW(uint32_t *cv, uint32_t *lock, DWORD
     return woke;
 }
 
+static bool once_claim(uint32_t *once, void **context, bool check_only, bool *done)
+{
+    for (;;) {
+        uint32_t v = __atomic_load_n(once, __ATOMIC_ACQUIRE);
+        if ((v & 3) == 2) {
+            if (context)
+                *context = (void *)(uintptr_t)(v & ~3u);
+            *done = true;
+            return true;
+        }
+        if (check_only)
+            return false;
+        uint32_t expected = 0;
+        if ((v & 3) == 0 && __atomic_compare_exchange_n(once, &expected, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            *done = false;
+            return true;
+        }
+        w32_block();
+    }
+}
+
+static void once_finish(uint32_t *once, void *context, bool ok)
+{
+    __atomic_store_n(once, ok ? (((uint32_t)(uintptr_t)context & ~3u) | 2) : 0, __ATOMIC_RELEASE);
+}
+
 static BOOL WINAPI InitOnceExecuteOnce(uint32_t *once, void *fn, void *param, void **context)
 {
-    while (*once == 1)
-        w32_block();
-    if (*once == 2)
+    bool done;
+    once_claim(once, context, false, &done);
+    if (done)
         return TRUE;
-    *once = 1;
+    void *ctx = NULL;
     typedef BOOL WINAPI (*init_fn)(uint32_t *, void *, void **);
-    BOOL ok = ((init_fn)fn)(once, param, context);
-    *once = ok ? 2 : 0;
+    BOOL ok = ((init_fn)fn)(once, param, &ctx);
+    once_finish(once, ctx, ok);
+    if (ok && context)
+        *context = ctx;
     return ok;
+}
+
+static BOOL WINAPI InitOnceBeginInitialize(uint32_t *once, DWORD flags, BOOL *pending, void **context)
+{
+    bool done;
+    if (!once_claim(once, context, flags & 1, &done)) {
+        w32_set_error(31);
+        return FALSE;
+    }
+    *pending = !done;
+    return TRUE;
+}
+
+static BOOL WINAPI InitOnceComplete(uint32_t *once, DWORD flags, void *context)
+{
+    once_finish(once, context, !(flags & 4));
+    return TRUE;
+}
+
+static BOOL WINAPI WaitOnAddress(volatile void *addr, const void *compare, SIZE_T size, DWORD ms)
+{
+    uint64_t deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
+    while (!memcmp((const void *)addr, compare, size)) {
+        if (ms == 0 || (ms != INFINITE && hal_ticks_ms() >= deadline)) {
+            w32_set_error(ERROR_TIMEOUT);
+            return FALSE;
+        }
+        w32_block();
+    }
+    return TRUE;
+}
+
+static void WINAPI WakeByAddress(void *addr)
+{
+    UNUSED(addr);
+}
+
+static HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD id)
+{
+    UNUSED(access);
+    UNUSED(inherit);
+    for (struct w32_thread *t = w32->threads; t; t = t->next) {
+        if (t->id == id && !t->done) {
+            HANDLE h = w32_handle_new(WH_THREAD);
+            struct w32_object *o = w32_handle_get(h);
+            if (o)
+                o->thread = t;
+            return h;
+        }
+        if (t->next == w32->threads)
+            break;
+    }
+    w32_set_error(ERROR_INVALID_PARAMETER);
+    return NULL;
 }
 
 static DWORD WINAPI FlsAlloc(void *callback)
@@ -969,6 +1051,9 @@ static const struct w32_export thread_exports[] = {
     W32_AS("WakeAllConditionVariable", WakeConditionVariable), W32_FN(SleepConditionVariableCS),
     W32_FN(SleepConditionVariableSRW), W32_FN(InitOnceExecuteOnce), W32_FN(FlsAlloc), W32_FN(FlsFree),
     W32_FN(FlsGetValue), W32_FN(FlsSetValue),
+    W32_AS("FlsGetValue2", FlsGetValue), W32_FN(InitOnceBeginInitialize), W32_FN(InitOnceComplete),
+    W32_FN(WaitOnAddress), W32_AS("WakeByAddressAll", WakeByAddress), W32_AS("WakeByAddressSingle", WakeByAddress),
+    W32_FN(OpenThread),
 };
 
 W32_EXPORTS(thread_module, "kernel32.dll", thread_exports);

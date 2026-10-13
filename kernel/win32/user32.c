@@ -354,7 +354,7 @@ static const struct w32_export user32_exports[] = {
     W32_FN(wvsprintfA), W32_FN(wvsprintfW), W32_FN(CharUpperA), W32_FN(CharLowerA), W32_FN(CharUpperW),
     W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA),
     W32_FN(CharNextW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
-    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA), W32_AS("GetProcessWindowStation", w32_zero0), W32_AS("GetUserObjectInformationW", w32_zero5),
+    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA),
     W32_AS("GetKeyboardLayout", GetKeyboardLayout),
 };
 

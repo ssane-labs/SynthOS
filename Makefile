@@ -130,6 +130,9 @@ $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/linker.ld
 	@$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
 
 $(OUT)/obj/%_fp.o: CFLAGS += -m80387 -mfpmath=387
+$(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
+$(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
+$(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
 
 $(OUT)/obj/%.o: %.c
 	@mkdir -p $(@D)

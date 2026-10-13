@@ -522,6 +522,11 @@ void vmm_set_commit_hook(bool (*fn)(uintptr_t address))
     commit_hook = fn;
 }
 
+bool vmm_mapped(uintptr_t address)
+{
+    return enabled && pte_present((uint32_t)address & ~4095u);
+}
+
 bool vmm_commit_fault(uintptr_t address)
 {
     uint32_t v = (uint32_t)address & ~4095u;

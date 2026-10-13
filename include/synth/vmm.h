@@ -31,6 +31,7 @@ void vmm_space_destroy(struct vmm_space *s);
 void vmm_space_set_commit(uintptr_t start, size_t size);
 void vmm_release(uintptr_t start, size_t size);
 bool vmm_commit_fault(uintptr_t address);
+bool vmm_mapped(uintptr_t address);
 void vmm_set_commit_hook(bool (*fn)(uintptr_t address));
 int vmm_commit_range(uintptr_t start, size_t size);
 

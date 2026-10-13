@@ -197,7 +197,27 @@ static uint32_t WINAPI not_supported5(uint32_t a, uint32_t b, uint32_t c, uint32
     return ERROR_NOT_SUPPORTED;
 }
 
+static DWORD WINAPI NotifyAddrChange(HANDLE *handle, void *overlapped)
+{
+    if (handle)
+        *handle = NULL;
+    return overlapped ? 997 : 50;
+}
+
+static DWORD WINAPI GetInterfaceInfo(void *table, ULONG *len)
+{
+    UNUSED(table);
+    UNUSED(len);
+    return 232;
+}
+
 static const struct w32_export iphlpapi_exports[] = {
+    W32_FN(NotifyAddrChange),
+    W32_AS("NotifyRouteChange", NotifyAddrChange),
+    W32_AS("CancelIPChangeNotify", w32_one1),
+    W32_FN(GetInterfaceInfo),
+    W32_AS("IpReleaseAddress", not_supported1),
+    W32_AS("IpRenewAddress", not_supported1),
     W32_AS("if_nametoindex", w32_zero1),
     W32_AS("if_indextoname", w32_zero2),
     W32_AS("FreeMibTable", w32_zero1),
@@ -342,16 +362,11 @@ static void *WINAPI CoTaskMemRealloc(void *p, SIZE_T n)
 }
 
 static const struct w32_export ole32_exports[] = {
-    W32_AS("CoInitialize", w32_zero1),
-    W32_AS("CoInitializeEx", w32_zero2),
-    W32_AS("CoUninitialize", w32_zero0),
     W32_AS("CoInitializeSecurity", com_ok9),
     W32_AS("CoCreateInstance", com_not_registered),
     W32_AS("CoSetProxyBlanket", com_notimpl8),
     W32_AS("ProgIDFromCLSID", not_implemented2),
     W32_AS("CLSIDFromProgID", not_implemented2),
-    W32_AS("StringFromCLSID", not_implemented2),
-    W32_AS("CLSIDFromString", not_implemented2),
     W32_FN(CoTaskMemAlloc),
     W32_FN(CoTaskMemFree),
     W32_FN(CoTaskMemRealloc),
@@ -393,11 +408,243 @@ static UINT WINAPI SysStringLen(const WCHAR *s)
     return s ? *(const uint32_t *)((const uint8_t *)s - 4) / 2 : 0;
 }
 
+static void com_call(void *obj, int slot)
+{
+    typedef uint32_t WINAPI (*method_fn)(void *);
+    if (obj)
+        ((method_fn)(*(void ***)obj)[slot])(obj);
+}
+
 static uint32_t WINAPI VariantClear(uint16_t *v)
 {
-    if (v)
-        memset(v, 0, 16);
+    if (!v)
+        return 0;
+    void *p = *(void **)(v + 4);
+    if (v[0] == 8)
+        SysFreeString(p);
+    else if (v[0] == 9 || v[0] == 13)
+        com_call(p, 2);
+    memset(v, 0, 16);
     return 0;
+}
+
+static uint32_t WINAPI VariantCopy(uint16_t *dst, const uint16_t *src)
+{
+    if (dst == src)
+        return 0;
+    VariantClear(dst);
+    memcpy(dst, src, 16);
+    void *p = *(void *const *)(src + 4);
+    if (src[0] == 8 && p) {
+        WCHAR *copy = SysAllocStringLen(p, SysStringLen(p));
+        *(void **)(dst + 4) = copy;
+        if (!copy)
+            return 0x8007000eu;
+    } else if (src[0] == 9 || src[0] == 13) {
+        com_call(p, 1);
+    }
+    return 0;
+}
+
+static char *WINAPI SysAllocStringByteLen(const char *s, UINT n)
+{
+    uint8_t *b = w32_alloc(4 + (size_t)n + 2);
+    if (!b)
+        return NULL;
+    *(uint32_t *)b = n;
+    if (s)
+        memcpy(b + 4, s, n);
+    else
+        memset(b + 4, 0, n);
+    b[4 + n] = b[5 + n] = 0;
+    return (char *)b + 4;
+}
+
+static UINT WINAPI SysStringByteLen(const WCHAR *s)
+{
+    return s ? *(const uint32_t *)((const uint8_t *)s - 4) : 0;
+}
+
+static uint32_t WINAPI VarBstrCmp(const WCHAR *a, const WCHAR *b, DWORD lcid, DWORD flags)
+{
+    UNUSED(lcid);
+    UINT na = SysStringLen(a), nb = SysStringLen(b);
+    for (UINT i = 0; i < na && i < nb; i++) {
+        WCHAR x = a[i], y = b[i];
+        if (flags & 1) {
+            x = x >= 'a' && x <= 'z' ? (WCHAR)(x - 32) : x;
+            y = y >= 'a' && y <= 'z' ? (WCHAR)(y - 32) : y;
+        }
+        if (x != y)
+            return x < y ? 0 : 2;
+    }
+    return na == nb ? 1 : na < nb ? 0 : 2;
+}
+
+struct safearray {
+    uint16_t dims, features;
+    uint32_t element_size, locks;
+    uint8_t *data;
+    uint32_t count;
+    int32_t lower;
+};
+
+static uint32_t vt_size(uint16_t vt)
+{
+    switch (vt) {
+    case 16:
+    case 17: return 1;
+    case 2:
+    case 11:
+    case 18: return 2;
+    case 5:
+    case 6:
+    case 7:
+    case 20:
+    case 21: return 8;
+    case 12: return 16;
+    default: return 4;
+    }
+}
+
+static struct safearray *WINAPI SafeArrayCreateVector(uint16_t vt, int32_t lower, uint32_t count)
+{
+    uint32_t *block = w32_zalloc(4 + sizeof(struct safearray));
+    if (!block)
+        return NULL;
+    struct safearray *sa = (struct safearray *)(block + 1);
+    block[0] = vt;
+    sa->dims = 1;
+    sa->features = 0x80 | (vt == 8 ? 0x100 : vt == 13 ? 0x200 : vt == 9 ? 0x400 : vt == 12 ? 0x800 : 0);
+    sa->element_size = vt_size(vt);
+    sa->count = count;
+    sa->lower = lower;
+    sa->data = w32_zalloc((size_t)count * sa->element_size + 1);
+    if (!sa->data) {
+        w32_free(block);
+        return NULL;
+    }
+    return sa;
+}
+
+static uint16_t sa_vartype(const struct safearray *sa)
+{
+    return (uint16_t)((const uint32_t *)sa)[-1];
+}
+
+static uint32_t WINAPI SafeArrayDestroy(struct safearray *sa)
+{
+    if (!sa)
+        return 0;
+    if (sa->locks)
+        return 0x8002000du;
+    for (uint32_t i = 0; i < sa->count; i++) {
+        void *p = sa->data + (size_t)i * sa->element_size;
+        if (sa->features & 0x100)
+            SysFreeString(*(WCHAR **)p);
+        else if (sa->features & 0x600)
+            com_call(*(void **)p, 2);
+        else if (sa->features & 0x800)
+            VariantClear(p);
+    }
+    w32_free(sa->data);
+    w32_free((uint32_t *)sa - 1);
+    return 0;
+}
+
+static UINT WINAPI SafeArrayGetDim(const struct safearray *sa)
+{
+    return sa ? sa->dims : 0;
+}
+
+static uint32_t WINAPI SafeArrayGetLBound(const struct safearray *sa, UINT dim, int32_t *out)
+{
+    if (!sa || dim != 1)
+        return 0x8002000bu;
+    *out = sa->lower;
+    return 0;
+}
+
+static uint32_t WINAPI SafeArrayGetUBound(const struct safearray *sa, UINT dim, int32_t *out)
+{
+    if (!sa || dim != 1)
+        return 0x8002000bu;
+    *out = sa->lower + (int32_t)sa->count - 1;
+    return 0;
+}
+
+static uint32_t WINAPI SafeArrayGetVartype(const struct safearray *sa, uint16_t *vt)
+{
+    *vt = sa && (sa->features & 0x80) ? sa_vartype(sa) : 0;
+    return sa ? 0 : 0x80070057u;
+}
+
+static uint32_t WINAPI SafeArrayAccessData(struct safearray *sa, void **out)
+{
+    if (!sa)
+        return 0x80070057u;
+    sa->locks++;
+    *out = sa->data;
+    return 0;
+}
+
+static uint32_t WINAPI SafeArrayUnaccessData(struct safearray *sa)
+{
+    if (!sa || !sa->locks)
+        return 0x8000ffffu;
+    sa->locks--;
+    return 0;
+}
+
+static void *element(struct safearray *sa, const int32_t *index)
+{
+    int32_t i = index[0] - sa->lower;
+    return i >= 0 && (uint32_t)i < sa->count ? sa->data + (size_t)i * sa->element_size : NULL;
+}
+
+static uint32_t WINAPI SafeArrayGetElement(struct safearray *sa, const int32_t *index, void *out)
+{
+    void *p = sa ? element(sa, index) : NULL;
+    if (!p)
+        return 0x8002000bu;
+    if (sa->features & 0x800)
+        return VariantCopy(out, p);
+    memcpy(out, p, sa->element_size);
+    if (sa->features & 0x100)
+        *(WCHAR **)out = SysAllocStringLen(*(WCHAR **)p, SysStringLen(*(WCHAR **)p));
+    else if (sa->features & 0x600)
+        com_call(*(void **)p, 1);
+    return 0;
+}
+
+static uint32_t WINAPI SafeArrayPutElement(struct safearray *sa, const int32_t *index, void *in)
+{
+    void *p = sa ? element(sa, index) : NULL;
+    if (!p)
+        return 0x8002000bu;
+    if (sa->features & 0x800)
+        return VariantCopy(p, in);
+    if (sa->features & 0x100) {
+        SysFreeString(*(WCHAR **)p);
+        *(WCHAR **)p = in ? SysAllocStringLen(in, SysStringLen(in)) : NULL;
+    } else if (sa->features & 0x600) {
+        com_call(in, 1);
+        com_call(*(void **)p, 2);
+        *(void **)p = in;
+    } else {
+        memcpy(p, in, sa->element_size);
+    }
+    return 0;
+}
+
+static uint32_t WINAPI LoadRegTypeLib(const void *guid, uint16_t major, uint16_t minor, DWORD lcid, void **out)
+{
+    UNUSED(guid);
+    UNUSED(major);
+    UNUSED(minor);
+    UNUSED(lcid);
+    *out = NULL;
+    return 0x8002801du;
 }
 
 static uint32_t WINAPI GetErrorInfo(uint32_t reserved, void **out)
@@ -411,12 +658,22 @@ static uint32_t WINAPI GetErrorInfo(uint32_t reserved, void **out)
 static const struct w32_export oleaut32_exports[] = {
     W32_FN(SysAllocString), W32_FN(SysAllocStringLen), W32_FN(SysFreeString),
     W32_FN(SysStringLen),   W32_FN(VariantClear),      W32_AS("VariantInit", VariantClear),
-    W32_FN(GetErrorInfo),
+    W32_FN(GetErrorInfo),   W32_FN(VariantCopy),       W32_FN(SysAllocStringByteLen),
+    W32_FN(SysStringByteLen), W32_FN(VarBstrCmp),      W32_FN(SafeArrayCreateVector),
+    W32_FN(SafeArrayDestroy), W32_FN(SafeArrayGetDim), W32_FN(SafeArrayGetLBound),
+    W32_FN(SafeArrayGetUBound), W32_FN(SafeArrayGetVartype), W32_FN(SafeArrayAccessData),
+    W32_FN(SafeArrayUnaccessData), W32_FN(SafeArrayGetElement), W32_FN(SafeArrayPutElement),
+    W32_FN(LoadRegTypeLib),
 };
 
 static const char *const oleaut32_ordinals[] = {
     [2] = "SysAllocString", [4] = "SysAllocStringLen", [6] = "SysFreeString", [7] = "SysStringLen",
-    [8] = "VariantInit",    [9] = "VariantClear",      [200] = "GetErrorInfo",
+    [8] = "VariantInit",    [9] = "VariantClear",      [10] = "VariantCopy",
+    [16] = "SafeArrayDestroy", [17] = "SafeArrayGetDim", [19] = "SafeArrayGetUBound",
+    [20] = "SafeArrayGetLBound", [23] = "SafeArrayAccessData", [24] = "SafeArrayUnaccessData",
+    [25] = "SafeArrayGetElement", [26] = "SafeArrayPutElement", [77] = "SafeArrayGetVartype",
+    [149] = "SysStringByteLen", [150] = "SysAllocStringByteLen", [162] = "LoadRegTypeLib",
+    [200] = "GetErrorInfo",  [314] = "VarBstrCmp",      [411] = "SafeArrayCreateVector",
 };
 
 static BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(const WCHAR *text, DWORD revision, void **sd,

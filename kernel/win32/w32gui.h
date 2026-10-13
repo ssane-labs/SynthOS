@@ -198,9 +198,12 @@ struct w32_window {
     intptr_t dlg_result;
     bool dlg_ended;
     intptr_t dlg_msgresult;
+    bool message_only;
 };
 
 struct w32_window *w32_win(HANDLE h);
+struct w32_window *w32_windows(void);
+struct w32_class *w32_find_class(const char *name);
 LRESULT w32_send(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp);
 void w32_post(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp);
 struct rect w32_area(struct w32_window *w);

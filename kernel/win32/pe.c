@@ -118,6 +118,15 @@ static const char *builtin_alias(const char *name)
         return "kernel32.dll";
     if (str_starts(name, "msvcr") || str_starts(name, "vcruntime") || strcmp(name, "crtdll.dll") == 0)
         return "msvcrt.dll";
+    static const char *const sets[][2] = {{"api-ms-win-shcore-", "shcore.dll"},
+                                          {"api-ms-win-downlevel-shell32-", "shell32.dll"},
+                                          {"api-ms-win-downlevel-shlwapi-", "shlwapi.dll"},
+                                          {"api-ms-win-downlevel-user32-", "user32.dll"},
+                                          {"api-ms-win-downlevel-advapi32-", "advapi32.dll"},
+                                          {"api-ms-win-security-", "advapi32.dll"}};
+    for (size_t i = 0; i < ARRAY_SIZE(sets); i++)
+        if (str_starts(name, sets[i][0]))
+            return sets[i][1];
     return name;
 }
 
@@ -306,32 +315,40 @@ static void *export_lookup(struct w32_image *img, const char *name, uint32_t ord
 
 bool w32_trace;
 
-#define TRACE_RING 48
+#define TRACE_RING 96
 
-static const char *trace_ring[TRACE_RING];
+static char (*trace_ring)[48];
 static unsigned trace_pos;
 
 static void trace_record(const char *name)
 {
-    trace_ring[trace_pos++ % TRACE_RING] = name;
+    if (!trace_ring && !(trace_ring = kzalloc(TRACE_RING * sizeof(*trace_ring))))
+        return;
+    ksnprintf(trace_ring[trace_pos++ % TRACE_RING], sizeof(*trace_ring), "%s%s", w32 && w32->parent ? "child " : "",
+              name);
 }
 
 void w32_trace_dump(void)
 {
-    if (!w32_trace)
+    if (!w32_trace || !trace_ring)
         return;
     klog("win32: last API calls, oldest first:");
     for (unsigned i = 0; i < TRACE_RING; i++) {
         const char *name = trace_ring[(trace_pos + i) % TRACE_RING];
-        if (name)
+        if (*name)
             klog("  %s", name);
     }
 }
 
 static void *relay(void *fn, const char *module, const char *symbol)
 {
+    static const char *const noisy[] = {"SRWLock", "CriticalSection", "LastError", "TlsGetValue", "TlsSetValue",
+                                        "FlsGetValue", "Interlocked", "HeapAlloc", "HeapFree", "HeapReAlloc"};
     if (!w32_trace || !fn)
         return fn;
+    for (size_t i = 0; i < ARRAY_SIZE(noisy); i++)
+        if (strstr(symbol, noisy[i]))
+            return fn;
     char label[96];
     ksnprintf(label, sizeof(label), "%s!%s", module, symbol);
     char *name = w32_strdup(label);

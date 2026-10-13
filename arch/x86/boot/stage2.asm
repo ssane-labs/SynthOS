@@ -110,6 +110,8 @@ detect_disk:
 read_chunk:
     cmp byte [use_lba], 0
     je read_chunk_chs
+    mov byte [tries], 8
+.retry:
     mov ax, [count]
     mov [dap_count], ax
     mov eax, [lba]
@@ -118,7 +120,14 @@ read_chunk:
     mov ah, 0x42
     mov dl, [drive]
     int 0x13
-    jc disk_error
+    jnc .ok
+    xor ah, ah
+    mov dl, [drive]
+    int 0x13
+    dec byte [tries]
+    jnz .retry
+    jmp disk_error
+.ok:
     ret
 
 read_chunk_chs:
@@ -349,6 +358,7 @@ remaining:      dd 0
 dest:           dd 0
 kernel_sectors: dd 0
 
+tries:      db 0
 msg_banner: db "SynthOS loader ", 0
 msg_kernel: db 13, 10, "SynthOS: kernel image is missing or damaged", 0
 msg_disk:   db 13, 10, "SynthOS: disk read error", 0

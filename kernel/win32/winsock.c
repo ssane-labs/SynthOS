@@ -1301,7 +1301,153 @@ static void winsock_attach(void)
     started = 0;
 }
 
+struct addrinfo_ex_w {
+    int flags, family, socktype, protocol;
+    SIZE_T addrlen;
+    WCHAR *canonname;
+    struct sockaddr_in *addr;
+    void *blob;
+    SIZE_T bloblen;
+    void *provider;
+    struct addrinfo_ex_w *next;
+};
+
+static void WINAPI FreeAddrInfoExW(struct addrinfo_ex_w *a)
+{
+    while (a) {
+        struct addrinfo_ex_w *next = a->next;
+        w32_free(a->addr);
+        w32_free(a->canonname);
+        w32_free(a);
+        a = next;
+    }
+}
+
+static int WINAPI GetAddrInfoExW(const WCHAR *node, const WCHAR *service, DWORD ns, void *nsid,
+                                 const struct addrinfo_ex_w *hints, struct addrinfo_ex_w **out, void *timeout,
+                                 void *overlapped, void *completion, HANDLE *cancel)
+{
+    UNUSED(ns);
+    UNUSED(nsid);
+    UNUSED(timeout);
+    UNUSED(completion);
+    if (cancel)
+        *cancel = NULL;
+    *out = NULL;
+    if (overlapped) {
+        WSASetLastError(10045);
+        return 10045;
+    }
+    struct addrinfo_w h = {0}, *list = NULL;
+    if (hints) {
+        h.flags = hints->flags;
+        h.family = hints->family;
+        h.socktype = hints->socktype;
+        h.protocol = hints->protocol;
+    }
+    int r = GetAddrInfoW(node, service, hints ? &h : NULL, &list);
+    if (r)
+        return r;
+    struct addrinfo_ex_w **tail = out;
+    for (struct addrinfo_w *a = list; a; a = a->next) {
+        struct addrinfo_ex_w *e = w32_zalloc(sizeof(*e));
+        void *addr = e ? w32_alloc(a->addrlen) : NULL;
+        if (!addr) {
+            w32_free(e);
+            FreeAddrInfoExW(*out);
+            FreeAddrInfoW(list);
+            *out = NULL;
+            return 8;
+        }
+        memcpy(addr, a->addr, a->addrlen);
+        *e = (struct addrinfo_ex_w){a->flags, a->family, a->socktype, a->protocol, a->addrlen, NULL, addr,
+                                    NULL, 0, NULL, NULL};
+        if (a->canonname) {
+            size_t n = w32_wcslen(a->canonname) + 1;
+            if ((e->canonname = w32_alloc(n * sizeof(WCHAR))))
+                memcpy(e->canonname, a->canonname, n * sizeof(WCHAR));
+        }
+        *tail = e;
+        tail = &e->next;
+    }
+    FreeAddrInfoW(list);
+    return 0;
+}
+
+static int WINAPI WSALookupServiceBeginW(void *restrictions, DWORD flags, HANDLE *lookup)
+{
+    UNUSED(restrictions);
+    UNUSED(flags);
+    *lookup = (HANDLE)(uintptr_t)0x00050005u;
+    return 0;
+}
+
+static int WINAPI WSALookupServiceNextW(HANDLE lookup, DWORD flags, DWORD *len, void *results)
+{
+    UNUSED(lookup);
+    UNUSED(flags);
+    UNUSED(len);
+    UNUSED(results);
+    WSASetLastError(10110);
+    return -1;
+}
+
+static int WINAPI no_service_entries(DWORD *len, void *buf)
+{
+    UNUSED(buf);
+    if (len)
+        *len = 0;
+    return 0;
+}
+
+static int WINAPI WSAEnumProtocolsW(int *protocols, void *buf, DWORD *len)
+{
+    UNUSED(protocols);
+    return no_service_entries(len, buf);
+}
+
+static int WINAPI WSCEnumProtocols(int *protocols, void *buf, DWORD *len, int *error)
+{
+    UNUSED(error);
+    return WSAEnumProtocolsW(protocols, buf, len);
+}
+
+static int WINAPI WSCGetProviderPath(const void *guid, WCHAR *path, int *len, int *error)
+{
+    UNUSED(guid);
+    UNUSED(path);
+    UNUSED(len);
+    *error = 10022;
+    return -1;
+}
+
+static int WINAPI socket_error_set3(uint32_t a, uint32_t b, uint32_t c)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    WSASetLastError(10045);
+    return -1;
+}
+
+static BOOL WINAPI WSAGetOverlappedResult(uint32_t s, void *overlapped, DWORD *transferred, BOOL wait, DWORD *flags)
+{
+    UNUSED(s);
+    UNUSED(overlapped);
+    UNUSED(wait);
+    if (transferred)
+        *transferred = 0;
+    if (flags)
+        *flags = 0;
+    WSASetLastError(996);
+    return FALSE;
+}
+
 static const struct w32_export winsock_exports[] = {
+    W32_FN(GetAddrInfoExW), W32_FN(FreeAddrInfoExW), W32_AS("GetAddrInfoExCancel", w32_one1),
+    W32_FN(WSALookupServiceBeginW), W32_FN(WSALookupServiceNextW), W32_AS("WSALookupServiceEnd", w32_zero1),
+    W32_AS("WSASetServiceW", socket_error_set3), W32_AS("WSAEnumNameSpaceProvidersW", no_service_entries),
+    W32_FN(WSAEnumProtocolsW), W32_FN(WSCEnumProtocols), W32_FN(WSCGetProviderPath), W32_FN(WSAGetOverlappedResult),
     W32_FN(WSAStartup),     W32_FN(WSACleanup),       W32_FN(WSAGetLastError), W32_FN(WSASetLastError),
     W32_FN(socket),         W32_FN(WSASocketA),       W32_AS("WSASocketW", WSASocketA), W32_FN(closesocket),
     W32_FN(bind),           W32_FN(listen),           W32_FN(accept),          W32_FN(connect),

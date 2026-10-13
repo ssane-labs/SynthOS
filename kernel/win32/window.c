@@ -116,6 +116,18 @@ static const struct gui_app *app_of_process(void)
 
 static const struct window_ops bridge_ops;
 
+static struct w32_class *find_class(const char *name);
+
+struct w32_window *w32_windows(void)
+{
+    return windows;
+}
+
+struct w32_class *w32_find_class(const char *name)
+{
+    return find_class(name);
+}
+
 struct w32_window *w32_win(HANDLE h)
 {
     struct w32_window *w = h;
@@ -486,12 +498,16 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         w32_set_error(1407);
         return NULL;
     }
-    struct w32_window *parent = parent_h ? w32_win(parent_h) : NULL;
+    bool message_only = parent_h == (HANDLE)(intptr_t)-3;
+    if (message_only)
+        style &= ~(DWORD)(WS_CHILD | WS_VISIBLE);
+    struct w32_window *parent = parent_h && !message_only ? w32_win(parent_h) : NULL;
     if ((style & WS_CHILD) && !parent) {
         w32_set_error(1406);
         return NULL;
     }
-    if (!(style & WS_CHILD) && !gui_active()) {
+    bool headless = !(style & WS_CHILD) && !message_only && !gui_active();
+    if (headless && !w32_headless) {
         w32_set_error(1400);
         return NULL;
     }
@@ -521,6 +537,10 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
                                 height == W32_CW_USEDEFAULT ? 30 : MAX(height, 0)};
         link_child(parent, w);
         w->font = parent->font;
+    } else if (message_only || headless) {
+        w->message_only = message_only;
+        w->rect = (struct rect){0, 0, width == W32_CW_USEDEFAULT ? 0 : MAX(width, 0),
+                                height == W32_CW_USEDEFAULT ? 0 : MAX(height, 0)};
     } else {
         struct rect work = wm_work_area(0);
         bool caption = (style & WS_CAPTION) == WS_CAPTION || !(style & WS_POPUP);

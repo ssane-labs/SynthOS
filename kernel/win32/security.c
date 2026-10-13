@@ -288,7 +288,418 @@ static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWOR
     return TRUE;
 }
 
+static WCHAR *local_wide(const char *s)
+{
+    size_t n = strlen(s);
+    WCHAR *w = local_alloc((n + 1) * sizeof(WCHAR));
+    if (w)
+        for (size_t i = 0; i <= n; i++)
+            w[i] = (uint8_t)s[i];
+    return w;
+}
+
+static int sid_format(const struct sid *s, char *out, size_t size)
+{
+    int n = ksnprintf(out, size, "S-1-%u", s->authority[5]);
+    for (int i = 0; i < s->count && (size_t)n < size; i++)
+        n += ksnprintf(out + n, size - (size_t)n, "-%u", s->sub[i]);
+    return n;
+}
+
+static BOOL WINAPI ConvertSidToStringSidW(const struct sid *s, WCHAR **out)
+{
+    char buf[128];
+    if (!IsValidSid(s) || !out) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    sid_format(s, buf, sizeof(buf));
+    *out = local_wide(buf);
+    return *out != NULL;
+}
+
+static const struct sid *sid_alias(const char *s)
+{
+    static const struct {
+        char name[3];
+        const struct sid *sid;
+    } aliases[] = {{"BA", &admins_sid}, {"SY", &system_sid}, {"WD", &world_sid}, {"OW", &user_sid}, {"CO", &user_sid}};
+    for (size_t i = 0; i < ARRAY_SIZE(aliases); i++)
+        if (!strcmp(s, aliases[i].name))
+            return aliases[i].sid;
+    return NULL;
+}
+
+static bool sid_parse(const char *s, struct sid *out)
+{
+    const struct sid *alias = sid_alias(s);
+    if (alias) {
+        *out = *alias;
+        return true;
+    }
+    if ((s[0] != 'S' && s[0] != 's') || s[1] != '-')
+        return false;
+    s += 2;
+    uint32_t parts[10];
+    int n = 0;
+    while (*s && n < 10) {
+        if (*s < '0' || *s > '9')
+            return false;
+        uint32_t v = 0;
+        while (*s >= '0' && *s <= '9')
+            v = v * 10 + (uint32_t)(*s++ - '0');
+        parts[n++] = v;
+        if (*s == '-')
+            s++;
+        else if (*s)
+            return false;
+    }
+    if (n < 2 || parts[0] != 1 || n - 2 > 8)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->revision = 1;
+    out->count = (uint8_t)(n - 2);
+    out->authority[5] = (uint8_t)parts[1];
+    for (int i = 2; i < n; i++)
+        out->sub[i - 2] = parts[i];
+    return true;
+}
+
+static BOOL WINAPI ConvertStringSidToSidW(const WCHAR *text, struct sid **out)
+{
+    char buf[128];
+    size_t i = 0;
+    for (; text && text[i] && i < sizeof(buf) - 1; i++)
+        buf[i] = (char)text[i];
+    buf[i] = 0;
+    struct sid s;
+    if (!text || !out || !sid_parse(buf, &s)) {
+        w32_set_error(1337);
+        return FALSE;
+    }
+    *out = local_alloc(sizeof(s));
+    if (!*out)
+        return FALSE;
+    memcpy(*out, &s, sizeof(s));
+    return TRUE;
+}
+
+static BOOL WINAPI ConvertStringSidToSidA(const char *text, struct sid **out)
+{
+    struct sid s;
+    if (!text || !out || !sid_parse(text, &s)) {
+        w32_set_error(1337);
+        return FALSE;
+    }
+    *out = local_alloc(sizeof(s));
+    if (!*out)
+        return FALSE;
+    memcpy(*out, &s, sizeof(s));
+    return TRUE;
+}
+
+static DWORD *WINAPI GetSidSubAuthority(struct sid *s, DWORD n)
+{
+    return &s->sub[n & 7];
+}
+
+static uint8_t *WINAPI GetSidSubAuthorityCount(struct sid *s)
+{
+    return &s->count;
+}
+
+static BOOL WINAPI LookupAccountNameW(const WCHAR *system, const WCHAR *name, struct sid *sid, DWORD *sid_len,
+                                      WCHAR *domain, DWORD *domain_len, int *use)
+{
+    UNUSED(system);
+    UNUSED(name);
+    static const char dom[] = "SYNTHOS";
+    DWORD need = sid_size(&user_sid);
+    if (!sid || !sid_len || *sid_len < need || !domain || !domain_len || *domain_len < sizeof(dom)) {
+        if (sid_len)
+            *sid_len = need;
+        if (domain_len)
+            *domain_len = sizeof(dom);
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    memcpy(sid, &user_sid, need);
+    for (size_t i = 0; i < sizeof(dom); i++)
+        domain[i] = (uint8_t)dom[i];
+    *domain_len = sizeof(dom) - 1;
+    if (use)
+        *use = 1;
+    return TRUE;
+}
+
+struct acl {
+    uint8_t revision, pad;
+    uint16_t size, count, pad2;
+};
+
+static BOOL WINAPI InitializeAcl(struct acl *acl, DWORD len, DWORD revision)
+{
+    if (!acl || len < sizeof(*acl)) {
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    *acl = (struct acl){(uint8_t)revision, 0, (uint16_t)len, 0, 0};
+    return TRUE;
+}
+
+static BOOL WINAPI GetAce(struct acl *acl, DWORD index, void **ace)
+{
+    UNUSED(acl);
+    UNUSED(index);
+    *ace = NULL;
+    w32_set_error(ERROR_INVALID_PARAMETER);
+    return FALSE;
+}
+
+static BOOL WINAPI GetSecurityDescriptorControl(void *sd, uint16_t *control, DWORD *revision)
+{
+    UNUSED(sd);
+    *control = 0;
+    *revision = 1;
+    return TRUE;
+}
+
+static BOOL WINAPI GetSecurityDescriptorAcl(void *sd, BOOL *present, void **acl, BOOL *defaulted)
+{
+    UNUSED(sd);
+    *present = FALSE;
+    *acl = NULL;
+    if (defaulted)
+        *defaulted = FALSE;
+    return TRUE;
+}
+
+static BOOL WINAPI GetSecurityDescriptorSid(void *sd, const struct sid **sid, BOOL *defaulted)
+{
+    UNUSED(sd);
+    *sid = &user_sid;
+    if (defaulted)
+        *defaulted = FALSE;
+    return TRUE;
+}
+
+static DWORD WINAPI GetSecurityInfo(HANDLE h, int type, DWORD info, struct sid **owner, struct sid **group, void **dacl,
+                                    void **sacl, void **descriptor)
+{
+    UNUSED(h);
+    return GetNamedSecurityInfoW(NULL, type, info, owner, group, dacl, sacl, descriptor);
+}
+
+static DWORD WINAPI BuildSecurityDescriptorW(void *owner, void *group, ULONG naccess, void *access, ULONG naudit,
+                                             void *audit, void *old, ULONG *size, void **out)
+{
+    UNUSED(owner);
+    UNUSED(group);
+    UNUSED(naccess);
+    UNUSED(access);
+    UNUSED(naudit);
+    UNUSED(audit);
+    UNUSED(old);
+    uint8_t *sd = local_alloc(20);
+    if (!sd)
+        return ERROR_NOT_ENOUGH_MEMORY;
+    sd[0] = 1;
+    sd[3] = 0x80;
+    *size = 20;
+    *out = sd;
+    return 0;
+}
+
+static BOOL WINAPI ConvertSecurityDescriptorToStringSecurityDescriptorW(void *sd, DWORD revision, DWORD info,
+                                                                         WCHAR **out, ULONG *len)
+{
+    UNUSED(sd);
+    UNUSED(revision);
+    char buf[160] = "";
+    int n = 0;
+    if (info & 1) {
+        n += ksnprintf(buf + n, sizeof(buf) - (size_t)n, "O:");
+        n += sid_format(&user_sid, buf + n, sizeof(buf) - (size_t)n);
+    }
+    if (info & 4)
+        ksnprintf(buf + n, sizeof(buf) - (size_t)n, "D:");
+    *out = local_wide(buf);
+    if (len)
+        *len = (ULONG)strlen(buf) + 1;
+    return *out != NULL;
+}
+
+struct trustee {
+    void *multiple;
+    int op, form, type;
+    void *name;
+};
+
+struct explicit_access {
+    DWORD permissions;
+    int mode;
+    DWORD inheritance;
+    struct trustee trustee;
+};
+
+static void WINAPI BuildTrusteeWithSidW(struct trustee *t, void *sid)
+{
+    *t = (struct trustee){NULL, 0, 0, 0, sid};
+}
+
+static void WINAPI BuildExplicitAccessWithNameW(struct explicit_access *e, WCHAR *name, DWORD permissions, int mode,
+                                                DWORD inheritance)
+{
+    *e = (struct explicit_access){permissions, mode, inheritance, {NULL, 0, 1, 0, name}};
+}
+
+static BOOL WINAPI AccessCheck(void *sd, HANDLE token, DWORD desired, void *mapping, void *privileges, DWORD *plen,
+                               DWORD *granted, BOOL *status)
+{
+    UNUSED(sd);
+    UNUSED(token);
+    UNUSED(mapping);
+    UNUSED(privileges);
+    UNUSED(plen);
+    *granted = desired;
+    *status = TRUE;
+    return TRUE;
+}
+
+static void WINAPI MapGenericMask(DWORD *mask, const DWORD *mapping)
+{
+    static const DWORD generic[4] = {0x80000000u, 0x40000000u, 0x20000000u, 0x10000000u};
+    for (int i = 0; i < 4; i++)
+        if (*mask & generic[i])
+            *mask |= mapping[i];
+    *mask &= 0x0fffffffu;
+}
+
+static BOOL WINAPI AllocateLocallyUniqueId(uint32_t *luid)
+{
+    static uint32_t next = 0x10000;
+    luid[0] = __atomic_add_fetch(&next, 1, __ATOMIC_RELAXED);
+    luid[1] = 0;
+    return TRUE;
+}
+
+static DWORD WINAPI LsaNtStatusToWinError(DWORD status)
+{
+    switch (status) {
+    case 0: return 0;
+    case 0xc0000022u: return ERROR_ACCESS_DENIED;
+    case 0xc0000034u: return 2;
+    case 0xc0000017u: return ERROR_NOT_ENOUGH_MEMORY;
+    default: return 317;
+    }
+}
+
+static DWORD WINAPI lsa_denied4(DWORD a, DWORD b, DWORD c, DWORD d)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    return 0xc0000022u;
+}
+
+static DWORD WINAPI EventRegister(const void *guid, void *callback, void *context, uint64_t *handle)
+{
+    UNUSED(guid);
+    UNUSED(callback);
+    UNUSED(context);
+    *handle = 1;
+    return 0;
+}
+
+static DWORD WINAPI RegisterTraceGuidsW(void *request, void *context, const void *guid, ULONG count, void *regs,
+                                        const WCHAR *mof, const WCHAR *resource, uint64_t *handle)
+{
+    UNUSED(request);
+    UNUSED(context);
+    UNUSED(guid);
+    UNUSED(count);
+    UNUSED(regs);
+    UNUSED(mof);
+    UNUSED(resource);
+    *handle = 1;
+    return 0;
+}
+
+static uint64_t WINAPI GetTraceLoggerHandle(void *buffer)
+{
+    UNUSED(buffer);
+    w32_set_error(ERROR_INVALID_HANDLE);
+    return ~0ull;
+}
+
 static const struct w32_export security_exports[] = {
+    W32_FN(ConvertSidToStringSidW),
+    W32_FN(ConvertStringSidToSidW),
+    W32_FN(ConvertStringSidToSidA),
+    W32_FN(GetSidSubAuthority),
+    W32_FN(GetSidSubAuthorityCount),
+    W32_FN(LookupAccountNameW),
+    W32_FN(InitializeAcl),
+    W32_AS("IsValidAcl", w32_one1),
+    W32_AS("IsValidSecurityDescriptor", w32_one1),
+    W32_FN(GetAce),
+    W32_AS("AddMandatoryAce", w32_one5),
+    W32_AS("AddConditionalAce", w32_one8),
+    W32_AS("AddAccessAllowedAce", w32_one4),
+    W32_AS("AddAccessAllowedAceEx", w32_one5),
+    W32_FN(GetSecurityDescriptorControl),
+    W32_AS("GetSecurityDescriptorDacl", GetSecurityDescriptorAcl),
+    W32_AS("GetSecurityDescriptorSacl", GetSecurityDescriptorAcl),
+    W32_AS("GetSecurityDescriptorOwner", GetSecurityDescriptorSid),
+    W32_AS("GetSecurityDescriptorGroup", GetSecurityDescriptorSid),
+    W32_FN(GetSecurityInfo),
+    W32_AS("SetSecurityInfo", w32_zero7),
+    W32_AS("SetNamedSecurityInfoW", w32_zero7),
+    W32_AS("SetFileSecurityW", w32_one3),
+    W32_AS("SetEntriesInAclW", SetEntriesInAclA),
+    W32_FN(BuildSecurityDescriptorW),
+    W32_FN(ConvertSecurityDescriptorToStringSecurityDescriptorW),
+    W32_FN(BuildTrusteeWithSidW),
+    W32_FN(BuildExplicitAccessWithNameW),
+    W32_FN(AccessCheck),
+    W32_FN(MapGenericMask),
+    W32_FN(AllocateLocallyUniqueId),
+    W32_FN(LsaNtStatusToWinError),
+    W32_AS("LsaOpenPolicy", lsa_denied4),
+    W32_AS("LsaAddAccountRights", lsa_denied4),
+    W32_AS("LsaClose", w32_zero1),
+    W32_AS("ChangeServiceConfigW", w32_fail11),
+    W32_AS("QueryServiceConfigW", w32_fail4),
+    W32_AS("QueryServiceStatus", w32_fail2),
+    W32_AS("CryptGetProvParam", w32_fail5),
+    W32_AS("CryptSetHashParam", w32_fail4),
+    W32_AS("CryptSignHashW", w32_fail6),
+    W32_AS("RegDisablePredefinedCache", w32_zero0),
+    W32_AS("RegNotifyChangeKeyValue", w32_zero5),
+    W32_FN(EventRegister),
+    W32_AS("EventUnregister", w32_zero2),
+    W32_AS("EventSetInformation", w32_zero5),
+    W32_AS("EventWrite", w32_zero5),
+    W32_AS("EventWriteTransfer", w32_zero7),
+    W32_AS("EventEnabled", w32_zero3),
+    W32_AS("EventProviderEnabled", w32_zero5),
+    W32_FN(RegisterTraceGuidsW),
+    W32_AS("UnregisterTraceGuids", w32_zero2),
+    W32_AS("TraceEvent", w32_zero3),
+    W32_AS("GetTraceEnableFlags", w32_zero2),
+    W32_AS("GetTraceEnableLevel", w32_zero2),
+    W32_FN(GetTraceLoggerHandle),
+    W32_AS("LogonUserW", w32_fail6),
+    W32_AS("CreateProcessAsUserW", w32_fail11),
+    W32_AS("CreateProcessWithTokenW", w32_fail9),
+    W32_AS("CreateRestrictedToken", w32_fail9),
+    W32_AS("DuplicateTokenEx", w32_fail6),
+    W32_AS("SetTokenInformation", w32_fail4),
+    W32_AS("SetThreadToken", w32_fail2),
+    W32_AS("ImpersonateAnonymousToken", w32_fail1),
+    W32_AS("ImpersonateNamedPipeClient", w32_fail1),
+    W32_AS("RevertToSelf", w32_fail0),
     W32_FN(AllocateAndInitializeSid),
     W32_FN(FreeSid),
     W32_FN(GetLengthSid),

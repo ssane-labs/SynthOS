@@ -144,6 +144,8 @@ struct w32_object {
     uint64_t due;
     char *path;
     struct w32_pipe *pipe;
+    struct w32_pipe *pipe_out;
+    struct w32_npipe *npipe;
     struct w32_port *port;
     struct w32_section *section;
     struct w32_child *child;
@@ -175,6 +177,9 @@ struct w32_thread {
     uint8_t fpu_area[528];
     struct w32_process *proc;
     bool boot;
+    struct w32_fiber *fiber;
+    uint8_t com_apartment;
+    int com_inits;
     struct w32_thread *next;
 };
 
@@ -280,13 +285,18 @@ void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_
 void w32_switch_thread(struct w32_thread *t);
 extern bool w32_trace;
 void w32_trace_dump(void);
+extern bool w32_headless;
 bool w32_vm_committed(uintptr_t address);
 void w32_vm_cleanup(void);
 NORETURN void w32_leave_forever(void);
 
 struct w32_pipe;
+struct w32_npipe;
+struct w32_fiber;
 struct stream;
 void w32_pipe_release(struct w32_object *o);
+HANDLE w32_npipe_open(const char *name);
+bool w32_is_pipe_name(const char *name);
 void w32_section_release(struct w32_section *s);
 long w32_pipe_write(struct w32_pipe *p, const void *data, size_t n);
 long w32_pipe_read(struct w32_pipe *p, void *out, size_t n, bool wait);

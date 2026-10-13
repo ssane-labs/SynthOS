@@ -298,6 +298,15 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
     if (!w32 || !w32->jump.active)
         panic("CPU exception %d at %08x (address %08x)", vector, eip, address);
     w32_trace_dump();
+    uint32_t r[8];
+    arch_fault_registers(r);
+    klog("win32: fault %d in %s at %08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x", vector,
+         w32->parent ? "child" : "main", eip, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+    uint32_t fp = r[6];
+    for (int i = 0; i < 12 && fp >= VMM_USER_START && (fp >= 0xc0000000u ? fp < 0xfff00000u : vmm_mapped(fp + 4)); i++) {
+        klog("win32:   called from %08x", ((uint32_t *)fp)[1]);
+        fp = ((uint32_t *)fp)[0];
+    }
     char where[96] = "";
     for (struct w32_image *img = w32->images; img; img = img->next)
         if (!img->builtin && eip >= img->base && eip - img->base < img->size)
@@ -629,8 +638,10 @@ static int run(struct exec_ctx *ctx)
         if (!w32->exiting)
             w32->exit_code = code;
     }
-    arch_set_tick_hook(NULL);
-    arch_set_fault_handler(NULL);
+    if (!w32->ring_next || w32->ring_next == w32) {
+        arch_set_tick_hook(NULL);
+        arch_set_fault_handler(NULL);
+    }
     if (w32->win64)
         w64_cleanup();
     if (entered_long)
@@ -995,3 +1006,24 @@ static const struct setting s_trace = {"w32trace", "on|off",
                                        "remember the last Windows API calls and log them when a program crashes",
                                        get_trace, set_trace};
 SETTING(s_trace);
+
+bool w32_headless;
+
+static void get_headless(char *buf, size_t cap)
+{
+    str_copy(buf, w32_headless ? "on" : "off", cap);
+}
+
+static int set_headless(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    w32_headless = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_headless = {"w32headless", "on|off",
+                                          "let Windows programs create windows without the desktop (headless mode)",
+                                          get_headless, set_headless};
+SETTING(s_headless);

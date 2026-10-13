@@ -82,6 +82,8 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
         return std_dup(0);
     if (is_device(name, "NUL"))
         return w32_handle_new(WH_NULL);
+    if (w32_is_pipe_name(name))
+        return w32_npipe_open(name);
     char path[PATH_MAX_LEN];
     if (w32_path(name, path, sizeof(path)) != 0) {
         w32_set_error(ERROR_PATH_NOT_FOUND);
@@ -183,7 +185,7 @@ long w32_handle_read(HANDLE h, void *buf, size_t n)
     case WH_FILE:
         return vfs_read(o->file, buf, n);
     case WH_PIPE:
-        return o->pipe && !o->value ? w32_pipe_read(o->pipe, buf, n, true) : E_BADF;
+        return o->pipe && o->value != 1 ? w32_pipe_read(o->pipe, buf, n, true) : E_BADF;
     case WH_NULL:
         return 0;
     default:
@@ -206,6 +208,8 @@ long w32_handle_write(HANDLE h, const void *buf, size_t n)
             vfs_seek(o->file, 0, VFS_SEEK_END);
         return vfs_write(o->file, buf, n);
     case WH_PIPE:
+        if (o->value == 2)
+            return o->pipe_out ? w32_pipe_write(o->pipe_out, buf, n) : E_PIPE;
         return o->pipe && o->value ? w32_pipe_write(o->pipe, buf, n) : E_BADF;
     case WH_NULL:
         return (long)n;

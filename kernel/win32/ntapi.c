@@ -271,11 +271,6 @@ static BOOL WINAPI ReplaceFileW(const WCHAR *replaced, const WCHAR *replacement,
     return move && move(replacement, replaced, 1);
 }
 
-static BOOL WINAPI no_fiber(void)
-{
-    return FALSE;
-}
-
 static DWORD WINAPI zero_frames(DWORD skip, DWORD count, void **frames, DWORD *hash)
 {
     UNUSED(skip);
@@ -329,7 +324,6 @@ static const struct w32_export ntapi_kernel32[] = {
     W32_FN(GetCurrentProcessorNumber),
     W32_FN(GetProcessHandleCount),
     W32_FN(GetProcessHeaps),
-    W32_AS("IsThreadAFiber", no_fiber),
     W32_FN(K32GetPerformanceInfo),
     W32_FN(K32GetProcessMemoryInfo),
     W32_AS("GetProcessMemoryInfo", K32GetProcessMemoryInfo),

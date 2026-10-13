@@ -278,17 +278,128 @@ void heap_get_stats(struct heap_stats *out)
     heap_stats_of(&kernel_heap, out);
 }
 
+#define POOL_CHUNK_PAGES 256u
+#define POOL_MAX_CHUNKS 2048
+
+struct page_chunk {
+    uint8_t *base;
+    void *free_list;
+    uint32_t free_count;
+    struct page_chunk *next_partial;
+};
+
+static struct page_chunk *pool_chunks[POOL_MAX_CHUNKS];
+static int pool_count;
+static struct page_chunk *pool_partial;
+
+static int pool_find(const void *ptr)
+{
+    int lo = 0, hi = pool_count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        const uint8_t *b = pool_chunks[mid]->base;
+        if ((const uint8_t *)ptr < b)
+            hi = mid - 1;
+        else if ((const uint8_t *)ptr >= b + POOL_CHUNK_PAGES * 4096u)
+            lo = mid + 1;
+        else
+            return mid;
+    }
+    return -1;
+}
+
+static struct page_chunk *pool_grow(void)
+{
+    if (pool_count == POOL_MAX_CHUNKS)
+        return NULL;
+    struct page_chunk *c = heap_alloc(&kernel_heap, sizeof(*c));
+    uint8_t *base = c ? alloc_aligned(&kernel_heap, POOL_CHUNK_PAGES * 4096u, 4096, false) : NULL;
+    if (!base) {
+        heap_free(&kernel_heap, c);
+        return NULL;
+    }
+    c->base = base;
+    c->free_list = NULL;
+    for (uint32_t i = POOL_CHUNK_PAGES; i-- > 0;) {
+        void **page = (void **)(base + i * 4096u);
+        *page = c->free_list;
+        c->free_list = page;
+    }
+    c->free_count = POOL_CHUNK_PAGES;
+    int at = pool_count;
+    while (at > 0 && pool_chunks[at - 1]->base > base) {
+        pool_chunks[at] = pool_chunks[at - 1];
+        at--;
+    }
+    pool_chunks[at] = c;
+    pool_count++;
+    c->next_partial = pool_partial;
+    pool_partial = c;
+    return c;
+}
+
+static void *page_alloc(void)
+{
+    struct page_chunk *c = pool_partial;
+    if (!c && !(c = pool_grow()))
+        return NULL;
+    void **page = c->free_list;
+    c->free_list = *page;
+    if (--c->free_count == 0)
+        pool_partial = c->next_partial;
+    return page;
+}
+
+static void partial_remove(struct page_chunk *c)
+{
+    for (struct page_chunk **pp = &pool_partial; *pp; pp = &(*pp)->next_partial)
+        if (*pp == c) {
+            *pp = c->next_partial;
+            return;
+        }
+}
+
+static void page_free(int index, void *ptr)
+{
+    struct page_chunk *c = pool_chunks[index];
+    *(void **)ptr = c->free_list;
+    c->free_list = ptr;
+    if (c->free_count++ == 0) {
+        c->next_partial = pool_partial;
+        pool_partial = c;
+    }
+    if (c->free_count == POOL_CHUNK_PAGES && pool_partial != c) {
+        partial_remove(c);
+        memmove(&pool_chunks[index], &pool_chunks[index + 1], (size_t)(pool_count - index - 1) * sizeof(c));
+        pool_count--;
+        heap_free_aligned(&kernel_heap, c->base);
+        heap_free(&kernel_heap, c);
+    }
+}
+
 void *kmalloc_pages(size_t size)
 {
+    if (size == 4096) {
+        void *p = page_alloc();
+        if (p)
+            memset(p, 0, 4096);
+        return p;
+    }
     return heap_alloc_aligned(&kernel_heap, size, 4096);
 }
 
 void *kmalloc_pages_uninit(size_t size)
 {
+    if (size == 4096)
+        return page_alloc();
     return alloc_aligned(&kernel_heap, size, 4096, false);
 }
 
 void kfree_pages(void *ptr)
 {
-    heap_free_aligned(&kernel_heap, ptr);
+    int index = ptr ? pool_find(ptr) : -1;
+    if (index >= 0)
+        page_free(index, ptr);
+    else
+        heap_free_aligned(&kernel_heap, ptr);
 }

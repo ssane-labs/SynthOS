@@ -261,6 +261,15 @@ bool arch_long_active(void)
     return long_active;
 }
 
+static struct regs *fault_regs;
+
+void arch_fault_registers(uint32_t out[8])
+{
+    const struct regs *r = fault_regs;
+    uint32_t v[8] = {r->eax, r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp, r->esp + 20};
+    memcpy(out, v, sizeof(v));
+}
+
 void arch_set_fault_handler(arch_fault_fn fn)
 {
     fault_handler = fn;
@@ -278,8 +287,10 @@ void x86_interrupt(struct regs *r)
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         if (r->vector == 14 && !(r->error & 1) && vmm_commit_fault(cr2))
             return;
-        if (fault_handler && r->vector != 8 && r->vector != 18)
+        if (fault_handler && r->vector != 8 && r->vector != 18) {
+            fault_regs = r;
             fault_handler((int)r->vector, r->eip, cr2);
+        }
         panic("CPU exception %u (%s) at %08x err=%x cr2=%08x eax=%08x ebx=%08x ecx=%08x edx=%08x esp=%08x",
               r->vector, exception_names[r->vector] ? exception_names[r->vector] : "reserved", r->eip,
               r->error, cr2, r->eax, r->ebx, r->ecx, r->edx, r->esp);

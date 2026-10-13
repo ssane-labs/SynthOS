@@ -1155,6 +1155,7 @@ static int spawn(const char *app, const char *cmdline, const uint32_t *startup, 
     struct spawn_args *a = kzalloc(sizeof(*a));
     if (!a)
         return ERROR_NOT_ENOUGH_MEMORY;
+    klog("win32: CreateProcess %.200s", cmdline ? cmdline : app ? app : "?");
     a->app = app ? kstrdup(app) : NULL;
     a->cmdline = cmdline ? kstrdup(cmdline) : NULL;
     a->env = copy_env_block(env, wide_env);

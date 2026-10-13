@@ -1,4 +1,5 @@
 #include <synth/error.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/stream.h>
 #include <synth/string.h>
@@ -20,8 +21,47 @@ static void pipe_drop(struct w32_pipe *p)
     }
 }
 
+struct w32_npipe {
+    char name[128];
+    struct w32_pipe *in, *out;
+    bool connected;
+    struct w32_npipe *next;
+};
+
+static struct w32_npipe *npipes;
+
+static void npipe_detach(struct w32_object *o)
+{
+    if (o->pipe) {
+        o->pipe->readers--;
+        pipe_drop(o->pipe);
+    }
+    if (o->pipe_out) {
+        o->pipe_out->writers--;
+        pipe_drop(o->pipe_out);
+    }
+    o->pipe = o->pipe_out = NULL;
+}
+
+static void npipe_remove(struct w32_npipe *np)
+{
+    for (struct w32_npipe **pp = &npipes; *pp; pp = &(*pp)->next)
+        if (*pp == np) {
+            *pp = np->next;
+            break;
+        }
+    kfree(np);
+}
+
 void w32_pipe_release(struct w32_object *o)
 {
+    if (o->value == 2) {
+        npipe_detach(o);
+        if (o->npipe)
+            npipe_remove(o->npipe);
+        o->npipe = NULL;
+        return;
+    }
     struct w32_pipe *p = o->pipe;
     if (!p)
         return;
@@ -209,9 +249,202 @@ struct stream *w32_handle_stream(HANDLE h)
     return s;
 }
 
+bool w32_is_pipe_name(const char *name)
+{
+    return name && (name[0] == '\\' || name[0] == '/') && (name[1] == '\\' || name[1] == '/') &&
+           (name[2] == '.' || name[2] == '?') && (name[3] == '\\' || name[3] == '/') &&
+           !str_ncasecmp(name + 4, "pipe", 4) && (name[8] == '\\' || name[8] == '/');
+}
+
+static bool npipe_listen(struct w32_object *o, struct w32_npipe *np)
+{
+    struct w32_pipe *in = kzalloc(sizeof(*in)), *out = kzalloc(sizeof(*out));
+    if (!in || !out) {
+        kfree(in);
+        kfree(out);
+        return false;
+    }
+    in->readers = 1;
+    out->writers = 1;
+    o->pipe = in;
+    o->pipe_out = out;
+    np->in = in;
+    np->out = out;
+    np->connected = false;
+    return true;
+}
+
+static HANDLE create_named_pipe(const char *name, DWORD open_mode)
+{
+    if (!w32_is_pipe_name(name)) {
+        w32_set_error(ERROR_INVALID_NAME);
+        return INVALID_HANDLE_VALUE;
+    }
+    if (open_mode & 0x00080000u)
+        for (struct w32_npipe *np = npipes; np; np = np->next)
+            if (!str_casecmp(np->name, name + 9)) {
+                w32_set_error(ERROR_ACCESS_DENIED);
+                return INVALID_HANDLE_VALUE;
+            }
+    struct w32_npipe *np = kzalloc(sizeof(*np));
+    HANDLE h = np ? w32_handle_new(WH_PIPE) : NULL;
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || !npipe_listen(o, np)) {
+        if (o)
+            w32_handle_close(h);
+        kfree(np);
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_HANDLE_VALUE;
+    }
+    str_copy(np->name, name + 9, sizeof(np->name));
+    o->value = 2;
+    o->npipe = np;
+    np->next = npipes;
+    npipes = np;
+    return h;
+}
+
+static HANDLE WINAPI CreateNamedPipeA(LPCSTR name, DWORD open_mode, DWORD pipe_mode, DWORD instances, DWORD out_size,
+                                      DWORD in_size, DWORD timeout, void *sa)
+{
+    UNUSED(pipe_mode);
+    UNUSED(instances);
+    UNUSED(out_size);
+    UNUSED(in_size);
+    UNUSED(timeout);
+    UNUSED(sa);
+    return create_named_pipe(name, open_mode);
+}
+
+static HANDLE WINAPI CreateNamedPipeW(LPCWSTR name, DWORD open_mode, DWORD pipe_mode, DWORD instances, DWORD out_size,
+                                      DWORD in_size, DWORD timeout, void *sa)
+{
+    char *n = w32_narrow(name);
+    HANDLE h = CreateNamedPipeA(n, open_mode, pipe_mode, instances, out_size, in_size, timeout, sa);
+    w32_free(n);
+    return h;
+}
+
+static struct w32_npipe *npipe_find(const char *name, bool *exists)
+{
+    *exists = false;
+    for (struct w32_npipe *np = npipes; np; np = np->next)
+        if (!str_casecmp(np->name, name + 9)) {
+            *exists = true;
+            if (!np->connected)
+                return np;
+        }
+    return NULL;
+}
+
+HANDLE w32_npipe_open(const char *name)
+{
+    bool exists;
+    struct w32_npipe *np = npipe_find(name, &exists);
+    if (!np) {
+        w32_set_error(exists ? 231 : ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    HANDLE h = w32_handle_new(WH_PIPE);
+    struct w32_object *o = w32_handle_get(h);
+    if (!o)
+        return INVALID_HANDLE_VALUE;
+    o->value = 2;
+    o->pipe = np->out;
+    o->pipe_out = np->in;
+    np->out->readers++;
+    np->in->writers++;
+    np->connected = true;
+    return h;
+}
+
+static struct w32_object *server_object(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || o->type != WH_PIPE || !o->npipe) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return NULL;
+    }
+    return o;
+}
+
+static BOOL WINAPI ConnectNamedPipe(HANDLE h, void *overlapped)
+{
+    struct w32_object *o = server_object(h);
+    if (!o)
+        return FALSE;
+    if (o->npipe->connected) {
+        w32_set_error(535);
+        return FALSE;
+    }
+    if (overlapped) {
+        w32_set_error(997);
+        return FALSE;
+    }
+    while (!o->npipe->connected)
+        w32_block();
+    return TRUE;
+}
+
+static BOOL WINAPI DisconnectNamedPipe(HANDLE h)
+{
+    struct w32_object *o = server_object(h);
+    if (!o)
+        return FALSE;
+    npipe_detach(o);
+    if (!npipe_listen(o, o->npipe)) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI WaitNamedPipeA(LPCSTR name, DWORD ms)
+{
+    uint64_t deadline = hal_ticks_ms() + (ms == 0 ? 50 : ms == INFINITE ? ~0u : ms);
+    for (;;) {
+        bool exists;
+        if (npipe_find(name, &exists))
+            return TRUE;
+        if (!exists || hal_ticks_ms() >= deadline) {
+            w32_set_error(exists ? 121 : ERROR_FILE_NOT_FOUND);
+            return FALSE;
+        }
+        w32_block();
+    }
+}
+
+static BOOL WINAPI WaitNamedPipeW(LPCWSTR name, DWORD ms)
+{
+    char *n = w32_narrow(name);
+    BOOL ok = n && WaitNamedPipeA(n, ms);
+    w32_free(n);
+    return ok;
+}
+
+static BOOL WINAPI SetNamedPipeHandleState(HANDLE h, DWORD *mode, DWORD *max, DWORD *timeout)
+{
+    UNUSED(mode);
+    UNUSED(max);
+    UNUSED(timeout);
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || o->type != WH_PIPE) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static const struct w32_export pipe_exports[] = {
     W32_FN(CreatePipe),
     W32_FN(PeekNamedPipe),
+    W32_FN(CreateNamedPipeA),
+    W32_FN(CreateNamedPipeW),
+    W32_FN(ConnectNamedPipe),
+    W32_FN(DisconnectNamedPipe),
+    W32_FN(WaitNamedPipeA),
+    W32_FN(WaitNamedPipeW),
+    W32_FN(SetNamedPipeHandleState),
 };
 
 W32_EXPORTS(pipe_module, "kernel32.dll", pipe_exports);

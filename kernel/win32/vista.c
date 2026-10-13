@@ -684,11 +684,6 @@ static BOOL WINAPI not_implemented3(uint32_t a, uint32_t b, uint32_t c)
     return not_implemented5(a, b, c, 0, 0);
 }
 
-static BOOL WINAPI not_implemented2(uint32_t a, uint32_t b)
-{
-    return not_implemented5(a, b, 0, 0, 0);
-}
-
 static BOOL WINAPI true7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
 {
     UNUSED(a);
@@ -725,39 +720,6 @@ static BOOL WINAPI false6(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32
     return false7(a, b, c, d, e, f, 0);
 }
 
-static void *WINAPI no_pointer1(uint32_t a)
-{
-    UNUSED(a);
-    w32_set_error(ERROR_CALL_NOT_IMPLEMENTED);
-    return NULL;
-}
-
-static void *WINAPI no_pointer2(uint32_t a, uint32_t b)
-{
-    UNUSED(b);
-    return no_pointer1(a);
-}
-
-static HANDLE WINAPI no_handle7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
-{
-    UNUSED(a);
-    UNUSED(b);
-    UNUSED(c);
-    UNUSED(d);
-    UNUSED(e);
-    UNUSED(f);
-    UNUSED(g);
-    w32_set_error(ERROR_CALL_NOT_IMPLEMENTED);
-    return INVALID_HANDLE_VALUE;
-}
-
-static HANDLE WINAPI no_handle8(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g,
-                                uint32_t h)
-{
-    UNUSED(h);
-    return no_handle7(a, b, c, d, e, f, g);
-}
-
 static void *WINAPI no_pointer3(uint32_t a, uint32_t b, uint32_t c)
 {
     UNUSED(a);
@@ -765,13 +727,6 @@ static void *WINAPI no_pointer3(uint32_t a, uint32_t b, uint32_t c)
     UNUSED(c);
     w32_set_error(ERROR_CALL_NOT_IMPLEMENTED);
     return NULL;
-}
-
-static void *WINAPI no_pointer5(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
-{
-    UNUSED(d);
-    UNUSED(e);
-    return no_pointer3(a, b, c);
 }
 
 static uint32_t WINAPI pss_failed4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
@@ -865,24 +820,11 @@ static const struct w32_export vista_exports[] = {
     W32_FN(GetOverlappedResult),
     W32_FN(CancelIoEx),
     W32_FN(CancelIo),
-    W32_AS("CreateNamedPipeW", no_handle8),
-    W32_AS("CreateNamedPipeA", no_handle8),
-    W32_AS("ConnectNamedPipe", not_implemented2),
-    W32_AS("WaitNamedPipeW", not_implemented2),
-    W32_AS("SetNamedPipeHandleState", not_implemented4),
-    W32_AS("GetNamedPipeHandleStateW", false7),
     W32_AS("DeviceIoControl", false8),
     W32_AS("OpenFileMappingW", no_pointer3),
     W32_AS("RegisterWaitForSingleObject", false6),
     W32_AS("UnregisterWait", w32_one1),
     W32_AS("UnregisterWaitEx", w32_one2),
-    W32_AS("ConvertThreadToFiberEx", no_pointer2),
-    W32_AS("ConvertThreadToFiber", no_pointer1),
-    W32_AS("CreateFiberEx", no_pointer5),
-    W32_AS("CreateFiber", no_pointer3),
-    W32_AS("SwitchToFiber", w32_zero1),
-    W32_AS("DeleteFiber", w32_zero1),
-    W32_AS("ConvertFiberToThread", w32_one0),
     W32_FN(InitializeProcThreadAttributeList),
     W32_AS("UpdateProcThreadAttribute", true7),
     W32_AS("DeleteProcThreadAttributeList", w32_zero1),

@@ -670,6 +670,108 @@ static int WINAPI GetTimeFormatW(DWORD lcid, DWORD flags, const uint16_t *st, LP
     return wide_date(st, fmt, out, cap, true);
 }
 
+static int WINAPI GetDateFormatEx(LPCWSTR name, DWORD flags, const uint16_t *st, LPCWSTR fmt, LPWSTR out, int cap,
+                                   LPCWSTR calendar)
+{
+    UNUSED(name);
+    UNUSED(flags);
+    UNUSED(calendar);
+    return wide_date(st, fmt, out, cap, false);
+}
+
+static int WINAPI GetTimeFormatEx(LPCWSTR name, DWORD flags, const uint16_t *st, LPCWSTR fmt, LPWSTR out, int cap)
+{
+    UNUSED(name);
+    UNUSED(flags);
+    return wide_date(st, fmt, out, cap, true);
+}
+
+static int WINAPI GetNumberFormatW(DWORD lcid, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
+{
+    UNUSED(lcid);
+    UNUSED(flags);
+    UNUSED(fmt);
+    int n = (int)w32_wcslen(value) + 1;
+    if (cap && out) {
+        if (n > cap) {
+            w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+            return 0;
+        }
+        memcpy(out, value, (size_t)n * sizeof(WCHAR));
+    }
+    return n;
+}
+
+static int WINAPI GetNumberFormatEx(LPCWSTR name, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
+{
+    UNUSED(name);
+    return GetNumberFormatW(0, flags, value, fmt, out, cap);
+}
+
+static BOOL WINAPI IsValidLocaleName(LPCWSTR name)
+{
+    return name && LocaleNameToLCID(name, 0) != 0;
+}
+
+static int WINAPI ResolveLocaleName(LPCWSTR name, LPWSTR out, int cap)
+{
+    static const WCHAR fallback[] = {'e', 'n', '-', 'U', 'S', 0};
+    const WCHAR *src = name && IsValidLocaleName(name) ? name : fallback;
+    int n = (int)w32_wcslen(src) + 1;
+    if (out && cap >= n)
+        memcpy(out, src, (size_t)n * sizeof(WCHAR));
+    return out && cap < n ? 0 : n;
+}
+
+static BOOL WINAPI preferred_languages(DWORD flags, ULONG *count, LPWSTR buf, ULONG *len)
+{
+    UNUSED(flags);
+    static const WCHAR list[] = {'e', 'n', '-', 'U', 'S', 0, 0};
+    *count = 1;
+    if (buf && *len >= ARRAY_SIZE(list))
+        memcpy(buf, list, sizeof(list));
+    else if (buf) {
+        *len = ARRAY_SIZE(list);
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    *len = ARRAY_SIZE(list);
+    return TRUE;
+}
+
+static int WINAPI FoldStringW(DWORD flags, LPCWSTR src, int n, LPWSTR out, int cap)
+{
+    UNUSED(flags);
+    if (n < 0)
+        n = (int)w32_wcslen(src) + 1;
+    if (!cap)
+        return n;
+    if (cap < n) {
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    memcpy(out, src, (size_t)n * sizeof(WCHAR));
+    return n;
+}
+
+static int WINAPI GetGeoInfoW(DWORD id, DWORD type, LPWSTR out, int cap, DWORD lang)
+{
+    UNUSED(id);
+    UNUSED(lang);
+    static const WCHAR us[] = {'U', 'S', 0}, usa[] = {'U', 'S', 'A', 0}, nation[] = {'2', '4', '4', 0};
+    const WCHAR *v = type == 4 ? us : type == 5 ? usa : nation;
+    int n = (int)w32_wcslen(v) + 1;
+    if (out && cap >= n)
+        memcpy(out, v, (size_t)n * sizeof(WCHAR));
+    return n;
+}
+
+static DWORD WINAPI GetUserGeoID(DWORD cls)
+{
+    UNUSED(cls);
+    return 244;
+}
+
 static const struct w32_export locale_exports[] = {
     W32_FN(MultiByteToWideChar), W32_FN(WideCharToMultiByte), W32_FN(GetACP), W32_FN(GetOEMCP),
     W32_FN(IsValidCodePage), W32_FN(GetCPInfo), W32_FN(GetCPInfoExA), W32_FN(GetCPInfoExW), W32_FN(IsDBCSLeadByte),
@@ -689,6 +791,13 @@ static const struct w32_export locale_exports[] = {
     W32_FN(LocaleNameToLCID), W32_FN(LCIDToLocaleName), W32_FN(EnumSystemLocalesA), W32_FN(EnumSystemLocalesW),
     W32_FN(GetNumberFormatA), W32_FN(GetDateFormatA), W32_FN(GetDateFormatW), W32_FN(GetTimeFormatA),
     W32_FN(GetTimeFormatW),
+    W32_FN(GetDateFormatEx), W32_FN(GetTimeFormatEx), W32_FN(GetNumberFormatW), W32_FN(GetNumberFormatEx),
+    W32_AS("GetCurrencyFormatW", GetNumberFormatW), W32_AS("GetCurrencyFormatEx", GetNumberFormatEx),
+    W32_FN(IsValidLocaleName), W32_FN(ResolveLocaleName), W32_AS("GetUserPreferredUILanguages", preferred_languages),
+    W32_AS("GetThreadPreferredUILanguages", preferred_languages),
+    W32_AS("GetSystemPreferredUILanguages", preferred_languages),
+    W32_AS("GetProcessPreferredUILanguages", preferred_languages), W32_FN(FoldStringW), W32_FN(GetGeoInfoW),
+    W32_FN(GetUserGeoID),
 };
 
 W32_EXPORTS(locale_module, "kernel32.dll", locale_exports);
