@@ -342,13 +342,144 @@ static HANDLE WINAPI ShellExecuteW(HANDLE wnd, LPCWSTR op, LPCWSTR file, LPCWSTR
     return r;
 }
 
+struct guid {
+    uint32_t d1;
+    uint16_t d2, d3;
+    uint8_t d4[8];
+};
+
+static const struct {
+    struct guid id;
+    int csidl;
+    const char *sub;
+} known_folders[] = {
+    {{0x3eb685db, 0x65f9, 0x4cf6, {0xa0, 0x3a, 0xe3, 0xef, 0x65, 0x72, 0x9f, 0x3d}}, 0x1a, NULL},
+    {{0xf1b32785, 0x6fba, 0x4fcf, {0x9d, 0x55, 0x7b, 0x8e, 0x7f, 0x15, 0x70, 0x91}}, 0x1c, NULL},
+    {{0xb4bfcc3a, 0xdb2c, 0x424c, {0xb0, 0x29, 0x7f, 0xe9, 0x9a, 0x87, 0xc6, 0x41}}, 0x10, NULL},
+    {{0xfdd39ad0, 0x238f, 0x46af, {0xad, 0xb4, 0x6c, 0x85, 0x48, 0x03, 0x69, 0xc7}}, 0x05, NULL},
+    {{0x905e63b6, 0xc1bf, 0x494e, {0xb2, 0x9c, 0x65, 0xb7, 0x32, 0xd3, 0xd2, 0x1a}}, 0x26, NULL},
+    {{0x7c5a40ef, 0xa0fb, 0x4bfc, {0x87, 0x4a, 0xc0, 0xf2, 0xe0, 0xb9, 0xfa, 0x8e}}, 0x2a, NULL},
+    {{0x1ac14e77, 0x02e7, 0x4e5d, {0xb7, 0x44, 0x2e, 0xb1, 0xae, 0x51, 0x98, 0xb7}}, 0x25, NULL},
+    {{0xf38bf404, 0x1d43, 0x42f2, {0x93, 0x05, 0x67, 0xde, 0x0b, 0x28, 0xfc, 0x23}}, 0x24, NULL},
+    {{0x5e6c858f, 0x0e22, 0x4760, {0x9a, 0xfe, 0xea, 0x33, 0x17, 0xb6, 0x71, 0x73}}, 0x28, NULL},
+    {{0x62ab5d82, 0xfdc1, 0x4dc3, {0xa9, 0xdd, 0x07, 0x0d, 0x1d, 0x49, 0x5d, 0x97}}, 0x23, NULL},
+    {{0x374de290, 0x123f, 0x4565, {0x91, 0x64, 0x39, 0xc4, 0x92, 0x5e, 0x46, 0x7b}}, 0x28, "\\Downloads"},
+    {{0xa520a1a4, 0x1780, 0x4ff6, {0xbd, 0x18, 0x16, 0x73, 0x43, 0xc5, 0xaf, 0x16}}, 0x28, "\\AppData\\LocalLow"},
+    {{0xfd228cb7, 0xae11, 0x4ae3, {0x86, 0x4c, 0x16, 0xf3, 0x91, 0x0a, 0xb8, 0xfe}}, 0x24, "\\Fonts"},
+};
+
+static long WINAPI SHGetKnownFolderPath(const struct guid *id, DWORD flags, HANDLE token, WCHAR **out)
+{
+    UNUSED(token);
+    *out = NULL;
+    for (size_t i = 0; i < ARRAY_SIZE(known_folders); i++) {
+        if (memcmp(id, &known_folders[i].id, sizeof(*id)))
+            continue;
+        char tmp[300];
+        long r = folder_path(known_folders[i].csidl | ((flags & 0x8000) ? CSIDL_FLAG_CREATE : 0), tmp);
+        if (r)
+            return r;
+        if (known_folders[i].sub) {
+            str_copy(tmp + strlen(tmp), known_folders[i].sub, sizeof(tmp) - strlen(tmp));
+            char path[PATH_MAX_LEN];
+            if (w32_path(tmp, path, sizeof(path)) == 0)
+                vfs_mkdirs(path);
+        }
+        size_t n = strlen(tmp) + 1;
+        *out = w32_alloc(n * sizeof(WCHAR));
+        if (!*out)
+            return (long)0x8007000e;
+        w32_cp_to_wide(tmp, -1, *out, n, 0);
+        return 0;
+    }
+    return (long)0x80070002;
+}
+
+static BOOL WINAPI ShellExecuteExW(uint32_t *info)
+{
+    char *o = info[3] ? w32_narrow((LPCWSTR)info[3]) : NULL, *f = info[4] ? w32_narrow((LPCWSTR)info[4]) : NULL;
+    char *p = info[5] ? w32_narrow((LPCWSTR)info[5]) : NULL;
+    HANDLE r = f ? shell_execute(o, f, p) : NULL;
+    w32_free(o);
+    w32_free(f);
+    w32_free(p);
+    info[8] = (uint32_t)r;
+    if ((uint32_t)r <= 32) {
+        w32_set_error(ERROR_FILE_NOT_FOUND);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static long WINAPI SHQueryUserNotificationState(int *state)
+{
+    *state = 5;
+    return 0;
+}
+
+static long WINAPI shell_notimpl1(void **out)
+{
+    if (out)
+        *out = NULL;
+    return (long)0x80004001;
+}
+
+static long WINAPI shell_notimpl3(uint32_t a, uint32_t b, void **out)
+{
+    UNUSED(a);
+    UNUSED(b);
+    return shell_notimpl1(out);
+}
+
+static long WINAPI shell_notimpl4(uint32_t a, uint32_t b, uint32_t c, void **out)
+{
+    UNUSED(c);
+    return shell_notimpl3(a, b, out);
+}
+
+static long WINAPI shell_notimpl5(uint32_t a, uint32_t b, uint32_t c, void **out, uint32_t e)
+{
+    UNUSED(e);
+    return shell_notimpl4(a, b, c, out);
+}
+
+static void WINAPI ILFree(void *pidl)
+{
+    w32_free(pidl);
+}
+
+static void WINAPI SHChangeNotify(LONG event, UINT flags, const void *a, const void *b)
+{
+    UNUSED(event);
+    UNUSED(flags);
+    UNUSED(a);
+    UNUSED(b);
+}
+
 static const struct w32_export shell32_exports[] = {
     W32_FN(SHGetFolderPathA),        W32_FN(SHGetFolderPathW),   W32_FN(SHGetSpecialFolderPathA),
     W32_FN(SHGetSpecialFolderPathW), W32_FN(CommandLineToArgvW), W32_FN(ShellExecuteA),
-    W32_FN(ShellExecuteW),
+    W32_FN(ShellExecuteW),           W32_FN(SHGetKnownFolderPath), W32_FN(ShellExecuteExW),
+    W32_FN(SHQueryUserNotificationState), W32_FN(ILFree),      W32_FN(SHChangeNotify),
+    W32_AS("SHGetMalloc", shell_notimpl1), W32_AS("SHGetDesktopFolder", shell_notimpl1),
+    W32_AS("SHGetSpecialFolderLocation", shell_notimpl3), W32_AS("SHGetPathFromIDListW", w32_zero2),
+    W32_AS("SHParseDisplayName", shell_notimpl5), W32_AS("SHCreateItemFromParsingName", shell_notimpl4),
+    W32_AS("SHOpenFolderAndSelectItems", shell_notimpl4), W32_AS("SHGetFileInfoW", w32_zero5),
+    W32_AS("SHAppBarMessage", w32_zero2), W32_AS("SHGetStockIconInfo", shell_notimpl3),
+    W32_AS("SHGetPropertyStoreForWindow", shell_notimpl3), W32_AS("SetCurrentProcessExplicitAppUserModelID", w32_zero1),
+    W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("DragQueryFileW", w32_zero4),
+    W32_AS("SHCreateAssociationRegistration", shell_notimpl3), W32_AS("SHChangeNotifyRegister", w32_zero6),
+    W32_AS("SHChangeNotifyDeregister", w32_one1), W32_AS("ILCreateFromPathW", w32_zero1),
+    W32_AS("IsUserAnAdmin", w32_one0),
 };
 
-W32_EXPORTS(shell32_module, "shell32.dll", shell32_exports);
+static const char *const shell32_ordinals[681] = {
+    [2] = "SHChangeNotifyRegister", [4] = "SHChangeNotifyDeregister", [155] = "ILFree",
+    [190] = "ILCreateFromPathW",    [680] = "IsUserAnAdmin",
+};
+
+W32_EXPORTS(shell32_module, "shell32.dll", shell32_exports, .ordinals = shell32_ordinals,
+            .ordinal_count = ARRAY_SIZE(shell32_ordinals));
 
 static LONG WINAPI RtlGetVersion(DWORD *info)
 {

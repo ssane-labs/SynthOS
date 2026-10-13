@@ -32,6 +32,9 @@ void vmm_space_set_commit(uintptr_t start, size_t size);
 void vmm_release(uintptr_t start, size_t size);
 bool vmm_commit_fault(uintptr_t address);
 bool vmm_mapped(uintptr_t address);
+int vmm_map_pages(uintptr_t vaddr, void *const *pages, size_t count, bool cow);
+void vmm_make_cow(uintptr_t vaddr, size_t size);
+bool vmm_cow_fault(uintptr_t address);
 void vmm_set_commit_hook(bool (*fn)(uintptr_t address));
 int vmm_commit_range(uintptr_t start, size_t size);
 

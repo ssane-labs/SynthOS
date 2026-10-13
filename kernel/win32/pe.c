@@ -467,6 +467,13 @@ static bool system_dll(const char *name)
     return str_starts(norm, "api-ms-win-") || str_starts(norm, "ext-ms-") || str_in_list(norm, known);
 }
 
+bool w32_is_system_dll(const char *name)
+{
+    char norm[64];
+    normalize(name, norm, sizeof(norm));
+    return builtin_find(builtin_alias(norm)) || system_dll(norm) || !strcmp(norm, "kernelbase.dll");
+}
+
 static struct w32_image *load_phantom(const char *name)
 {
     static const struct w32_module_def phantom = {.name = "phantom"};
@@ -526,6 +533,68 @@ static int resolve_imports(struct w32_image *img, const struct pe_info *pe, cons
     return 0;
 }
 
+#define CACHE_MIN (4u * 1024 * 1024)
+
+struct image_cache {
+    char path[PATH_MAX_LEN];
+    uint32_t base, size, file_size;
+    void **pages;
+    int users;
+    struct image_cache *next;
+};
+
+static struct image_cache *image_caches;
+
+static struct image_cache *cache_find(const char *path, uint32_t base, uint32_t size, uint32_t file_size)
+{
+    for (struct image_cache *c = image_caches; c; c = c->next)
+        if (c->base == base && c->size == size && c->file_size == file_size && !strcmp(c->path, path))
+            return c;
+    return NULL;
+}
+
+static void cache_free(struct image_cache *c)
+{
+    for (uint32_t i = 0; c->pages && i < c->size / 4096u; i++)
+        kfree_pages(c->pages[i]);
+    kfree(c->pages);
+    kfree(c);
+}
+
+static struct image_cache *cache_new(const char *path, uint32_t base, uint32_t size, uint32_t file_size)
+{
+    struct image_cache *c = kzalloc(sizeof(*c));
+    uint32_t count = ALIGN_UP(size, 4096u) / 4096u;
+    if (!c || !(c->pages = kzalloc(count * sizeof(*c->pages)))) {
+        kfree(c);
+        return NULL;
+    }
+    str_copy(c->path, path, sizeof(c->path));
+    c->base = base;
+    c->size = count * 4096u;
+    c->file_size = file_size;
+    for (uint32_t i = 0; i < count; i++)
+        if (!(c->pages[i] = kmalloc_pages(4096))) {
+            cache_free(c);
+            return NULL;
+        }
+    return c;
+}
+
+static void cache_put(struct image_cache *c, uint32_t base)
+{
+    vmm_release(base, c->size);
+    vmm_unmap(base, c->size);
+    if (--c->users > 0)
+        return;
+    for (struct image_cache **pp = &image_caches; *pp; pp = &(*pp)->next)
+        if (*pp == c) {
+            *pp = c->next;
+            break;
+        }
+    cache_free(c);
+}
+
 static struct w32_image *load_file(const char *path, const char *name, int *error)
 {
     struct file *f;
@@ -558,16 +627,30 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     dir_of(&pe, DIR_RELOC, &reloc_rva, &reloc_size);
     bool relocatable = reloc_rva && reloc_size && !(pe.characteristics & 0x0001);
     uint32_t base = pick_base(pe.image_base, pe.image_size, relocatable);
-    if (!base || vmm_commit_range(base, pe.image_size) != 0) {
+    struct image_cache *cache = NULL;
+    bool cached = false;
+    if (base && pe.image_size >= CACHE_MIN) {
+        if ((cache = cache_find(path, base, ALIGN_UP(pe.image_size, 4096u), (uint32_t)size)) &&
+            vmm_map_pages(base, cache->pages, cache->size / 4096u, true) == 0) {
+            cache->users++;
+            cached = true;
+        } else if ((cache = cache_new(path, base, pe.image_size, (uint32_t)size)) &&
+                   vmm_map_pages(base, cache->pages, cache->size / 4096u, false) != 0) {
+            cache_free(cache);
+            cache = NULL;
+        }
+    }
+    if (!base || (!cache && vmm_commit_range(base, pe.image_size) != 0)) {
         kfree(data);
         vfs_close(f);
         *error = base ? ERROR_NOT_ENOUGH_MEMORY : 193;
         return NULL;
     }
     uint8_t *mem = (uint8_t *)base;
-    memcpy(mem, data, MIN((size_t)pe.headers_size, MIN(head_size, (size_t)pe.image_size)));
+    if (!cached)
+        memcpy(mem, data, MIN((size_t)pe.headers_size, MIN(head_size, (size_t)pe.image_size)));
     uint32_t sec = pe.opt + rd16(pe.file + pe.coff + 16);
-    for (uint16_t i = 0; i < pe.sections && sec + 40 <= head_size; i++, sec += 40) {
+    for (uint16_t i = 0; !cached && i < pe.sections && sec + 40 <= head_size; i++, sec += 40) {
         uint32_t vsize = rd32(pe.file + sec + 8), va = rd32(pe.file + sec + 12);
         uint32_t raw = rd32(pe.file + sec + 16), ptr = rd32(pe.file + sec + 20);
         uint32_t copy = vsize && vsize < raw ? vsize : raw;
@@ -576,6 +659,10 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         copy = MIN(copy, MIN(pe.image_size - va, (uint32_t)(size - ptr)));
         vfs_seek(f, (long)ptr, VFS_SEEK_SET);
         if (vfs_read(f, mem + va, copy) != (long)copy) {
+            if (cache) {
+                vmm_unmap(base, cache->size);
+                cache_free(cache);
+            }
             vmm_release(base, pe.image_size);
             kfree(data);
             vfs_close(f);
@@ -600,7 +687,7 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     img->memory = memory;
     img->entry = pe.entry ? base + pe.entry : 0;
     img->dll = pe.characteristics & 0x2000;
-    if (base != pe.image_base) {
+    if (base != pe.image_base && !cached) {
         uint64_t delta = base - pe.image_base, base64 = base;
         if (pe.pe64)
             memcpy(mem + pe.opt + 24, &base64, 8);
@@ -609,6 +696,13 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         apply_relocations(&pe, mem, delta);
         klog("win32: %s relocated to 0x%08x", name, base);
     }
+    if (cache && !cached) {
+        vmm_make_cow(base, cache->size);
+        cache->users = 1;
+        cache->next = image_caches;
+        image_caches = cache;
+    }
+    img->cache = cache;
     pe.file = mem;
     char dir[PATH_MAX_LEN];
     path_dirname(path, dir, sizeof(dir));
@@ -759,6 +853,8 @@ void w32_unload_all(void)
         if (img->memory) {
             vmm_unmap(img->base, img->size);
             kfree_pages(img->memory);
+        } else if (img->cache) {
+            cache_put(img->cache, img->base);
         } else if (!img->builtin && img->base) {
             vmm_release(img->base, img->size);
         }

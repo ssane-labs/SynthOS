@@ -427,6 +427,14 @@ static DWORD WINAPI GetThreadDescription(HANDLE thread, WCHAR **text)
     return 0x80004001u;
 }
 
+static BOOL WINAPI SetFileCompletionNotificationModes(HANDLE h, uint8_t flags)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->skip_port = flags & 1;
+    return TRUE;
+}
+
 static const struct w32_export sysinfo_kernel32[] = {
     W32_FN(IsWow64Process2),
     W32_FN(SetThreadDescription),
@@ -484,7 +492,7 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_AS("FlushInstructionCache", w32_one3),
     W32_AS("SetDllDirectoryW", w32_one1),
     W32_AS("SetDllDirectoryA", w32_one1),
-    W32_AS("SetFileCompletionNotificationModes", w32_one2),
+    W32_FN(SetFileCompletionNotificationModes),
     W32_AS("EnumResourceNamesW", w32_fail4),
     W32_AS("ClearCommError", w32_fail3),
     W32_AS("EscapeCommFunction", w32_fail2),

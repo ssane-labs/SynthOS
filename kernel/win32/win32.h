@@ -143,6 +143,11 @@ struct w32_object {
     struct w32_thread *thread;
     uint64_t due;
     char *path;
+    bool inherit;
+    bool skip_port;
+    uint32_t access;
+    HANDLE io_port;
+    uintptr_t io_key;
     struct w32_pipe *pipe;
     struct w32_pipe *pipe_out;
     struct w32_npipe *npipe;
@@ -195,6 +200,7 @@ struct w32_image {
     bool dll;
     bool initialized;
     int refs;
+    struct image_cache *cache;
     struct w32_image *next;
 };
 
@@ -287,14 +293,38 @@ extern bool w32_trace;
 void w32_trace_dump(void);
 extern bool w32_headless;
 bool w32_vm_committed(uintptr_t address);
+uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count);
+bool w32_vm_unmap_shared(uint32_t base);
 void w32_vm_cleanup(void);
 NORETURN void w32_leave_forever(void);
 
 struct w32_pipe;
 struct w32_npipe;
 struct w32_fiber;
+struct image_cache;
 struct stream;
 void w32_pipe_release(struct w32_object *o);
+bool w32_pipe_clone(struct w32_object *o);
+void w32_section_retain(struct w32_section *s);
+void w32_object_release(struct w32_object *o);
+bool w32_object_clone(struct w32_object *dst, const struct w32_object *src);
+
+struct w32_inherit {
+    int count;
+    struct {
+        uint32_t index;
+        struct w32_object object;
+    } items[];
+};
+
+struct w32_inherit *w32_inherit_collect(const HANDLE *list, int count);
+void w32_inherit_free(struct w32_inherit *in);
+HANDLE w32_handle_put(struct w32_process *p, const struct w32_object *o);
+const HANDLE *w32_attribute_handles(const void *attributes, int *count);
+HANDLE w32_inheritable(HANDLE h, const void *sa);
+struct w32_object *w32_handle_get_in(struct w32_process *p, HANDLE h);
+struct w32_process *w32_process_by_pid(uint32_t pid);
+uint32_t w32_current_pid(void);
 HANDLE w32_npipe_open(const char *name);
 bool w32_is_pipe_name(const char *name);
 void w32_section_release(struct w32_section *s);
@@ -304,6 +334,10 @@ size_t w32_pipe_available(struct w32_pipe *p);
 struct stream *w32_handle_stream(HANDLE h);
 void w32_port_post(HANDLE port, DWORD bytes, uintptr_t key, void *ov);
 void w32_winsock_poll(void);
+void w32_io_poll(void);
+void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32_t bytes, bool sync);
+int w32_pipe_overlapped(HANDLE h, struct w32_object *o, void *buf, DWORD n, DWORD *done, uint32_t *ov, bool write);
+bool w32_io_cancel(HANDLE h, const uint32_t *ov);
 bool w32_winsock_cancel(UINT s, uint32_t *ov);
 bool w32_socket_associate(uintptr_t s, HANDLE port, uintptr_t key);
 void w32_tls_register(struct w32_image *img);
@@ -356,6 +390,7 @@ bool w32_is_pe64(const uint8_t *file, size_t size);
 void *w64_stub(const char *module, const char *symbol, uint32_t ordinal);
 void *w64_lookup(const char *module, const char *symbol, uint32_t ordinal, bool create_missing);
 void *w32_builtin_lookup(const char *module, const char *symbol);
+bool w32_is_system_dll(const char *name);
 const char *w32_builtin_ordinal_name(const char *module, uint32_t ordinal);
 bool w64_setup(void);
 void w64_set_image(uint32_t base);

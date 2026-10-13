@@ -22,6 +22,7 @@ static void pipe_drop(struct w32_pipe *p)
 }
 
 struct w32_npipe {
+    int refs;
     char name[128];
     struct w32_pipe *in, *out;
     bool connected;
@@ -57,7 +58,7 @@ void w32_pipe_release(struct w32_object *o)
 {
     if (o->value == 2) {
         npipe_detach(o);
-        if (o->npipe)
+        if (o->npipe && --o->npipe->refs <= 0)
             npipe_remove(o->npipe);
         o->npipe = NULL;
         return;
@@ -111,7 +112,6 @@ size_t w32_pipe_available(struct w32_pipe *p)
 
 static BOOL WINAPI CreatePipe(HANDLE *rd, HANDLE *wr, void *sa, DWORD size)
 {
-    UNUSED(sa);
     UNUSED(size);
     struct w32_pipe *p = kzalloc(sizeof(*p));
     if (!p)
@@ -128,8 +128,8 @@ static BOOL WINAPI CreatePipe(HANDLE *rd, HANDLE *wr, void *sa, DWORD size)
     wo->pipe = p;
     wo->value = 1;
     p->readers = p->writers = 1;
-    *rd = r;
-    *wr = w;
+    *rd = w32_inheritable(r, sa);
+    *wr = w32_inheritable(w, sa);
     return TRUE;
 }
 
@@ -249,6 +249,24 @@ struct stream *w32_handle_stream(HANDLE h)
     return s;
 }
 
+bool w32_pipe_clone(struct w32_object *o)
+{
+    if (o->value == 2) {
+        if (o->pipe)
+            o->pipe->readers++;
+        if (o->pipe_out)
+            o->pipe_out->writers++;
+        if (o->npipe)
+            o->npipe->refs++;
+    } else if (o->pipe) {
+        if (o->value)
+            o->pipe->writers++;
+        else
+            o->pipe->readers++;
+    }
+    return true;
+}
+
 bool w32_is_pipe_name(const char *name)
 {
     return name && (name[0] == '\\' || name[0] == '/') && (name[1] == '\\' || name[1] == '/') &&
@@ -297,6 +315,7 @@ static HANDLE create_named_pipe(const char *name, DWORD open_mode)
         return INVALID_HANDLE_VALUE;
     }
     str_copy(np->name, name + 9, sizeof(np->name));
+    np->refs = 1;
     o->value = 2;
     o->npipe = np;
     np->next = npipes;
@@ -312,8 +331,7 @@ static HANDLE WINAPI CreateNamedPipeA(LPCSTR name, DWORD open_mode, DWORD pipe_m
     UNUSED(out_size);
     UNUSED(in_size);
     UNUSED(timeout);
-    UNUSED(sa);
-    return create_named_pipe(name, open_mode);
+    return w32_inheritable(create_named_pipe(name, open_mode), sa);
 }
 
 static HANDLE WINAPI CreateNamedPipeW(LPCWSTR name, DWORD open_mode, DWORD pipe_mode, DWORD instances, DWORD out_size,
@@ -368,6 +386,127 @@ static struct w32_object *server_object(HANDLE h)
     return o;
 }
 
+#define STATUS_PENDING 0x103u
+#define STATUS_CANCELLED 0xc0000120u
+#define STATUS_PIPE_BROKEN 0xc000014bu
+
+struct pending_io {
+    HANDLE handle;
+    uint8_t *buf;
+    DWORD n;
+    uint32_t *ov;
+    bool connect;
+    struct pending_io *next;
+};
+
+static W32_STATE struct pending_io *pending;
+
+void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32_t bytes, bool sync)
+{
+    ov[0] = status;
+    ov[1] = bytes;
+    HANDLE event = (HANDLE)(uintptr_t)(ov[4] & ~1u);
+    if (event) {
+        BOOL(WINAPI * set)(HANDLE) = (BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("kernel32.dll", "SetEvent");
+        if (set)
+            set(event);
+    }
+    if (o && o->io_port && !(ov[4] & 1) && !(sync && o->skip_port))
+        w32_port_post(o->io_port, bytes, o->io_key, ov);
+}
+
+static void pending_add(HANDLE h, uint8_t *buf, DWORD n, uint32_t *ov, bool connect)
+{
+    struct pending_io *p = kzalloc(sizeof(*p));
+    if (!p)
+        return;
+    *p = (struct pending_io){h, buf, n, ov, connect, NULL};
+    struct pending_io **tail = &pending;
+    while (*tail)
+        tail = &(*tail)->next;
+    *tail = p;
+    ov[0] = STATUS_PENDING;
+    ov[1] = 0;
+}
+
+void w32_io_poll(void)
+{
+    if (!w32)
+        return;
+    for (struct pending_io **pp = &pending; *pp;) {
+        struct pending_io *p = *pp;
+        struct w32_object *o = w32_handle_get(p->handle);
+        uint32_t status = STATUS_PENDING, bytes = 0;
+        if (!o || o->type != WH_PIPE) {
+            status = STATUS_CANCELLED;
+        } else if (p->connect) {
+            if (o->npipe && o->npipe->connected)
+                status = 0;
+        } else if (o->pipe && w32_pipe_available(o->pipe)) {
+            long got = w32_pipe_read(o->pipe, p->buf, p->n, false);
+            status = 0;
+            bytes = got > 0 ? (uint32_t)got : 0;
+        } else if (!o->pipe || o->pipe->writers <= 0) {
+            status = STATUS_PIPE_BROKEN;
+        }
+        if (status == STATUS_PENDING) {
+            pp = &p->next;
+            continue;
+        }
+        *pp = p->next;
+        w32_io_complete(o && o->type == WH_PIPE ? o : NULL, p->ov, status, bytes, false);
+        kfree(p);
+    }
+}
+
+bool w32_io_cancel(HANDLE h, const uint32_t *ov)
+{
+    bool found = false;
+    for (struct pending_io **pp = &pending; *pp;) {
+        struct pending_io *p = *pp;
+        if (p->handle != h || (ov && p->ov != ov)) {
+            pp = &p->next;
+            continue;
+        }
+        *pp = p->next;
+        w32_io_complete(w32_handle_get(h), p->ov, STATUS_CANCELLED, 0, false);
+        kfree(p);
+        found = true;
+    }
+    return found;
+}
+
+int w32_pipe_overlapped(HANDLE h, struct w32_object *o, void *buf, DWORD n, DWORD *done, uint32_t *ov, bool write)
+{
+    if (done)
+        *done = 0;
+    if (write) {
+        struct w32_pipe *p = o->value == 2 ? o->pipe_out : o->value == 1 ? o->pipe : NULL;
+        long put = p ? w32_pipe_write(p, buf, n) : E_PIPE;
+        if (put < 0) {
+            w32_io_complete(o, ov, STATUS_PIPE_BROKEN, 0, true);
+            return ERROR_BROKEN_PIPE;
+        }
+        if (done)
+            *done = (DWORD)put;
+        w32_io_complete(o, ov, 0, (uint32_t)put, true);
+        return 0;
+    }
+    if (o->value == 1 || !o->pipe)
+        return ERROR_INVALID_HANDLE;
+    if (w32_pipe_available(o->pipe)) {
+        long got = w32_pipe_read(o->pipe, buf, n, false);
+        if (done)
+            *done = (DWORD)got;
+        w32_io_complete(o, ov, 0, (uint32_t)got, true);
+        return 0;
+    }
+    if (o->pipe->writers <= 0 && !(o->npipe && !o->npipe->connected))
+        return ERROR_BROKEN_PIPE;
+    pending_add(h, buf, n, ov, false);
+    return 997;
+}
+
 static BOOL WINAPI ConnectNamedPipe(HANDLE h, void *overlapped)
 {
     struct w32_object *o = server_object(h);
@@ -378,6 +517,7 @@ static BOOL WINAPI ConnectNamedPipe(HANDLE h, void *overlapped)
         return FALSE;
     }
     if (overlapped) {
+        pending_add(h, NULL, 0, overlapped, true);
         w32_set_error(997);
         return FALSE;
     }

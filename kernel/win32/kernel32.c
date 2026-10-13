@@ -68,7 +68,7 @@ static HANDLE WINAPI GetCurrentThread(void)
 
 static DWORD WINAPI GetCurrentProcessId(void)
 {
-    return 0x100;
+    return w32_current_pid();
 }
 
 
@@ -866,26 +866,54 @@ static BOOL WINAPI CloseHandle(HANDLE h)
     return TRUE;
 }
 
+static struct w32_process *process_of(HANDLE h)
+{
+    if (h == W32_PSEUDO_PROCESS)
+        return w32;
+    struct w32_object *o = w32_handle_get(h);
+    return o && o->type == WH_PROCESS && o->child ? o->child->proc : NULL;
+}
+
 static BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out, DWORD access, BOOL inherit,
                                    DWORD options)
 {
-    UNUSED(sp);
-    UNUSED(tp);
-    UNUSED(access);
-    UNUSED(inherit);
-    struct w32_object *o = w32_handle_get(src);
-    if (src == W32_PSEUDO_PROCESS || src == W32_PSEUDO_THREAD) {
-        *out = src;
+    struct w32_process *from = process_of(sp), *to = tp ? process_of(tp) : NULL;
+    if (!from || (tp && !to)) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (from == w32 && (src == W32_PSEUDO_PROCESS || src == W32_PSEUDO_THREAD)) {
+        if (out)
+            *out = src;
         return TRUE;
     }
+    struct w32_object *o = w32_handle_get_in(from, src);
     if (!o) {
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
-    o->refs++;
-    *out = src;
-    if (options & 1)
-        w32_handle_close(src);
+    HANDLE h = NULL;
+    if (to) {
+        bool shared_state = o->type == WH_EVENT || o->type == WH_MUTEX || o->type == WH_SEMAPHORE ||
+                            o->type == WH_TIMER || o->type == WH_THREAD || o->type == WH_PORT;
+        if (to == from && shared_state) {
+            o->refs++;
+            h = src;
+        } else {
+            h = w32_handle_put(to, o);
+            if (!h) {
+                w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+                return FALSE;
+            }
+            struct w32_object *n = w32_handle_get_in(to, h);
+            n->inherit = inherit != 0;
+            n->access = (options & 2) ? o->access : access;
+        }
+    }
+    if (options & 1 && h != src && --o->refs <= 0)
+        w32_object_release(o);
+    if (out)
+        *out = h;
     return TRUE;
 }
 
@@ -959,15 +987,6 @@ static UINT WINAPI SetHandleCount(UINT n)
     return n;
 }
 
-static void build_cmdline(const char *app, const char *cmdline, char *out, size_t cap)
-{
-    out[0] = 0;
-    if (cmdline && *cmdline)
-        str_copy(out, cmdline, cap);
-    else if (app)
-        str_copy(out, app, cap);
-}
-
 struct spawn_args {
     char *app;
     char *cmdline;
@@ -976,6 +995,7 @@ struct spawn_args {
     DWORD exit_code;
     struct stream *in, *out, *err;
     struct w32_child *child;
+    struct w32_inherit *handles;
 };
 
 bool w32_is_pe64(const uint8_t *file, size_t size);
@@ -1009,7 +1029,7 @@ static bool spawn_async(struct spawn_args *a, const char *path, int argc, char *
     for (int i = 0; i < argc; i++)
         copy[i] = kstrdup(argv[i]);
     *c = (struct exec_ctx){w32->ctx->sh, p, argc, copy, a->in ? a->in : w32->ctx->in, a->out ? a->out : w32->ctx->out,
-                           a->err ? a->err : w32->ctx->err, a->env, a->cwd};
+                           a->err ? a->err : w32->ctx->err, a->env, a->cwd, a->handles};
     unsigned own = (a->in ? 1u : 0) | (a->out ? 2u : 0) | (a->err ? 4u : 0);
     struct w32_child *child = w32_spawn_async(c, own);
     if (!child) {
@@ -1021,6 +1041,7 @@ static bool spawn_async(struct spawn_args *a, const char *path, int argc, char *
         return false;
     }
     a->child = child;
+    a->handles = NULL;
     a->in = a->out = a->err = NULL;
     a->env = a->cwd = NULL;
     return true;
@@ -1048,36 +1069,70 @@ static int run_cmd(struct spawn_args *a, const char *rest)
     return 0;
 }
 
-static int spawn_now(struct spawn_args *a)
+static int split_args(const char *line, char *buf, char **argv, int max)
 {
-    const char *app = a->app, *cmdline = a->cmdline;
-    DWORD *exit_code = &a->exit_code;
-    char line[1024];
-    build_cmdline(app, cmdline, line, sizeof(line));
-    char *argv[32];
     int argc = 0;
-    char *p = line;
-    while (*p && argc < 31) {
-        while (*p == ' ')
+    const char *p = line;
+    char *o = buf;
+    while (argc < max) {
+        while (*p == ' ' || *p == '\t')
             p++;
         if (!*p)
             break;
-        char *start = p;
-        if (*p == '"') {
-            start = ++p;
-            while (*p && *p != '"')
+        argv[argc++] = o;
+        bool quoted = false;
+        while (*p && (quoted || (*p != ' ' && *p != '\t'))) {
+            size_t slashes = 0;
+            while (*p == '\\') {
+                slashes++;
                 p++;
-        } else {
-            while (*p && *p != ' ')
+            }
+            if (*p == '"') {
+                for (size_t i = 0; i < slashes / 2; i++)
+                    *o++ = '\\';
+                if (slashes % 2) {
+                    *o++ = '"';
+                } else if (quoted && p[1] == '"') {
+                    *o++ = '"';
+                    p++;
+                } else {
+                    quoted = !quoted;
+                }
                 p++;
+            } else {
+                for (size_t i = 0; i < slashes; i++)
+                    *o++ = '\\';
+                if (*p)
+                    *o++ = *p++;
+            }
         }
-        if (*p)
-            *p++ = 0;
-        argv[argc++] = start;
+        *o++ = 0;
     }
     argv[argc] = NULL;
-    if (!argc)
-        return ERROR_INVALID_PARAMETER;
+    return argc;
+}
+
+static int spawn_args_run(struct spawn_args *a, int argc, char **argv);
+
+static int spawn_now(struct spawn_args *a)
+{
+    const char *line = a->cmdline && *a->cmdline ? a->cmdline : a->app ? a->app : "";
+    char *buf = kmalloc(strlen(line) + 2);
+    char **argv = kmalloc(256 * sizeof(char *));
+    int rc = ERROR_NOT_ENOUGH_MEMORY;
+    if (buf && argv) {
+        int argc = split_args(line, buf, argv, 255);
+        rc = argc ? spawn_args_run(a, argc, argv) : ERROR_INVALID_PARAMETER;
+    }
+    kfree(buf);
+    kfree(argv);
+    return rc;
+}
+
+static int spawn_args_run(struct spawn_args *a, int argc, char **argv)
+{
+    const char *app = a->app;
+    DWORD *exit_code = &a->exit_code;
     const char *base = path_basename(argv[0]);
     if ((!str_casecmp(base, "cmd") || !str_casecmp(base, "cmd.exe")) && argc > 1 &&
         (!str_casecmp(argv[1], "/c") || !str_casecmp(argv[1], "/k"))) {
@@ -1102,7 +1157,9 @@ static int spawn_now(struct spawn_args *a)
     if (async_target(path) && spawn_async(a, path, argc, argv))
         return 0;
     struct exec_ctx ctx = {w32->ctx->sh, path, argc, argv, a->in ? a->in : w32->ctx->in,
-                           a->out ? a->out : w32->ctx->out, a->err ? a->err : w32->ctx->err, a->env, a->cwd};
+                           a->out ? a->out : w32->ctx->out, a->err ? a->err : w32->ctx->err, a->env, a->cwd,
+                           a->handles};
+    a->handles = NULL;
     char *image;
     size_t size;
     if (vfs_read_all(path, &image, &size) != 0)
@@ -1150,12 +1207,14 @@ static char *copy_env_block(const void *env, bool wide)
 }
 
 static int spawn(const char *app, const char *cmdline, const uint32_t *startup, DWORD *exit_code,
-                 struct w32_child **child, const void *env, bool wide_env, const char *dir)
+                 struct w32_child **child, const void *env, bool wide_env, const char *dir, struct w32_inherit *handles)
 {
     struct spawn_args *a = kzalloc(sizeof(*a));
     if (!a)
         return ERROR_NOT_ENOUGH_MEMORY;
-    klog("win32: CreateProcess %.200s", cmdline ? cmdline : app ? app : "?");
+    const char *shown = cmdline ? cmdline : app ? app : "?";
+    for (size_t off = 0, len = strlen(shown); off < len; off += 160)
+        klog("win32: %s %.160s", off ? "  ..." : "CreateProcess", shown + off);
     a->app = app ? kstrdup(app) : NULL;
     a->cmdline = cmdline ? kstrdup(cmdline) : NULL;
     a->env = copy_env_block(env, wide_env);
@@ -1171,7 +1230,9 @@ static int spawn(const char *app, const char *cmdline, const uint32_t *startup, 
         a->out = w32_handle_stream((HANDLE)startup[15]);
         a->err = w32_handle_stream((HANDLE)startup[16]);
     }
+    a->handles = handles;
     int err = (int)w32_kernel_call(spawn_thunk, a);
+    w32_inherit_free(a->handles);
     *exit_code = a->exit_code;
     *child = a->child;
     if (a->in)
@@ -1198,11 +1259,18 @@ static HANDLE new_object(enum w32_object_type type, uint32_t value)
 }
 
 static BOOL create_process(const char *app, const char *cmdline, const void *startup, uint32_t *info, const void *env,
-                           bool wide_env, const char *dir)
+                           bool wide_env, const char *dir, BOOL inherit, DWORD flags)
 {
     DWORD code = 0;
     struct w32_child *child = NULL;
-    int err = spawn(app, cmdline, startup, &code, &child, env, wide_env, dir);
+    struct w32_inherit *handles = NULL;
+    if (inherit) {
+        int count = 0;
+        const HANDLE *list = (flags & 0x80000) && startup ? w32_attribute_handles(((void *const *)startup)[17], &count)
+                                                          : NULL;
+        handles = w32_inherit_collect(list, count);
+    }
+    int err = spawn(app, cmdline, startup, &code, &child, env, wide_env, dir, handles);
     if (err) {
         w32_set_error((DWORD)err);
         return FALSE;
@@ -1235,8 +1303,7 @@ static BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmdline, void *psa, void *ts
 {
     UNUSED(psa);
     UNUSED(tsa);
-    UNUSED(inherit);
-    return create_process(app, cmdline, startup, info, env, (flags & 0x400) != 0, dir);
+    return create_process(app, cmdline, startup, info, env, (flags & 0x400) != 0, dir, inherit, flags);
 }
 
 static BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmdline, void *psa, void *tsa, BOOL inherit, DWORD flags,
@@ -1244,9 +1311,8 @@ static BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmdline, void *psa, void *
 {
     UNUSED(psa);
     UNUSED(tsa);
-    UNUSED(inherit);
     char *a = w32_narrow(app), *c = w32_narrow(cmdline), *d = dir ? w32_narrow(dir) : NULL;
-    BOOL ok = create_process(a, c, startup, info, env, (flags & 0x400) != 0, d);
+    BOOL ok = create_process(a, c, startup, info, env, (flags & 0x400) != 0, d, inherit, flags);
     w32_free(a);
     w32_free(c);
     w32_free(d);
@@ -1271,7 +1337,7 @@ static UINT WINAPI WinExec(LPCSTR cmdline, UINT show)
     UNUSED(show);
     DWORD code;
     struct w32_child *child = NULL;
-    int err = spawn(NULL, cmdline, NULL, &code, &child, NULL, false, NULL);
+    int err = spawn(NULL, cmdline, NULL, &code, &child, NULL, false, NULL, NULL);
     w32_child_release(child);
     return err == 0 ? 33 : 2;
 }

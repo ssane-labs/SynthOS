@@ -188,6 +188,7 @@ void w32_yield(void)
 
 void w32_block(void)
 {
+    w32_io_poll();
     struct w32_thread *cur = w32->current;
     if (!cur) {
         w32_idle(1);
@@ -525,9 +526,8 @@ static HANDLE new_object(enum w32_object_type type, uint32_t value, uint32_t max
 
 static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL initial, LPCSTR name)
 {
-    UNUSED(sa);
     UNUSED(name);
-    return new_object(WH_EVENT, initial ? 1 : 0, 1, manual);
+    return w32_inheritable(new_object(WH_EVENT, initial ? 1 : 0, 1, manual), sa);
 }
 
 static HANDLE WINAPI CreateEventW(void *sa, BOOL manual, BOOL initial, LPCWSTR name)

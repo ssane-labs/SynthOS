@@ -335,14 +335,6 @@ static void *WINAPI AddDllDirectory(const WCHAR *dir)
     return (void *)dir;
 }
 
-static BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags)
-{
-    UNUSED(h);
-    if (flags)
-        *flags = 0;
-    return TRUE;
-}
-
 static uint64_t WINAPI VerSetConditionMask(uint64_t mask, DWORD type, BYTE cond)
 {
     for (int i = 0; i < 8; i++)
@@ -422,6 +414,17 @@ static HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD pid)
     UNUSED(inherit);
     if (pid == 0x1000 || pid == 0x100 || pid == 0)
         return W32_PSEUDO_PROCESS;
+    struct w32_process *p = w32_process_by_pid(pid);
+    if (p && p->child) {
+        HANDLE h = w32_handle_new(WH_PROCESS);
+        struct w32_object *n = w32_handle_get(h);
+        if (n) {
+            n->max = pid;
+            n->child = p->child;
+            n->child->refs++;
+        }
+        return h;
+    }
     for (int i = 0; i < W32_MAX_HANDLES; i++) {
         struct w32_object *o = &w32->handles[i];
         if (o->type == WH_PROCESS && o->max == pid) {
@@ -528,8 +531,13 @@ static HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, uintptr_t 
 {
     UNUSED(threads);
     if (port && port_of(port)) {
-        if (file != INVALID_HANDLE_VALUE)
+        struct w32_object *o = file != INVALID_HANDLE_VALUE ? w32_handle_get(file) : NULL;
+        if (o) {
+            o->io_port = port;
+            o->io_key = key;
+        } else if (file != INVALID_HANDLE_VALUE) {
             w32_socket_associate((uintptr_t)file, port, key);
+        }
         return port;
     }
     if (file != INVALID_HANDLE_VALUE && port) {
@@ -545,6 +553,8 @@ static HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, uintptr_t 
         w32_handle_close(h);
         return NULL;
     }
+    if (file != INVALID_HANDLE_VALUE)
+        return CreateIoCompletionPort(file, h, key, threads);
     return h;
 }
 
@@ -568,11 +578,13 @@ static bool port_wait(struct w32_port *p, DWORD ms)
 {
     uint64_t deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
     w32_winsock_poll();
+    w32_io_poll();
     while (p->head == p->tail) {
         if (ms == 0 || (ms != INFINITE && hal_ticks_ms() >= deadline))
             return false;
         w32_block();
         w32_winsock_poll();
+        w32_io_poll();
     }
     return true;
 }
@@ -580,8 +592,10 @@ static bool port_wait(struct w32_port *p, DWORD ms)
 static BOOL WINAPI GetOverlappedResult(HANDLE h, uint32_t *ov, DWORD *bytes, BOOL wait)
 {
     UNUSED(h);
+    w32_io_poll();
     while (ov[0] == 0x103u && wait) {
         w32_winsock_poll();
+        w32_io_poll();
         if (ov[0] == 0x103u)
             w32_block();
     }
@@ -600,7 +614,7 @@ static BOOL WINAPI GetOverlappedResult(HANDLE h, uint32_t *ov, DWORD *bytes, BOO
 
 static BOOL WINAPI CancelIoEx(HANDLE h, uint32_t *ov)
 {
-    if (w32_winsock_cancel((UINT)(uintptr_t)h, ov))
+    if (w32_io_cancel(h, ov) || w32_winsock_cancel((UINT)(uintptr_t)h, ov))
         return TRUE;
     w32_set_error(1168);
     return FALSE;
@@ -684,18 +698,6 @@ static BOOL WINAPI not_implemented3(uint32_t a, uint32_t b, uint32_t c)
     return not_implemented5(a, b, c, 0, 0);
 }
 
-static BOOL WINAPI true7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
-{
-    UNUSED(a);
-    UNUSED(b);
-    UNUSED(c);
-    UNUSED(d);
-    UNUSED(e);
-    UNUSED(f);
-    UNUSED(g);
-    return TRUE;
-}
-
 static BOOL WINAPI false7(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g)
 {
     UNUSED(a);
@@ -743,7 +745,9 @@ static uint32_t WINAPI pss_failed2(uint32_t a, uint32_t b)
     return pss_failed4(a, b, 0, 0);
 }
 
-static BOOL WINAPI InitializeProcThreadAttributeList(void *list, DWORD count, DWORD flags, SIZE_T *size)
+#define ATTRIBUTE_SLOTS_MAX 16
+
+static BOOL WINAPI InitializeProcThreadAttributeList(uint32_t *list, DWORD count, DWORD flags, SIZE_T *size)
 {
     UNUSED(flags);
     SIZE_T need = 16 + count * 16;
@@ -754,6 +758,59 @@ static BOOL WINAPI InitializeProcThreadAttributeList(void *list, DWORD count, DW
         return FALSE;
     }
     memset(list, 0, need);
+    list[0] = MIN(count, ATTRIBUTE_SLOTS_MAX);
+    return TRUE;
+}
+
+static BOOL WINAPI UpdateProcThreadAttribute(uint32_t *list, DWORD flags, uintptr_t attribute, void *value,
+                                             SIZE_T size, void *previous, SIZE_T *returned)
+{
+    UNUSED(flags);
+    UNUSED(previous);
+    UNUSED(returned);
+    if (!list || list[1] >= list[0]) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    uint32_t *slot = list + 4 + list[1]++ * 4;
+    slot[0] = (uint32_t)attribute;
+    slot[1] = (uint32_t)(uintptr_t)value;
+    slot[2] = (uint32_t)size;
+    return TRUE;
+}
+
+const HANDLE *w32_attribute_handles(const void *attributes, int *count)
+{
+    const uint32_t *list = attributes;
+    *count = 0;
+    for (uint32_t i = 0; list && i < list[1] && i < ATTRIBUTE_SLOTS_MAX; i++)
+        if (list[4 + i * 4] == 0x20002u) {
+            *count = (int)(list[4 + i * 4 + 2] / sizeof(HANDLE));
+            return (const HANDLE *)(uintptr_t)list[4 + i * 4 + 1];
+        }
+    return NULL;
+}
+
+static BOOL WINAPI SetHandleInformation(HANDLE h, DWORD mask, DWORD flags)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (mask & 1)
+        o->inherit = flags & 1;
+    return TRUE;
+}
+
+static BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    *flags = o->inherit ? 1 : 0;
     return TRUE;
 }
 
@@ -779,7 +836,7 @@ static const struct w32_export vista_exports[] = {
     W32_AS("RemoveDllDirectory", w32_one1),
     W32_AS("DisableThreadLibraryCalls", w32_one1),
     W32_FN(GetHandleInformation),
-    W32_AS("SetHandleInformation", w32_one3),
+    W32_FN(SetHandleInformation),
     W32_FN(VerSetConditionMask),
     W32_AS("VerifyVersionInfoA", w32_one4),
     W32_AS("VerifyVersionInfoW", w32_one4),
@@ -826,7 +883,7 @@ static const struct w32_export vista_exports[] = {
     W32_AS("UnregisterWait", w32_one1),
     W32_AS("UnregisterWaitEx", w32_one2),
     W32_FN(InitializeProcThreadAttributeList),
-    W32_AS("UpdateProcThreadAttribute", true7),
+    W32_FN(UpdateProcThreadAttribute),
     W32_AS("DeleteProcThreadAttributeList", w32_zero1),
     W32_AS("PssCaptureSnapshot", pss_failed4),
     W32_AS("PssQuerySnapshot", pss_failed4),

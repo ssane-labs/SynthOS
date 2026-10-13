@@ -194,7 +194,7 @@ void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, ui
         return NULL;
     uint32_t cr0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= 0x80000000u;
+    cr0 |= 0x80010000u;
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
     enabled = true;
     return heap;
@@ -402,6 +402,7 @@ uint32_t vmm_pae_root(void)
 }
 
 #define PTE_OWNED 0x200u
+#define PTE_COW 0x400u
 
 struct vmm_space {
     void *tables[2048];
@@ -513,6 +514,49 @@ void vmm_release(uintptr_t start, size_t size)
 {
     release_tables(tables, (uint32_t)start, (uint32_t)(start + size), false);
     flush_range((uint32_t)start, size);
+}
+
+int vmm_map_pages(uintptr_t vaddr, void *const *pages, size_t count, bool cow)
+{
+    if (!enabled || (vaddr & 4095u))
+        return -1;
+    for (size_t i = 0; i < count; i++) {
+        uint32_t v = (uint32_t)vaddr + (uint32_t)i * 4096u;
+        if (!ensure_table(v, PTE_USER)) {
+            vmm_unmap(vaddr, i * 4096u);
+            return -1;
+        }
+        set_pte(v, phys_of(pages[i]), PTE_PRESENT | PTE_USER | (cow ? PTE_COW : PTE_WRITE));
+    }
+    flush_range((uint32_t)vaddr, count * 4096u);
+    return 0;
+}
+
+void vmm_make_cow(uintptr_t vaddr, size_t size)
+{
+    for (uint32_t v = (uint32_t)vaddr; v < vaddr + size; v += 4096u) {
+        void *t = tables[v >> shift()];
+        uint64_t e = t ? pte_get(t, v) : 0;
+        if ((e & PTE_PRESENT) && !(e & PTE_OWNED))
+            set_pte(v, e & 0x000ffffffffff000ull, (uint32_t)(e & 0xfffu & ~PTE_WRITE) | PTE_COW);
+    }
+    flush_range((uint32_t)vaddr, size);
+}
+
+bool vmm_cow_fault(uintptr_t address)
+{
+    uint32_t v = (uint32_t)address & ~4095u;
+    void *t = enabled ? tables[v >> shift()] : NULL;
+    uint64_t e = t ? pte_get(t, v) : 0;
+    if (!(e & PTE_PRESENT) || !(e & PTE_COW))
+        return false;
+    void *page = kmalloc_pages_uninit(4096);
+    if (!page)
+        return false;
+    memcpy(page, (const void *)(uintptr_t)v, 4096);
+    set_pte(v, phys_of(page), PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_OWNED);
+    invlpg(v);
+    return true;
 }
 
 static bool (*commit_hook)(uintptr_t address);

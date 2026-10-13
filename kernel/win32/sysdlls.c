@@ -10,40 +10,282 @@
 #define CRYPT_E_NOT_FOUND 0x80092004u
 #define ERROR_RESOURCE_TYPE_NOT_FOUND 1813
 
+static const uint8_t *rsrc_find(const uint8_t *file, size_t size, uint32_t *out_size)
+{
+    if (size < 0x40 || file[0] != 'M' || file[1] != 'Z')
+        return NULL;
+    uint32_t pe = *(const uint32_t *)(file + 0x3c);
+    if (pe + 0x18 > size)
+        return NULL;
+    uint16_t sections = *(const uint16_t *)(file + pe + 6), opt_size = *(const uint16_t *)(file + pe + 20);
+    uint32_t opt = pe + 24;
+    bool pe64 = *(const uint16_t *)(file + opt) == 0x20b;
+    uint32_t dirs = opt + (pe64 ? 112 : 96);
+    if (dirs + 24 > size)
+        return NULL;
+    uint32_t rva = *(const uint32_t *)(file + dirs + 16), sec = opt + opt_size;
+    uint32_t base_off = 0, base_va = 0;
+    for (uint16_t i = 0; i < sections && sec + 40 <= size; i++, sec += 40) {
+        uint32_t va = *(const uint32_t *)(file + sec + 12), vs = *(const uint32_t *)(file + sec + 16);
+        if (rva >= va && rva < va + MAX(vs, *(const uint32_t *)(file + sec + 8))) {
+            base_va = va;
+            base_off = *(const uint32_t *)(file + sec + 20);
+            break;
+        }
+    }
+    if (!rva || !base_off)
+        return NULL;
+    const uint8_t *root = file + base_off + (rva - base_va);
+    const uint8_t *dir = root;
+    for (int level = 0; level < 3; level++) {
+        if (dir + 16 > file + size)
+            return NULL;
+        uint16_t named = *(const uint16_t *)(dir + 12), ids = *(const uint16_t *)(dir + 14);
+        const uint32_t *e = (const uint32_t *)(dir + 16);
+        uint32_t next = 0;
+        for (uint32_t i = 0; i < (uint32_t)named + ids && (const uint8_t *)(e + 2) <= file + size; i++, e += 2)
+            if (level > 0 || e[0] == 16) {
+                next = e[1];
+                break;
+            }
+        if (!next)
+            return NULL;
+        if (level < 2) {
+            if (!(next & 0x80000000u))
+                return NULL;
+            dir = root + (next & 0x7fffffffu);
+        } else {
+            const uint32_t *data = (const uint32_t *)(root + next);
+            if ((const uint8_t *)(data + 2) > file + size || data[0] < base_va)
+                return NULL;
+            const uint8_t *blob = file + base_off + (data[0] - base_va);
+            if (blob + data[1] > file + size)
+                return NULL;
+            *out_size = data[1];
+            return blob;
+        }
+    }
+    return NULL;
+}
+
+struct vbuild {
+    uint8_t *out;
+    uint32_t cap, pos;
+};
+
+static void vput(struct vbuild *b, const void *data, uint32_t n)
+{
+    if (b->out && b->pos + n <= b->cap)
+        memcpy(b->out + b->pos, data, n);
+    b->pos += n;
+}
+
+static void valign(struct vbuild *b)
+{
+    static const uint8_t zero[4];
+    vput(b, zero, ALIGN_UP(b->pos, 4u) - b->pos);
+}
+
+static uint32_t vbegin(struct vbuild *b, const char *key, uint16_t value_len, uint16_t text)
+{
+    valign(b);
+    uint32_t at = b->pos;
+    uint16_t head[3] = {0, value_len, text};
+    vput(b, head, 6);
+    for (const char *k = key;; k++) {
+        uint16_t c = (uint8_t)*k;
+        vput(b, &c, 2);
+        if (!*k)
+            break;
+    }
+    valign(b);
+    return at;
+}
+
+static void vend(struct vbuild *b, uint32_t at)
+{
+    uint16_t len = (uint16_t)(b->pos - at);
+    if (b->out && at + 2 <= b->cap)
+        memcpy(b->out + at, &len, 2);
+}
+
+static void vstring(struct vbuild *b, const char *key, const char *value)
+{
+    uint32_t at = vbegin(b, key, (uint16_t)(strlen(value) + 1), 1);
+    for (const char *v = value;; v++) {
+        uint16_t c = (uint8_t)*v;
+        vput(b, &c, 2);
+        if (!*v)
+            break;
+    }
+    vend(b, at);
+}
+
+static uint32_t synth_version(uint8_t *out, uint32_t cap, const char *name)
+{
+    struct vbuild b = {out, cap, 0};
+    uint32_t root = vbegin(&b, "VS_VERSION_INFO", 52, 0);
+    uint32_t fixed[13] = {0xfeef04bdu, 0x00010000u, 10u << 16, (19041u << 16) | 5794u, 10u << 16,
+                          (19041u << 16) | 5794u, 0x3f, 0, 0x40004u, 2, 0, 0, 0};
+    vput(&b, fixed, sizeof(fixed));
+    uint32_t sfi = vbegin(&b, "StringFileInfo", 0, 1);
+    uint32_t table = vbegin(&b, "040904B0", 0, 1);
+    vstring(&b, "CompanyName", "SynthOS");
+    vstring(&b, "FileDescription", name);
+    vstring(&b, "FileVersion", "10.0.19041.5794");
+    vstring(&b, "InternalName", name);
+    vstring(&b, "OriginalFilename", name);
+    vstring(&b, "ProductName", "SynthOS Windows compatibility");
+    vstring(&b, "ProductVersion", "10.0.19041.5794");
+    vend(&b, table);
+    vend(&b, sfi);
+    uint32_t vfi = vbegin(&b, "VarFileInfo", 0, 1);
+    uint32_t var = vbegin(&b, "Translation", 4, 0);
+    uint16_t translation[2] = {0x0409, 0x04b0};
+    vput(&b, translation, sizeof(translation));
+    vend(&b, var);
+    vend(&b, vfi);
+    vend(&b, root);
+    return b.pos;
+}
+
+static uint32_t version_blob(LPCWSTR path, uint8_t *out, uint32_t cap)
+{
+    char *p = w32_narrow(path);
+    if (!p)
+        return 0;
+    char unix_path[PATH_MAX_LEN];
+    uint32_t n = 0;
+    bool disk = w32_path(p, unix_path, sizeof(unix_path)) == 0 && vfs_exists(unix_path);
+    char *data = NULL;
+    size_t size = 0;
+    if (disk && vfs_read_all(unix_path, &data, &size) == 0) {
+        uint32_t blob_size = 0;
+        const uint8_t *blob = rsrc_find((const uint8_t *)data, size, &blob_size);
+        if (blob) {
+            n = blob_size;
+            if (out && cap >= n)
+                memcpy(out, blob, n);
+        }
+    }
+    kfree(data);
+    if (!n && w32_is_system_dll(path_basename(p)))
+        n = synth_version(out, cap, path_basename(p));
+    w32_free(p);
+    return n;
+}
+
 static DWORD WINAPI GetFileVersionInfoSizeW(LPCWSTR path, DWORD *handle)
 {
-    UNUSED(path);
     if (handle)
         *handle = 0;
-    w32_set_error(ERROR_RESOURCE_TYPE_NOT_FOUND);
-    return 0;
+    uint32_t n = path ? version_blob(path, NULL, 0) : 0;
+    if (!n)
+        w32_set_error(ERROR_RESOURCE_TYPE_NOT_FOUND);
+    return n;
 }
 
 static BOOL WINAPI GetFileVersionInfoW(LPCWSTR path, DWORD handle, DWORD len, void *data)
 {
-    UNUSED(path);
     UNUSED(handle);
-    UNUSED(len);
-    UNUSED(data);
-    w32_set_error(ERROR_RESOURCE_TYPE_NOT_FOUND);
-    return FALSE;
+    uint32_t n = path ? version_blob(path, NULL, 0) : 0;
+    if (!n || len < n) {
+        w32_set_error(n ? ERROR_INSUFFICIENT_BUFFER : ERROR_RESOURCE_TYPE_NOT_FOUND);
+        return FALSE;
+    }
+    version_blob(path, data, len);
+    return TRUE;
+}
+
+static DWORD WINAPI GetFileVersionInfoSizeExW(DWORD flags, LPCWSTR path, DWORD *handle)
+{
+    UNUSED(flags);
+    return GetFileVersionInfoSizeW(path, handle);
+}
+
+static BOOL WINAPI GetFileVersionInfoExW(DWORD flags, LPCWSTR path, DWORD handle, DWORD len, void *data)
+{
+    UNUSED(flags);
+    return GetFileVersionInfoW(path, handle, len, data);
+}
+
+static const uint8_t *node_value(const uint8_t *node, const WCHAR **key)
+{
+    *key = (const WCHAR *)(node + 6);
+    const WCHAR *k = *key;
+    while (*k)
+        k++;
+    uintptr_t after = (uintptr_t)(k + 1);
+    return (const uint8_t *)ALIGN_UP(after, 4u);
+}
+
+static bool key_equal(const WCHAR *k, const WCHAR *part, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        WCHAR a = k[i], b = part[i];
+        if (a >= 'a' && a <= 'z')
+            a -= 32;
+        if (b >= 'a' && b <= 'z')
+            b -= 32;
+        if (a != b)
+            return false;
+    }
+    return k[n] == 0;
 }
 
 static BOOL WINAPI VerQueryValueW(const void *block, LPCWSTR sub, void **out, UINT *len)
 {
-    UNUSED(block);
-    UNUSED(sub);
     if (out)
         *out = NULL;
     if (len)
         *len = 0;
-    return FALSE;
+    if (!block || !sub)
+        return FALSE;
+    const uint8_t *node = block;
+    while (*sub) {
+        while (*sub == '\\')
+            sub++;
+        if (!*sub)
+            break;
+        size_t n = 0;
+        while (sub[n] && sub[n] != '\\')
+            n++;
+        const WCHAR *key;
+        uint16_t length = *(const uint16_t *)node, vlen = *(const uint16_t *)(node + 2);
+        const uint8_t *value = node_value(node, &key);
+        uint32_t vbytes = *(const uint16_t *)(node + 4) ? vlen * 2u : vlen;
+        const uint8_t *child = (const uint8_t *)ALIGN_UP((uintptr_t)(value + vbytes), 4u), *end = node + length;
+        const uint8_t *found = NULL;
+        while (child + 6 <= end && *(const uint16_t *)child) {
+            const WCHAR *ck;
+            node_value(child, &ck);
+            if (key_equal(ck, sub, n)) {
+                found = child;
+                break;
+            }
+            child = (const uint8_t *)ALIGN_UP((uintptr_t)(child + *(const uint16_t *)child), 4u);
+        }
+        if (!found)
+            return FALSE;
+        node = found;
+        sub += n;
+    }
+    const WCHAR *key;
+    const uint8_t *value = node_value(node, &key);
+    uint16_t vlen = *(const uint16_t *)(node + 2);
+    if (!vlen)
+        return FALSE;
+    if (out)
+        *out = (void *)value;
+    if (len)
+        *len = vlen;
+    return TRUE;
 }
 
 static const struct w32_export version_exports[] = {
     W32_FN(GetFileVersionInfoSizeW), W32_AS("GetFileVersionInfoSizeA", GetFileVersionInfoSizeW),
     W32_FN(GetFileVersionInfoW),     W32_AS("GetFileVersionInfoA", GetFileVersionInfoW),
-    W32_AS("GetFileVersionInfoSizeExW", w32_zero3), W32_AS("GetFileVersionInfoExW", w32_zero5),
+    W32_FN(GetFileVersionInfoSizeExW), W32_FN(GetFileVersionInfoExW),
     W32_FN(VerQueryValueW),          W32_AS("VerQueryValueA", VerQueryValueW),
 };
 

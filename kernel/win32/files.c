@@ -155,21 +155,19 @@ static HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD share, void *s
                                  HANDLE tmpl)
 {
     UNUSED(share);
-    UNUSED(sa);
     UNUSED(flags);
     UNUSED(tmpl);
-    return w32_create_file(name, access, disposition);
+    return w32_inheritable(w32_create_file(name, access, disposition), sa);
 }
 
 static HANDLE WINAPI CreateFileW(LPCWSTR name, DWORD access, DWORD share, void *sa, DWORD disposition, DWORD flags,
                                  HANDLE tmpl)
 {
     UNUSED(share);
-    UNUSED(sa);
     UNUSED(flags);
     UNUSED(tmpl);
     char *n = narrow(name);
-    HANDLE h = w32_create_file(n, access, disposition);
+    HANDLE h = w32_inheritable(w32_create_file(n, access, disposition), sa);
     w32_free(n);
     return h;
 }
@@ -220,9 +218,18 @@ long w32_handle_write(HANDLE h, const void *buf, size_t n)
 
 static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, void *overlapped)
 {
-    UNUSED(overlapped);
+    uint32_t *ov = overlapped;
+    struct w32_object *o = w32_handle_get(h);
     if (read)
         *read = 0;
+    if (ov && o && o->type == WH_PIPE) {
+        int e = w32_pipe_overlapped(h, o, buf, n, read, ov, false);
+        if (e)
+            w32_set_error((DWORD)e);
+        return e == 0;
+    }
+    if (ov && o && o->type == WH_FILE)
+        vfs_seek(o->file, (long)ov[2], VFS_SEEK_SET);
     long got = w32_handle_read(h, buf, n);
     if (got < 0) {
         w32_set_error(got == E_BADF ? ERROR_INVALID_HANDLE : w32_error_from_vfs((int)got));
@@ -230,14 +237,31 @@ static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, void *ove
     }
     if (read)
         *read = (DWORD)got;
+    if (ov) {
+        if (!got && n && o && o->type == WH_FILE) {
+            w32_io_complete(o, ov, 0xc0000011u, 0, true);
+            w32_set_error(38);
+            return FALSE;
+        }
+        w32_io_complete(o, ov, 0, (uint32_t)got, true);
+    }
     return TRUE;
 }
 
 static BOOL WINAPI WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, void *overlapped)
 {
-    UNUSED(overlapped);
+    uint32_t *ov = overlapped;
+    struct w32_object *o = w32_handle_get(h);
     if (written)
         *written = 0;
+    if (ov && o && o->type == WH_PIPE) {
+        int e = w32_pipe_overlapped(h, o, (void *)buf, n, written, ov, true);
+        if (e)
+            w32_set_error((DWORD)e);
+        return e == 0;
+    }
+    if (ov && o && o->type == WH_FILE && !o->append)
+        vfs_seek(o->file, (long)ov[2], VFS_SEEK_SET);
     long put = w32_handle_write(h, buf, n);
     if (put < 0) {
         w32_set_error(put == E_BADF ? ERROR_INVALID_HANDLE : w32_error_from_vfs((int)put));
@@ -245,6 +269,8 @@ static BOOL WINAPI WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written,
     }
     if (written)
         *written = (DWORD)put;
+    if (ov)
+        w32_io_complete(o, ov, 0, (uint32_t)put, true);
     return TRUE;
 }
 

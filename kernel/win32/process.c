@@ -131,13 +131,8 @@ HANDLE w32_std_handle(int which)
     return (HANDLE)(uintptr_t)(HANDLE_BASE + (uintptr_t)which * 4);
 }
 
-bool w32_handle_close(HANDLE h)
+void w32_object_release(struct w32_object *o)
 {
-    struct w32_object *o = w32_handle_get(h);
-    if (!o)
-        return false;
-    if (--o->refs > 0)
-        return true;
     if (o->file)
         vfs_close(o->file);
     if (o->delete_on_close && o->path)
@@ -161,7 +156,107 @@ bool w32_handle_close(HANDLE h)
     o->type = WH_FREE;
     o->file = NULL;
     o->find = NULL;
+}
+
+bool w32_handle_close(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o)
+        return false;
+    if (--o->refs > 0)
+        return true;
+    w32_object_release(o);
     return true;
+}
+
+bool w32_object_clone(struct w32_object *dst, const struct w32_object *src)
+{
+    if (src->type == WH_FIND || src->type == WH_PORT || src->type == WH_THREAD || src->type == WH_FREE ||
+        src->type <= WH_STDERR)
+        return false;
+    *dst = *src;
+    dst->refs = 1;
+    dst->delete_on_close = false;
+    dst->path = src->path ? kstrdup(src->path) : NULL;
+    dst->file = NULL;
+    if (src->file) {
+        if (!src->path || vfs_open(src->path, src->file->flags & ~(unsigned)(VFS_CREATE | VFS_TRUNC), &dst->file)) {
+            kfree(dst->path);
+            return false;
+        }
+        vfs_seek(dst->file, (long)src->file->pos, VFS_SEEK_SET);
+    }
+    if (src->type == WH_PIPE && !w32_pipe_clone(dst)) {
+        if (dst->file)
+            vfs_close(dst->file);
+        kfree(dst->path);
+        return false;
+    }
+    if (dst->section)
+        w32_section_retain(dst->section);
+    if (dst->child)
+        dst->child->refs++;
+    return true;
+}
+
+struct w32_inherit *w32_inherit_collect(const HANDLE *list, int count)
+{
+    int n = 0;
+    for (int i = 3; i < W32_MAX_HANDLES; i++)
+        if (w32->handles[i].type != WH_FREE)
+            n++;
+    struct w32_inherit *in = kzalloc(sizeof(*in) + (size_t)n * sizeof(in->items[0]));
+    if (!in)
+        return NULL;
+    for (int i = 3; i < W32_MAX_HANDLES && in->count < n; i++) {
+        HANDLE h = (HANDLE)(uintptr_t)(HANDLE_BASE + (uintptr_t)i * 4);
+        const struct w32_object *o = &w32->handles[i];
+        bool wanted = list ? false : o->inherit;
+        for (int k = 0; list && k < count; k++)
+            wanted |= list[k] == h;
+        if (wanted && o->type != WH_FREE && w32_object_clone(&in->items[in->count].object, o))
+            in->items[in->count++].index = (uint32_t)i;
+    }
+    return in;
+}
+
+HANDLE w32_inheritable(HANDLE h, const void *sa)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (o && sa)
+        o->inherit = ((const uint32_t *)sa)[2] != 0;
+    return h;
+}
+
+void w32_inherit_free(struct w32_inherit *in)
+{
+    for (int i = 0; in && i < in->count; i++)
+        if (in->items[i].object.type != WH_FREE)
+            w32_object_release(&in->items[i].object);
+    kfree(in);
+}
+
+static void install_inherited(struct w32_inherit *in)
+{
+    for (int i = 0; in && i < in->count; i++) {
+        uint32_t index = in->items[i].index;
+        if (index < W32_MAX_HANDLES && w32->handles[index].type == WH_FREE) {
+            w32->handles[index] = in->items[i].object;
+            memset(&in->items[i].object, 0, sizeof(in->items[i].object));
+        }
+    }
+    w32_inherit_free(in);
+}
+
+HANDLE w32_handle_put(struct w32_process *p, const struct w32_object *o)
+{
+    for (int i = 3; i < W32_MAX_HANDLES; i++)
+        if (p->handles[i].type == WH_FREE) {
+            if (!w32_object_clone(&p->handles[i], o))
+                return NULL;
+            return (HANDLE)(uintptr_t)(HANDLE_BASE + i * 4);
+        }
+    return NULL;
 }
 
 int w32_path(const char *win, char *out, size_t cap)
@@ -595,6 +690,8 @@ static int run(struct exec_ctx *ctx)
         w32->handles[i].type = (enum w32_object_type)(WH_STDIN + i);
         w32->handles[i].refs = 1 << 20;
     }
+    install_inherited(ctx->handles);
+    ctx->handles = NULL;
     build_command_line(ctx);
     build_environment(ctx);
     if (!w32->stack || !build_teb_peb() || !w32_threads_start() || (w32->win64 && !w64_setup()))
@@ -683,6 +780,33 @@ static uint32_t next_pid = 0x2000;
 static size_t state_size(void)
 {
     return (size_t)(__stop_w32state - __start_w32state);
+}
+
+struct w32_object *w32_handle_get_in(struct w32_process *p, HANDLE h)
+{
+    uintptr_t v = (uintptr_t)h;
+    if (!p || v < HANDLE_BASE || (v - HANDLE_BASE) % 4)
+        return NULL;
+    uintptr_t i = (v - HANDLE_BASE) / 4;
+    if (i >= W32_MAX_HANDLES || p->handles[i].type == WH_FREE)
+        return NULL;
+    return &p->handles[i];
+}
+
+struct w32_process *w32_process_by_pid(uint32_t pid)
+{
+    struct w32_process *p = w32;
+    do {
+        if (p->child && p->child->pid == pid)
+            return p;
+        p = p->ring_next;
+    } while (p && p != w32);
+    return NULL;
+}
+
+uint32_t w32_current_pid(void)
+{
+    return w32 && w32->child ? w32->child->pid : 0x100;
 }
 
 struct w32_process *w32_ring_next(struct w32_process *p)
@@ -848,12 +972,16 @@ static int exit_status(int rc, bool started)
     return code <= 255 ? (int)code : (code & 0xff) ? (int)(code & 0xff) : 255;
 }
 
+static uint8_t *pristine_state;
+
 static int run_process(struct exec_ctx *ctx)
 {
     struct w32_process *parent = w32;
     struct w32_process *p = kzalloc(sizeof(*p));
     if (!p)
         return E_NOMEM;
+    if (pristine_state)
+        memcpy(__start_w32state, pristine_state, state_size());
     p->space = vmm_space_create();
     if (!p->space) {
         kfree(p);
@@ -861,6 +989,12 @@ static int run_process(struct exec_ctx *ctx)
     }
     struct vmm_space *outer = vmm_space_current();
     p->parent = parent;
+    if ((p->child = kzalloc(sizeof(*p->child)))) {
+        next_pid += 8;
+        p->child->refs = 1;
+        p->child->pid = next_pid;
+        p->child->proc = p;
+    }
     w32 = p;
     ring_add(p);
     vmm_space_switch(p->space);
@@ -874,6 +1008,13 @@ static int run_process(struct exec_ctx *ctx)
         sh_error(ctx->sh, path_basename(ctx->path), "%s", w32->message);
     cleanup();
     kill_children(p);
+    if (p->child) {
+        p->child->done = true;
+        p->child->exit_code = (uint32_t)w32->exit_code;
+        p->child->proc = NULL;
+        w32_child_release(p->child);
+        p->child = NULL;
+    }
     vmm_space_switch(outer);
     ring_remove(p);
     w32 = parent;
@@ -944,7 +1085,7 @@ struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own)
         vmm_space_destroy(space);
         return NULL;
     }
-    memcpy(state, __start_w32state, state_size());
+    memcpy(state, pristine_state ? pristine_state : __start_w32state, state_size());
     next_pid += 8;
     c->refs = 2;
     c->pid = next_pid;
@@ -974,6 +1115,8 @@ static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
     UNUSED(image);
     if (!vmm_available())
         return E_NOSYS;
+    if (!pristine_state && !w32 && (pristine_state = kmalloc(state_size())))
+        memcpy(pristine_state, __start_w32state, state_size());
     image_reserve = size * 3 + 256 * 1024;
     image_win64 = w32_is_pe64(image, size);
     return w32 ? run_nested(ctx) : run_process(ctx);

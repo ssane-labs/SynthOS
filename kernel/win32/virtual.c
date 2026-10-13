@@ -10,6 +10,7 @@
 #define MEM_RELEASE 0x8000u
 #define MEM_FREE 0x10000u
 #define MEM_PRIVATE 0x20000u
+#define MEM_MAPPED 0x40000u
 #define MEM_IMAGE 0x1000000u
 #define MEM_RESET 0x80000u
 #define MEM_TOP_DOWN 0x100000u
@@ -24,6 +25,7 @@ struct vregion {
     uint32_t base, size;
     uint32_t alloc_protect, protect;
     uint8_t *committed;
+    bool mapped;
 };
 
 struct w32_vm {
@@ -144,7 +146,7 @@ static struct vregion *add_region(uint32_t base, uint32_t size, uint32_t protect
     while (at < v->count && v->regions[at].base < base)
         at++;
     memmove(&v->regions[at + 1], &v->regions[at], sizeof(*v->regions) * (size_t)(v->count - at));
-    v->regions[at] = (struct vregion){base, size, protect, protect, bits};
+    v->regions[at] = (struct vregion){base, size, protect, protect, bits, false};
     v->count++;
     return &v->regions[at];
 }
@@ -168,6 +170,33 @@ void w32_vm_cleanup(void)
     kfree(w32->vm->regions);
     kfree(w32->vm);
     w32->vm = NULL;
+}
+
+uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count)
+{
+    uint32_t size = count * 4096u, base = vm() ? find_free(size, false) : 0;
+    struct vregion *r = base ? add_region(base, size, PAGE_READWRITE) : NULL;
+    if (!r)
+        return 0;
+    r->mapped = true;
+    mark(r, base, base + size, true);
+    for (uint32_t i = 0; i < count; i++)
+        if (vmm_map(base + i * 4096u, pages[i], 4096u) != 0) {
+            vmm_unmap(base, i * 4096u);
+            remove_region(find_index(base));
+            return 0;
+        }
+    return base;
+}
+
+bool w32_vm_unmap_shared(uint32_t base)
+{
+    int i = find_index(base);
+    if (i < 0 || !w32->vm->regions[i].mapped)
+        return false;
+    vmm_unmap(w32->vm->regions[i].base, w32->vm->regions[i].size);
+    remove_region(i);
+    return true;
 }
 
 static void *WINAPI VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect)
@@ -298,7 +327,7 @@ static SIZE_T WINAPI VirtualQuery(const void *addr, struct mbi *info, SIZE_T len
         while (end < r->base + r->size && page_committed(r, end) == on)
             end += 4096u;
         *info = (struct mbi){a, r->base, r->alloc_protect, end - a, on ? MEM_COMMIT : MEM_RESERVE,
-                             on ? r->protect : 0, MEM_PRIVATE};
+                             on ? r->protect : 0, r->mapped ? MEM_MAPPED : MEM_PRIVATE};
         return sizeof(*info);
     }
     for (struct w32_image *img = w32->images; img; img = img->next)

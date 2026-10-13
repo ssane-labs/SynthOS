@@ -287,6 +287,8 @@ void x86_interrupt(struct regs *r)
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         if (r->vector == 14 && !(r->error & 1) && vmm_commit_fault(cr2))
             return;
+        if (r->vector == 14 && (r->error & 3) == 3 && vmm_cow_fault(cr2))
+            return;
         if (fault_handler && r->vector != 8 && r->vector != 18) {
             fault_regs = r;
             fault_handler((int)r->vector, r->eip, cr2);
