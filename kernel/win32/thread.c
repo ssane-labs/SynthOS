@@ -1196,8 +1196,121 @@ static BOOL WINAPI FlsSetValue(DWORD index, void *value)
     return TRUE;
 }
 
+/* RegisterWaitForSingleObject: one wait thread per process polls every registration when woken. */
+struct registered_wait {
+    HANDLE object, done_event;
+    void(WINAPI *callback)(void *, uint8_t);
+    void *context;
+    DWORD ms, flags;
+    uint64_t deadline;
+    bool running, cancelled, spent;
+    struct registered_wait *next;
+};
+
+static W32_STATE struct registered_wait *reg_waits;
+static W32_STATE DWORD reg_thread;
+
+static void reg_finish(struct registered_wait *w)
+{
+    if (w->done_event && w->done_event != INVALID_HANDLE_VALUE)
+        SetEvent(w->done_event);
+    w32_free(w);
+}
+
+static bool reg_fire_one(void)
+{
+    uint64_t now = hal_ticks_ms();
+    for (struct registered_wait **pp = &reg_waits; *pp; pp = &(*pp)->next) {
+        struct registered_wait *w = *pp;
+        if (w->cancelled) {
+            *pp = w->next;
+            reg_finish(w);
+            return true;
+        }
+        if (w->spent)
+            continue;
+        struct w32_object *o = w32_handle_get(w->object);
+        bool ready = signaled(w->object, o), timeout = w->ms != INFINITE && now >= w->deadline;
+        if (!ready && !timeout)
+            continue;
+        if (ready)
+            acquire(o);
+        w->spent = (w->flags & 8) != 0;
+        w->deadline = now + w->ms;
+        w->running = true;
+        w->callback(w->context, !ready);
+        w->running = false;
+        w32_signal();
+        return true;
+    }
+    return false;
+}
+
+static DWORD WINAPI reg_wait_thread(void *arg)
+{
+    UNUSED(arg);
+    for (;;)
+        if (!reg_fire_one())
+            w32_block();
+    return 0;
+}
+
+static BOOL WINAPI RegisterWaitForSingleObject(HANDLE *out, HANDLE object, void *callback, void *context, DWORD ms,
+                                               DWORD flags)
+{
+    if (!out || !callback || !w32_handle_get(object)) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (!reg_thread) {
+        HANDLE t = w32_create_thread(0, (void *)reg_wait_thread, NULL, 0, &reg_thread);
+        if (!t)
+            return FALSE;
+        w32_handle_close(t);
+    }
+    struct registered_wait *w = w32_zalloc(sizeof(*w));
+    if (!w) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    w->object = object;
+    w->callback = (void(WINAPI *)(void *, uint8_t))callback;
+    w->context = context;
+    w->ms = ms;
+    w->flags = flags;
+    w->deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
+    w->next = reg_waits;
+    reg_waits = w;
+    w32_signal();
+    *out = (HANDLE)w;
+    return TRUE;
+}
+
+static BOOL WINAPI UnregisterWaitEx(HANDLE handle, HANDLE completion)
+{
+    struct registered_wait *w = reg_waits;
+    while (w && w != (struct registered_wait *)handle)
+        w = w->next;
+    if (!w || w->cancelled) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    w->cancelled = true;
+    w->done_event = completion;
+    w32_signal();
+    if (completion == INVALID_HANDLE_VALUE && w32_thread_id() != reg_thread)
+        while (w->running)
+            w32_block();
+    return TRUE;
+}
+
+static BOOL WINAPI UnregisterWait(HANDLE handle)
+{
+    return UnregisterWaitEx(handle, NULL);
+}
+
 static const struct w32_export thread_exports[] = {
-    W32_AS("RegisterWaitForSingleObject", w32_fail6), W32_AS("UnregisterWaitEx", w32_one2), W32_AS("UnregisterWait", w32_one1),
+    W32_FN(RegisterWaitForSingleObject), W32_FN(UnregisterWaitEx), W32_FN(UnregisterWait),
     W32_FN(CreateThread), W32_FN(ExitThread), W32_FN(TerminateThread), W32_FN(GetExitCodeThread),
     W32_FN(SuspendThread), W32_FN(ResumeThread), W32_FN(GetCurrentThreadId), W32_FN(GetThreadId),
     W32_FN(SetThreadPriority), W32_FN(GetThreadPriority), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),

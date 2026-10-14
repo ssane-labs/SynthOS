@@ -12,6 +12,14 @@ static LONG WINAPI filter(EXCEPTION_POINTERS *info)
 
 static int data_var = 1;
 
+static volatile LONG wait_hits, wait_timeouts;
+
+static void CALLBACK on_wait(void *ctx, BOOLEAN timed_out)
+{
+    (void)ctx;
+    InterlockedIncrement(timed_out ? &wait_timeouts : &wait_hits);
+}
+
 static void compat(void)
 {
     LOGFONTW lf = {0};
@@ -90,6 +98,21 @@ static void compat(void)
     printf("reparent loop=%s move=%s children=%d\n", loop ? "allowed" : "refused", moved == a ? "ok" : "bad",
            children);
     DestroyWindow(top);
+
+    HANDLE ev = CreateEventA(NULL, FALSE, FALSE, NULL), once = NULL, timer = NULL;
+    BOOL reg = RegisterWaitForSingleObject(&once, ev, on_wait, NULL, INFINITE, WT_EXECUTEONLYONCE);
+    SetEvent(ev);
+    for (int i = 0; i < 200 && !wait_hits; i++)
+        Sleep(5);
+    SetEvent(ev);
+    Sleep(50);
+    HANDLE never = CreateEventA(NULL, TRUE, FALSE, NULL);
+    RegisterWaitForSingleObject(&timer, never, on_wait, NULL, 20, 0);
+    for (int i = 0; i < 200 && wait_timeouts < 2; i++)
+        Sleep(5);
+    BOOL un = UnregisterWaitEx(once, INVALID_HANDLE_VALUE) && UnregisterWaitEx(timer, INVALID_HANDLE_VALUE);
+    printf("registered wait=%s hits=%ld timeouts=%s unregister=%s\n", reg ? "ok" : "failed", wait_hits,
+           wait_timeouts >= 2 ? "ok" : "missing", un ? "ok" : "failed");
 }
 
 int main(int argc, char **argv)
