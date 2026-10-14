@@ -564,6 +564,7 @@ static HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, uintptr_t 
 
 static BOOL WINAPI PostQueuedCompletionStatus(HANDLE h, DWORD bytes, uintptr_t key, void *ov)
 {
+    w32_signal();
     struct w32_port *p = port_of(h);
     if (!p || p->tail - p->head >= PORT_SLOTS) {
         w32_set_error(p ? ERROR_NOT_ENOUGH_MEMORY : ERROR_INVALID_HANDLE);

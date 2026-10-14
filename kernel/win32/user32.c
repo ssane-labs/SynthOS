@@ -201,7 +201,7 @@ static void buf_sink(void *ctx, const char *s, size_t n)
         b->buf[b->len++] = s[i];
 }
 
-static int WINAPIV wvsprintfA(LPSTR out, LPCSTR fmt, va_list ap)
+static int WINAPI wvsprintfA(LPSTR out, LPCSTR fmt, va_list ap)
 {
     struct strbuf b = {out, 0};
     crt_vformat(buf_sink, &b, fmt, ap);
@@ -230,7 +230,7 @@ static void wbuf_sink(void *ctx, const WCHAR *s, size_t n)
         b->buf[b->len++] = s[i];
 }
 
-static int WINAPIV wvsprintfW(LPWSTR out, LPCWSTR fmt, va_list ap)
+static int WINAPI wvsprintfW(LPWSTR out, LPCWSTR fmt, va_list ap)
 {
     struct wstrbuf b = {out, 0};
     crt_vwformat(wbuf_sink, &b, fmt, ap);

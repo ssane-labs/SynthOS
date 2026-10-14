@@ -116,6 +116,38 @@ static struct w32_thread *pick(struct w32_thread *cur, bool active_only)
     return NULL;
 }
 
+/* Bumped whenever something a waiting thread might be waiting for happens. */
+static uint32_t signal_gen;
+
+void w32_signal(void)
+{
+    signal_gen++;
+}
+
+static bool stale(const struct w32_thread *t)
+{
+    return !t->done && !t->suspended && t->waiting && t->seen != signal_gen;
+}
+
+/* A waiting thread, here or in another process, that has not looked since the last signal. */
+static struct w32_thread *pick_stale(struct w32_thread *cur)
+{
+    for (struct w32_thread *t = cur->next; t != cur; t = t->next)
+        if (stale(t))
+            return t;
+    for (struct w32_process *p = w32_ring_next(w32); p && p != w32; p = w32_ring_next(p)) {
+        if (p->dead || p->frozen || !p->current)
+            continue;
+        struct w32_thread *t = p->current;
+        do {
+            if (stale(t))
+                return t;
+            t = t->next;
+        } while (t != p->current);
+    }
+    return NULL;
+}
+
 static struct w32_thread *pick_other(bool active_only)
 {
     for (struct w32_process *p = w32_ring_next(w32); p && p != w32; p = w32_ring_next(p)) {
@@ -192,22 +224,39 @@ void w32_yield(void)
         switch_to(next);
 }
 
+static uint32_t user_caller(void)
+{
+    const uint32_t *frame = __builtin_frame_address(0);
+    for (int i = 0; i < 16 && frame && (uint32_t)frame >= 0xc0000000u; i++) {
+        uint32_t ret = frame[1];
+        if (ret >= VMM_USER_START && ret < 0xc0000000u)
+            return ret;
+        frame = (const uint32_t *)frame[0];
+    }
+    return 0;
+}
+
 void w32_block(void)
 {
     w32_io_poll();
+    if (input_info_take())
+        w32_dump_status();
     struct w32_thread *cur = w32->current;
     if (!cur) {
         w32_idle(1);
     } else {
+        cur->wait_caller = user_caller();
         cur->waiting = true;
+        cur->seen = signal_gen;
         struct w32_thread *next = w32->live_threads > 1 ? pick(cur, true) : NULL;
         if (!next)
             next = pick_other(true);
+        if (!next)
+            next = pick_stale(cur);
         if (!next) {
             w32_idle(1);
-            next = w32->live_threads > 1 ? pick(cur, false) : NULL;
-            if (!next)
-                next = pick_other(false);
+            signal_gen++;
+            next = pick_stale(cur);
         }
         if (next)
             switch_to(next);
@@ -306,6 +355,7 @@ static NORETURN void finish(uint32_t code)
         w64_tls_callbacks(3);
     t->done = true;
     t->exit_code = code;
+    w32_signal();
     if (--w32->live_threads <= 0)
         w32_exit(code);
     for (;;) {
@@ -343,11 +393,10 @@ static uint8_t *make_teb(struct w32_thread *t)
     memcpy(teb + 0x08, &v, 4);
     v = (uint32_t)teb;
     memcpy(teb + 0x18, &v, 4);
-    v = 0x100;
+    v = w32_current_pid();
     memcpy(teb + 0x20, &v, 4);
     memcpy(teb + 0x24, &t->id, 4);
     memcpy(teb + 0x30, w32->teb + 0x30, 4);
-    memcpy(teb + 0xe10, w32->threads->teb + 0xe10, 64 * 4);
     for (int i = 0; i < w32->tls_mod_count; i++)
         if (!tls_attach(teb, i))
             return NULL;
@@ -627,6 +676,7 @@ static BOOL WINAPI SetEvent(HANDLE h)
     struct w32_object *o = object(h, WH_EVENT);
     if (o)
         o->value = 1;
+    w32_signal();
     return o != NULL;
 }
 
@@ -643,6 +693,7 @@ static BOOL WINAPI PulseEvent(HANDLE h)
     struct w32_object *o = object(h, WH_EVENT);
     if (o) {
         o->value = 1;
+        w32_signal();
         w32_yield();
         o->value = 0;
     }
@@ -660,6 +711,7 @@ static BOOL WINAPI ReleaseMutex(HANDLE h)
     }
     if (--o->value == 0)
         o->owner = 0;
+    w32_signal();
     return TRUE;
 }
 
@@ -675,6 +727,7 @@ static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG count, LONG *previous)
     if (previous)
         *previous = (LONG)o->value;
     o->value += (uint32_t)count;
+    w32_signal();
     return TRUE;
 }
 
@@ -811,12 +864,12 @@ static void WINAPI DeleteCriticalSection(struct critical_section *cs)
 
 static BOOL WINAPI TryEnterCriticalSection(struct critical_section *cs)
 {
-    DWORD me = w32_thread_id();
-    if (cs->owner && cs->owner != me && cs->recursion > 0)
+    DWORD me = w32_thread_id(), free = 0;
+    if (__atomic_load_n(&cs->owner, __ATOMIC_ACQUIRE) != me &&
+        !__atomic_compare_exchange_n(&cs->owner, &free, me, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
         return FALSE;
-    cs->owner = me;
     cs->recursion++;
-    cs->lock_count++;
+    __atomic_add_fetch(&cs->lock_count, 1, __ATOMIC_RELAXED);
     return TRUE;
 }
 
@@ -830,9 +883,11 @@ static void WINAPI LeaveCriticalSection(struct critical_section *cs)
 {
     if (cs->owner != w32_thread_id() || cs->recursion <= 0)
         return;
-    cs->lock_count--;
-    if (--cs->recursion == 0)
-        cs->owner = 0;
+    __atomic_sub_fetch(&cs->lock_count, 1, __ATOMIC_RELAXED);
+    if (--cs->recursion == 0) {
+        __atomic_store_n(&cs->owner, 0, __ATOMIC_RELEASE);
+        w32_signal();
+    }
 }
 
 static void WINAPI InitializeSRWLock(uint32_t *lock)
@@ -840,36 +895,32 @@ static void WINAPI InitializeSRWLock(uint32_t *lock)
     *lock = 0;
 }
 
-static uint8_t try_exclusive(uint32_t *lock)
-{
-    if (*lock)
-        return 0;
-    *lock = 1;
-    return 1;
-}
-
+/* bit 0: held exclusively; the rest counts shared holders in steps of 2 */
 static uint8_t WINAPI TryAcquireSRWLockExclusive(uint32_t *lock)
 {
-    return try_exclusive(lock);
+    uint32_t free = 0;
+    return __atomic_compare_exchange_n(lock, &free, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 }
 
 static void WINAPI AcquireSRWLockExclusive(uint32_t *lock)
 {
-    while (!try_exclusive(lock))
+    while (!TryAcquireSRWLockExclusive(lock))
         w32_block();
 }
 
 static void WINAPI ReleaseSRWLockExclusive(uint32_t *lock)
 {
-    *lock = 0;
+    __atomic_store_n(lock, 0, __ATOMIC_RELEASE);
+    w32_signal();
 }
 
 static uint8_t WINAPI TryAcquireSRWLockShared(uint32_t *lock)
 {
-    if (*lock & 1)
-        return 0;
-    *lock += 2;
-    return 1;
+    uint32_t v = __atomic_load_n(lock, __ATOMIC_RELAXED);
+    while (!(v & 1))
+        if (__atomic_compare_exchange_n(lock, &v, v + 2, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+            return 1;
+    return 0;
 }
 
 static void WINAPI AcquireSRWLockShared(uint32_t *lock)
@@ -880,8 +931,10 @@ static void WINAPI AcquireSRWLockShared(uint32_t *lock)
 
 static void WINAPI ReleaseSRWLockShared(uint32_t *lock)
 {
-    if (*lock >= 2)
-        *lock -= 2;
+    uint32_t v = __atomic_load_n(lock, __ATOMIC_RELAXED);
+    while (v >= 2 && !__atomic_compare_exchange_n(lock, &v, v - 2, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+        ;
+    w32_signal();
 }
 
 static void WINAPI InitializeConditionVariable(uint32_t *cv)
@@ -891,13 +944,14 @@ static void WINAPI InitializeConditionVariable(uint32_t *cv)
 
 static void WINAPI WakeConditionVariable(uint32_t *cv)
 {
-    (*cv)++;
+    __atomic_add_fetch(cv, 1, __ATOMIC_RELEASE);
+    w32_signal();
 }
 
 static bool wait_generation(uint32_t *cv, uint32_t generation, DWORD ms)
 {
     uint64_t deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
-    while (*cv == generation) {
+    while (__atomic_load_n(cv, __ATOMIC_ACQUIRE) == generation) {
         if (ms == 0 || (ms != INFINITE && hal_ticks_ms() >= deadline)) {
             w32_set_error(ERROR_TIMEOUT);
             return false;
@@ -909,23 +963,26 @@ static bool wait_generation(uint32_t *cv, uint32_t generation, DWORD ms)
 
 static BOOL WINAPI SleepConditionVariableCS(uint32_t *cv, struct critical_section *cs, DWORD ms)
 {
-    uint32_t generation = *cv;
+    uint32_t generation = __atomic_load_n(cv, __ATOMIC_ACQUIRE);
     LONG depth = cs->recursion;
     cs->recursion = 0;
-    cs->owner = 0;
-    cs->lock_count -= depth;
+    __atomic_sub_fetch(&cs->lock_count, depth, __ATOMIC_RELAXED);
+    __atomic_store_n(&cs->owner, 0, __ATOMIC_RELEASE);
+    w32_signal();
     bool woke = wait_generation(cv, generation, ms);
-    while (cs->owner && cs->owner != w32_thread_id())
+    DWORD me = w32_thread_id(), free = 0;
+    while (!__atomic_compare_exchange_n(&cs->owner, &free, me, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        free = 0;
         w32_block();
-    cs->owner = w32_thread_id();
+    }
     cs->recursion = depth;
-    cs->lock_count += depth;
+    __atomic_add_fetch(&cs->lock_count, depth, __ATOMIC_RELAXED);
     return woke;
 }
 
 static BOOL WINAPI SleepConditionVariableSRW(uint32_t *cv, uint32_t *lock, DWORD ms, ULONG flags)
 {
-    uint32_t generation = *cv;
+    uint32_t generation = __atomic_load_n(cv, __ATOMIC_ACQUIRE);
     bool shared = flags & 1;
     if (shared)
         ReleaseSRWLockShared(lock);
@@ -993,6 +1050,7 @@ static BOOL WINAPI InitOnceBeginInitialize(uint32_t *once, DWORD flags, BOOL *pe
 
 static BOOL WINAPI InitOnceComplete(uint32_t *once, DWORD flags, void *context)
 {
+    w32_signal();
     once_finish(once, context, !(flags & 4));
     return TRUE;
 }
@@ -1012,6 +1070,7 @@ static BOOL WINAPI WaitOnAddress(volatile void *addr, const void *compare, SIZE_
 
 static void WINAPI WakeByAddress(void *addr)
 {
+    w32_signal();
     UNUSED(addr);
 }
 

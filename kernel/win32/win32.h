@@ -175,6 +175,10 @@ struct w32_thread {
     bool done;
     bool waiting;
     int suspended;
+    uint32_t wait_caller;
+    uint32_t seen;
+    const char *recent[8];
+    unsigned recent_pos;
     int irq_depth;
     uint32_t exit_code;
     uint8_t *teb64;
@@ -212,7 +216,8 @@ struct w32_tls_module {
 };
 
 #define W32_MAX_HANDLES 2048
-#define W32_TLS_SLOTS 64
+#define W32_TLS_SLOTS 1088
+#define W32_TLS_TEB_SLOTS 64
 #define W32_ATEXIT_MAX 64
 
 struct vmm_space;
@@ -373,6 +378,8 @@ struct dw_point {
 int dwrite_glyph_outline(int face, uint16_t glyph, struct dw_point *pts, int cap, int *advance, int *units);
 uint32_t dwrite_outline(int face, uint32_t em, const uint16_t *glyphs, const uint32_t *advances, const void *offsets,
                         UINT count, BOOL rtl, void *sink);
+void w32_dump_status(void);
+void w32_signal(void);
 void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face);
 struct w32_object *w32_handle_get(HANDLE h);
 HANDLE w32_std_handle(int which);
@@ -389,6 +396,7 @@ WCHAR *w32_widen(const char *s);
 size_t w32_wcslen(const WCHAR *w);
 
 HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition);
+DWORD w32_file_access(DWORD access);
 HANDLE w32_find_first(const char *spec, struct w32_find_entry *e);
 bool w32_find_next(HANDLE h, struct w32_find_entry *e);
 long w32_handle_read(HANDLE h, void *buf, size_t n);

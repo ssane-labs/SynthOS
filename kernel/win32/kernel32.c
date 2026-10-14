@@ -803,41 +803,79 @@ static BOOL WINAPI GlobalMemoryStatusEx(uint32_t *status)
     return TRUE;
 }
 
+#define TLS_EXPANSION_OFFSET 0xf94
+
+static uint32_t *tls_slot(uint8_t *teb, DWORD index, bool create)
+{
+    if (index < W32_TLS_TEB_SLOTS)
+        return (uint32_t *)(teb + TLS_SLOTS_OFFSET + index * 4);
+    uint32_t *more;
+    memcpy(&more, teb + TLS_EXPANSION_OFFSET, 4);
+    if (!more && create) {
+        more = w32_zalloc((W32_TLS_SLOTS - W32_TLS_TEB_SLOTS) * 4);
+        memcpy(teb + TLS_EXPANSION_OFFSET, &more, 4);
+    }
+    return more ? more + (index - W32_TLS_TEB_SLOTS) : NULL;
+}
+
+static void tls_clear_all(DWORD index)
+{
+    struct w32_thread *t = w32->threads;
+    if (!t)
+        return;
+    do {
+        uint32_t *slot = tls_slot(t->teb, index, false);
+        if (slot)
+            *slot = 0;
+    } while ((t = t->next) != w32->threads);
+}
+
 static DWORD WINAPI TlsAlloc(void)
 {
     for (DWORD i = 0; i < W32_TLS_SLOTS; i++) {
         if (!w32->tls_used[i]) {
             w32->tls_used[i] = true;
-            memset(w32->teb + TLS_SLOTS_OFFSET + i * 4, 0, 4);
+            tls_clear_all(i);
+            uint32_t *slot = tls_slot(w32->teb, i, false);
+            if (slot)
+                *slot = 0;
             return i;
         }
     }
+    w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
     return 0xffffffffu;
 }
 
 static BOOL WINAPI TlsFree(DWORD index)
 {
-    if (index >= W32_TLS_SLOTS)
+    if (index >= W32_TLS_SLOTS || !w32->tls_used[index]) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
         return FALSE;
+    }
     w32->tls_used[index] = false;
+    tls_clear_all(index);
     return TRUE;
 }
 
 static void *WINAPI TlsGetValue(DWORD index)
 {
-    if (index >= W32_TLS_SLOTS)
+    if (index >= W32_TLS_SLOTS) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
         return NULL;
-    void *v;
-    memcpy(&v, w32->teb + TLS_SLOTS_OFFSET + index * 4, 4);
+    }
+    uint32_t *slot = tls_slot(w32->teb, index, false);
     w32_set_error(0);
-    return v;
+    return slot ? (void *)(uintptr_t)*slot : NULL;
 }
 
 static BOOL WINAPI TlsSetValue(DWORD index, void *value)
 {
-    if (index >= W32_TLS_SLOTS)
+    uint32_t *slot = index < W32_TLS_SLOTS ? tls_slot(w32->teb, index, true) : NULL;
+    if (!slot) {
+        w32_set_error(index < W32_TLS_SLOTS ? ERROR_NOT_ENOUGH_MEMORY : ERROR_INVALID_PARAMETER);
         return FALSE;
-    memcpy(w32->teb + TLS_SLOTS_OFFSET + index * 4, &value, 4);
+    }
+    *slot = (uint32_t)(uintptr_t)value;
     return TRUE;
 }
 
@@ -919,7 +957,7 @@ static BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out
             }
             struct w32_object *n = w32_handle_get_in(to, h);
             n->inherit = inherit != 0;
-            n->access = (options & 2) ? o->access : access;
+            n->access = (options & 2) ? o->access : o->type == WH_FILE ? w32_file_access(access) : access;
         }
     }
     if (options & 1 && h != src && --o->refs <= 0)

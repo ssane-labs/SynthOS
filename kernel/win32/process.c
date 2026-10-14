@@ -610,7 +610,7 @@ static bool build_teb_peb(void)
     put32(w32->teb, 0x04, stack_top);
     put32(w32->teb, 0x08, (uint32_t)w32->stack);
     put32(w32->teb, 0x18, (uint32_t)w32->teb);
-    put32(w32->teb, 0x20, 0x100);
+    put32(w32->teb, 0x20, w32_current_pid());
     put32(w32->teb, 0x24, 0x104);
     put32(w32->teb, 0x30, (uint32_t)w32->peb);
 
@@ -812,6 +812,44 @@ uint32_t w32_current_pid(void)
     return w32 && w32->child ? w32->child->pid : 0x100;
 }
 
+static void where(struct w32_process *p, uint32_t a, char *out, size_t cap)
+{
+    for (struct w32_image *img = p->images; img; img = img->next)
+        if (a >= img->base && a < img->base + img->size) {
+            ksnprintf(out, cap, "%s+0x%x", img->name, a - img->base);
+            return;
+        }
+    ksnprintf(out, cap, "0x%08x", a);
+}
+
+void w32_dump_status(void)
+{
+    char line[160], at[96];
+    struct w32_process *p = ring;
+    if (!p)
+        return;
+    do {
+        ksnprintf(line, sizeof(line), "pid %u %s: %d live threads\n", p->child ? p->child->pid : 0,
+                  p->main ? p->main->name : "?", p->live_threads);
+        w32_console_write(WH_STDERR, line, strlen(line));
+        struct w32_thread *t = p->threads;
+        if (t)
+            do {
+                where(p, t->wait_caller, at, sizeof(at));
+                ksnprintf(line, sizeof(line), "  tid %u %s%s from %s\n", t->id,
+                          t->done ? "done" : t->waiting ? "waiting" : "running", t->suspended ? " suspended" : "", at);
+                w32_console_write(WH_STDERR, line, strlen(line));
+                for (unsigned r = 0; r < 8; r++) {
+                    const char *name = t->recent[(t->recent_pos + r) % 8];
+                    if (name && !t->done) {
+                        ksnprintf(line, sizeof(line), "      %s\n", name);
+                        w32_console_write(WH_STDERR, line, strlen(line));
+                    }
+                }
+            } while ((t = t->next) != p->threads);
+    } while ((p = p->ring_next) && p != ring);
+}
+
 struct w32_process *w32_ring_next(struct w32_process *p)
 {
     return p ? p->ring_next : NULL;
@@ -869,6 +907,7 @@ void w32_child_release(struct w32_child *c)
 
 static void finish_child(struct w32_process *p, uint32_t code)
 {
+    w32_signal();
     if (p->child) {
         p->child->done = true;
         p->child->exit_code = code;

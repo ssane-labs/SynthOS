@@ -367,6 +367,12 @@ static LONG WINAPI display_config_unsupported(void)
     return 50;
 }
 
+static LONG WINAPI DisplayConfigGetDeviceInfo(void *packet)
+{
+    UNUSED(packet);
+    return display_config_unsupported();
+}
+
 static LONG WINAPI GetDisplayConfigBufferSizes(UINT flags, UINT *paths, UINT *modes)
 {
     UNUSED(flags);
@@ -784,6 +790,12 @@ static HANDLE WINAPI GetDpiAwarenessContext(void)
     return (HANDLE)(intptr_t)-4;
 }
 
+static HANDLE WINAPI DpiAwarenessContextOf(HANDLE target)
+{
+    UNUSED(target);
+    return GetDpiAwarenessContext();
+}
+
 static int WINAPI GetAwarenessFromDpiAwarenessContext(HANDLE context)
 {
     UNUSED(context);
@@ -801,8 +813,8 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(AreDpiAwarenessContextsEqual),
     W32_FN(GetAwarenessFromDpiAwarenessContext),
     W32_AS("GetThreadDpiAwarenessContext", GetDpiAwarenessContext),
-    W32_AS("SetThreadDpiAwarenessContext", GetDpiAwarenessContext),
-    W32_AS("GetWindowDpiAwarenessContext", GetDpiAwarenessContext),
+    W32_AS("SetThreadDpiAwarenessContext", DpiAwarenessContextOf),
+    W32_AS("GetWindowDpiAwarenessContext", DpiAwarenessContextOf),
     W32_AS("GetDpiForSystem", GetDpi),
     W32_FN(GetDpiForWindow),
     W32_FN(GetSystemMetricsForDpi),
@@ -855,7 +867,7 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(EnumDisplaySettingsExW),
     W32_FN(GetDisplayConfigBufferSizes),
     W32_AS("QueryDisplayConfig", w32_fail6),
-    W32_AS("DisplayConfigGetDeviceInfo", display_config_unsupported),
+    W32_FN(DisplayConfigGetDeviceInfo),
     W32_AS("OpenClipboard", w32_one1),
     W32_AS("CloseClipboard", w32_one0),
     W32_AS("EmptyClipboard", w32_one0),

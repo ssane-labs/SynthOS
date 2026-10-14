@@ -15,6 +15,8 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
   (the VGA build boots into the desktop; keys go to the Terminal window, `launch <app>` opens apps;
   a key `sleep:N` pauses, `AFTER=N` waits before the shot, `QEMU_EXTRA` adds flags)
 - `prof -o file cmd` inside the OS + `tools/profsym.py build/<variant>/kernel.elf < file` — where time goes
+- `tools/w32audit.py build/serial/kernel.elf` — every built-in Win32 export must pop the same stack bytes as
+  Wine's .spec says (run it after adding exports); Ctrl+T while a Win32 program runs dumps its processes/threads
 
 ## Rules
 

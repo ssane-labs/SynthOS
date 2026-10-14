@@ -74,6 +74,20 @@ static HANDLE std_dup(int which)
     return w32_std_handle(which);
 }
 
+DWORD w32_file_access(DWORD access)
+{
+    DWORD granted = access & 0x01ffffffu;
+    if (access & 0x80000000u)
+        granted |= 0x120089u;
+    if (access & 0x40000000u)
+        granted |= 0x120116u;
+    if (access & 0x20000000u)
+        granted |= 0x1200a0u;
+    if (access & 0x10000000u)
+        granted |= 0x1f01ffu;
+    return granted ? granted : 0x100080u;
+}
+
 HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
 {
     if (is_device(name, "CONOUT$") || is_device(name, "CON"))
@@ -147,6 +161,7 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
         return INVALID_HANDLE_VALUE;
     }
     o->file = f;
+    o->access = w32_file_access(access);
     o->append = append;
     o->path = kstrdup(path);
     w32_set_error(exists && (disposition == CREATE_ALWAYS || disposition == OPEN_ALWAYS) ? ERROR_ALREADY_EXISTS : 0);
@@ -246,7 +261,8 @@ static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, void *ove
         *read = (DWORD)got;
     if (ov) {
         if (!got && n && o && o->type == WH_FILE) {
-            w32_io_complete(o, ov, 0xc0000011u, 0, true);
+            ov[0] = 0xc0000011u;
+            ov[1] = 0;
             w32_set_error(38);
             return FALSE;
         }

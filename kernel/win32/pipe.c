@@ -15,6 +15,7 @@ struct w32_pipe {
 
 static void pipe_drop(struct w32_pipe *p)
 {
+    w32_signal();
     if (p->readers <= 0 && p->writers <= 0) {
         kfree(p->buf);
         kfree(p);
@@ -76,6 +77,7 @@ void w32_pipe_release(struct w32_object *o)
 
 long w32_pipe_write(struct w32_pipe *p, const void *data, size_t n)
 {
+    w32_signal();
     if (p->readers <= 0)
         return E_PIPE;
     if (p->rpos && p->rpos == p->len)
@@ -426,6 +428,7 @@ static W32_STATE struct pending_io *pending;
 
 void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32_t bytes, bool sync)
 {
+    w32_signal();
     ov[0] = status;
     ov[1] = bytes;
     HANDLE event = (HANDLE)(uintptr_t)(ov[4] & ~1u);
@@ -507,7 +510,8 @@ int w32_pipe_overlapped(HANDLE h, struct w32_object *o, void *buf, DWORD n, DWOR
         struct w32_pipe *p = o->value == 2 ? o->pipe_out : o->value == 1 ? o->pipe : NULL;
         long put = p ? w32_pipe_write(p, buf, n) : E_PIPE;
         if (put < 0) {
-            w32_io_complete(o, ov, STATUS_PIPE_BROKEN, 0, true);
+            ov[0] = STATUS_PIPE_BROKEN;
+            ov[1] = 0;
             return ERROR_BROKEN_PIPE;
         }
         if (done)

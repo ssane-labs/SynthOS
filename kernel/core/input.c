@@ -8,6 +8,7 @@ static int queue[QUEUE_SIZE];
 static unsigned head, tail;
 static bool break_mode;
 static volatile bool break_flag;
+static volatile bool info_flag;
 static void (*pump)(int timeout_ms);
 
 void input_set_pump(void (*fn)(int timeout_ms))
@@ -20,6 +21,10 @@ static bool push(int key)
     if (key == KEY_RESIZE && !pump) {
         struct display *d = hal_display();
         con_resize(d->cols, d->rows);
+    }
+    if (break_mode && key == KEY_CTRL('t')) {
+        info_flag = true;
+        return false;
     }
     if (break_mode && key == KEY_CTRL('c')) {
         break_flag = true;
@@ -95,6 +100,13 @@ void input_set_break(bool enabled)
 {
     break_mode = enabled;
     break_flag = false;
+}
+
+bool input_info_take(void)
+{
+    bool was = info_flag;
+    info_flag = false;
+    return was;
 }
 
 bool input_break_pending(void)

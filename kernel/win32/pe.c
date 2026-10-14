@@ -330,6 +330,13 @@ static void trace_record(const char *name)
               name);
 }
 
+static void trace_call(const char *name)
+{
+    trace_record(name);
+    if (w32 && w32->current)
+        w32->current->recent[w32->current->recent_pos++ % 8] = name;
+}
+
 void w32_trace_note(const char *module, const char *name)
 {
     char label[64];
@@ -362,7 +369,7 @@ static void *relay(void *fn, const char *module, const char *symbol)
             return fn;
     char label[96];
     ksnprintf(label, sizeof(label), "%s!%s", module, symbol);
-    char *name = w32_strdup(label);
+    char *name = kstrdup(label);
     uint8_t *code = w32_alloc(24);
     if (!name || !code)
         return fn;
@@ -371,7 +378,7 @@ static void *relay(void *fn, const char *module, const char *symbol)
     code[2] = 0x68;
     memcpy(code + 3, &name, 4);
     code[7] = 0xe8;
-    int32_t rel = (int32_t)((uintptr_t)trace_record - (uintptr_t)(code + 12));
+    int32_t rel = (int32_t)((uintptr_t)trace_call - (uintptr_t)(code + 12));
     memcpy(code + 8, &rel, 4);
     code[12] = 0x83;
     code[13] = 0xc4;

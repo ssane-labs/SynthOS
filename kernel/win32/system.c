@@ -424,6 +424,12 @@ static long WINAPI shell_notimpl1(void **out)
     return (long)0x80004001;
 }
 
+static long WINAPI shell_notimpl2(uint32_t a, void **out)
+{
+    UNUSED(a);
+    return shell_notimpl1(out);
+}
+
 static long WINAPI shell_notimpl3(uint32_t a, uint32_t b, void **out)
 {
     UNUSED(a);
@@ -464,11 +470,11 @@ static const struct w32_export shell32_exports[] = {
     W32_AS("SHGetMalloc", shell_notimpl1), W32_AS("SHGetDesktopFolder", shell_notimpl1),
     W32_AS("SHGetSpecialFolderLocation", shell_notimpl3), W32_AS("SHGetPathFromIDListW", w32_zero2),
     W32_AS("SHParseDisplayName", shell_notimpl5), W32_AS("SHCreateItemFromParsingName", shell_notimpl4),
-    W32_AS("SHOpenFolderAndSelectItems", shell_notimpl4), W32_AS("SHGetFileInfoW", w32_zero5),
-    W32_AS("SHAppBarMessage", w32_zero2), W32_AS("SHGetStockIconInfo", shell_notimpl3),
+    W32_AS("SHOpenFolderAndSelectItems", w32_notimpl4), W32_AS("SHGetFileInfoW", w32_zero5),
+    W32_AS("SHAppBarMessage", w32_zero2), W32_AS("SHGetStockIconInfo", w32_notimpl3),
     W32_AS("SHGetPropertyStoreForWindow", shell_notimpl3), W32_AS("SetCurrentProcessExplicitAppUserModelID", w32_zero1),
     W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("DragQueryFileW", w32_zero4),
-    W32_AS("SHCreateAssociationRegistration", shell_notimpl3), W32_AS("SHChangeNotifyRegister", w32_zero6),
+    W32_AS("SHCreateAssociationRegistration", shell_notimpl2), W32_AS("SHChangeNotifyRegister", w32_zero6),
     W32_AS("SHChangeNotifyDeregister", w32_one1), W32_AS("ILCreateFromPathW", w32_zero1),
     W32_AS("IsUserAnAdmin", w32_one0),
 };

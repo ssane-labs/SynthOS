@@ -69,6 +69,15 @@ static UINT WINAPI bad_device3(uint32_t a, uint32_t b, uint32_t c)
     return MMSYSERR_BADDEVICEID;
 }
 
+static UINT WINAPI no_device4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+{
+    UNUSED(a);
+    UNUSED(b);
+    UNUSED(c);
+    UNUSED(d);
+    return MMSYSERR_BADDEVICEID;
+}
+
 static UINT WINAPI no_open5(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
 {
     UNUSED(a);
@@ -129,8 +138,8 @@ static const struct w32_export winmm_exports[] = {
     W32_AS("sndPlaySoundW", w32_one2),
     W32_AS("mciSendStringA", mciSendString),
     W32_AS("mciSendStringW", mciSendString),
-    W32_AS("mciSendCommandA", no_open5),
-    W32_AS("mciSendCommandW", no_open5),
+    W32_AS("mciSendCommandA", no_device4),
+    W32_AS("mciSendCommandW", no_device4),
     W32_AS("waveOutGetNumDevs", no_devices),
     W32_AS("waveInGetNumDevs", no_devices),
     W32_AS("midiInGetNumDevs", no_devices),
