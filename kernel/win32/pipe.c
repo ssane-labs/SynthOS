@@ -133,6 +133,29 @@ static BOOL WINAPI CreatePipe(HANDLE *rd, HANDLE *wr, void *sa, DWORD size)
     return TRUE;
 }
 
+static BOOL WINAPI TransactNamedPipe(HANDLE h, const void *in, DWORD in_size, void *out, DWORD out_size, DWORD *read,
+                                     uint32_t *overlapped)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (read)
+        *read = 0;
+    if (!o || o->type != WH_PIPE) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    long put = w32_handle_write(h, in, in_size);
+    long got = put < 0 ? put : w32_handle_read(h, out, out_size);
+    if (got < 0) {
+        w32_set_error(ERROR_BROKEN_PIPE);
+        return FALSE;
+    }
+    if (read)
+        *read = (DWORD)got;
+    if (overlapped)
+        w32_io_complete(o, overlapped, 0, (uint32_t)got, true);
+    return TRUE;
+}
+
 static BOOL WINAPI PeekNamedPipe(HANDLE h, void *buf, DWORD size, DWORD *read, DWORD *avail, DWORD *left)
 {
     struct w32_object *o = w32_handle_get(h);
@@ -576,6 +599,7 @@ static BOOL WINAPI SetNamedPipeHandleState(HANDLE h, DWORD *mode, DWORD *max, DW
 }
 
 static const struct w32_export pipe_exports[] = {
+    W32_FN(TransactNamedPipe),
     W32_FN(CreatePipe),
     W32_FN(PeekNamedPipe),
     W32_FN(CreateNamedPipeA),

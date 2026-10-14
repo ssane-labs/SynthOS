@@ -319,7 +319,6 @@ static const struct w32_export ntapi_kernel32[] = {
     W32_FN(GetProcessMitigationPolicy),
     W32_AS("SetThreadInformation", w32_one4),
     W32_AS("SetThreadAffinityMask", w32_one2),
-    W32_AS("TransactNamedPipe", w32_fail7),
     W32_AS("WerRegisterRuntimeExceptionModule", w32_zero2),
     W32_AS("WerUnregisterRuntimeExceptionModule", w32_zero2),
     W32_AS("EnumSystemLocalesEx", w32_one4),
