@@ -13,7 +13,7 @@
 #define E_OUTOFMEMORY 0x8007000eu
 #define E_NOT_FOUND 0x80070490u
 #define A uint32_t
-#define MAX_FACES 64
+#define MAX_FACES 96
 
 #define GUID(d1, d2, d3, a, b, c, d, e, f, g, h)                                                                      \
     {(uint8_t)(d1), (uint8_t)((d1) >> 8), (uint8_t)((d1) >> 16), (uint8_t)((d1) >> 24), (uint8_t)(d2),               \
@@ -32,6 +32,7 @@ static const uint8_t iid_loader[16] = GUID(0x727cad4e, 0xd6af, 0x4c9e, 0x8a, 0x0
 static const uint8_t iid_local_loader[16] =
     GUID(0xb2d9f3ec, 0xc9fe, 0x4a11, 0xa2, 0xec, 0xd8, 0x62, 0x08, 0xf7, 0xc0, 0xa2);
 static const uint8_t iid_stream[16] = GUID(0x6d4865fe, 0x0ab8, 0x4d91, 0x8f, 0x62, 0x5d, 0xd6, 0xbe, 0x34, 0xa3, 0xe0);
+static const uint8_t iid_analysis[16] = GUID(0x7d97dbf7, 0xe085, 0x42d4, 0x81, 0xe3, 0x6a, 0x88, 0x3b, 0xde, 0xd1, 0x18);
 static const uint8_t iid_strings[16] = GUID(0x08256209, 0x099a, 0x4b34, 0xb8, 0x6d, 0xc2, 0x2b, 0x11, 0x0e, 0x77, 0x71);
 
 struct face {
@@ -1056,39 +1057,44 @@ static struct obj *new_family(int family)
     return com_new(family_vtbl, iid_family, iid_list, family);
 }
 
-/* IDWriteFontCollection */
+/* IDWriteFontCollection: extra = struct families for collections built by the program, else all families */
+
+struct families {
+    int count;
+    int family[MAX_FACES];
+};
 
 static UINT WINAPI collection_count(struct obj *o)
 {
-    UNUSED(o);
-    return (UINT)family_count;
+    const struct families *c = o->extra;
+    return (UINT)(c ? c->count : family_count);
 }
 
 static uint32_t WINAPI collection_family(struct obj *o, UINT index, void **out)
 {
-    UNUSED(o);
-    if (index >= (UINT)family_count) {
+    const struct families *c = o->extra;
+    if (index >= collection_count(o)) {
         *out = NULL;
         return E_INVALIDARG;
     }
-    return give(out, new_family((int)index));
+    return give(out, new_family(c ? c->family[index] : (int)index));
 }
 
 static uint32_t WINAPI collection_find(struct obj *o, const WCHAR *name, UINT *index, BOOL *exists)
 {
-    UNUSED(o);
+    const struct families *c = o->extra;
     char n[64];
     size_t k = 0;
     for (; name && name[k] && k < sizeof(n) - 1; k++)
         n[k] = name[k] < 0x80 ? (char)name[k] : '?';
     n[k] = 0;
-    for (int i = 0; i < family_count; i++)
-        if (!str_casecmp(faces[family_first[i]].family, n)) {
-            *index = (UINT)i;
+    for (UINT i = 0; i < collection_count(o); i++)
+        if (!str_casecmp(faces[family_first[c ? c->family[i] : (int)i]].family, n)) {
+            *index = i;
             *exists = TRUE;
             return S_OK;
         }
-    int alias = alias_family(n);
+    int alias = c ? -1 : alias_family(n);
     *exists = alias >= 0;
     *index = alias >= 0 ? (UINT)alias : 0xffffffffu;
     return S_OK;
@@ -1161,16 +1167,239 @@ static uint32_t WINAPI create_font_face(void *self, int type, UINT count, struct
     return give(out, com_new(face_vtbl, iid_face, NULL, files[0]->index));
 }
 
+/* Faces handed over as streams by the program (Skia's in-memory fonts) join the table once. */
+static int memory_face(const uint8_t *data, uint32_t size)
+{
+    for (int i = 0; i < face_count; i++)
+        if (faces[i].size == size && !memcmp(faces[i].data, data, size))
+            return i;
+    if (face_count >= MAX_FACES)
+        return -1;
+    uint8_t *copy = kmalloc(size);
+    if (!copy)
+        return -1;
+    memcpy(copy, data, size);
+    struct face *f = &faces[face_count];
+    memset(f, 0, sizeof(*f));
+    f->data = copy;
+    f->size = size;
+    if (!parse_face(f)) {
+        kfree(copy);
+        return -1;
+    }
+    f->family_index = -1;
+    for (int k = 0; k < family_count; k++)
+        if (!str_casecmp(faces[family_first[k]].family, f->family))
+            f->family_index = k;
+    if (f->family_index < 0) {
+        f->family_index = family_count;
+        family_first[family_count++] = face_count;
+    }
+    return face_count++;
+}
+
+typedef uint32_t(WINAPI *stream_from_key_fn)(void *, const void *, UINT, void **);
+typedef uint32_t(WINAPI *read_fragment_fn)(void *, const void **, uint64_t, uint64_t, void **);
+typedef void(WINAPI *release_fragment_fn)(void *, void *);
+typedef uint32_t(WINAPI *file_size_fn)(void *, uint64_t *);
+typedef uint32_t(WINAPI *com_release_fn)(void *);
+
+static uint32_t WINAPI custom_file_reference(void *self, const void *key, UINT size, void *loader, void **out)
+{
+    UNUSED(self);
+    *out = NULL;
+    if (!loader)
+        return E_INVALIDARG;
+    if (loader == &local_loader) {
+        int index = key_face(key, size);
+        return index < 0 ? E_INVALIDARG : give(out, com_new(file_vtbl, iid_file, NULL, index));
+    }
+    void **lv = *(void ***)loader, *stream = NULL;
+    uint32_t hr = ((stream_from_key_fn)lv[3])(loader, key, size, &stream);
+    if (hr || !stream)
+        return hr ? hr : E_INVALIDARG;
+    void **sv = *(void ***)stream;
+    uint64_t bytes = 0;
+    const void *start = NULL;
+    void *context = NULL;
+    int index = -1;
+    if (!((file_size_fn)sv[5])(stream, &bytes) && bytes && bytes < 64u * 1024 * 1024 &&
+        !((read_fragment_fn)sv[3])(stream, &start, 0, bytes, &context) && start) {
+        index = memory_face(start, (uint32_t)bytes);
+        ((release_fragment_fn)sv[4])(stream, context);
+    }
+    ((com_release_fn)sv[2])(stream);
+    return index < 0 ? 0x88985002u : give(out, com_new(file_vtbl, iid_file, NULL, index));
+}
+
+/* IDWriteGlyphRunAnalysis: extra = struct analysis */
+
+struct analysis {
+    int32_t rect[4];
+    uint8_t *bits;
+};
+
+static uint32_t WINAPI analysis_release(struct obj *self)
+{
+    struct analysis *a = self->extra;
+    if (__atomic_load_n(&self->refs, __ATOMIC_RELAXED) == 1 && a)
+        w32_free(a->bits);
+    return release(self);
+}
+
+static uint32_t WINAPI analysis_bounds(struct obj *self, int type, int32_t *rect)
+{
+    UNUSED(type);
+    memcpy(rect, ((struct analysis *)self->extra)->rect, 4 * sizeof(int32_t));
+    return S_OK;
+}
+
+static uint32_t WINAPI analysis_texture(struct obj *self, int type, const int32_t *want, uint8_t *buf, UINT size)
+{
+
+    const struct analysis *a = self->extra;
+    int w = want[2] - want[0], h = want[3] - want[1], bpp = type ? 3 : 1;
+    if (w < 0 || h < 0 || (UINT)(w * h * bpp) > size)
+        return 0x8007007au;
+    int aw = a->rect[2] - a->rect[0];
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int sx = want[0] + x - a->rect[0], sy = want[1] + y - a->rect[1];
+            uint8_t v = 0;
+            if (a->bits && sx >= 0 && sy >= 0 && sx < aw && sy < a->rect[3] - a->rect[1])
+                v = a->bits[sy * aw + sx];
+            if (!type)
+                v = v >= 128 ? 255 : 0;
+            for (int k = 0; k < bpp; k++)
+                buf[(y * w + x) * bpp + k] = v;
+        }
+    return S_OK;
+}
+
+static uint32_t WINAPI analysis_blend(struct obj *self, void *params, uint32_t *gamma, uint32_t *contrast,
+                                      uint32_t *level)
+{
+    UNUSED(self);
+    UNUSED(params);
+    *gamma = 0x3fe66666u;
+    *contrast = 0;
+    *level = 0;
+    return S_OK;
+}
+
+static const void *const analysis_vtbl[] = {
+    query_interface, add_ref, analysis_release, analysis_bounds, analysis_texture, analysis_blend,
+};
+
+struct glyph_run {
+    struct obj *face;
+    uint32_t em;
+    UINT count;
+    const uint16_t *glyphs;
+    const uint32_t *advances, *offsets;
+    BOOL sideways;
+    UINT bidi;
+};
+
+static uint32_t WINAPI glyph_run_analysis(void *self, const struct glyph_run *run, uint32_t ppd,
+                                          const uint32_t *matrix, int mode, int measuring, uint32_t x, uint32_t y,
+                                          void **out)
+{
+    UNUSED(self);
+    UNUSED(mode);
+    UNUSED(measuring);
+    *out = NULL;
+    if (!run || !run->face || run->face->vtbl != face_vtbl)
+        return E_INVALIDARG;
+    struct obj *o = com_new(analysis_vtbl, iid_analysis, NULL, 0);
+    struct analysis *a = w32_zalloc(sizeof(*a));
+    if (!o || !a) {
+        w32_free(o);
+        w32_free(a);
+        return E_OUTOFMEMORY;
+    }
+    o->extra = a;
+    uint32_t hr = dwrite_raster(run->face->index, run->em, ppd, matrix, x, y, run->glyphs, run->advances,
+                                run->offsets, run->count, a->rect, &a->bits);
+    if (hr) {
+        analysis_release(o);
+        return hr;
+    }
+    return give(out, o);
+}
+
+typedef uint32_t(WINAPI *enum_from_key_fn)(void *, void *, const void *, UINT, void **);
+typedef uint32_t(WINAPI *move_next_fn)(void *, BOOL *);
+typedef uint32_t(WINAPI *current_file_fn)(void *, void **);
+typedef uint32_t(WINAPI *file_key_fn)(void *, const void **, UINT *);
+typedef uint32_t(WINAPI *file_loader_fn)(void *, void **);
+
+static int file_face(struct obj *file)
+{
+    if (file->vtbl == file_vtbl)
+        return file->index;
+    void **fv = *(void ***)file, *loader = NULL, *ours = NULL;
+    const void *key = NULL;
+    UINT size = 0;
+    if (((file_key_fn)fv[3])(file, &key, &size) || ((file_loader_fn)fv[4])(file, &loader) || !loader)
+        return -1;
+    int index = -1;
+    if (!custom_file_reference(NULL, key, size, loader, &ours) && ours) {
+        index = ((struct obj *)ours)->index;
+        release(ours);
+    }
+    ((com_release_fn)(*(void ***)loader)[2])(loader);
+    return index;
+}
+
+static uint32_t WINAPI custom_collection(void *self, void *loader, const void *key, UINT size, void **out)
+{
+    *out = NULL;
+    if (!loader)
+        return E_INVALIDARG;
+    void *files = NULL;
+    uint32_t hr = ((enum_from_key_fn)(*(void ***)loader)[3])(loader, self, key, size, &files);
+    if (hr || !files)
+        return hr ? hr : E_INVALIDARG;
+    struct obj *o = new_collection();
+    struct families *c = w32_zalloc(sizeof(*c));
+    if (!o || !c) {
+        w32_free(o);
+        w32_free(c);
+        ((com_release_fn)(*(void ***)files)[2])(files);
+        return E_OUTOFMEMORY;
+    }
+    o->extra = c;
+    void **ev = *(void ***)files;
+    BOOL more = FALSE;
+    while (!((move_next_fn)ev[3])(files, &more) && more) {
+        void *file = NULL;
+        if (((current_file_fn)ev[4])(files, &file) || !file)
+            continue;
+        int face = file_face(file);
+        ((com_release_fn)(*(void ***)file)[2])(file);
+        if (face < 0)
+            continue;
+        int family = faces[face].family_index, k = 0;
+        while (k < c->count && c->family[k] != family)
+            k++;
+        if (k == c->count && c->count < MAX_FACES)
+            c->family[c->count++] = family;
+    }
+    ((com_release_fn)ev[2])(files);
+    return give(out, o);
+}
+
 TRAPS(factory, 24, 25, 26, 27)
 
 static const void *const factory_vtbl[] = {
     query_interface, add_ref,     release,
     system_collection,      /* GetSystemFontCollection */
-    none5,                  /* CreateCustomFontCollection */
+    custom_collection,      /* CreateCustomFontCollection */
     ok2,                    /* RegisterFontCollectionLoader */
     ok2,                    /* UnregisterFontCollectionLoader */
     font_file_reference,    /* CreateFontFileReference */
-    none5,                  /* CreateCustomFontFileReference */
+    custom_file_reference,  /* CreateCustomFontFileReference */
     create_font_face,       /* CreateFontFace */
     none2,                  /* CreateRenderingParams */
     none3,                  /* CreateMonitorRenderingParams */
@@ -1185,7 +1414,7 @@ static const void *const factory_vtbl[] = {
     none3,                  /* CreateEllipsisTrimmingSign */
     none2,                  /* CreateTextAnalyzer */
     none5,                  /* CreateNumberSubstitution */
-    none9,                  /* CreateGlyphRunAnalysis */
+    glyph_run_analysis,     /* CreateGlyphRunAnalysis */
     trap_factory_24, trap_factory_25, trap_factory_26, trap_factory_27,
 };
 

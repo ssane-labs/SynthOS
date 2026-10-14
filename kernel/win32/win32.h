@@ -378,6 +378,9 @@ struct dw_point {
     uint8_t on, end;
 };
 int dwrite_glyph_outline(int face, uint16_t glyph, struct dw_point *pts, int cap, int *advance, int *units);
+uint32_t dwrite_raster(int face, uint32_t em, uint32_t ppd, const uint32_t *matrix, uint32_t ox, uint32_t oy,
+                       const uint16_t *glyphs, const uint32_t *advances, const uint32_t *offsets, UINT count,
+                       int32_t rect[4], uint8_t **out);
 uint32_t dwrite_outline(int face, uint32_t em, const uint16_t *glyphs, const uint32_t *advances, const void *offsets,
                         UINT count, BOOL rtl, void *sink);
 void w32_dump_status(void);

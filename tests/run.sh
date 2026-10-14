@@ -171,6 +171,10 @@ wintest compat | grep reparent
 reparent loop=refused move=ok children=2
 wintest compat | grep registered
 registered wait=ok hits=1 timeouts=ok unregister=ok
+wintest font | grep collection
+collection hr=0 families=1 found=yes glyph=1
+wintest font | grep bounds
+glyph bounds=2,-14,13,1 center=255 outside=0
 winipc | tail -n 1
 sent ok, reply: child got 'hello', child exit 0
 winevt | grep -c "ok,"

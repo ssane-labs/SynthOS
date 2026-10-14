@@ -39,11 +39,14 @@ SynthOS 0.1.0 «Neon» — рабочая система:
 * **запуск программ Windows**: 32-битные (PE32) и **64-битные (PE32+)** `.exe`/`.dll`, консольные и
   **оконные** (окна, GDI, элементы управления, диалоги из ресурсов), потоки и синхронизация,
   Winsock, **WinINet/WinHTTP/URLDownloadToFile** с HTTPS, msvcrt и **UCRT**, C++ с исключениями
-  (в 64-битных — табличная раскрутка x64 SEH);
+  (в 64-битных — табличная раскрутка x64 SEH); многопроцессный **Google Chrome** (32-битный) в режиме
+  `--headless` открывает страницы `file://` и `http://`, выполняет JavaScript, печатает DOM
+  (`--dump-dom`) и сохраняет снимок страницы с текстом (`--screenshot`); шрифты — TrueType-файлы из
+  `/home/fonts` через свой DirectWrite;
 * пользователи с паролями (`useradd`, `passwd`, `su`, `lock`), у каждого свой `/home`;
 * виртуальная машина **SX** для своих программ + ассемблер/дизассемблер внутри ОС;
 * эмулятор **MS-DOS** (8086/186) для `.COM` и `.EXE`;
-* автотесты: `make test` (136 проверок), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI, i486;
+* автотесты: `make test` (156 проверок), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI, i486;
   29 проверок), `make test-crypto` (криптография против эталонов).
 
 ---

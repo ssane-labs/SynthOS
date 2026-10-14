@@ -115,6 +115,265 @@ static void compat(void)
            wait_timeouts >= 2 ? "ok" : "missing", un ? "ok" : "failed");
 }
 
+/* DirectWrite the way Chromium's renderer uses it: a font collection and font files supplied by the program's own
+   loaders (here a one-glyph font built in memory), then glyph coverage through IDWriteGlyphRunAnalysis. */
+typedef HRESULT(WINAPI *create_factory_fn)(int, const GUID *, void **);
+
+static unsigned char font[1024];
+static int font_size;
+static void *factory;
+
+#define CALL(obj, slot, type) ((type)(*(void ***)(obj))[slot])
+
+static void put16(unsigned char *p, unsigned v)
+{
+    p[0] = (unsigned char)(v >> 8);
+    p[1] = (unsigned char)v;
+}
+
+static void put32(unsigned char *p, unsigned v)
+{
+    put16(p, v >> 16);
+    put16(p + 2, v & 0xffff);
+}
+
+/* Glyph 1 is a square from (100, 0) to (600, 700) in a 1000-unit em, mapped from 'A'. */
+static void build_font(void)
+{
+    static const char *const tags[] = {"cmap", "glyf", "head", "hhea", "hmtx", "loca", "maxp", "name"};
+    unsigned char t[8][128];
+    int len[8];
+    memset(t, 0, sizeof(t));
+    unsigned char *cmap = t[0];
+    put16(cmap + 2, 1);
+    put16(cmap + 4, 3);
+    put16(cmap + 6, 1);
+    put32(cmap + 8, 12);
+    unsigned char *f4 = cmap + 12;
+    put16(f4, 4);
+    put16(f4 + 2, 32);
+    put16(f4 + 6, 4);
+    put16(f4 + 8, 4);
+    put16(f4 + 10, 1);
+    put16(f4 + 14, 'A');
+    put16(f4 + 16, 0xffff);
+    put16(f4 + 20, 'A');
+    put16(f4 + 22, 0xffff);
+    put16(f4 + 24, (1 - 'A') & 0xffff);
+    put16(f4 + 26, 1);
+    len[0] = 12 + 32;
+    unsigned char *g = t[1];
+    put16(g, 1);
+    put16(g + 2, 100);
+    put16(g + 6, 600);
+    put16(g + 8, 700);
+    put16(g + 10, 3);
+    memset(g + 14, 1, 4);
+    static const short xs[] = {100, 0, 500, 0}, ys[] = {0, 700, 0, -700};
+    for (int i = 0; i < 4; i++) {
+        put16(g + 18 + i * 2, (unsigned)xs[i] & 0xffff);
+        put16(g + 26 + i * 2, (unsigned)ys[i] & 0xffff);
+    }
+    len[1] = 36;
+    put32(t[2], 0x10000);
+    put16(t[2] + 18, 1000);
+    put16(t[2] + 50, 1);
+    len[2] = 54;
+    put32(t[3], 0x10000);
+    put16(t[3] + 4, 800);
+    put16(t[3] + 6, (unsigned)-200 & 0xffff);
+    put16(t[3] + 34, 2);
+    len[3] = 36;
+    put16(t[4], 500);
+    put16(t[4] + 4, 700);
+    put16(t[4] + 6, 100);
+    len[4] = 8;
+    put32(t[5] + 8, 36);
+    len[5] = 12;
+    put32(t[6], 0x5000);
+    put16(t[6] + 4, 2);
+    len[6] = 6;
+    unsigned char *n = t[7];
+    put16(n + 2, 1);
+    put16(n + 4, 18);
+    put16(n + 6, 3);
+    put16(n + 8, 1);
+    put16(n + 10, 0x409);
+    put16(n + 12, 1);
+    put16(n + 14, 8);
+    for (int i = 0; i < 4; i++)
+        put16(n + 18 + i * 2, (unsigned)"Tiny"[i]);
+    len[7] = 26;
+    put32(font, 0x10000);
+    put16(font + 4, 8);
+    int pos = 12 + 8 * 16;
+    for (int i = 0; i < 8; i++) {
+        unsigned char *r = font + 12 + i * 16;
+        memcpy(r, tags[i], 4);
+        put32(r + 8, (unsigned)pos);
+        put32(r + 12, (unsigned)len[i]);
+        memcpy(font + pos, t[i], (size_t)len[i]);
+        pos += (len[i] + 3) & ~3;
+    }
+    font_size = pos;
+}
+
+struct com {
+    void **vtbl;
+};
+
+static HRESULT WINAPI qi(void *self, const GUID *iid, void **out)
+{
+    (void)iid;
+    *out = self;
+    return S_OK;
+}
+
+static ULONG WINAPI ref(void *self)
+{
+    (void)self;
+    return 1;
+}
+
+static HRESULT WINAPI stream_read(void *self, const void **start, UINT64 offset, UINT64 size, void **ctx)
+{
+    (void)self;
+    *ctx = NULL;
+    if (offset + size > (UINT64)font_size)
+        return E_FAIL;
+    *start = font + offset;
+    return S_OK;
+}
+
+static void WINAPI stream_release(void *self, void *ctx)
+{
+    (void)self;
+    (void)ctx;
+}
+
+static HRESULT WINAPI stream_size(void *self, UINT64 *size)
+{
+    (void)self;
+    *size = (UINT64)font_size;
+    return S_OK;
+}
+
+static HRESULT WINAPI stream_time(void *self, UINT64 *time)
+{
+    (void)self;
+    *time = 0;
+    return S_OK;
+}
+
+static void *stream_vtbl[] = {qi, ref, ref, stream_read, stream_release, stream_size, stream_time};
+static struct com stream = {stream_vtbl};
+
+static HRESULT WINAPI loader_stream(void *self, const void *key, UINT32 size, void **out)
+{
+    (void)self;
+    (void)key;
+    (void)size;
+    *out = &stream;
+    return S_OK;
+}
+
+static void *loader_vtbl[] = {qi, ref, ref, loader_stream};
+static struct com loader = {loader_vtbl};
+static int enum_pos;
+
+static HRESULT WINAPI enum_next(void *self, BOOL *more)
+{
+    (void)self;
+    *more = enum_pos++ == 0;
+    return S_OK;
+}
+
+static HRESULT WINAPI enum_file(void *self, void **out)
+{
+    (void)self;
+    static const int key = 7;
+    return CALL(factory, 8, HRESULT(WINAPI *)(void *, const void *, UINT32, void *, void **))(factory, &key,
+                                                                                            sizeof(key), &loader, out);
+}
+
+static void *enum_vtbl[] = {qi, ref, ref, enum_next, enum_file};
+static struct com enumerator = {enum_vtbl};
+
+static HRESULT WINAPI collection_enum(void *self, void *f, const void *key, UINT32 size, void **out)
+{
+    (void)self;
+    (void)f;
+    (void)key;
+    (void)size;
+    enum_pos = 0;
+    *out = &enumerator;
+    return S_OK;
+}
+
+static void *collection_loader_vtbl[] = {qi, ref, ref, collection_enum};
+static struct com collection_loader = {collection_loader_vtbl};
+
+struct glyph_run {
+    void *face;
+    float em;
+    UINT32 count;
+    const UINT16 *glyphs;
+    const float *advances;
+    const void *offsets;
+    BOOL sideways;
+    UINT32 bidi;
+};
+
+static int font_test(void)
+{
+    static const GUID iid_factory = {0xb859ee5a, 0xd838, 0x4b5b, {0xa2, 0xe8, 0x1a, 0xdc, 0x7d, 0x93, 0xdb, 0x48}};
+    build_font();
+    create_factory_fn create = (create_factory_fn)GetProcAddress(LoadLibraryA("dwrite.dll"), "DWriteCreateFactory");
+    if (!create || create(0, &iid_factory, &factory) || !factory) {
+        printf("no dwrite\n");
+        return 1;
+    }
+    CALL(factory, 5, HRESULT(WINAPI *)(void *, void *))(factory, &collection_loader);
+    CALL(factory, 13, HRESULT(WINAPI *)(void *, void *))(factory, &loader);
+    static const int key = 1;
+    void *collection = NULL, *family = NULL, *match = NULL, *face = NULL, *analysis = NULL;
+    HRESULT hr = CALL(factory, 4, HRESULT(WINAPI *)(void *, void *, const void *, UINT32, void **))(
+        factory, &collection_loader, &key, sizeof(key), &collection);
+    UINT32 families = collection ? CALL(collection, 3, UINT32(WINAPI *)(void *))(collection) : 0, index = 0;
+    BOOL exists = FALSE;
+    if (collection)
+        CALL(collection, 5, HRESULT(WINAPI *)(void *, const WCHAR *, UINT32 *, BOOL *))(collection, L"Tiny", &index,
+                                                                                         &exists);
+    if (exists)
+        CALL(collection, 4, HRESULT(WINAPI *)(void *, UINT32, void **))(collection, index, &family);
+    if (family)
+        CALL(family, 7, HRESULT(WINAPI *)(void *, int, int, int, void **))(family, 400, 5, 0, &match);
+    if (match)
+        CALL(match, 13, HRESULT(WINAPI *)(void *, void **))(match, &face);
+    UINT32 cp = 'A';
+    UINT16 glyph = 0;
+    if (face)
+        CALL(face, 11, HRESULT(WINAPI *)(void *, const UINT32 *, UINT32, UINT16 *))(face, &cp, 1, &glyph);
+    printf("collection hr=%lx families=%u found=%s glyph=%u\n", (unsigned long)hr, families, exists ? "yes" : "no",
+           glyph);
+    if (!face)
+        return 1;
+    struct glyph_run run = {face, 20.0f, 1, &glyph, NULL, NULL, FALSE, 0};
+    CALL(factory, 23, HRESULT(WINAPI *)(void *, const struct glyph_run *, float, const void *, int, int, float, float,
+                                        void **))(factory, &run, 1.0f, NULL, 4, 0, 0.0f, 0.0f, &analysis);
+    RECT r = {0};
+    if (analysis)
+        CALL(analysis, 3, HRESULT(WINAPI *)(void *, int, RECT *))(analysis, 1, &r);
+    int w = r.right - r.left, h = r.bottom - r.top;
+    unsigned char bits[3 * 32 * 32] = {0};
+    if (analysis && w > 0 && h > 0 && w * h <= 32 * 32)
+        CALL(analysis, 4, HRESULT(WINAPI *)(void *, int, const RECT *, BYTE *, UINT32))(analysis, 1, &r, bits,
+                                                                                         sizeof(bits));
+    int edge = w > 0 ? bits[((h / 2) * w + w - 1) * 3] : -1, center = w > 0 ? bits[((h / 2) * w + w / 2) * 3] : -1;
+    printf("glyph bounds=%ld,%ld,%ld,%ld center=%d outside=%d\n", r.left, r.top, r.right, r.bottom, center, edge);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *mode = argc > 1 ? argv[1] : "info";
@@ -136,6 +395,8 @@ int main(int argc, char **argv)
         printf("system returned %d\n", rc);
     } else if (!strcmp(mode, "compat")) {
         compat();
+    } else if (!strcmp(mode, "font")) {
+        return font_test();
     } else if (!strcmp(mode, "box")) {
         int r = MessageBoxA(NULL, "SynthOS runs Windows programs.\nPress Y or N.", "Question", MB_YESNO);
         printf("answer=%s\n", r == IDYES ? "yes" : "no");
