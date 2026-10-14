@@ -211,7 +211,7 @@ struct w32_tls_module {
     uint32_t base, start, size, zero, callbacks;
 };
 
-#define W32_MAX_HANDLES 256
+#define W32_MAX_HANDLES 2048
 #define W32_TLS_SLOTS 64
 #define W32_ATEXIT_MAX 64
 
@@ -269,6 +269,7 @@ struct w32_process {
     struct w32_vm *vm;
     struct w32_process *ring_next;
     struct w32_process *parent;
+    uint32_t parent_pid;
     uint8_t *state;
     struct w32_child *child;
     uint8_t *boot_stack;
@@ -355,6 +356,16 @@ size_t w32_msize(void *ptr);
 char *w32_strdup(const char *s);
 
 HANDLE w32_handle_new(enum w32_object_type type);
+struct file_cache;
+struct file_cache *w32_fcache_get(const char *path, uint32_t size);
+void w32_fcache_put(struct file_cache *c);
+void *w32_fcache_page(struct file_cache *c, uint32_t index);
+void w32_fcache_write(const char *path, uint32_t offset, const void *data, uint32_t len);
+void w32_fcache_truncate(const char *path, uint32_t size);
+void w32_fcache_forget(const char *path);
+uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count);
+bool w32_vm_fault(uintptr_t address);
+
 struct dw_point {
     int32_t x, y;
     uint8_t on, end;

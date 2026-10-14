@@ -135,8 +135,10 @@ void w32_object_release(struct w32_object *o)
 {
     if (o->file)
         vfs_close(o->file);
-    if (o->delete_on_close && o->path)
+    if (o->delete_on_close && o->path) {
+        w32_fcache_forget(o->path);
         vfs_unlink(o->path);
+    }
     o->delete_on_close = false;
     if (o->find)
         kfree(o->find);
@@ -723,6 +725,7 @@ static int run(struct exec_ctx *ctx)
     arch_set_fault_handler(on_fault);
     arch_set_tick_hook(on_tick);
     vmm_set_commit_hook(w32_vm_committed);
+    vmm_set_map_hook(w32_vm_fault);
     if (w32_init_modules() == 0 && !w32->exiting) {
         if (w32->win64)
             w64_setup_tls(main);
@@ -989,6 +992,7 @@ static int run_process(struct exec_ctx *ctx)
     }
     struct vmm_space *outer = vmm_space_current();
     p->parent = parent;
+    p->parent_pid = parent && parent->child ? parent->child->pid : 0;
     if ((p->child = kzalloc(sizeof(*p->child)))) {
         next_pid += 8;
         p->child->refs = 1;

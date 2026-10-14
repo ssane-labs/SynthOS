@@ -412,7 +412,11 @@ static HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD pid)
 {
     UNUSED(access);
     UNUSED(inherit);
-    if (pid == 0x1000 || pid == 0x100 || pid == 0)
+    if (!pid) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    if (pid == w32_current_pid() && !w32->child)
         return W32_PSEUDO_PROCESS;
     struct w32_process *p = w32_process_by_pid(pid);
     if (p && p->child) {

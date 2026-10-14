@@ -6,7 +6,7 @@
 
 #include "win32.h"
 
-#define SOCKET_BASE 0x1000u
+#define SOCKET_BASE 0x6000u
 #define INVALID_SOCKET (~0u)
 #define SOCKET_ERROR (-1)
 #define AF_INET 2

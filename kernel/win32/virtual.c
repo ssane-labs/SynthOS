@@ -26,11 +26,19 @@ struct vregion {
     uint32_t alloc_protect, protect;
     uint8_t *committed;
     bool mapped;
+    struct file_cache *file;
+    uint32_t file_page;
+};
+
+struct prot_range {
+    uint32_t start, end, protect;
 };
 
 struct w32_vm {
     struct vregion *regions;
     int count, cap;
+    struct prot_range *prot;
+    int prot_count, prot_cap;
 };
 
 static struct w32_vm *vm(void)
@@ -146,7 +154,7 @@ static struct vregion *add_region(uint32_t base, uint32_t size, uint32_t protect
     while (at < v->count && v->regions[at].base < base)
         at++;
     memmove(&v->regions[at + 1], &v->regions[at], sizeof(*v->regions) * (size_t)(v->count - at));
-    v->regions[at] = (struct vregion){base, size, protect, protect, bits, false};
+    v->regions[at] = (struct vregion){base, size, protect, protect, bits, false, NULL, 0};
     v->count++;
     return &v->regions[at];
 }
@@ -156,6 +164,7 @@ static void remove_region(int i)
     struct w32_vm *v = w32->vm;
     struct vregion *r = &v->regions[i];
     vmm_release(r->base, r->size);
+    w32_fcache_put(r->file);
     kfree(r->committed);
     memmove(&v->regions[i], &v->regions[i + 1], sizeof(*v->regions) * (size_t)(v->count - i - 1));
     v->count--;
@@ -168,6 +177,7 @@ void w32_vm_cleanup(void)
     while (w32->vm->count)
         remove_region(w32->vm->count - 1);
     kfree(w32->vm->regions);
+    kfree(w32->vm->prot);
     kfree(w32->vm);
     w32->vm = NULL;
 }
@@ -187,6 +197,31 @@ uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count)
             return 0;
         }
     return base;
+}
+
+uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count)
+{
+    uint32_t size = count * 4096u, base = vm() ? find_free(size, false) : 0;
+    struct vregion *r = base ? add_region(base, size, 0x08u) : NULL;
+    if (!r)
+        return 0;
+    r->mapped = true;
+    r->file = c;
+    r->file_page = first_page;
+    mark(r, base, base + size, true);
+    return base;
+}
+
+bool w32_vm_fault(uintptr_t address)
+{
+    if (!w32 || !w32->vm)
+        return false;
+    struct vregion *r = region_at((uint32_t)address);
+    if (!r || !r->file)
+        return false;
+    uint32_t v = (uint32_t)address & ~4095u;
+    void *page = w32_fcache_page(r->file, r->file_page + (v - r->base) / 4096u);
+    return page && vmm_map_pages(v, &page, 1, true) == 0;
 }
 
 bool w32_vm_unmap_shared(uint32_t base)
@@ -283,14 +318,87 @@ static BOOL WINAPI VirtualFree(void *addr, SIZE_T size, DWORD type)
     return FALSE;
 }
 
+static struct w32_image *image_at(uint32_t a)
+{
+    for (struct w32_image *img = w32->images; img; img = img->next)
+        if (!img->builtin && a >= img->base && a < img->base + img->size)
+            return img;
+    return NULL;
+}
+
+static uint32_t section_protect(uint32_t chars)
+{
+    bool x = chars & 0x20000000u, w = chars & 0x80000000u;
+    return x ? (w ? 0x80u : 0x20u) : (w ? 0x08u : 0x02u);
+}
+
+/* Protection of an image page from its section headers; *end is where that section stops. */
+static uint32_t image_protect(const struct w32_image *img, uint32_t a, uint32_t *end)
+{
+    const uint8_t *base = (const uint8_t *)(uintptr_t)img->base;
+    uint32_t nt = *(const uint32_t *)(base + 0x3c), rva = a - img->base;
+    uint16_t count = *(const uint16_t *)(base + nt + 6), opt = *(const uint16_t *)(base + nt + 20);
+    const uint8_t *sec = base + nt + 24 + opt;
+    uint32_t first = img->size;
+    for (uint16_t i = 0; i < count; i++, sec += 40) {
+        uint32_t va = *(const uint32_t *)(sec + 12), vsize = ALIGN_UP(*(const uint32_t *)(sec + 8), 4096u);
+        first = MIN(first, va);
+        if (rva >= va && rva < va + vsize) {
+            *end = img->base + va + vsize;
+            return section_protect(*(const uint32_t *)(sec + 36));
+        }
+    }
+    *end = rva < first ? img->base + first : img->base + img->size;
+    return 0x02u;
+}
+
+static uint32_t page_protect(uint32_t a, const struct w32_image *img, uint32_t *end)
+{
+    uint32_t p = image_protect(img, a, end);
+    struct w32_vm *v = w32->vm;
+    for (int i = 0; v && i < v->prot_count; i++) {
+        const struct prot_range *r = &v->prot[i];
+        if (a >= r->start && a < r->end) {
+            p = r->protect;
+            *end = MIN(*end, r->end);
+        } else if (r->start > a) {
+            *end = MIN(*end, r->start);
+        }
+    }
+    return p;
+}
+
+static void override_protect(uint32_t start, uint32_t end, uint32_t protect)
+{
+    struct w32_vm *v = vm();
+    for (int i = 0; i < v->prot_count; i++)
+        if (v->prot[i].start == start && v->prot[i].end == end) {
+            v->prot[i].protect = protect;
+            return;
+        }
+    if (v->prot_count == v->prot_cap) {
+        int cap = v->prot_cap ? v->prot_cap * 2 : 16;
+        struct prot_range *grown = krealloc(v->prot, sizeof(*grown) * (size_t)cap);
+        if (!grown)
+            return;
+        v->prot = grown;
+        v->prot_cap = cap;
+    }
+    v->prot[v->prot_count++] = (struct prot_range){start, end, protect};
+}
+
 static BOOL WINAPI VirtualProtect(void *addr, SIZE_T size, DWORD protect, DWORD *old)
 {
-    UNUSED(size);
-    struct vregion *r = region_at((uint32_t)addr);
+    uint32_t a = (uint32_t)addr;
+    struct vregion *r = region_at(a);
+    struct w32_image *img = r ? NULL : image_at(a);
+    uint32_t end;
     if (old)
-        *old = r ? r->protect : PAGE_EXECUTE_READWRITE;
+        *old = r ? r->protect : img ? page_protect(a & ~4095u, img, &end) : PAGE_READWRITE;
     if (r)
         r->protect = protect;
+    else if (img && size)
+        override_protect(a & ~4095u, MIN(ALIGN_UP(a + (uint32_t)size, 4096u), img->base + img->size), protect);
     return TRUE;
 }
 
@@ -330,9 +438,17 @@ static SIZE_T WINAPI VirtualQuery(const void *addr, struct mbi *info, SIZE_T len
                              on ? r->protect : 0, r->mapped ? MEM_MAPPED : MEM_PRIVATE};
         return sizeof(*info);
     }
-    for (struct w32_image *img = w32->images; img; img = img->next)
-        if (a >= img->base && a < img->base + img->size) {
-            *info = (struct mbi){a, img->base, PAGE_EXECUTE_READWRITE, img->base + img->size - a, MEM_COMMIT,
+    struct w32_image *img = image_at(a);
+    if (img) {
+        uint32_t end, next, protect = page_protect(a, img, &end);
+        while (end < img->base + img->size && page_protect(end, img, &next) == protect)
+            end = next;
+        *info = (struct mbi){a, img->base, 0x80u, end - a, MEM_COMMIT, protect, MEM_IMAGE};
+        return sizeof(*info);
+    }
+    for (struct w32_image *b = w32->images; b; b = b->next)
+        if (a >= b->base && a < b->base + b->size) {
+            *info = (struct mbi){a, b->base, PAGE_EXECUTE_READWRITE, b->base + b->size - a, MEM_COMMIT,
                                  PAGE_EXECUTE_READWRITE, MEM_IMAGE};
             return sizeof(*info);
         }

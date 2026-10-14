@@ -161,6 +161,20 @@ static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T
         s->refs++;
         return v->base;
     }
+    bool copy = (access & 0x1fu) == FILE_MAP_COPY;
+    if (copy || !(access & FILE_MAP_WRITE)) {
+        uint32_t first = off_lo / 4096u, count = (off_lo % 4096u + length + 4095u) / 4096u;
+        struct file_cache *c = w32_fcache_get(s->path, (first + count) * 4096u);
+        uint32_t base = c ? w32_vm_map_file(c, first, count) : 0;
+        if (!base) {
+            w32_fcache_put(c);
+            w32_set_error(c ? ERROR_NOT_ENOUGH_MEMORY : ERROR_FILE_NOT_FOUND);
+            return NULL;
+        }
+        *v = (struct view){(uint8_t *)(uintptr_t)base + off_lo % 4096u, off_lo, length, false, false, true, s};
+        s->refs++;
+        return v->base;
+    }
     uint8_t *mem = w32_alloc(MAX(length, 1u));
     if (!mem) {
         w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
@@ -179,7 +193,7 @@ static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T
         got = 0;
     if ((uint32_t)got < length)
         memset(mem + got, 0, length - (uint32_t)got);
-    bool write_back = s->writable && (access & FILE_MAP_WRITE) && !(access & FILE_MAP_COPY);
+    bool write_back = s->writable;
     *v = (struct view){mem, off_lo, length, write_back, true, false, s};
     s->refs++;
     return mem;
@@ -215,6 +229,7 @@ static void flush(struct view *v)
     vfs_seek(f, (long)v->offset, VFS_SEEK_SET);
     vfs_write(f, v->base, v->length);
     vfs_close(f);
+    w32_fcache_write(v->section->path, v->offset, v->base, v->length);
 }
 
 static BOOL WINAPI FlushViewOfFile(const void *p, SIZE_T n)

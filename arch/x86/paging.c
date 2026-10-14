@@ -560,10 +560,16 @@ bool vmm_cow_fault(uintptr_t address)
 }
 
 static bool (*commit_hook)(uintptr_t address);
+static bool (*map_hook)(uintptr_t address);
 
 void vmm_set_commit_hook(bool (*fn)(uintptr_t address))
 {
     commit_hook = fn;
+}
+
+void vmm_set_map_hook(bool (*fn)(uintptr_t address))
+{
+    map_hook = fn;
 }
 
 bool vmm_mapped(uintptr_t address)
@@ -576,6 +582,8 @@ bool vmm_commit_fault(uintptr_t address)
     uint32_t v = (uint32_t)address & ~4095u;
     if (!enabled || pte_present(v))
         return false;
+    if (map_hook && map_hook(v))
+        return true;
     if ((v < current_space->commit_start || v >= current_space->commit_end) && !(commit_hook && commit_hook(v)))
         return false;
     if (!ensure_table(v, PTE_USER))

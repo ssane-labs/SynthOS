@@ -108,15 +108,17 @@ static DWORD WINAPI NtSetValueKey(HANDLE key, void *name, DWORD index, DWORD typ
 
 static DWORD WINAPI NtQueryInformationProcess(HANDLE process, int cls, void *info, DWORD len, DWORD *result)
 {
-    UNUSED(process);
+    struct w32_object *o = process == W32_PSEUDO_PROCESS ? NULL : w32_handle_get(process);
+    struct w32_process *target = o && o->type == WH_PROCESS && o->child ? o->child->proc : w32;
     if (cls == 0 && len >= 24) {
         uint32_t *p = info;
         memset(p, 0, 24);
-        p[0] = 0x103;
-        p[1] = (uint32_t)w32->peb;
+        p[0] = o && o->child && o->child->done ? o->child->exit_code : 0x103;
+        p[1] = target ? (uint32_t)target->peb : 0;
         p[2] = 1;
         p[3] = 8;
-        p[4] = 0x100;
+        p[4] = o && o->child ? o->child->pid : w32_current_pid();
+        p[5] = target ? target->parent_pid : 0;
         if (result)
             *result = 24;
         return STATUS_SUCCESS;

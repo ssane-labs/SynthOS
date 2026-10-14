@@ -99,6 +99,12 @@ static HMODULE module_handle(const char *name)
     if (!name)
         return (HMODULE)w32->main->base;
     struct w32_image *img = w32_find_module(name);
+    static const char *const always[] = {"ntdll", "ntdll.dll", "kernel32", "kernel32.dll", "kernelbase.dll"};
+    for (size_t i = 0; !img && i < ARRAY_SIZE(always); i++)
+        if (!str_casecmp(name, always[i])) {
+            int err = 0;
+            img = w32_load(always[i][strlen(always[i]) - 4] == '.' ? always[i] : always[i + 1], NULL, &err);
+        }
     if (!img) {
         w32_set_error(ERROR_MOD_NOT_FOUND);
         return NULL;

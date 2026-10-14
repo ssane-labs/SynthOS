@@ -116,6 +116,8 @@ static BOOL rename_open(struct w32_object *o, const uint8_t *info, DWORD size)
         }
         vfs_unlink(target);
     }
+    w32_fcache_forget(o->path);
+    w32_fcache_forget(target);
     if (vfs_rename(o->path, target) != 0) {
         w32_set_error(ERROR_ACCESS_DENIED);
         return FALSE;
@@ -182,12 +184,6 @@ static DWORD WINAPI nt_not_implemented4(uint32_t a, uint32_t b, uint32_t c, uint
     return STATUS_NOT_IMPLEMENTED;
 }
 
-static DWORD WINAPI nt_not_implemented5(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
-{
-    UNUSED(e);
-    return nt_not_implemented4(a, b, c, d);
-}
-
 static DWORD WINAPI NtQueryDirectoryFile(HANDLE h, HANDLE ev, void *apc, void *ctx, void *iosb, void *out, DWORD size,
                                          DWORD cls, BOOL single, void *mask, BOOL restart)
 {
@@ -231,7 +227,6 @@ static const struct w32_export compat_kernel32[] = {
 static const struct w32_export compat_ntdll[] = {
     W32_FN(NtQueryInformationFile),
     W32_FN(NtQueryDirectoryFile),
-    W32_AS("NtQueryObject", nt_not_implemented5),
     W32_AS("NtSetEaFile", nt_not_implemented4),
 };
 

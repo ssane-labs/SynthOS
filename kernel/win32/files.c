@@ -138,6 +138,8 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
         w32_set_error(w32_error_from_vfs(err));
         return INVALID_HANDLE_VALUE;
     }
+    if (flags & VFS_TRUNC)
+        w32_fcache_truncate(path, 0);
     HANDLE h = w32_handle_new(WH_FILE);
     struct w32_object *o = w32_handle_get(h);
     if (!o) {
@@ -201,10 +203,15 @@ long w32_handle_write(HANDLE h, const void *buf, size_t n)
     case WH_STDERR:
         w32_console_write(o->type, buf, n);
         return (long)n;
-    case WH_FILE:
+    case WH_FILE: {
         if (o->append)
             vfs_seek(o->file, 0, VFS_SEEK_END);
-        return vfs_write(o->file, buf, n);
+        uint32_t at = o->file->pos;
+        long put = vfs_write(o->file, buf, n);
+        if (put > 0 && o->path)
+            w32_fcache_write(o->path, at, buf, (uint32_t)put);
+        return put;
+    }
     case WH_PIPE:
         if (o->value == 2)
             return o->pipe_out ? w32_pipe_write(o->pipe_out, buf, n) : E_PIPE;
@@ -367,9 +374,11 @@ static DWORD WINAPI GetFileType(HANDLE h)
 static BOOL WINAPI SetEndOfFile(HANDLE h)
 {
     struct w32_object *o = file_object(h);
-    if (!o || !o->file->vn->ops->truncate)
+    if (!o || !o->file->vn->ops->truncate || o->file->vn->ops->truncate(o->file->vn, o->file->pos) != 0)
         return FALSE;
-    return o->file->vn->ops->truncate(o->file->vn, o->file->pos) == 0;
+    if (o->path)
+        w32_fcache_truncate(o->path, o->file->pos);
+    return TRUE;
 }
 
 static BOOL WINAPI FlushFileBuffers(HANDLE h)
@@ -393,6 +402,8 @@ static BOOL delete_file(const char *name)
     int err = w32_path(name, path, sizeof(path));
     if (!err && vfs_is_dir(path))
         err = E_PERM;
+    if (!err)
+        w32_fcache_forget(path);
     return fs_result(err ? err : vfs_unlink(path));
 }
 
@@ -424,6 +435,8 @@ static BOOL move_file(const char *from, const char *to, DWORD flags)
         }
         vfs_unlink(b);
     }
+    w32_fcache_forget(a);
+    w32_fcache_forget(b);
     err = vfs_rename(a, b);
     if (err == E_XDEV && (err = vfs_copy(a, b)) == 0)
         err = vfs_unlink(a);

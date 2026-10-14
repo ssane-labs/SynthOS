@@ -161,6 +161,12 @@ wintest compat | grep section
 section read-only=ok write-dup=denied write-view=denied
 wintest compat | grep power
 power=ok oleacc=ok
+wintest compat | grep mapped
+mapped view=bbaa
+wintest compat | grep image
+image code=20 data=8 protected=2
+wintest compat | grep object
+object type=Section self=handle
 ls C:/Windows/System32 | grep -c dll
 kernel32.dll
 cd 'C:\Program Files'; pwd; cd
