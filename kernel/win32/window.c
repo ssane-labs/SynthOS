@@ -452,18 +452,23 @@ static BOOL WINAPI GetClassInfoExW(HANDLE inst, LPCWSTR name, WNDCLASSEX *out)
 static void link_child(struct w32_window *parent, struct w32_window *w)
 {
     struct w32_window **link = &parent->child;
-    while (*link)
+    while (*link) {
+        if (*link == w)
+            return;
         link = &(*link)->sibling;
+    }
+    w->sibling = NULL;
     *link = w;
 }
 
 static void unlink_child(struct w32_window *w)
 {
-    if (!is_child(w))
+    if (!w->parent)
         return;
     for (struct w32_window **link = &w->parent->child; *link; link = &(*link)->sibling)
         if (*link == w) {
             *link = w->sibling;
+            w->sibling = NULL;
             return;
         }
 }
@@ -981,6 +986,11 @@ static HANDLE WINAPI SetParent(HANDLE h, HANDLE parent_h)
     struct w32_window *w = w32_win(h), *p = w32_win(parent_h);
     if (!w || !p || !is_child(w))
         return NULL;
+    for (struct w32_window *a = p; a; a = a->parent)
+        if (a == w) {
+            w32_set_error(ERROR_INVALID_PARAMETER);
+            return NULL;
+        }
     HANDLE old = w->parent;
     unlink_child(w);
     w->parent = p;

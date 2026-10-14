@@ -122,6 +122,25 @@ static uint32_t signal_gen;
 void w32_signal(void)
 {
     signal_gen++;
+    if (w32)
+        w32->kicked = true;
+}
+
+void w32_kick(struct w32_process *p)
+{
+    signal_gen++;
+    if (p)
+        p->kicked = true;
+}
+
+void w32_kick_all(void)
+{
+    signal_gen++;
+    struct w32_process *p = w32;
+    do {
+        if (p)
+            p->kicked = true;
+    } while ((p = w32_ring_next(p)) && p != w32);
 }
 
 static bool stale(const struct w32_thread *t)
@@ -146,6 +165,33 @@ static struct w32_thread *pick_stale(struct w32_thread *cur)
         } while (t != p->current);
     }
     return NULL;
+}
+
+/* Busy threads would starve waiters that were signaled: preemption starts a short pass over kicked processes. */
+static int sweep_left;
+
+static struct w32_thread *stale_in(struct w32_process *p, struct w32_thread *from)
+{
+    struct w32_thread *t = from;
+    do {
+        t = t->next;
+        if (stale(t))
+            return t;
+    } while (t != from);
+    p->kicked = false;
+    return NULL;
+}
+
+static struct w32_thread *sweep_next(struct w32_thread *cur)
+{
+    if (sweep_left <= 0)
+        return NULL;
+    struct w32_thread *t = w32->kicked ? stale_in(w32, cur) : NULL;
+    for (struct w32_process *p = w32_ring_next(w32); !t && p && p != w32; p = w32_ring_next(p))
+        if (p->kicked && !p->dead && !p->frozen && p->current)
+            t = stale_in(p, p->current);
+    sweep_left = t ? sweep_left - 1 : 0;
+    return t;
 }
 
 static struct w32_thread *pick_other(bool active_only)
@@ -243,10 +289,10 @@ static uint32_t user_caller(struct w32_thread *t)
         if (ret >= VMM_USER_START && ret < 0xc0000000u) {
             const uint32_t *sp = frame + 2;
             int k = 0;
-            for (int n = 0; n < 2048 && k < 6; n++, sp++)
+            for (int n = 0; n < 4096 && k < 16; n++, sp++)
                 if (after_call(*sp))
                     t->wait_stack[k++] = *sp;
-            while (k < 6)
+            while (k < 16)
                 t->wait_stack[k++] = 0;
             return ret;
         }
@@ -267,7 +313,9 @@ void w32_block(void)
         cur->wait_caller = user_caller(cur);
         cur->waiting = true;
         cur->seen = signal_gen;
-        struct w32_thread *next = w32->live_threads > 1 ? pick(cur, true) : NULL;
+        struct w32_thread *next = sweep_next(cur);
+        if (!next && w32->live_threads > 1)
+            next = pick(cur, true);
         if (!next)
             next = pick_other(true);
         if (!next)
@@ -290,8 +338,9 @@ void w32_preempt(void)
     static unsigned turn;
     if (!w32 || !w32->current)
         return;
-    struct w32_thread *next = NULL;
-    if (++turn % 2 == 0)
+    sweep_left = 64;
+    struct w32_thread *next = sweep_next(w32->current);
+    if (!next && ++turn % 2 == 0)
         next = pick_other(true);
     if (!next && w32->live_threads > 1) {
         next = pick(w32->current, true);

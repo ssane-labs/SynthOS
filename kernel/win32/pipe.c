@@ -1,4 +1,5 @@
 #include <synth/error.h>
+#include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/stream.h>
@@ -10,12 +11,14 @@
 struct w32_pipe {
     uint8_t *buf;
     size_t len, cap, rpos;
-    int readers, writers;
+    int readers, writers, sync_waiters;
 };
+
+static void pipe_kick(struct w32_pipe *p);
 
 static void pipe_drop(struct w32_pipe *p)
 {
-    w32_signal();
+    w32_kick_all();
     if (p->readers <= 0 && p->writers <= 0) {
         kfree(p->buf);
         kfree(p);
@@ -92,13 +95,17 @@ long w32_pipe_write(struct w32_pipe *p, const void *data, size_t n)
     }
     memcpy(p->buf + p->len, data, n);
     p->len += n;
+    pipe_kick(p);
     return (long)n;
 }
 
 long w32_pipe_read(struct w32_pipe *p, void *out, size_t n, bool wait)
 {
-    while (p->rpos == p->len && p->writers > 0 && wait && w32)
+    while (p->rpos == p->len && p->writers > 0 && wait && w32) {
+        p->sync_waiters++;
         w32_block();
+        p->sync_waiters--;
+    }
     if (p->rpos == p->len && p->writers > 0)
         return 0;
     size_t k = MIN(n, p->len - p->rpos);
@@ -398,6 +405,7 @@ HANDLE w32_npipe_open(const char *name)
     np->out->readers++;
     np->in->writers++;
     np->connected = true;
+    w32_kick_all();
     return h;
 }
 
@@ -416,6 +424,8 @@ static struct w32_object *server_object(HANDLE h)
 #define STATUS_PIPE_BROKEN 0xc000014bu
 
 struct pending_io {
+    struct w32_process *proc;
+    struct w32_pipe *pipe;
     HANDLE handle;
     uint8_t *buf;
     DWORD n;
@@ -424,7 +434,7 @@ struct pending_io {
     struct pending_io *next;
 };
 
-static W32_STATE struct pending_io *pending;
+static struct pending_io *pending;
 
 void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32_t bytes, bool sync)
 {
@@ -441,12 +451,23 @@ void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32
         w32_port_post(o->io_port, bytes, o->io_key, ov);
 }
 
-static void pending_add(HANDLE h, uint8_t *buf, DWORD n, uint32_t *ov, bool connect)
+static void pipe_kick(struct w32_pipe *p)
+{
+    if (p->sync_waiters > 0) {
+        w32_kick_all();
+        return;
+    }
+    for (struct pending_io *q = pending; q; q = q->next)
+        if (q->pipe == p)
+            w32_kick(q->proc);
+}
+
+static void pending_add(HANDLE h, struct w32_pipe *pipe, uint8_t *buf, DWORD n, uint32_t *ov, bool connect)
 {
     struct pending_io *p = kzalloc(sizeof(*p));
     if (!p)
         return;
-    *p = (struct pending_io){h, buf, n, ov, connect, NULL};
+    *p = (struct pending_io){w32, pipe, h, buf, n, ov, connect, NULL};
     struct pending_io **tail = &pending;
     while (*tail)
         tail = &(*tail)->next;
@@ -462,6 +483,10 @@ void w32_io_poll(void)
         return;
     for (struct pending_io **pp = &pending; *pp;) {
         struct pending_io *p = *pp;
+        if (p->proc != w32) {
+            pp = &p->next;
+            continue;
+        }
         struct w32_object *o = w32_handle_get(p->handle);
         uint32_t status = STATUS_PENDING, bytes = 0;
         if (!o || o->type != WH_PIPE) {
@@ -486,12 +511,38 @@ void w32_io_poll(void)
     }
 }
 
+void w32_io_drop(HANDLE h)
+{
+    for (struct pending_io **pp = &pending; *pp;) {
+        struct pending_io *p = *pp;
+        if (p->proc != w32 || p->handle != h) {
+            pp = &p->next;
+            continue;
+        }
+        *pp = p->next;
+        kfree(p);
+    }
+}
+
+void w32_io_forget(struct w32_process *proc)
+{
+    for (struct pending_io **pp = &pending; *pp;) {
+        struct pending_io *p = *pp;
+        if (p->proc != proc) {
+            pp = &p->next;
+            continue;
+        }
+        *pp = p->next;
+        kfree(p);
+    }
+}
+
 bool w32_io_cancel(HANDLE h, const uint32_t *ov)
 {
     bool found = false;
     for (struct pending_io **pp = &pending; *pp;) {
         struct pending_io *p = *pp;
-        if (p->handle != h || (ov && p->ov != ov)) {
+        if (p->proc != w32 || p->handle != h || (ov && p->ov != ov)) {
             pp = &p->next;
             continue;
         }
@@ -531,7 +582,7 @@ int w32_pipe_overlapped(HANDLE h, struct w32_object *o, void *buf, DWORD n, DWOR
     }
     if (o->pipe->writers <= 0 && !(o->npipe && !o->npipe->connected))
         return ERROR_BROKEN_PIPE;
-    pending_add(h, buf, n, ov, false);
+    pending_add(h, o->pipe, buf, n, ov, false);
     return 997;
 }
 
@@ -545,7 +596,7 @@ static BOOL WINAPI ConnectNamedPipe(HANDLE h, void *overlapped)
         return FALSE;
     }
     if (overlapped) {
-        pending_add(h, NULL, 0, overlapped, true);
+        pending_add(h, NULL, NULL, 0, overlapped, true);
         w32_set_error(997);
         return FALSE;
     }
@@ -617,3 +668,15 @@ static const struct w32_export pipe_exports[] = {
 };
 
 W32_EXPORTS(pipe_module, "kernel32.dll", pipe_exports);
+
+void w32_pipe_dump(void)
+{
+    char line[96];
+    for (struct pending_io *q = pending; q; q = q->next)
+        if (q->pipe && w32_pipe_available(q->pipe)) {
+            ksnprintf(line, sizeof(line), "pid %u: read on pipe handle %x not completed, %u bytes waiting\n",
+                      q->proc->child ? q->proc->child->pid : 0, (unsigned)(uintptr_t)q->handle,
+                      (unsigned)w32_pipe_available(q->pipe));
+            w32_console_write(WH_STDERR, line, strlen(line));
+        }
+}

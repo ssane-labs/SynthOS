@@ -167,6 +167,8 @@ bool w32_handle_close(HANDLE h)
         return false;
     if (--o->refs > 0)
         return true;
+    if (o->type == WH_PIPE)
+        w32_io_drop(h);
     w32_object_release(o);
     return true;
 }
@@ -426,6 +428,8 @@ static void on_tick(uint32_t eip)
     if (!w32 || !w32->jump.active || eip < VMM_USER_START || eip >= 0xc0000000u)
         return;
     ticks++;
+    if (w32->current)
+        w32->current->user_eip = eip;
     if (ticks % 32 == 0) {
         input_poll();
         if (input_break_pending()) {
@@ -434,7 +438,9 @@ static void on_tick(uint32_t eip)
             arch_w32_abort(&w32->jump, STATUS_CONTROL_C_EXIT);
         }
     }
-    if (ticks % 4 == 0)
+    if (ticks % 32 == 0)
+        w32_kick_all();
+    else if (ticks % 4 == 0)
         w32_signal();
     if (ticks % 10 == 0)
         w32_preempt();
@@ -480,6 +486,13 @@ static void build_command_line(struct exec_ctx *ctx)
     }
     w32->cmdline = line;
     w32->cmdline_w = w32_widen(line);
+    const char *type = strstr(line, "--type=");
+    if (type) {
+        str_copy(w32->tag, type + 7, sizeof(w32->tag));
+        char *end = strchr(w32->tag, ' ');
+        if (end)
+            *end = 0;
+    }
     w32->wargv = w32_zalloc(sizeof(WCHAR *) * (size_t)(w32->argc + 1));
     for (int i = 0; i < w32->argc; i++)
         w32->wargv[i] = w32_widen(w32->argv[i]);
@@ -831,8 +844,9 @@ void w32_dump_status(void)
     if (!p)
         return;
     do {
-        ksnprintf(line, sizeof(line), "pid %u %s: %d live threads\n", p->child ? p->child->pid : 0,
-                  p->main ? p->main->name : "?", p->live_threads);
+        ksnprintf(line, sizeof(line), "pid %u %s %s: %d live threads%s%s\n", p->child ? p->child->pid : 0,
+                  p->main ? p->main->name : "?", p->tag, p->live_threads, p->frozen ? " frozen" : "",
+                  p->dead ? " dead" : "");
         w32_console_write(WH_STDERR, line, strlen(line));
         struct w32_thread *t = p->threads;
         if (t)
@@ -841,7 +855,12 @@ void w32_dump_status(void)
                 ksnprintf(line, sizeof(line), "  tid %u %s%s from %s\n", t->id,
                           t->done ? "done" : t->waiting ? "waiting" : "running", t->suspended ? " suspended" : "", at);
                 w32_console_write(WH_STDERR, line, strlen(line));
-                for (int k = 0; k < 6 && t->wait_caller && t->wait_stack[k]; k++) {
+                if (!t->waiting && t->user_eip) {
+                    where(p, t->user_eip, at, sizeof(at));
+                    ksnprintf(line, sizeof(line), "      at %s\n", at);
+                    w32_console_write(WH_STDERR, line, strlen(line));
+                }
+                for (int k = 0; k < 16 && t->wait_caller && t->wait_stack[k]; k++) {
                     where(p, t->wait_stack[k], at, sizeof(at));
                     ksnprintf(line, sizeof(line), "      <- %s\n", at);
                     w32_console_write(WH_STDERR, line, strlen(line));
@@ -855,6 +874,7 @@ void w32_dump_status(void)
                 }
             } while ((t = t->next) != p->threads);
     } while ((p = p->ring_next) && p != ring);
+    w32_pipe_dump();
 }
 
 struct w32_process *w32_ring_next(struct w32_process *p)
@@ -914,7 +934,7 @@ void w32_child_release(struct w32_child *c)
 
 static void finish_child(struct w32_process *p, uint32_t code)
 {
-    w32_signal();
+    w32_kick_all();
     if (p->child) {
         p->child->done = true;
         p->child->exit_code = code;
@@ -937,6 +957,7 @@ static void finish_child(struct w32_process *p, uint32_t code)
 
 static void free_process(struct w32_process *p)
 {
+    w32_io_forget(p);
     ring_remove(p);
     vmm_space_destroy(p->space);
     kfree(p->boot_stack);
@@ -1066,6 +1087,7 @@ static int run_process(struct exec_ctx *ctx)
         p->child = NULL;
     }
     vmm_space_switch(outer);
+    w32_io_forget(p);
     ring_remove(p);
     w32 = parent;
     w32_reap();

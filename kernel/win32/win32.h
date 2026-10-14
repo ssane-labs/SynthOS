@@ -175,8 +175,8 @@ struct w32_thread {
     bool done;
     bool waiting;
     int suspended;
-    uint32_t wait_caller, wait_stack[6];
-    uint32_t seen;
+    uint32_t wait_caller, wait_stack[16];
+    uint32_t seen, user_eip;
     const char *recent[8];
     unsigned recent_pos;
     int irq_depth;
@@ -224,6 +224,8 @@ struct vmm_space;
 
 struct w32_process {
     struct exec_ctx *ctx;
+    bool kicked;
+    char tag[20];
     struct vmm_space *space;
     struct heap heap;
     void *arena;
@@ -379,6 +381,11 @@ int dwrite_glyph_outline(int face, uint16_t glyph, struct dw_point *pts, int cap
 uint32_t dwrite_outline(int face, uint32_t em, const uint16_t *glyphs, const uint32_t *advances, const void *offsets,
                         UINT count, BOOL rtl, void *sink);
 void w32_dump_status(void);
+void w32_pipe_dump(void);
+void w32_kick(struct w32_process *p);
+void w32_kick_all(void);
+void w32_io_forget(struct w32_process *p);
+void w32_io_drop(HANDLE h);
 void w32_signal(void);
 void w32_sock_poll(void);
 void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face);

@@ -75,6 +75,21 @@ static void compat(void)
     HMODULE power = LoadLibraryA("api-ms-win-power-base-l1-1-0.dll"), acc = LoadLibraryA("oleacc.dll");
     printf("power=%s oleacc=%s\n", power && GetProcAddress(power, "CallNtPowerInformation") ? "ok" : "missing",
            acc && GetProcAddress(acc, "AccessibleObjectFromWindow") ? "ok" : "missing");
+
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.lpszClassName = "wintest";
+    RegisterClassA(&wc);
+    HWND top = CreateWindowExA(0, "wintest", "", 0, 0, 0, 10, 10, HWND_MESSAGE, NULL, NULL, NULL);
+    HWND a = CreateWindowExA(0, "wintest", "", WS_CHILD, 0, 0, 5, 5, top, NULL, NULL, NULL);
+    HWND b = CreateWindowExA(0, "wintest", "", WS_CHILD, 0, 0, 5, 5, a, NULL, NULL, NULL);
+    HWND loop = SetParent(a, b), moved = SetParent(b, top);
+    int children = 0;
+    for (HWND c = GetWindow(top, GW_CHILD); c && children < 10; c = GetWindow(c, GW_HWNDNEXT))
+        children++;
+    printf("reparent loop=%s move=%s children=%d\n", loop ? "allowed" : "refused", moved == a ? "ok" : "bad",
+           children);
+    DestroyWindow(top);
 }
 
 int main(int argc, char **argv)
