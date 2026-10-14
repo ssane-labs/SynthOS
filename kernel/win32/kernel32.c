@@ -929,8 +929,26 @@ static BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out
         return FALSE;
     }
     if (from == w32 && (src == W32_PSEUDO_PROCESS || src == W32_PSEUDO_THREAD)) {
+        HANDLE h = src;
+        if (to == w32 && out) {
+            h = w32_handle_new(src == W32_PSEUDO_THREAD ? WH_THREAD : WH_PROCESS);
+            struct w32_object *n = w32_handle_get(h);
+            if (!n) {
+                w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+                return FALSE;
+            }
+            n->inherit = inherit != 0;
+            if (src == W32_PSEUDO_THREAD) {
+                n->thread = w32->current;
+            } else {
+                n->max = w32_current_pid();
+                n->child = w32->child;
+                if (n->child)
+                    n->child->refs++;
+            }
+        }
         if (out)
-            *out = src;
+            *out = h;
         return TRUE;
     }
     struct w32_object *o = w32_handle_get_in(from, src);

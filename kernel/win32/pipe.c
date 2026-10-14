@@ -457,6 +457,7 @@ static void pending_add(HANDLE h, uint8_t *buf, DWORD n, uint32_t *ov, bool conn
 
 void w32_io_poll(void)
 {
+    w32_sock_poll();
     if (!w32)
         return;
     for (struct pending_io **pp = &pending; *pp;) {

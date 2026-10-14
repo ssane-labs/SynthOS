@@ -220,17 +220,36 @@ void w32_yield(void)
     struct w32_thread *next = w32->live_threads > 1 ? pick(w32->current, true) : NULL;
     if (!next)
         next = pick_other(true);
+    if (!next)
+        next = pick_stale(w32->current);
     if (next)
         switch_to(next);
 }
 
-static uint32_t user_caller(void)
+static bool after_call(uint32_t a)
+{
+    if (a < VMM_USER_START + 8 || a >= 0xc0000000u || !vmm_mapped(a - 8) || !vmm_mapped(a - 1))
+        return false;
+    const uint8_t *p = (const uint8_t *)(uintptr_t)a;
+    return p[-5] == 0xe8 || (p[-6] == 0xff && (p[-5] & 0x38) == 0x10) || (p[-2] == 0xff && (p[-1] & 0xf8) == 0xd0) ||
+           (p[-3] == 0xff && (p[-2] & 0x38) == 0x10);
+}
+
+static uint32_t user_caller(struct w32_thread *t)
 {
     const uint32_t *frame = __builtin_frame_address(0);
     for (int i = 0; i < 16 && frame && (uint32_t)frame >= 0xc0000000u; i++) {
         uint32_t ret = frame[1];
-        if (ret >= VMM_USER_START && ret < 0xc0000000u)
+        if (ret >= VMM_USER_START && ret < 0xc0000000u) {
+            const uint32_t *sp = frame + 2;
+            int k = 0;
+            for (int n = 0; n < 2048 && k < 6; n++, sp++)
+                if (after_call(*sp))
+                    t->wait_stack[k++] = *sp;
+            while (k < 6)
+                t->wait_stack[k++] = 0;
             return ret;
+        }
         frame = (const uint32_t *)frame[0];
     }
     return 0;
@@ -245,7 +264,7 @@ void w32_block(void)
     if (!cur) {
         w32_idle(1);
     } else {
-        cur->wait_caller = user_caller();
+        cur->wait_caller = user_caller(cur);
         cur->waiting = true;
         cur->seen = signal_gen;
         struct w32_thread *next = w32->live_threads > 1 ? pick(cur, true) : NULL;
@@ -1129,6 +1148,7 @@ static BOOL WINAPI FlsSetValue(DWORD index, void *value)
 }
 
 static const struct w32_export thread_exports[] = {
+    W32_AS("RegisterWaitForSingleObject", w32_fail6), W32_AS("UnregisterWaitEx", w32_one2), W32_AS("UnregisterWait", w32_one1),
     W32_FN(CreateThread), W32_FN(ExitThread), W32_FN(TerminateThread), W32_FN(GetExitCodeThread),
     W32_FN(SuspendThread), W32_FN(ResumeThread), W32_FN(GetCurrentThreadId), W32_FN(GetThreadId),
     W32_FN(SetThreadPriority), W32_FN(GetThreadPriority), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),

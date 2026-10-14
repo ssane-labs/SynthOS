@@ -722,11 +722,6 @@ static BOOL WINAPI false8(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32
     return false7(a, b, c, d, e, f, g);
 }
 
-static BOOL WINAPI false6(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f)
-{
-    return false7(a, b, c, d, e, f, 0);
-}
-
 static void *WINAPI no_pointer3(uint32_t a, uint32_t b, uint32_t c)
 {
     UNUSED(a);
@@ -884,9 +879,6 @@ static const struct w32_export vista_exports[] = {
     W32_FN(CancelIo),
     W32_AS("DeviceIoControl", false8),
     W32_AS("OpenFileMappingW", no_pointer3),
-    W32_AS("RegisterWaitForSingleObject", false6),
-    W32_AS("UnregisterWait", w32_one1),
-    W32_AS("UnregisterWaitEx", w32_one2),
     W32_FN(InitializeProcThreadAttributeList),
     W32_FN(UpdateProcThreadAttribute),
     W32_AS("DeleteProcThreadAttributeList", w32_zero1),

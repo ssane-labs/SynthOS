@@ -43,6 +43,8 @@ enum {
     WSAHOST_NOT_FOUND = 11001,
 };
 
+enum { FD_READ = 1, FD_WRITE = 2, FD_OOB = 4, FD_ACCEPT = 8, FD_CONNECT = 16, FD_CLOSE = 32 };
+
 struct wsock {
     bool used, nonblocking;
     int id;
@@ -51,7 +53,7 @@ struct wsock {
     HANDLE port;
     uintptr_t key;
     HANDLE event;
-    long mask;
+    long mask, reported;
 };
 
 #define STATUS_PENDING 0x103u
@@ -241,7 +243,7 @@ static UINT WINAPI socket(int family, int type, int protocol)
         fail(id);
         return INVALID_SOCKET;
     }
-    socks[id] = (struct wsock){true, false, id, type, 0, 0, NULL, 0, NULL, 0};
+    socks[id] = (struct wsock){true, false, id, type, 0, 0, NULL, 0, NULL, 0, 0};
     return handle_of(id);
 }
 
@@ -298,7 +300,7 @@ static UINT WINAPI accept(UINT s, struct sockaddr_in *addr, int *len)
         uint16_t port;
         int c = net_accept(w->id, &ip, &port);
         if (c >= 0) {
-            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0, NULL, 0};
+            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0, NULL, 0, 0};
             fill_addr(addr, len, ip, port);
             return handle_of(c);
         }
@@ -353,8 +355,10 @@ static int WINAPI send(UINT s, const char *buf, int len, int flags)
         }
         if (n != E_AGAIN)
             return sent ? sent : fail((int)n);
-        if (w->nonblocking)
+        if (w->nonblocking) {
+            w->reported &= ~FD_WRITE;
             return sent ? sent : fail(E_AGAIN);
+        }
         if (expired(start, w->send_timeout))
             return sent ? sent : fail(E_TIMEDOUT);
         wait_step();
@@ -588,8 +592,10 @@ static int WINAPI select(int nfds, struct fd_set *r, struct fd_set *wr, struct f
     }
 }
 
-enum { FD_READ = 1, FD_WRITE = 2, FD_OOB = 4, FD_ACCEPT = 8, FD_CONNECT = 16, FD_CLOSE = 32 };
 
+#define FD_EDGE (FD_CONNECT | FD_WRITE | FD_CLOSE)
+
+/* FD_CONNECT, FD_WRITE and FD_CLOSE fire once, like on Windows; FD_WRITE re-arms when a send would block. */
 static long sock_events(struct wsock *w)
 {
     long ev = 0;
@@ -598,8 +604,25 @@ static long sock_events(struct wsock *w)
     if (write_ready(w->id))
         ev |= FD_WRITE | FD_CONNECT;
     if (net_error(w->id))
-        ev |= FD_CLOSE | FD_READ;
-    return ev & w->mask;
+        ev |= FD_CLOSE | FD_READ | FD_CONNECT;
+    return ev & w->mask & ~(w->reported & FD_EDGE);
+}
+
+void w32_sock_poll(void)
+{
+    bool any = false;
+    for (int i = 0; i < NET_MAX_SOCKETS && !any; i++)
+        any = socks[i].used && socks[i].event;
+    if (!any)
+        return;
+    net_poll();
+    for (int i = 0; i < NET_MAX_SOCKETS; i++) {
+        struct w32_object *o = socks[i].used && socks[i].event ? w32_handle_get(socks[i].event) : NULL;
+        if (o && o->type == WH_EVENT && !o->value && sock_events(&socks[i])) {
+            o->value = 1;
+            w32_signal();
+        }
+    }
 }
 
 static HANDLE WINAPI WSACreateEvent(void)
@@ -644,6 +667,7 @@ static int WINAPI WSAEventSelect(UINT s, HANDLE event, long mask)
         return SOCKET_ERROR;
     w->event = event;
     w->mask = event ? mask : 0;
+    w->reported = 0;
     if (event)
         w->nonblocking = true;
     return 0;
@@ -662,8 +686,12 @@ static int WINAPI WSAEnumNetworkEvents(UINT s, HANDLE event, struct network_even
     net_poll();
     memset(out, 0, sizeof(*out));
     out->events = sock_events(w);
-    if (net_error(w->id) && (out->events & FD_CLOSE))
+    w->reported |= out->events & FD_EDGE;
+    int err = net_error(w->id);
+    if (err && (out->events & FD_CLOSE))
         out->errors[5] = WSAECONNRESET;
+    if (err && (out->events & FD_CONNECT))
+        out->errors[4] = wsa_error(err);
     if (event)
         WSAResetEvent(event);
     return 0;
@@ -928,8 +956,12 @@ static void complete(UINT s, uint32_t *ov, DWORD bytes, uint32_t status)
 {
     ov[0] = status;
     ov[1] = bytes;
+    struct w32_object *event = ov[4] & ~1u ? w32_handle_get((HANDLE)(uintptr_t)(ov[4] & ~1u)) : NULL;
+    if (event && event->type == WH_EVENT)
+        event->value = 1;
+    w32_signal();
     struct wsock *w = s >= SOCKET_BASE && s < SOCKET_BASE + NET_MAX_SOCKETS ? &socks[s - SOCKET_BASE] : NULL;
-    if (w && w->port)
+    if (w && w->port && !(ov[4] & 1))
         w32_port_post(w->port, bytes, w->key, ov);
 }
 
@@ -1010,12 +1042,21 @@ static int WINAPI WSASend(UINT s, struct wsabuf *bufs, DWORD count, DWORD *sent,
 {
     UNUSED(cb);
     DWORD total = 0;
+    struct wsock *w = ov ? sock_of(s) : NULL;
+    bool nonblocking = w && w->nonblocking;
+    if (w)
+        w->nonblocking = false;
     for (DWORD i = 0; i < count; i++) {
         int n = send(s, bufs[i].buf, (int)bufs[i].len, (int)flags);
-        if (n < 0)
+        if (n < 0) {
+            if (w)
+                w->nonblocking = nonblocking;
             return SOCKET_ERROR;
+        }
         total += (DWORD)n;
     }
+    if (w)
+        w->nonblocking = nonblocking;
     if (sent)
         *sent = total;
     if (ov)

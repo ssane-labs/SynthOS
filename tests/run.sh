@@ -171,6 +171,8 @@ winipc | tail -n 1
 sent ok, reply: child got 'hello', child exit 0
 winevt | grep -c "ok,"
 4
+winipc2
+duplicate ok/ok, child a exit 0, child b exit 0
 ls C:/Windows/System32 | grep -c dll
 kernel32.dll
 cd 'C:\Program Files'; pwd; cd

@@ -434,6 +434,8 @@ static void on_tick(uint32_t eip)
             arch_w32_abort(&w32->jump, STATUS_CONTROL_C_EXIT);
         }
     }
+    if (ticks % 4 == 0)
+        w32_signal();
     if (ticks % 10 == 0)
         w32_preempt();
 }
@@ -839,6 +841,11 @@ void w32_dump_status(void)
                 ksnprintf(line, sizeof(line), "  tid %u %s%s from %s\n", t->id,
                           t->done ? "done" : t->waiting ? "waiting" : "running", t->suspended ? " suspended" : "", at);
                 w32_console_write(WH_STDERR, line, strlen(line));
+                for (int k = 0; k < 6 && t->wait_caller && t->wait_stack[k]; k++) {
+                    where(p, t->wait_stack[k], at, sizeof(at));
+                    ksnprintf(line, sizeof(line), "      <- %s\n", at);
+                    w32_console_write(WH_STDERR, line, strlen(line));
+                }
                 for (unsigned r = 0; r < 8; r++) {
                     const char *name = t->recent[(t->recent_pos + r) % 8];
                     if (name && !t->done) {

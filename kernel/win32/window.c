@@ -191,6 +191,7 @@ static uint32_t message_time(void)
 
 static void enqueue(HANDLE hwnd, uint32_t thread, UINT msg, WPARAM wp, LPARAM lp)
 {
+    w32_signal();
     if (queue_tail - queue_head >= QUEUE_SIZE)
         return;
     struct queued *q = &queue[queue_tail++ % QUEUE_SIZE];

@@ -175,7 +175,7 @@ struct w32_thread {
     bool done;
     bool waiting;
     int suspended;
-    uint32_t wait_caller;
+    uint32_t wait_caller, wait_stack[6];
     uint32_t seen;
     const char *recent[8];
     unsigned recent_pos;
@@ -380,6 +380,7 @@ uint32_t dwrite_outline(int face, uint32_t em, const uint16_t *glyphs, const uin
                         UINT count, BOOL rtl, void *sink);
 void w32_dump_status(void);
 void w32_signal(void);
+void w32_sock_poll(void);
 void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face);
 struct w32_object *w32_handle_get(HANDLE h);
 HANDLE w32_std_handle(int which);
