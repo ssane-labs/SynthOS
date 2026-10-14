@@ -123,7 +123,8 @@ static const char *builtin_alias(const char *name)
                                           {"api-ms-win-downlevel-shlwapi-", "shlwapi.dll"},
                                           {"api-ms-win-downlevel-user32-", "user32.dll"},
                                           {"api-ms-win-downlevel-advapi32-", "advapi32.dll"},
-                                          {"api-ms-win-security-", "advapi32.dll"}};
+                                          {"api-ms-win-security-", "advapi32.dll"},
+                                          {"api-ms-win-power-", "powrprof.dll"}};
     for (size_t i = 0; i < ARRAY_SIZE(sets); i++)
         if (str_starts(name, sets[i][0]))
             return sets[i][1];
@@ -328,6 +329,15 @@ static void trace_record(const char *name)
               name);
 }
 
+void w32_trace_note(const char *module, const char *name)
+{
+    char label[64];
+    if (!w32_trace)
+        return;
+    ksnprintf(label, sizeof(label), "GetProcAddress %s!%s", module, name);
+    trace_record(label);
+}
+
 void w32_trace_dump(void)
 {
     if (!w32_trace || !trace_ring)
@@ -454,10 +464,10 @@ static bool system_dll(const char *name)
 {
     static const char *const known =
         "cfgmgr32.dll,comctl32.dll,comdlg32.dll,cryptui.dll,dwrite.dll,esent.dll,hid.dll,imm32.dll,mf.dll,"
-        "mfplat.dll,mfreadwrite.dll,mmdevapi.dll,ndfapi.dll,netapi32.dll,oleacc.dll,propsys.dll,setupapi.dll,"
-        "shlwapi.dll,uiautomationcore.dll,userenv.dll,uxtheme.dll,winmm.dll,winspool.drv,wintrust.dll,winusb.dll,"
+        "mfplat.dll,mfreadwrite.dll,mmdevapi.dll,ndfapi.dll,netapi32.dll,propsys.dll,setupapi.dll,"
+        "shlwapi.dll,userenv.dll,uxtheme.dll,winmm.dll,winspool.drv,wintrust.dll,winusb.dll,"
         "wtsapi32.dll,bcryptprimitives.dll,bthprops.cpl,credui.dll,d3d11.dll,d3d12.dll,d3d9.dll,dbghelp.dll,"
-        "dcomp.dll,dhcpcsvc.dll,dwmapi.dll,dxgi.dll,ncrypt.dll,pdh.dll,tbs.dll,wevtapi.dll,powrprof.dll,"
+        "dcomp.dll,dhcpcsvc.dll,dwmapi.dll,dxgi.dll,ncrypt.dll,pdh.dll,tbs.dll,wevtapi.dll,"
         "shcore.dll,dinput8.dll,xinput1_3.dll,xinput1_4.dll,xinput9_1_0.dll,dsound.dll,opengl32.dll,glu32.dll,"
         "msimg32.dll,version.dll,psapi.dll,mpr.dll,urlmon.dll,wininet.dll,winhttp.dll,crypt32.dll,secur32.dll,"
         "dnsapi.dll,mswsock.dll,fontsub.dll,usp10.dll,msvcp140.dll,d2d1.dll,windowscodecs.dll,dxva2.dll,"

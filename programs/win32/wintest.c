@@ -10,6 +10,35 @@ static LONG WINAPI filter(EXCEPTION_POINTERS *info)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+static void compat(void)
+{
+    LOGFONTW lf = {0};
+    lf.lfHeight = -13;
+    lf.lfWeight = FW_BOLD;
+    wcscpy(lf.lfFaceName, L"Segoe UI");
+    HFONT font = CreateFontIndirectW(&lf);
+    LOGFONTW back = {0};
+    int size = GetObjectW(font, sizeof(back), &back);
+    DeleteObject(font);
+    NONCLIENTMETRICSW ncm = {sizeof(ncm)};
+    BOOL spi = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+    printf("logfontw=%d face=%s ncm=%s\n", size, wcscmp(back.lfFaceName, L"Segoe UI") ? "bad" : "ok",
+           spi && ncm.lfMessageFont.lfFaceName[0] ? "ok" : "bad");
+
+    printf("lstrcmpW null=%d,%d,%d\n", lstrcmpW(NULL, L"a") < 0, lstrcmpW(L"a", NULL) > 0, lstrcmpW(NULL, NULL) == 0);
+
+    HANDLE rw = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 4096, NULL), ro = NULL, w = NULL;
+    BOOL made = DuplicateHandle(GetCurrentProcess(), rw, GetCurrentProcess(), &ro, FILE_MAP_READ, FALSE, 0);
+    BOOL widened = DuplicateHandle(GetCurrentProcess(), ro, GetCurrentProcess(), &w, FILE_MAP_WRITE, FALSE, 0);
+    void *view = MapViewOfFile(ro, FILE_MAP_WRITE, 0, 0, 0);
+    printf("section read-only=%s write-dup=%s write-view=%s\n", made ? "ok" : "bad", widened ? "allowed" : "denied",
+           view ? "allowed" : "denied");
+
+    HMODULE power = LoadLibraryA("api-ms-win-power-base-l1-1-0.dll"), acc = LoadLibraryA("oleacc.dll");
+    printf("power=%s oleacc=%s\n", power && GetProcAddress(power, "CallNtPowerInformation") ? "ok" : "missing",
+           acc && GetProcAddress(acc, "AccessibleObjectFromWindow") ? "ok" : "missing");
+}
+
 int main(int argc, char **argv)
 {
     const char *mode = argc > 1 ? argv[1] : "info";
@@ -29,6 +58,8 @@ int main(int argc, char **argv)
     } else if (!strcmp(mode, "system")) {
         int rc = system("echo inside system; winhello nested; wintest info");
         printf("system returned %d\n", rc);
+    } else if (!strcmp(mode, "compat")) {
+        compat();
     } else if (!strcmp(mode, "box")) {
         int r = MessageBoxA(NULL, "SynthOS runs Windows programs.\nPress Y or N.", "Question", MB_YESNO);
         printf("answer=%s\n", r == IDYES ? "yes" : "no");

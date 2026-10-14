@@ -40,5 +40,7 @@ void kfree(void *ptr);
 char *kstrdup(const char *s);
 char *kstrndup(const char *s, size_t n);
 void heap_get_stats(struct heap_stats *out);
+uintptr_t heap_check(void);
+size_t heap_free_bytes(void);
 
 #endif

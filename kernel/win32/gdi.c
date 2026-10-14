@@ -612,7 +612,29 @@ static DWORD WINAPI GetObjectType(HANDLE h)
     return o ? (DWORD)o->kind : 0;
 }
 
-static int WINAPI GetObjectA(HANDLE h, int size, void *out)
+void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face)
+{
+    uint8_t *lf = out;
+    memset(lf, 0, wide ? 92 : 60);
+    memcpy(lf, &height, 4);
+    memcpy(lf + 16, &weight, 4);
+    lf[20] = italic;
+    lf[21] = underline;
+    lf[23] = 1;
+    lf[26] = 5;
+    if (!face)
+        face = "";
+    for (int i = 0; i < 31 && face[i]; i++) {
+        if (wide) {
+            WCHAR c = (uint8_t)face[i];
+            memcpy(lf + 28 + i * 2, &c, 2);
+        } else {
+            lf[28 + i] = (uint8_t)face[i];
+        }
+    }
+}
+
+static int get_object(HANDLE h, int size, void *out, bool wide)
 {
     struct gdi_obj *o = obj(h);
     if (!o)
@@ -626,14 +648,12 @@ static int WINAPI GetObjectA(HANDLE h, int size, void *out)
         return MIN(size, 24);
     }
     if (o->kind == OBJ_FONT) {
-        uint8_t lf[60] = {0};
-        LONG height = o->height ? o->height : -o->font->height;
-        memcpy(lf, &height, 4);
-        memcpy(lf + 16, &o->weight, 4);
-        str_copy((char *)lf + 28, o->face, 32);
+        uint8_t lf[92];
+        int n = wide ? 92 : 60;
+        w32_logfont(lf, wide, o->height ? o->height : -o->font->height, o->weight, o->italic, o->underline, o->face);
         if (out)
-            memcpy(out, lf, (size_t)MIN(size, 60));
-        return MIN(size, 60);
+            memcpy(out, lf, (size_t)MIN(size, n));
+        return out ? MIN(size, n) : n;
     }
     if (o->kind == OBJ_PEN) {
         uint32_t lp[4] = {(uint32_t)o->style, (uint32_t)o->width, 0, o->color};
@@ -648,6 +668,16 @@ static int WINAPI GetObjectA(HANDLE h, int size, void *out)
         return MIN(size, 12);
     }
     return 0;
+}
+
+static int WINAPI GetObjectA(HANDLE h, int size, void *out)
+{
+    return get_object(h, size, out, false);
+}
+
+static int WINAPI GetObjectW(HANDLE h, int size, void *out)
+{
+    return get_object(h, size, out, true);
 }
 
 static COLORREF WINAPI SetTextColor(HANDLE h, COLORREF c)
@@ -1859,7 +1889,7 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(GetStockObject), W32_FN(CreateSolidBrush), W32_FN(CreateHatchBrush), W32_FN(CreateBrushIndirect),
     W32_FN(CreatePen), W32_FN(CreatePenIndirect), W32_FN(ExtCreatePen), W32_FN(CreateFontIndirectA),
     W32_FN(CreateFontIndirectW), W32_FN(CreateFontA), W32_FN(CreateFontW), W32_FN(SelectObject), W32_FN(DeleteObject),
-    W32_FN(GetObjectType), W32_FN(GetObjectA), W32_AS("GetObjectW", GetObjectA), W32_FN(SetTextColor),
+    W32_FN(GetObjectType), W32_FN(GetObjectA), W32_FN(GetObjectW), W32_FN(SetTextColor),
     W32_FN(GetTextColor), W32_FN(SetBkColor), W32_FN(GetBkColor), W32_FN(SetBkMode), W32_FN(GetBkMode),
     W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode),
     W32_FN(SetStretchBltMode), W32_FN(SetGraphicsMode), W32_FN(SetViewportOrgEx), W32_FN(SetWindowOrgEx),

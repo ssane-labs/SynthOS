@@ -1882,16 +1882,96 @@ static int WINAPI GetSystemMetrics(int index)
     }
 }
 
-static BOOL WINAPI SystemParametersInfoA(UINT action, UINT param, void *out, UINT ini)
+static void ui_logfont(uint8_t *lf, bool wide, LONG weight)
+{
+    w32_logfont(lf, wide, -12, weight, 0, 0, "Segoe UI");
+}
+
+static BOOL system_parameters(UINT action, UINT param, void *out, bool wide)
 {
     UNUSED(param);
-    UNUSED(ini);
-    if (action == 0x30 && out) {
+    uint8_t *b = out;
+    DWORD *d = out;
+    int lf = wide ? 92 : 60;
+    if (!out)
+        return FALSE;
+    switch (action) {
+    case 0x30: {
         struct rect a = gui_active() ? wm_work_area(0) : (struct rect){0, 0, 1024, 768};
         to_rect(out, a);
         return TRUE;
     }
-    return FALSE;
+    case 0x29: {
+        DWORD size = d[0] ? d[0] : (DWORD)(wide ? 504 : 344);
+        memset(b, 0, size);
+        d[0] = size;
+        LONG head[5] = {1, 17, 17, 22, 22};
+        memcpy(b + 4, head, sizeof(head));
+        uint8_t *p = b + 24;
+        ui_logfont(p, wide, 400);
+        p += lf;
+        LONG sm[2] = {17, 17};
+        memcpy(p, sm, 8);
+        ui_logfont(p + 8, wide, 400);
+        p += 8 + lf;
+        LONG menu[2] = {19, 19};
+        memcpy(p, menu, 8);
+        p += 8;
+        for (int i = 0; i < 3; i++, p += lf)
+            ui_logfont(p, wide, 400);
+        if ((DWORD)(p - b) + 4 <= size)
+            memset(p, 0, 4);
+        return TRUE;
+    }
+    case 0x1f: ui_logfont(b, wide, 400); return TRUE;
+    case 0x42: d[1] = 0; if (d[0] >= 12) d[2] = 0; return TRUE;
+    case 0x48: if (d[0] >= 8) d[1] = 1; return TRUE;
+    case 0x4a: *d = 1; return TRUE;
+    case 0x200a: *d = 2; return TRUE;
+    case 0x200c: *d = 1400; return TRUE;
+    case 0x2006:
+    case 0x200e:
+    case 0x2010: *d = 1; return TRUE;
+    case 0x68:
+    case 0x6c: *d = 3; return TRUE;
+    case 0x62:
+    case 0x64: *d = 4; return TRUE;
+    case 0x66: *d = 400; return TRUE;
+    case 0x6a: *d = 400; return TRUE;
+    case 0x16: *d = 1; return TRUE;
+    case 0x0a: *d = 31; return TRUE;
+    case 0x46:
+    case 0x5f: *d = 0; return TRUE;
+    case 0x0d:
+    case 0x18: *d = 75; return TRUE;
+    case 0x73: if (wide) *(WCHAR *)b = 0; else *b = 0; return TRUE;
+    default:
+        if (action >= 0x1000 && action < 0x2000 && !(action & 1)) {
+            *d = action == 0x1002 || action == 0x1004 || action == 0x1042 || action == 0x1024 || action == 0x1012 ||
+                 action == 0x101a || action == 0x1022;
+            return TRUE;
+        }
+        return FALSE;
+    }
+}
+
+static BOOL WINAPI SystemParametersInfoA(UINT action, UINT param, void *out, UINT ini)
+{
+    UNUSED(ini);
+    return system_parameters(action, param, out, false);
+}
+
+static BOOL WINAPI SystemParametersInfoW(UINT action, UINT param, void *out, UINT ini)
+{
+    UNUSED(ini);
+    return system_parameters(action, param, out, true);
+}
+
+static BOOL WINAPI SystemParametersInfoForDpi(UINT action, UINT param, void *out, UINT ini, UINT dpi)
+{
+    UNUSED(ini);
+    UNUSED(dpi);
+    return system_parameters(action, param, out, true);
 }
 
 static HANDLE WINAPI LoadCursorA(HANDLE inst, LPCSTR name)
@@ -2428,7 +2508,7 @@ static const struct w32_export window_exports[] = {
     W32_FN(SetCapture),
     W32_FN(ReleaseCapture), W32_FN(GetCapture), W32_FN(SetFocus), W32_FN(GetFocus), W32_FN(GetCursorPos),
     W32_FN(SetCursorPos), W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(GetSystemMetrics),
-    W32_FN(SystemParametersInfoA), W32_AS("SystemParametersInfoW", SystemParametersInfoA), W32_FN(LoadCursorA),
+    W32_FN(SystemParametersInfoA), W32_FN(SystemParametersInfoW), W32_FN(SystemParametersInfoForDpi), W32_FN(LoadCursorA),
     W32_AS("LoadCursorW", LoadCursorA), W32_FN(LoadIconA), W32_AS("LoadIconW", LoadIconA), W32_FN(LoadImageA),
     W32_AS("LoadImageW", LoadImageA), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(CreateMenu),
     W32_AS("CreatePopupMenu", CreateMenu), W32_FN(DestroyMenu), W32_FN(AppendMenuA), W32_FN(AppendMenuW),

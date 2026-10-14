@@ -291,6 +291,7 @@ void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_
 void w32_switch_thread(struct w32_thread *t);
 extern bool w32_trace;
 void w32_trace_dump(void);
+void w32_trace_note(const char *module, const char *name);
 extern bool w32_headless;
 bool w32_vm_committed(uintptr_t address);
 uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count);
@@ -354,6 +355,14 @@ size_t w32_msize(void *ptr);
 char *w32_strdup(const char *s);
 
 HANDLE w32_handle_new(enum w32_object_type type);
+struct dw_point {
+    int32_t x, y;
+    uint8_t on, end;
+};
+int dwrite_glyph_outline(int face, uint16_t glyph, struct dw_point *pts, int cap, int *advance, int *units);
+uint32_t dwrite_outline(int face, uint32_t em, const uint16_t *glyphs, const uint32_t *advances, const void *offsets,
+                        UINT count, BOOL rtl, void *sink);
+void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face);
 struct w32_object *w32_handle_get(HANDLE h);
 HANDLE w32_std_handle(int which);
 bool w32_handle_close(HANDLE h);

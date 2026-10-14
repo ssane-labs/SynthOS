@@ -273,6 +273,24 @@ char *kstrdup(const char *s)
     return kstrndup(s, (size_t)-1);
 }
 
+size_t heap_free_bytes(void)
+{
+    return (size_t)(kernel_heap.end - kernel_heap.start) - kernel_heap.used;
+}
+
+uintptr_t heap_check(void)
+{
+    struct heap *h = &kernel_heap;
+    struct block *prev = NULL;
+    for (struct block *b = (struct block *)h->start; b;) {
+        if (b->magic != HEAP_MAGIC || b->prev_phys != prev || (uint8_t *)b + HEADER_SIZE + b->size > h->end)
+            return (uintptr_t)b;
+        prev = b;
+        b = next_phys(h, b);
+    }
+    return 0;
+}
+
 void heap_get_stats(struct heap_stats *out)
 {
     heap_stats_of(&kernel_heap, out);

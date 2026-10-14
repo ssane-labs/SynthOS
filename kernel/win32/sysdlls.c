@@ -395,7 +395,22 @@ static const void *WINAPI CertEnumCRLsInStore(HANDLE store, const void *prev)
     return NULL;
 }
 
+struct name_blob {
+    DWORD size;
+    const BYTE *data;
+};
+
+static BOOL WINAPI CertCompareCertificateName(DWORD encoding, const struct name_blob *a, const struct name_blob *b)
+{
+    UNUSED(encoding);
+    return a && b && a->size == b->size && (!a->size || !memcmp(a->data, b->data, a->size));
+}
+
 static const struct w32_export crypt32_exports[] = {
+    W32_FN(CertCompareCertificateName),
+    W32_AS("CertControlStore", w32_one4),
+    W32_AS("CertVerifyTimeValidity", w32_zero2),
+    W32_AS("CryptMsgClose", w32_one1),
     W32_FN(CertOpenStore),
     W32_FN(CertOpenSystemStoreW),
     W32_AS("CertOpenSystemStoreA", CertOpenSystemStoreW),

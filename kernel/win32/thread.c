@@ -1,5 +1,6 @@
 #include <synth/console.h>
 #include <synth/error.h>
+#include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/input.h>
@@ -20,6 +21,8 @@
 #define CREATE_SUSPENDED 4
 #define DEFAULT_STACK (256u * 1024)
 #define MAX_STACK (4u * 1024 * 1024)
+#define STACK_GUARD (64u * 1024)
+#define STACK_CANARY 0x5ac0ffeeu
 
 struct critical_section {
     void *debug;
@@ -68,7 +71,7 @@ void w32_threads_end(void)
             struct w32_thread *next = t->next;
             if (!t->boot) {
                 if (t->stack != w32->stack)
-                    kfree_pages(t->stack);
+                    kfree_pages(t->stack - STACK_GUARD);
                 kfree(t);
             }
             t = next;
@@ -128,11 +131,14 @@ static struct w32_thread *pick_other(bool active_only)
     return NULL;
 }
 
+static void check_stack(struct w32_thread *t);
+
 static void switch_to(struct w32_thread *next)
 {
     struct w32_thread *cur = w32->current;
     if (next == cur)
         return;
+    check_stack(cur);
     cur->irq_depth = arch_irq_depth();
     arch_fpu_save(fpu_of(cur));
     if (next->proc && next->proc != w32)
@@ -356,6 +362,30 @@ static struct w32_thread *thread_of(HANDLE h)
     return o && o->type == WH_THREAD ? o->thread : NULL;
 }
 
+static uint32_t image_stack_reserve(void)
+{
+    if (!w32->main || !w32->main->base)
+        return DEFAULT_STACK;
+    const uint8_t *mem = (const uint8_t *)w32->main->base;
+    uint32_t lfanew, reserve;
+    memcpy(&lfanew, mem + 0x3c, 4);
+    memcpy(&reserve, mem + lfanew + 24 + 72, 4);
+    return reserve;
+}
+
+static void check_stack(struct w32_thread *t)
+{
+    if (!t->stack || t->stack == w32->stack || t->boot)
+        return;
+    const uint32_t *canary = (const uint32_t *)(t->stack - STACK_GUARD);
+    for (int i = 0; i < 16; i++)
+        if (canary[i] != STACK_CANARY) {
+            klog("win32: thread %u overflowed its %u KB stack", t->id, t->stack_size / 1024);
+            ksnprintf(w32->message, sizeof(w32->message), "crashed: stack overflow in thread %u", t->id);
+            w32_exit(0xc00000fdu);
+        }
+}
+
 HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id)
 {
     struct w32_thread *t = kzalloc(sizeof(*t));
@@ -363,8 +393,13 @@ HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DW
         w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
         return NULL;
     }
-    t->stack_size = (uint32_t)MIN(MAX(ALIGN_UP(stack, 4096), DEFAULT_STACK), MAX_STACK);
-    t->stack = kmalloc_pages_uninit(t->stack_size);
+    uint32_t reserve = heap_free_bytes() >= 256u * 1024 * 1024 ? MIN(image_stack_reserve(), 1024u * 1024) : DEFAULT_STACK;
+    uint32_t size = (flags & 0x10000) ? (uint32_t)stack : MAX((uint32_t)stack, reserve);
+    t->stack_size = (uint32_t)MIN(MAX(ALIGN_UP(size ? size : reserve, 4096), DEFAULT_STACK), MAX_STACK);
+    uint8_t *block = kmalloc_pages_uninit(t->stack_size + STACK_GUARD);
+    t->stack = block ? block + STACK_GUARD : NULL;
+    for (int i = 0; block && i < 16; i++)
+        ((uint32_t *)block)[i] = STACK_CANARY;
     t->proc = w32;
     t->id = w32->next_tid;
     w32->next_tid += 4;

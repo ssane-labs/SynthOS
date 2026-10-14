@@ -239,6 +239,8 @@ static void *WINAPI GetProcAddress(HMODULE h, LPCSTR name)
     }
     bool ordinal = (uint32_t)name < 0x10000u;
     void *fn = w32_get_proc(img, ordinal ? NULL : name, ordinal ? (uint32_t)name : 0);
+    if (img->builtin && !ordinal)
+        w32_trace_note(img->name, name);
     if (!fn) {
         if (img->builtin) {
             if (ordinal)
@@ -890,6 +892,10 @@ static BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out
     struct w32_object *o = w32_handle_get_in(from, src);
     if (!o) {
         w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (o->type == WH_SECTION && !(options & 2) && o->access && (access & ~o->access & 0x2fu)) {
+        w32_set_error(ERROR_ACCESS_DENIED);
         return FALSE;
     }
     HANDLE h = NULL;

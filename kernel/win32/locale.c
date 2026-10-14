@@ -194,6 +194,8 @@ static LPWSTR WINAPI lstrcatW(LPWSTR d, LPCWSTR s)
 
 static int wcompare(LPCWSTR a, int alen, LPCWSTR b, int blen, bool icase)
 {
+    if (!a || !b)
+        return a == b ? 0 : a ? 1 : -1;
     size_t na = alen < 0 ? w32_wcslen(a) : (size_t)alen, nb = blen < 0 ? w32_wcslen(b) : (size_t)blen;
     for (size_t i = 0; i < na && i < nb; i++) {
         WCHAR x = icase ? w32_towlower(a[i]) : a[i], y = icase ? w32_towlower(b[i]) : b[i];
@@ -205,6 +207,8 @@ static int wcompare(LPCWSTR a, int alen, LPCWSTR b, int blen, bool icase)
 
 static int acompare(LPCSTR a, int alen, LPCSTR b, int blen, bool icase)
 {
+    if (!a || !b)
+        return a == b ? 0 : a ? 1 : -1;
     WCHAR *wa = w32_widen(a), *wb = w32_widen(b);
     if (alen >= 0)
         alen = (int)MIN((size_t)alen, w32_wcslen(wa));

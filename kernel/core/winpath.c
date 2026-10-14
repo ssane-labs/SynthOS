@@ -10,6 +10,7 @@ static const struct winpath_rule rules[] = {
     {"C:\\Windows\\System32", "/system/win32"},
     {"C:\\Windows\\SysWOW64", "/system/win32"},
     {"C:\\Windows\\Temp", "/tmp"},
+    {"C:\\Windows\\Fonts", "/home/fonts"},
     {"C:\\Windows", "/system"},
     {"C:\\Program Files", "/apps"},
     {"C:\\Program Files (x86)", "/apps"},

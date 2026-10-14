@@ -153,6 +153,14 @@ wintest system | grep -c Windows
 2
 wintest | grep build
 Windows 10.0 build 19045
+wintest compat | grep logfontw
+logfontw=92 face=ok ncm=ok
+wintest compat | grep lstrcmpW
+lstrcmpW null=1,1,1
+wintest compat | grep section
+section read-only=ok write-dup=denied write-view=denied
+wintest compat | grep power
+power=ok oleacc=ok
 ls C:/Windows/System32 | grep -c dll
 kernel32.dll
 cd 'C:\Program Files'; pwd; cd
