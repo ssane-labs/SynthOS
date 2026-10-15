@@ -97,10 +97,8 @@ static const struct w32_export bcrypt_extra_exports[] = {
 };
 
 static const struct w32_export crypt32_extra_exports[] = {
-    W32_AS("CertAddCertificateContextToStore", w32_fail4),
     W32_AS("CertAddEncodedCertificateToStore", w32_fail6),
     W32_AS("CertCreateCertificateChainEngine", w32_fail2),
-    W32_AS("CertFindCertificateInStore", w32_fail6),
     W32_AS("CertFindChainInStore", w32_fail6),
     W32_AS("CertGetCertificateContextProperty", w32_fail4),
     W32_AS("CertGetIntendedKeyUsage", w32_fail4),

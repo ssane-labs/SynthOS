@@ -43,13 +43,14 @@ SynthOS 0.1.0 «Neon» — рабочая система:
   окном на рабочем столе (вкладки, адресная строка, страницы `file://` и `http://` с JavaScript),
   а в режиме `--headless` печатает DOM (`--dump-dom`) и сохраняет снимок страницы (`--screenshot`);
   запуск: `chrome.exe --no-sandbox --in-process-gpu --disable-gpu --disable-software-rasterizer`;
-  работают клавиатура (Ctrl+L, ввод адреса) и мышь (ссылки); шрифты для DirectWrite — встроенный
+  работают клавиатура (Ctrl+L, ввод адреса) и мышь (ссылки); HTTPS проверяется встроенными корнями Chrome
+  плюс хранилищем Windows `ROOT` (корни Mozilla и сертификаты из `/home/certs` после `certs reload`); шрифты для DirectWrite — встроенный
   `C:\Windows\Fonts\DejaVuSans.ttf` (латиница и кириллица, `tools/mksysfont.sh`) и любые TrueType-файлы,
   скопированные в `/home/fonts`;
 * пользователи с паролями (`useradd`, `passwd`, `su`, `lock`), у каждого свой `/home`;
 * виртуальная машина **SX** для своих программ + ассемблер/дизассемблер внутри ОС;
 * эмулятор **MS-DOS** (8086/186) для `.COM` и `.EXE`;
-* автотесты: `make test` (157 проверок), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI, i486;
+* автотесты: `make test` (158 проверок), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI, i486;
   29 проверок), `make test-crypto` (криптография против эталонов).
 
 ---

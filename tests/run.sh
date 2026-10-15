@@ -171,6 +171,8 @@ wintest compat | grep reparent
 reparent loop=refused move=ok children=2
 wintest compat | grep gdi
 gdi region=2 box=0,0,20,20 and=5,5,10,10 dc=ok world=identity current=ok blend=ok 80007f
+wintest compat | grep certs
+certs roots=many disallowed=0 collection=live sha1=found usage=any
 wintest compat | grep registered
 registered wait=ok hits=1 timeouts=ok unregister=ok
 wintest font | grep collection

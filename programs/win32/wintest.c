@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <wincrypt.h>
 
 static LONG WINAPI filter(EXCEPTION_POINTERS *info)
 {
@@ -127,6 +128,31 @@ static void compat(void)
     DeleteDC(src);
     DeleteDC(mem);
     DeleteDC(screen);
+
+    HCERTSTORE roots = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_LOCAL_MACHINE, L"ROOT");
+    HCERTSTORE banned = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_LOCAL_MACHINE, L"Disallowed");
+    HCERTSTORE all = CertOpenStore(CERT_STORE_PROV_COLLECTION, 0, 0, 0, NULL);
+    BOOL linked = CertAddStoreToCollection(all, roots, 0, 0);
+    int nroots = 0, nbanned = 0;
+    PCCERT_CONTEXT c = NULL, first = NULL;
+    while ((c = CertEnumCertificatesInStore(all, c)))
+        if (!nroots++)
+            first = CertDuplicateCertificateContext(c);
+    while ((c = CertEnumCertificatesInStore(banned, c)))
+        nbanned++;
+    BYTE hash[20];
+    DWORD hlen = sizeof(hash);
+    CRYPT_HASH_BLOB blob = {hlen, hash};
+    BOOL hashed = first && CryptHashCertificate(0, CALG_SHA1, 0, first->pbCertEncoded, first->cbCertEncoded, hash, &hlen);
+    PCCERT_CONTEXT by_hash = hashed ? CertFindCertificateInStore(all, X509_ASN_ENCODING, 0, CERT_FIND_SHA1_HASH, &blob,
+                                                                 NULL) : NULL;
+    DWORD usage_size = 0;
+    BOOL usage = first && CertGetEnhancedKeyUsage(first, 0, NULL, &usage_size) && GetLastError() == CRYPT_E_NOT_FOUND;
+    printf("certs roots=%s disallowed=%d collection=%s sha1=%s usage=%s\n", nroots > 100 ? "many" : "few", nbanned,
+           linked ? "live" : "bad", by_hash ? "found" : hashed ? "missing" : "nohash", usage ? "any" : "bad");
+    CertCloseStore(all, 0);
+    CertCloseStore(roots, 0);
+    CertCloseStore(banned, 0);
 
     HANDLE ev = CreateEventA(NULL, FALSE, FALSE, NULL), once = NULL, timer = NULL;
     BOOL reg = RegisterWaitForSingleObject(&once, ev, on_wait, NULL, INFINITE, WT_EXECUTEONLYONCE);

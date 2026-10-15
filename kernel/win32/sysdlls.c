@@ -1,5 +1,7 @@
 #include <synth/crypto.h>
 #include <synth/fmt.h>
+#include <synth/sha1.h>
+#include <synth/sha256.h>
 #include <synth/string.h>
 #include <synth/tls.h>
 
@@ -320,71 +322,269 @@ struct cert_context {
     HANDLE store;
 };
 
+#define STORE_SIBLINGS 8
+
 struct cert_store {
     uint32_t magic;
-    int count;
-    struct cert_context certs[];
+    int refs, count, cap, siblings;
+    struct cert_context **certs;
+    struct cert_store *sibling[STORE_SIBLINGS];
 };
 
 #define STORE_MAGIC 0x53435254u
 
-static HANDLE WINAPI CertOpenStore(const char *provider, DWORD encoding, HANDLE prov, DWORD flags, const void *para)
+static bool store_add(struct cert_store *s, const BYTE *data, DWORD size, const struct cert_context **out)
 {
-    UNUSED(provider);
-    UNUSED(encoding);
-    UNUSED(prov);
-    UNUSED(flags);
-    UNUSED(para);
-    int n = tls_roots_count();
-    struct cert_store *s = w32_zalloc(sizeof(*s) + (size_t)n * sizeof(struct cert_context));
+    if (s->count == s->cap) {
+        int cap = s->cap ? s->cap * 2 : 16;
+        struct cert_context **grown = w32_realloc(s->certs, sizeof(*grown) * (size_t)cap);
+        if (!grown)
+            return false;
+        s->certs = grown;
+        s->cap = cap;
+    }
+    struct cert_context *c = w32_zalloc(sizeof(*c));
+    if (!c)
+        return false;
+    *c = (struct cert_context){1, data, size, NULL, s};
+    s->certs[s->count++] = c;
+    if (out)
+        *out = c;
+    return true;
+}
+
+static struct cert_store *store_of(HANDLE h)
+{
+    struct cert_store *s = h;
+    return s && s->magic == STORE_MAGIC ? s : NULL;
+}
+
+static HANDLE open_store(bool roots)
+{
+    struct cert_store *s = w32_zalloc(sizeof(*s));
     if (!s)
         return NULL;
     s->magic = STORE_MAGIC;
-    for (int i = 0; i < n; i++) {
+    s->refs = 1;
+    for (int i = 0; roots && i < tls_roots_count(); i++) {
         const struct x509 *c = tls_root(i);
-        s->certs[s->count++] = (struct cert_context){1, c->raw, (DWORD)c->raw_len, NULL, s};
+        store_add(s, c->raw, (DWORD)c->raw_len, NULL);
     }
     return s;
 }
 
+static bool is_root_store(const void *name, bool wide)
+{
+    char n[8] = {0};
+    for (int i = 0; name && i < 7; i++) {
+        int c = wide ? ((const WCHAR *)name)[i] : ((const char *)name)[i];
+        if (!c)
+            break;
+        n[i] = (char)c;
+    }
+    return !str_casecmp(n, "ROOT");
+}
+
+/* The ROOT system store holds the trusted roots (Mozilla's and /home/certs); every other store starts empty. */
+static HANDLE WINAPI CertOpenStore(const char *provider, DWORD encoding, HANDLE prov, DWORD flags, const void *para)
+{
+    UNUSED(encoding);
+    UNUSED(prov);
+    UNUSED(flags);
+    uintptr_t kind = (uintptr_t)provider;
+    bool roots = (kind == 9 || kind == 10 || kind == 13 || kind == 14) && is_root_store(para, kind != 9);
+    return open_store(roots);
+}
+
 static HANDLE WINAPI CertOpenSystemStoreW(HANDLE prov, LPCWSTR name)
 {
-    UNUSED(name);
-    return CertOpenStore(NULL, 0, prov, 0, NULL);
+    UNUSED(prov);
+    return open_store(is_root_store(name, true));
 }
+
+static HANDLE WINAPI CertOpenSystemStoreA(HANDLE prov, LPCSTR name)
+{
+    UNUSED(prov);
+    return open_store(is_root_store(name, false));
+}
+
+/* A collection sees its siblings live; walking yields the store's own certificates, then each sibling's. */
+static const struct cert_context *store_walk(struct cert_store *s, const struct cert_context **prev, DWORD type,
+                                             const void *para, int depth);
 
 static const struct cert_context *WINAPI CertEnumCertificatesInStore(HANDLE store, const struct cert_context *prev)
 {
-    struct cert_store *s = store;
-    if (!s || s->magic != STORE_MAGIC)
-        return NULL;
-    int next = prev ? (int)(prev - s->certs) + 1 : 0;
-    if (next < 0 || next >= s->count) {
+    struct cert_store *s = store_of(store);
+    const struct cert_context *c = s ? store_walk(s, &prev, 0, NULL, 0) : NULL;
+    if (!c)
         w32_set_error(CRYPT_E_NOT_FOUND);
-        return NULL;
+    return c;
+}
+
+struct hash_blob {
+    DWORD size;
+    const BYTE *data;
+};
+
+static bool cert_matches(const struct cert_context *c, DWORD type, const void *para)
+{
+    const struct hash_blob *b = para;
+    struct x509 x;
+    switch (type) {
+    case 0: return true;
+    case 0x000d0000u: {
+        const struct cert_context *other = para;
+        return other && other->size == c->size && !memcmp(other->data, c->data, c->size);
     }
-    return &s->certs[next];
+    case 0x00020007u:
+    case 0x00020004u:
+        if (!b || !x509_parse(c->data, c->size, &x))
+            return false;
+        return type == 0x00020007u ? b->size == x.subject_len && !memcmp(b->data, x.subject, b->size)
+                                   : b->size == x.issuer_len && !memcmp(b->data, x.issuer, b->size);
+    case 0x00010000u: {
+        uint8_t hash[20];
+        if (!b || b->size != 20)
+            return false;
+        sha1(c->data, c->size, hash);
+        return !memcmp(hash, b->data, 20);
+    }
+    case 0x00200000u: {
+        uint8_t hash[32];
+        if (!b || b->size != 32)
+            return false;
+        sha256(c->data, c->size, hash);
+        return !memcmp(hash, b->data, 32);
+    }
+    default: return false;
+    }
+}
+
+static const struct cert_context *store_walk(struct cert_store *s, const struct cert_context **prev, DWORD type,
+                                             const void *para, int depth)
+{
+    for (int i = 0; i < s->count; i++) {
+        if (*prev) {
+            if (s->certs[i] == *prev)
+                *prev = NULL;
+            continue;
+        }
+        if (cert_matches(s->certs[i], type, para))
+            return s->certs[i];
+    }
+    for (int k = 0; k < s->siblings && depth < 4; k++) {
+        const struct cert_context *c = store_walk(s->sibling[k], prev, type, para, depth + 1);
+        if (c)
+            return c;
+    }
+    return NULL;
+}
+
+static const struct cert_context *WINAPI CertFindCertificateInStore(HANDLE store, DWORD encoding, DWORD flags,
+                                                                     DWORD type, const void *para,
+                                                                     const struct cert_context *prev)
+{
+    UNUSED(encoding);
+    UNUSED(flags);
+    struct cert_store *s = store_of(store);
+    const struct cert_context *c = s ? store_walk(s, &prev, type, para, 0) : NULL;
+    if (!c)
+        w32_set_error(CRYPT_E_NOT_FOUND);
+    return c;
+}
+
+static BOOL WINAPI CryptHashCertificate(HANDLE prov, DWORD alg, DWORD flags, const BYTE *data, DWORD size, BYTE *out,
+                                        DWORD *out_size)
+{
+    UNUSED(prov);
+    UNUSED(flags);
+    DWORD need = alg == 0x800cu ? 32 : alg == 0x8004u || !alg ? 20 : 0;
+    if (!need || !out_size) {
+        w32_set_error(0x80090008u);
+        return FALSE;
+    }
+    if (!out || *out_size < need) {
+        *out_size = need;
+        if (out)
+            w32_set_error(234);
+        return out == NULL;
+    }
+    if (need == 32)
+        sha256(data, size, out);
+    else
+        sha1(data, size, out);
+    *out_size = need;
+    return TRUE;
+}
+
+static BOOL WINAPI CertAddStoreToCollection(HANDLE collection, HANDLE sibling, DWORD flags, DWORD priority)
+{
+    UNUSED(flags);
+    UNUSED(priority);
+    struct cert_store *c = store_of(collection), *from = store_of(sibling);
+    if (!c || !from || c == from || c->siblings == STORE_SIBLINGS)
+        return FALSE;
+    from->refs++;
+    c->sibling[c->siblings++] = from;
+    return TRUE;
+}
+
+static BOOL WINAPI CertAddCertificateContextToStore(HANDLE store, const struct cert_context *ctx, DWORD how,
+                                                    const struct cert_context **out)
+{
+    UNUSED(how);
+    struct cert_store *s = store_of(store);
+    if (out)
+        *out = NULL;
+    return s && ctx && store_add(s, ctx->data, ctx->size, out);
+}
+
+static const struct cert_context *WINAPI CertDuplicateCertificateContext(const struct cert_context *ctx)
+{
+    return ctx;
+}
+
+static void store_release(struct cert_store *s)
+{
+    if (--s->refs > 0)
+        return;
+    s->magic = 0;
+    for (int i = 0; i < s->siblings; i++)
+        store_release(s->sibling[i]);
+    for (int i = 0; i < s->count; i++)
+        w32_free(s->certs[i]);
+    w32_free(s->certs);
+    w32_free(s);
 }
 
 static BOOL WINAPI CertCloseStore(HANDLE store, DWORD flags)
 {
     UNUSED(flags);
-    struct cert_store *s = store;
-    if (s && s->magic == STORE_MAGIC) {
-        s->magic = 0;
-        w32_free(s);
-    }
+    struct cert_store *s = store_of(store);
+    if (s)
+        store_release(s);
     return TRUE;
 }
 
-static BOOL WINAPI CertGetEnhancedKeyUsage(const void *ctx, DWORD flags, void *usage, DWORD *size)
+/* No usage restrictions recorded: zero identifiers with CRYPT_E_NOT_FOUND means "valid for every usage". */
+static BOOL WINAPI CertGetEnhancedKeyUsage(const void *ctx, DWORD flags, uint32_t *usage, DWORD *size)
 {
     UNUSED(ctx);
     UNUSED(flags);
-    UNUSED(usage);
-    UNUSED(size);
+    if (!size)
+        return FALSE;
+    if (usage) {
+        if (*size < 8) {
+            *size = 8;
+            w32_set_error(234);
+            return FALSE;
+        }
+        usage[0] = 0;
+        usage[1] = 0;
+    }
+    *size = 8;
     w32_set_error(CRYPT_E_NOT_FOUND);
-    return FALSE;
+    return TRUE;
 }
 
 static const void *WINAPI CertEnumCRLsInStore(HANDLE store, const void *prev)
@@ -413,14 +613,18 @@ static const struct w32_export crypt32_exports[] = {
     W32_AS("CryptMsgClose", w32_one1),
     W32_FN(CertOpenStore),
     W32_FN(CertOpenSystemStoreW),
-    W32_AS("CertOpenSystemStoreA", CertOpenSystemStoreW),
+    W32_FN(CertOpenSystemStoreA),
     W32_FN(CertEnumCertificatesInStore),
     W32_FN(CertCloseStore),
     W32_FN(CertGetEnhancedKeyUsage),
     W32_FN(CertEnumCRLsInStore),
     W32_AS("CertFreeCertificateContext", w32_one1),
     W32_AS("CertFreeCRLContext", w32_one1),
-    W32_AS("CertAddStoreToCollection", w32_one4),
+    W32_FN(CertAddStoreToCollection),
+    W32_FN(CertFindCertificateInStore),
+    W32_FN(CryptHashCertificate),
+    W32_FN(CertAddCertificateContextToStore),
+    W32_FN(CertDuplicateCertificateContext),
 };
 
 static uint32_t WINAPI not_supported1(uint32_t a)
