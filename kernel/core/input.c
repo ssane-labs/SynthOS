@@ -45,8 +45,9 @@ bool input_poll(void)
 {
     if (tail != head)
         return true;
-    if (pump && !hal_in_interrupt()) {
-        pump(0);
+    if (pump) {
+        if (!hal_in_interrupt())
+            pump(0);
         return tail != head;
     }
     for (;;) {

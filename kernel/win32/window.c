@@ -29,7 +29,9 @@ enum {
     SW_SHOWMINIMIZED = 2,
     SW_SHOWMAXIMIZED = 3,
     SW_MINIMIZE = 6,
+    SW_SHOWNOACTIVATE = 4,
     SW_SHOWMINNOACTIVE = 7,
+    SW_SHOWNA = 8,
     SW_FORCEMINIMIZE = 11,
 };
 
@@ -244,6 +246,8 @@ void w32_set_text(struct w32_window *w, const char *text)
     if (w->wm)
         wm_set_title(w->wm, copy);
 }
+
+#define WS_EX_NOACTIVATE 0x08000000u
 
 struct w32_window *w32_focus(void)
 {
@@ -594,7 +598,8 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         w->visible = true;
         if (w->wm) {
             wm_show(w->wm);
-            wm_focus(w->wm);
+            if (!(w->exstyle & WS_EX_NOACTIVATE))
+                wm_focus(w->wm);
         }
         w32_invalidate(w, NULL, true);
     }
@@ -705,7 +710,8 @@ static void show(struct w32_window *w, int cmd)
             wm_show(w->wm);
             if (cmd == SW_SHOWMAXIMIZED && !(w->wm->flags & WIN_MAXIMIZED))
                 wm_toggle_maximize(w->wm);
-            wm_focus(w->wm);
+            if (cmd != SW_SHOWNOACTIVATE && cmd != SW_SHOWNA && !(w->exstyle & WS_EX_NOACTIVATE))
+                wm_focus(w->wm);
         }
     }
     if (visible == w->visible)
@@ -944,7 +950,7 @@ static BOOL WINAPI SetWindowPos(HANDLE h, HANDLE after, int x, int y, int cx, in
         move_window(w, x, y, cx, cy, move, size);
     }
     if (flags & 0x40)
-        show(w, 5);
+        show(w, flags & 0x10 ? SW_SHOWNA : 5);
     if (flags & 0x80)
         show(w, SW_HIDE);
     return TRUE;
@@ -1644,8 +1650,11 @@ static struct w32_window *paint_candidate(struct w32_window *w, uint32_t thread)
     return NULL;
 }
 
+static void gui_replay(void);
+
 static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
 {
+    gui_replay();
     uint32_t me = w32_thread_id();
     for (unsigned i = queue_head; i != queue_tail; i++) {
         struct queued *q = &queue[i % QUEUE_SIZE];
@@ -2362,6 +2371,8 @@ static void key_message(struct w32_window *top, int key)
     if (top->cls->dialog && w32_dialog_key(top, target, key))
         return;
     key_mods = (unsigned)key & KEY_MOD_MASK;
+    if ((key & ~KEY_MOD_MASK) < 0x20 && vk >= 'A' && vk <= 'Z')
+        key_mods |= KEY_MOD_CTRL;
     bool alt = key & KEY_MOD_ALT;
     LPARAM lp = (LPARAM)(1u | (uint32_t)scan << 16 | (alt ? 1u << 29 : 0));
     w32_post(target, alt ? WM_SYSKEYDOWN : WM_KEYDOWN, vk, lp);
@@ -2377,15 +2388,87 @@ static struct w32_window *bridged(struct window *wm)
     return b && b->process == w32 && w32 ? b->win : NULL;
 }
 
+/* Desktop events can arrive while another process runs: they wait here for the window's own process. */
+#define DEFER_PAINT (-1)
+#define DEFER_CLOSE (-2)
+#define DEFERRED_MAX 128
+
+static struct deferred {
+    struct window *wm;
+    struct w32_process *proc;
+    struct gui_event e;
+} deferred[DEFERRED_MAX];
+static unsigned deferred_count;
+
+static bool defer(struct window *wm, const struct gui_event *e, int kind)
+{
+    struct w32_bridge *b = wm->data;
+    if (!b || b->process == w32)
+        return false;
+    if (deferred_count < DEFERRED_MAX) {
+        struct deferred *d = &deferred[deferred_count++];
+        d->wm = wm;
+        d->proc = b->process;
+        d->e = e ? *e : (struct gui_event){0};
+        d->e.type = kind ? (enum gui_event_type)kind : d->e.type;
+        w32_kick(b->process);
+    }
+    return true;
+}
+
+static void forget_deferred(struct window *wm)
+{
+    for (unsigned i = 0; i < deferred_count;)
+        if (deferred[i].wm == wm)
+            deferred[i] = deferred[--deferred_count];
+        else
+            i++;
+}
+
+static void bridge_dispatch(struct window *wm, struct gui_event *e);
+
+static void gui_replay(void)
+{
+    for (unsigned i = 0; i < deferred_count;) {
+        if (deferred[i].proc != w32) {
+            i++;
+            continue;
+        }
+        struct deferred d = deferred[i];
+        memmove(&deferred[i], &deferred[i + 1], (deferred_count - i - 1) * sizeof(deferred[0]));
+        deferred_count--;
+        struct w32_window *w = bridged(d.wm);
+        if (!w)
+            continue;
+        if ((int)d.e.type == DEFER_PAINT)
+            w32_invalidate(w, NULL, true);
+        else if ((int)d.e.type == DEFER_CLOSE)
+            w32_post(w, WM_CLOSE, 0, 0);
+        else
+            bridge_dispatch(d.wm, &d.e);
+    }
+}
+
 static void bridge_paint(struct window *wm, struct canvas *c)
 {
     UNUSED(c);
+    if (defer(wm, NULL, DEFER_PAINT))
+        return;
     struct w32_window *w = bridged(wm);
     if (w)
         w32_invalidate(w, NULL, true);
 }
 
 static void bridge_event(struct window *wm, struct gui_event *e)
+{
+    if (defer(wm, e, 0)) {
+        e->handled = e->type == EV_MOUSE_DOWN;
+        return;
+    }
+    bridge_dispatch(wm, e);
+}
+
+static void bridge_dispatch(struct window *wm, struct gui_event *e)
 {
     struct w32_window *w = bridged(wm);
     if (!w)
@@ -2436,6 +2519,8 @@ static void bridge_event(struct window *wm, struct gui_event *e)
 
 static bool bridge_close(struct window *wm)
 {
+    if (defer(wm, NULL, DEFER_CLOSE))
+        return false;
     struct w32_window *w = bridged(wm);
     if (w)
         w32_post(w, WM_CLOSE, 0, 0);
@@ -2444,6 +2529,7 @@ static bool bridge_close(struct window *wm)
 
 static void bridge_destroy(struct window *wm)
 {
+    forget_deferred(wm);
     struct w32_bridge *b = wm->data;
     if (b && b->process == w32 && b->win) {
         b->win->wm = NULL;

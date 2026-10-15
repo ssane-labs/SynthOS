@@ -288,6 +288,12 @@ static uint32_t user_caller(struct w32_thread *t)
 
 void w32_block(void)
 {
+    static uint64_t polled;
+    uint64_t now = hal_ticks_ms();
+    if (now - polled >= 20) {
+        polled = now;
+        input_poll();
+    }
     w32_io_poll();
     if (input_info_take())
         w32_dump_status();
