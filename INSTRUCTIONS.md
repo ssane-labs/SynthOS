@@ -43,7 +43,9 @@ SynthOS 0.1.0 «Neon» — рабочая система:
   окном на рабочем столе (вкладки, адресная строка, страницы `file://` и `http://` с JavaScript),
   а в режиме `--headless` печатает DOM (`--dump-dom`) и сохраняет снимок страницы (`--screenshot`);
   запуск: `chrome.exe --no-sandbox --in-process-gpu --disable-gpu --disable-software-rasterizer`;
-  нужны TrueType-шрифты в `/home/fonts` (их читает свой DirectWrite) — без шрифтов Chrome падает;
+  работают клавиатура (Ctrl+L, ввод адреса) и мышь (ссылки); шрифты для DirectWrite — встроенный
+  `C:\Windows\Fonts\DejaVuSans.ttf` (латиница и кириллица, `tools/mksysfont.sh`) и любые TrueType-файлы,
+  скопированные в `/home/fonts`;
 * пользователи с паролями (`useradd`, `passwd`, `su`, `lock`), у каждого свой `/home`;
 * виртуальная машина **SX** для своих программ + ассемблер/дизассемблер внутри ОС;
 * эмулятор **MS-DOS** (8086/186) для `.COM` и `.EXE`;
