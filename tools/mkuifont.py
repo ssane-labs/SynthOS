@@ -3,9 +3,16 @@
 
 Glyphs are 4-bit alpha bitmaps rendered from Inter (SIL Open Font License); characters Inter
 lacks are taken from DejaVu (Bitstream Vera license).
+The alpha data is LZ4-compressed; the kernel unpacks a font into the heap the first time it is drawn.
 usage: tools/mkuifont.py > kernel/gui/uifont.c (needs Pillow)
 """
+import os
+import sys
+
 from PIL import Image, ImageDraw, ImageFont
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lz4pack  # noqa: E402
 
 INTER = "/usr/share/fonts/opentype/inter/"
 DEJAVU = "/usr/share/fonts/truetype/dejavu/"
@@ -71,15 +78,18 @@ def main():
     print("#include <synth/gui.h>\n")
     for name, path, fallback, size, codes in FONTS:
         ascent, descent, glyphs, data = render(path, fallback, size, codes)
-        print(f"static const uint8_t {name}_alpha[] = {{")
-        for i in range(0, len(data), 24):
-            print("    " + ", ".join(f"0x{b:02x}" for b in data[i:i + 24]) + ",")
+        packed = lz4pack.compress(data)
+        print(f"static const uint8_t {name}_lz[] = {{")
+        for i in range(0, len(packed), 24):
+            print("    " + ", ".join(f"0x{b:02x}" for b in packed[i:i + 24]) + ",")
         print("};\n")
+        print(f"static const uint8_t *{name}_alpha;\n")
         print(f"static const struct ui_glyph {name}_glyphs[] = {{")
         for g in glyphs:
             print("    {0x%04x, %d, %d, %d, %d, %d, %d}," % g)
         print("};\n")
-        print(f"const struct ui_font {name} = {{{ascent + descent}, {ascent}, {len(glyphs)}, {name}_glyphs, {name}_alpha}};\n")
+        print(f"const struct ui_font {name} = {{{ascent + descent}, {ascent}, {len(glyphs)}, {name}_glyphs, {name}_lz, "
+              f"{len(packed)}, {len(data)}, &{name}_alpha}};\n")
 
 
 main()

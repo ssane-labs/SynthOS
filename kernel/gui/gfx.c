@@ -849,10 +849,26 @@ bool gfx_has_glyph(const struct ui_font *f, uint32_t code)
     return lookup(f, code) != NULL;
 }
 
+static const uint8_t *font_alpha(const struct ui_font *f)
+{
+    if (!*f->alpha) {
+        uint8_t *data = kmalloc(f->size);
+        if (data && lz4_decode(f->lz, f->lz_size, data, f->size) != f->size) {
+            kfree(data);
+            data = NULL;
+        }
+        *f->alpha = data;
+    }
+    return *f->alpha;
+}
+
 static void draw_glyph(struct canvas *c, int x, int y, const struct ui_font *f, const struct ui_glyph *g,
                        uint32_t color)
 {
-    const uint8_t *data = f->alpha + g->offset;
+    const uint8_t *alpha = font_alpha(f);
+    if (!alpha)
+        return;
+    const uint8_t *data = alpha + g->offset;
     int stride = (g->w + 1) / 2;
     unsigned base = color >> 24;
     for (int row = 0; row < g->h; row++) {

@@ -29,7 +29,9 @@ struct ui_font {
     int ascent;
     int count;
     const struct ui_glyph *glyphs;
-    const uint8_t *alpha;
+    const uint8_t *lz;
+    uint32_t lz_size, size;
+    const uint8_t **alpha;
 };
 
 extern const struct ui_font font_sans, font_bold, font_small, font_title, font_large, font_mono, font_clock, font_display;
