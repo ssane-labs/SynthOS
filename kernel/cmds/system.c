@@ -372,7 +372,11 @@ COMMAND(prof, NULL, "dev", "prof [-o file] command [args...]",
         kfree(buf);
         return rc;
     }
-    len += (size_t)ksnprintf(text + len, 8192 - len, "prof: %u samples\n", n);
+    uint32_t user = 0;
+    for (uint32_t i = 0; i < n; i++)
+        user += buf[i] >= VMM_USER_START && buf[i] < VMM_USER_END;
+    len += (size_t)ksnprintf(text + len, 8192 - len, "prof: %u samples, %u in the kernel, %u in programs\n", n, n - user,
+                             user);
     for (int k = 0; k < 60; k++) {
         uint32_t best = 0, at = 0;
         for (uint32_t i = 0, j; i < n; i = j) {
