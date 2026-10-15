@@ -1,5 +1,6 @@
 #include <synth/config.h>
 #if CONFIG_GUI
+#include <synth/codepage.h>
 #include <synth/string.h>
 
 #include "w32gui.h"
@@ -895,6 +896,146 @@ static int WINAPI GetClipBox(HANDLE h, RECT *out)
     return 2;
 }
 
+static const struct ui_font *dc_font(struct w32_dc *d);
+
+static int region_kind(struct rect r)
+{
+    return r.w > 0 && r.h > 0 ? 2 : 1;
+}
+
+static BOOL WINAPI SetRectRgn(HANDLE rgn, int l, int t, int r, int b)
+{
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION)
+        return FALSE;
+    o->region = (struct rect){l, t, r - l, b - t};
+    return TRUE;
+}
+
+static int WINAPI CombineRgn(HANDLE dst, HANDLE a, HANDLE b, int mode)
+{
+    struct gdi_obj *d = obj(dst), *x = obj(a), *y = obj(b);
+    if (!d || !x || d->kind != OBJ_REGION)
+        return 0;
+    struct rect r = x->region, o = y ? y->region : r;
+    if (mode == 1)
+        r = rect_intersect(r, o);
+    else if ((mode == 2 || mode == 3) && region_kind(o) == 2)
+        r = region_kind(r) == 2 ? (struct rect){MIN(r.x, o.x), MIN(r.y, o.y),
+                                                MAX(r.x + r.w, o.x + o.w) - MIN(r.x, o.x),
+                                                MAX(r.y + r.h, o.y + o.h) - MIN(r.y, o.y)}
+                                : o;
+    else if (mode == 4 && o.x <= r.x && o.y <= r.y && o.x + o.w >= r.x + r.w && o.y + o.h >= r.y + r.h)
+        r = (struct rect){0, 0, 0, 0};
+    d->region = r;
+    return region_kind(r);
+}
+
+static int WINAPI GetRgnBox(HANDLE rgn, RECT *out)
+{
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION)
+        return 0;
+    struct rect r = o->region;
+    *out = (RECT){r.x, r.y, r.x + r.w, r.y + r.h};
+    return region_kind(r);
+}
+
+static BOOL WINAPI EqualRgn(HANDLE a, HANDLE b)
+{
+    struct gdi_obj *x = obj(a), *y = obj(b);
+    return x && y && !memcmp(&x->region, &y->region, sizeof(x->region));
+}
+
+static DWORD WINAPI GetRegionData(HANDLE rgn, DWORD size, uint32_t *out)
+{
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION)
+        return 0;
+    struct rect r = o->region;
+    bool any = region_kind(r) == 2;
+    DWORD need = 32 + (any ? 16 : 0);
+    if (!out)
+        return need;
+    if (size < need)
+        return 0;
+    int32_t box[4] = {r.x, r.y, r.x + r.w, r.y + r.h};
+    out[0] = 32;
+    out[1] = 1;
+    out[2] = any;
+    out[3] = any ? 16 : 0;
+    memcpy(out + 4, box, 16);
+    if (any)
+        memcpy(out + 8, box, 16);
+    return need;
+}
+
+static int WINAPI GetClipRgn(HANDLE h, HANDLE rgn)
+{
+    struct w32_dc *d = dc_of(h);
+    struct gdi_obj *o = obj(rgn);
+    if (!d || !o)
+        return -1;
+    if (!d->s.clipped)
+        return 0;
+    o->region = d->s.clip;
+    return 1;
+}
+
+static HANDLE WINAPI GetCurrentObject(HANDLE h, UINT type)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d)
+        return NULL;
+    switch (type) {
+    case OBJ_PEN: return d->s.pen;
+    case OBJ_BRUSH: return d->s.brush;
+    case OBJ_FONT: return d->s.font;
+    case OBJ_BITMAP: return d->s.bitmap;
+    default: return NULL;
+    }
+}
+
+static BOOL WINAPI GetWorldTransform(HANDLE h, uint32_t *xform)
+{
+    static const uint32_t identity[6] = {0x3f800000u, 0, 0, 0x3f800000u, 0, 0};
+    if (!dc_of(h) || !xform)
+        return FALSE;
+    memcpy(xform, identity, sizeof(identity));
+    return TRUE;
+}
+
+static BOOL WINAPI SetBrushOrgEx(HANDLE h, int x, int y, POINT *old)
+{
+    UNUSED(x);
+    UNUSED(y);
+    if (old)
+        *old = (POINT){0, 0};
+    return dc_of(h) != NULL;
+}
+
+static DWORD WINAPI GetFontData(HANDLE h, DWORD table, DWORD offset, void *buf, DWORD size)
+{
+    UNUSED(h);
+    UNUSED(table);
+    UNUSED(offset);
+    UNUSED(buf);
+    UNUSED(size);
+    return 0xffffffffu;
+}
+
+static BOOL WINAPI GetCharWidthW(HANDLE h, UINT first, UINT last, int *out)
+{
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    for (UINT c = first; c <= last; c++) {
+        char u[8];
+        u[utf8_encode(c, u)] = 0;
+        out[c - first] = gfx_text_width(f, u);
+    }
+    return TRUE;
+}
+
 static BOOL WINAPI MoveToEx(HANDLE h, int x, int y, POINT *old)
 {
     struct w32_dc *d = dc_of(h);
@@ -1543,6 +1684,15 @@ static HANDLE WINAPI CreateCompatibleDC(HANDLE h)
     return d;
 }
 
+static HANDLE WINAPI CreateDCW(const void *driver, const void *device, const void *output, const void *mode)
+{
+    UNUSED(driver);
+    UNUSED(device);
+    UNUSED(output);
+    UNUSED(mode);
+    return CreateCompatibleDC(NULL);
+}
+
 static BOOL WINAPI DeleteDC(HANDLE h)
 {
     struct w32_dc *d = dc_of(h);
@@ -1746,6 +1896,23 @@ static uint32_t raster(uint32_t src, uint32_t dst, uint32_t pat, DWORD rop)
     }
 }
 
+#define ROP_ALPHA 0xffffffffu
+
+static uint32_t blend_func;
+
+static uint32_t alpha_blend(uint32_t src, uint32_t dst)
+{
+    unsigned k = (blend_func >> 16) & 0xff, a = blend_func & 0x01000000u ? (src >> 24) * k / 255 : k;
+    unsigned sk = blend_func & 0x01000000u ? k : a;
+    uint32_t out = 0;
+    for (int sh = 0; sh < 24; sh += 8) {
+        unsigned sc = (src >> sh) & 0xff, dc = (dst >> sh) & 0xff;
+        unsigned v = sc * sk / 255 + dc * (255 - a) / 255;
+        out |= (v > 255 ? 255 : v) << sh;
+    }
+    return out;
+}
+
 static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx, int sy, int sw, int sh, DWORD rop)
 {
     struct w32_dc *d = dc_of(hd), *s = dc_of(hs);
@@ -1777,20 +1944,45 @@ static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx
                 if (sb && sb->bpp != 32) {
                     if (xx < 0 || yy < 0 || xx >= sb->canvas.w || yy >= sb->canvas.h)
                         continue;
-                    src = dib_pixel(&bmi, sb->bits, xx, yy) & 0xffffff;
+                    src = dib_pixel(&bmi, sb->bits, xx, yy);
                 } else {
                     int px = st.ox + xx, py = st.oy + yy;
                     if (px < 0 || py < 0 || px >= st.c->w || py >= st.c->h)
                         continue;
-                    src = st.c->px[py * st.c->stride + px] & 0xffffff;
+                    src = st.c->px[py * st.c->stride + px];
                 }
             }
-            *out = (raster(src, *out & 0xffffff, pat, rop) & 0xffffff) | 0xff000000u;
+            uint32_t v = rop == ROP_ALPHA ? alpha_blend(src, *out) : raster(src & 0xffffff, *out & 0xffffff, pat, rop);
+            *out = (v & 0xffffff) | 0xff000000u;
         }
     }
     dt.c->clip = dt.clip;
     damage(d, &dt, (struct rect){dt.ox + MIN(dx, dx + dw), dt.oy + MIN(dy, dy + dh), ABS(dw) + 1, ABS(dh) + 1});
     return TRUE;
+}
+
+static BOOL WINAPI GdiAlphaBlend(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx, int sy, int sw, int sh,
+                                 uint32_t func)
+{
+    blend_func = func;
+    return stretch(hd, dx, dy, dw, dh, hs, sx, sy, sw, sh, ROP_ALPHA);
+}
+
+static int WINAPI SetDIBits(HANDLE h, HANDLE bitmap, UINT start, UINT lines, const void *bits,
+                            const struct bitmap_info *bmi, UINT usage)
+{
+    UNUSED(h);
+    UNUSED(usage);
+    struct gdi_obj *b = obj(bitmap);
+    if (!b || b->kind != OBJ_BITMAP || !bmi || !bits || !b->canvas.px)
+        return 0;
+    int height = bmi->height < 0 ? -bmi->height : bmi->height, n = 0;
+    for (UINT i = start; i < start + lines && (int)i < height && (int)i < b->canvas.h; i++, n++) {
+        int row = bmi->height > 0 ? b->canvas.h - 1 - (int)i : (int)i;
+        for (int x = 0; x < b->canvas.w && x < bmi->width; x++)
+            b->canvas.px[row * b->canvas.stride + x] = dib_pixel(bmi, bits, x, bmi->height > 0 ? height - 1 - (int)i : (int)i);
+    }
+    return n;
 }
 
 static BOOL WINAPI BitBlt(HANDLE hd, int dx, int dy, int w, int h, HANDLE hs, int sx, int sy, DWORD rop)
@@ -1894,13 +2086,30 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode),
     W32_FN(SetStretchBltMode), W32_FN(SetGraphicsMode), W32_FN(SetViewportOrgEx), W32_FN(SetWindowOrgEx),
     W32_FN(OffsetViewportOrgEx), W32_FN(SaveDC), W32_FN(RestoreDC), W32_FN(CreateRectRgn),
-    W32_FN(CreateRectRgnIndirect), W32_FN(SelectClipRgn), W32_FN(IntersectClipRect), W32_FN(GetClipBox),
+    W32_FN(CreateRectRgnIndirect), W32_FN(SelectClipRgn), W32_FN(SetRectRgn), W32_FN(CombineRgn), W32_FN(GetRgnBox),
+    W32_FN(EqualRgn), W32_FN(GetRegionData), W32_FN(GetClipRgn), W32_FN(GetCurrentObject), W32_FN(GetWorldTransform),
+    W32_AS("SetWorldTransform", w32_one2), W32_AS("ModifyWorldTransform", w32_one3), W32_FN(SetBrushOrgEx),
+    W32_FN(GetCharWidthW), W32_AS("GetCharWidth32W", GetCharWidthW), W32_FN(GdiAlphaBlend), W32_FN(SetDIBits),
+    W32_AS("SetPolyFillMode", w32_one2), W32_AS("SetArcDirection", w32_one2), W32_AS("SetMiterLimit", w32_one3),
+    W32_FN(GetFontData), W32_AS("GetOutlineTextMetricsW", w32_zero3), W32_AS("BeginPath", w32_zero1),
+    W32_AS("EndPath", w32_zero1), W32_AS("CloseFigure", w32_zero1), W32_AS("FillPath", w32_zero1),
+    W32_AS("StrokePath", w32_zero1), W32_AS("StrokeAndFillPath", w32_zero1), W32_AS("WidenPath", w32_zero1),
+    W32_AS("SelectClipPath", w32_zero2), W32_AS("PolyBezierTo", w32_zero3), W32_AS("StartDocW", w32_zero2),
+    W32_AS("StartPage", w32_zero1), W32_AS("EndPage", w32_zero1), W32_AS("EndDoc", w32_zero1),
+    W32_AS("SetAbortProc", w32_zero2), W32_AS("CancelDC", w32_one1), W32_AS("CreateEnhMetaFileW", w32_zero4),
+    W32_AS("CloseEnhMetaFile", w32_zero1), W32_AS("DeleteEnhMetaFile", w32_zero1), W32_AS("EnumEnhMetaFile", w32_zero5),
+    W32_AS("GetEnhMetaFileBits", w32_zero3), W32_AS("GetEnhMetaFileHeader", w32_zero3), W32_AS("PlayEnhMetaFile", w32_zero3),
+    W32_AS("PlayEnhMetaFileRecord", w32_zero4), W32_AS("SetEnhMetaFileBits", w32_zero2), W32_AS("GdiComment", w32_zero3),
+    W32_AS("ChoosePixelFormat", w32_zero2), W32_AS("DescribePixelFormat", w32_zero4), W32_AS("GetPixelFormat", w32_zero1),
+    W32_AS("SetPixelFormat", w32_zero3), W32_AS("SwapBuffers", w32_zero1), W32_AS("ExtEscape", w32_zero6),
+    W32_AS("GetICMProfileW", w32_zero3), W32_FN(IntersectClipRect), W32_FN(GetClipBox),
     W32_FN(MoveToEx), W32_FN(LineTo), W32_FN(Polyline), W32_FN(PolylineTo), W32_FN(Rectangle), W32_FN(Ellipse),
     W32_FN(RoundRect), W32_FN(Polygon), W32_FN(Arc), W32_FN(Pie), W32_AS("Chord", Pie), W32_FN(SetPixel),
     W32_FN(SetPixelV), W32_FN(GetPixel), W32_FN(TextOutA), W32_FN(TextOutW), W32_FN(ExtTextOutA), W32_FN(ExtTextOutW),
     W32_FN(GetTextExtentPoint32A), W32_FN(GetTextExtentPoint32W), W32_AS("GetTextExtentPointA", GetTextExtentPoint32A),
     W32_AS("GetTextExtentPointW", GetTextExtentPoint32W), W32_FN(GetTextMetricsA), W32_FN(GetTextMetricsW),
-    W32_FN(GetTextFaceA), W32_FN(CreateCompatibleDC), W32_FN(DeleteDC), W32_FN(CreateCompatibleBitmap),
+    W32_FN(GetTextFaceA), W32_FN(CreateCompatibleDC), W32_FN(DeleteDC), W32_FN(CreateDCW), W32_AS("CreateDCA", CreateDCW),
+    W32_AS("CreateICW", CreateDCW), W32_AS("CreateICA", CreateDCW), W32_FN(CreateCompatibleBitmap),
     W32_FN(CreateBitmap), W32_FN(CreateDIBSection), W32_FN(StretchDIBits), W32_FN(SetDIBitsToDevice),
     W32_FN(GetDIBits), W32_FN(BitBlt), W32_FN(StretchBlt), W32_FN(PatBlt), W32_FN(GetDeviceCaps), W32_FN(GdiFlush),
     W32_FN(EnumFontFamiliesExA), W32_AS("EnumFontFamiliesExW", EnumFontFamiliesExA),
@@ -1913,6 +2122,7 @@ static const struct w32_export gdi_user_exports[] = {
 
 static const struct w32_export msimg_exports[] = {
     W32_FN(TransparentBlt),
+    W32_AS("AlphaBlend", GdiAlphaBlend),
 };
 
 W32_EXPORTS(gdi_module, "gdi32.dll", gdi_exports, .attach = w32_gdi_reset);

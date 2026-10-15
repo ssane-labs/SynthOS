@@ -507,6 +507,7 @@ static BOOL WINAPI InternetCheckConnectionA(LPCSTR url, DWORD flags, DWORD reser
 }
 
 static const struct w32_export wininet_exports[] = {
+    W32_AS("GetUrlCacheEntryInfoExW", w32_fail7),
     W32_FN(InternetOpenA), W32_FN(InternetOpenW), W32_FN(InternetConnectA), W32_FN(InternetConnectW),
     W32_FN(HttpOpenRequestA), W32_FN(HttpOpenRequestW), W32_FN(HttpSendRequestA), W32_FN(HttpSendRequestW),
     W32_FN(HttpAddRequestHeadersA), W32_FN(HttpAddRequestHeadersW), W32_FN(InternetOpenUrlA),
@@ -619,6 +620,9 @@ static BOOL WINAPI WinHttpGetIEProxyConfigForCurrentUser(void *config)
 }
 
 static const struct w32_export winhttp_exports[] = {
+    W32_AS("WinHttpCreateProxyResolver", w32_one2), W32_AS("WinHttpFreeProxyResult", w32_zero1),
+    W32_AS("WinHttpGetProxyForUrl", w32_fail4), W32_AS("WinHttpGetProxyForUrlEx", w32_one4),
+    W32_AS("WinHttpGetProxyResult", w32_one2),
     W32_FN(WinHttpOpen), W32_FN(WinHttpConnect), W32_FN(WinHttpOpenRequest), W32_FN(WinHttpSendRequest),
     W32_FN(WinHttpReceiveResponse), W32_FN(WinHttpQueryHeaders), W32_FN(WinHttpAddRequestHeaders),
     W32_FN(WinHttpQueryDataAvailable), W32_AS("WinHttpReadData", InternetReadFile),
@@ -660,6 +664,7 @@ static uint32_t WINAPI URLDownloadToFileW(void *caller, LPCWSTR url, LPCWSTR fil
 }
 
 static const struct w32_export urlmon_exports[] = {
+    W32_AS("CoInternetCreateSecurityManager", w32_notimpl3),
     W32_FN(URLDownloadToFileA),
     W32_FN(URLDownloadToFileW),
 };

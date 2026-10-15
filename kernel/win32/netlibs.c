@@ -57,6 +57,10 @@ static const void *WINAPI InitSecurityInterface(void)
 }
 
 static const struct w32_export secur32_exports[] = {
+    W32_AS("DeleteSecurityContext", w32_secerr1), W32_AS("FreeCredentialsHandle", w32_secerr1),
+    W32_AS("QueryContextAttributesW", w32_secerr3), W32_AS("LsaConnectUntrusted", w32_secerr1),
+    W32_AS("LsaDeregisterLogonProcess", w32_secerr1), W32_AS("LsaFreeReturnBuffer", w32_secerr1),
+    W32_AS("LsaLogonUser", w32_secerr14),
     W32_AS("InitSecurityInterfaceA", InitSecurityInterface),
     W32_AS("InitSecurityInterfaceW", InitSecurityInterface),
     W32_AS("FreeContextBuffer", w32_zero1),

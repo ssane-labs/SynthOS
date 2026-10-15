@@ -272,28 +272,13 @@ void w32_yield(void)
         switch_to(next);
 }
 
-static bool after_call(uint32_t a)
-{
-    if (a < VMM_USER_START + 8 || a >= 0xc0000000u || !vmm_mapped(a - 8) || !vmm_mapped(a - 1))
-        return false;
-    const uint8_t *p = (const uint8_t *)(uintptr_t)a;
-    return p[-5] == 0xe8 || (p[-6] == 0xff && (p[-5] & 0x38) == 0x10) || (p[-2] == 0xff && (p[-1] & 0xf8) == 0xd0) ||
-           (p[-3] == 0xff && (p[-2] & 0x38) == 0x10);
-}
-
 static uint32_t user_caller(struct w32_thread *t)
 {
     const uint32_t *frame = __builtin_frame_address(0);
     for (int i = 0; i < 16 && frame && (uint32_t)frame >= 0xc0000000u; i++) {
         uint32_t ret = frame[1];
         if (ret >= VMM_USER_START && ret < 0xc0000000u) {
-            const uint32_t *sp = frame + 2;
-            int k = 0;
-            for (int n = 0; n < 4096 && k < 16; n++, sp++)
-                if (after_call(*sp))
-                    t->wait_stack[k++] = *sp;
-            while (k < 16)
-                t->wait_stack[k++] = 0;
+            t->wait_sp = (uint32_t)(frame + 2);
             return ret;
         }
         frame = (const uint32_t *)frame[0];

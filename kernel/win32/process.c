@@ -399,8 +399,8 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
     w32_trace_dump();
     uint32_t r[8];
     arch_fault_registers(r);
-    klog("win32: fault %d in %s at %08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x", vector,
-         w32->parent ? "child" : "main", eip, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+    klog("win32: fault %d in %s thread %u at %08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x",
+         vector, w32->parent ? "child" : "main", w32->current ? w32->current->id : 0, eip, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
     uint32_t fp = r[6];
     for (int i = 0; i < 12 && fp >= VMM_USER_START && (fp >= 0xc0000000u ? fp < 0xfff00000u : vmm_mapped(fp + 4)); i++) {
         klog("win32:   called from %08x", ((uint32_t *)fp)[1]);
@@ -837,6 +837,42 @@ static void where(struct w32_process *p, uint32_t a, char *out, size_t cap)
     ksnprintf(out, cap, "0x%08x", a);
 }
 
+static const struct w32_image *code_image(struct w32_process *p, uint32_t a)
+{
+    for (const struct w32_image *img = p->images; img; img = img->next)
+        if (!img->builtin && a >= img->base + 8 && a < img->base + img->size)
+            return img;
+    return NULL;
+}
+
+static bool after_call(struct w32_process *p, uint32_t a)
+{
+    if (!code_image(p, a) || !vmm_mapped(a - 8) || !vmm_mapped(a - 1))
+        return false;
+    const uint8_t *c = (const uint8_t *)(uintptr_t)a;
+    return c[-5] == 0xe8 || (c[-6] == 0xff && (c[-5] & 0x38) == 0x10) || (c[-2] == 0xff && (c[-1] & 0xf8) == 0xd0) ||
+           (c[-3] == 0xff && (c[-2] & 0x38) == 0x10);
+}
+
+/* Likely return addresses above where a waiting thread left program code: its call chain, read on demand. */
+static int call_trail(struct w32_process *p, const struct w32_thread *t, uint32_t *out, int cap)
+{
+    if (!t->wait_caller || !t->wait_sp || t->done)
+        return 0;
+    struct vmm_space *old = vmm_space_current();
+    if (p->space && p->space != old)
+        vmm_space_switch(p->space);
+    const uint32_t *sp = (const uint32_t *)(uintptr_t)t->wait_sp;
+    const uint32_t *end = t->stack ? (const uint32_t *)(t->stack + t->stack_size) : sp + 4096;
+    int k = 0;
+    for (int n = 0; n < 4096 && sp < end && k < cap; n++, sp++)
+        if (after_call(p, *sp))
+            out[k++] = *sp;
+    if (vmm_space_current() != old)
+        vmm_space_switch(old);
+    return k;
+}
+
 void w32_dump_status(void)
 {
     char line[160], at[96];
@@ -860,8 +896,10 @@ void w32_dump_status(void)
                     ksnprintf(line, sizeof(line), "      at %s\n", at);
                     w32_console_write(WH_STDERR, line, strlen(line));
                 }
-                for (int k = 0; k < 16 && t->wait_caller && t->wait_stack[k]; k++) {
-                    where(p, t->wait_stack[k], at, sizeof(at));
+                uint32_t trail[16];
+                int n = t->waiting ? call_trail(p, t, trail, 16) : 0;
+                for (int k = 0; k < n; k++) {
+                    where(p, trail[k], at, sizeof(at));
                     ksnprintf(line, sizeof(line), "      <- %s\n", at);
                     w32_console_write(WH_STDERR, line, strlen(line));
                 }

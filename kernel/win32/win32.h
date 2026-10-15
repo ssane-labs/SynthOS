@@ -175,7 +175,7 @@ struct w32_thread {
     bool done;
     bool waiting;
     int suspended;
-    uint32_t wait_caller, wait_stack[16];
+    uint32_t wait_caller, wait_sp;
     uint32_t seen, user_eip;
     const char *recent[8];
     unsigned recent_pos;

@@ -99,6 +99,35 @@ static void compat(void)
            children);
     DestroyWindow(top);
 
+    HRGN ra = CreateRectRgn(0, 0, 10, 10), rb = CreateRectRgn(5, 5, 20, 20), u = CreateRectRgn(0, 0, 0, 0);
+    int kind = CombineRgn(u, ra, rb, RGN_OR);
+    RECT box;
+    GetRgnBox(u, &box);
+    CombineRgn(u, ra, rb, RGN_AND);
+    RECT both;
+    GetRgnBox(u, &both);
+    HDC screen = CreateDCW(L"DISPLAY", NULL, NULL, NULL), mem = CreateCompatibleDC(screen);
+    XFORM xf = {0};
+    BOOL world = GetWorldTransform(mem, &xf);
+    BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), 1, 1, 1, 32, BI_RGB}};
+    unsigned *src_px, *dst_px;
+    HBITMAP sb = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, (void **)&src_px, NULL, 0);
+    HDC src = CreateCompatibleDC(screen);
+    SelectObject(src, sb);
+    HBITMAP db = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, (void **)&dst_px, NULL, 0);
+    SelectObject(mem, db);
+    *src_px = 0x80800000u;
+    *dst_px = 0x000000ffu;
+    BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    BOOL blended = GdiAlphaBlend(mem, 0, 0, 1, 1, src, 0, 0, 1, 1, bf);
+    printf("gdi region=%d box=%ld,%ld,%ld,%ld and=%ld,%ld,%ld,%ld dc=%s world=%s current=%s blend=%s %06x\n", kind,
+           box.left, box.top, box.right, box.bottom, both.left, both.top, both.right, both.bottom, screen ? "ok" : "none",
+           world && xf.eM11 == 1.0f ? "identity" : "bad", GetCurrentObject(mem, OBJ_BITMAP) == db ? "ok" : "bad",
+           blended ? "ok" : "failed", *dst_px & 0xffffff);
+    DeleteDC(src);
+    DeleteDC(mem);
+    DeleteDC(screen);
+
     HANDLE ev = CreateEventA(NULL, FALSE, FALSE, NULL), once = NULL, timer = NULL;
     BOOL reg = RegisterWaitForSingleObject(&once, ev, on_wait, NULL, INFINITE, WT_EXECUTEONLYONCE);
     SetEvent(ev);
