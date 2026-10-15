@@ -15,6 +15,9 @@ for n in [0,1,55,56,111,112,127,128,129,1000]:
     d=os.urandom(n)
     for h in ['sha256','sha384','sha512']:
         check('hash'+h+str(n), run('hash',h,d.hex() or '00'[:0] if n else '')[0] if n else run('hash',h,'')[0], hashlib.new(h,d).hexdigest())
+for n in [0,1,55,56,63,64,65,119,120,1000]:
+    d=os.urandom(n)
+    check('sha1-'+str(n), run('sha1',d.hex())[0] if n else run('sha1','')[0], hashlib.sha1(d).hexdigest())
 for h in ['sha256','sha384']:
     salt,ikm,info=os.urandom(13),os.urandom(40),os.urandom(9)
     want=HKDF(H[h](),77,salt,info).derive(ikm).hex()

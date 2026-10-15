@@ -1,3 +1,4 @@
+#include <synth/sha1.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +31,11 @@ static uint8_t a[4096], b[4096], c[4096], d[4096], e[4096], o[8192];
 int main(int argc, char **argv)
 {
     const char *cmd = argv[1];
-    if (!strcmp(cmd, "hash")) {
+    if (!strcmp(cmd, "sha1")) {
+        size_t n = unhex(argv[2], a);
+        sha1(a, n, o);
+        hex(o, 20);
+    } else if (!strcmp(cmd, "hash")) {
         size_t n = unhex(argv[3], a);
         const struct hash_alg *h = alg(argv[2]);
         hash_digest(h, a, n, o);
