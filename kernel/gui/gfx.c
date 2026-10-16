@@ -386,7 +386,7 @@ void gfx_drop_shadow(struct canvas *c, struct rect r, int radius, int size, int 
 
 void gfx_glow(struct canvas *c, struct rect r, int radius, int size, int strength, uint32_t color)
 {
-    shadow_impl(c, r, radius, size, strength, 0, color & 0xffffffu);
+    shadow_impl(c, r, radius, size, strength, 0, (color & 0xffffffu) | 0x01000000u);
 }
 
 static int isqrt_i(uint32_t v)
@@ -434,6 +434,8 @@ static void shadow_impl(struct canvas *c, struct rect r, int radius, int size, i
 {
     if (size <= 0 || strength <= 0)
         return;
+    bool fill = color >> 24;
+    color &= 0xffffffu;
     shadow_init();
     struct rect s = {r.x, r.y + dy, r.w, r.h};
     radius = MAX(0, MIN(radius, MIN(r.w, r.h) / 2));
@@ -454,7 +456,7 @@ static void shadow_impl(struct canvas *c, struct rect r, int radius, int size, i
         const uint8_t *trow = t->alpha + dy0 * n;
         bool body_row = y >= body.y && y < body.y + body.h;
         int sx0 = body_row ? r.x : skip.x, sx1 = body_row ? r.x + r.w : skip.x + skip.w;
-        bool skip_row = body_row || (y >= r.y && y < r.y + r.h);
+        bool skip_row = !fill && (body_row || (y >= r.y && y < r.y + r.h));
         uint32_t *row = c->px + y * c->stride;
         for (int x = area.x; x < area.x + area.w; x++) {
             if (skip_row && x >= sx0 && x < sx1) {

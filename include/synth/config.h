@@ -2,8 +2,8 @@
 #define SYNTH_CONFIG_H
 
 #define SYNTH_NAME "SynthOS"
-#define SYNTH_VERSION "0.1.0"
-#define SYNTH_CODENAME "Neon"
+#define SYNTH_VERSION "1.0"
+#define SYNTH_CODENAME "Mirage"
 
 #ifndef CONFIG_DOS
 #define CONFIG_DOS 1

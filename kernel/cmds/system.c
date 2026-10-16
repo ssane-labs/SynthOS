@@ -161,18 +161,18 @@ static void collect_format(const struct binfmt *fmt, void *ctx)
 COMMAND(fetch, "sysinfo,neofetch", "system", "fetch", "show system information with style")
 {
     static const char *const art[] = {
-        "     " LB LB LB LB LB LB LB "     ",
-        "  " LB FB FB FB FB FB FB FB FB FB FB FB LB "  ",
-        " " FB FB FB FB FB FB FB FB FB FB FB FB FB FB FB " ",
-        " " UB UB UB UB UB UB UB UB UB UB UB UB UB UB UB " ",
-        "  " UB UB UB UB UB UB UB UB UB UB UB UB UB "  ",
-        "    " UB UB UB UB UB UB UB UB UB "    ",
-        "\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd\xcd",
-        "  /  /  \xb3  \\  \\  ",
-        " /  /   \xb3   \\  \\ ",
+        "      " LB LB LB LB LB "      ",
+        "   " LB FB FB FB FB FB FB FB FB FB LB "   ",
+        "  " FB FB FB FB FB FB FB FB FB FB FB FB FB "  ",
+        " \xf7\xf7\xf7  \xf7\xf7\xf7\xf7\xf7\xf7\xf7  \xf7\xf7\xf7 ",
+        "  " FB FB FB FB FB FB FB FB FB FB FB FB FB "  ",
+        "  \xf7\xf7\xf7\xf7  \xf7\xf7\xf7  \xf7\xf7\xf7\xf7  ",
+        "    " UB FB FB FB FB FB FB FB UB "    ",
+        "       " UB UB UB "       ",
+        "                 ",
     };
-    static const enum theme_role art_roles[] = {ROLE_LOGO1, ROLE_LOGO1, ROLE_LOGO1, ROLE_LOGO2, ROLE_LOGO2,
-                                                ROLE_LOGO2, ROLE_LOGO3, ROLE_LOGO3, ROLE_LOGO3};
+    static const enum theme_role art_roles[] = {ROLE_LOGO1, ROLE_LOGO1, ROLE_LOGO1, ROLE_LOGO3, ROLE_LOGO2,
+                                                ROLE_LOGO3, ROLE_LOGO2, ROLE_LOGO2, ROLE_LOGO3};
     char lines[12][96];
     const char *labels[12];
     int n = 0;

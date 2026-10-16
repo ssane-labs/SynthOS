@@ -142,11 +142,24 @@ static bool is_boot_disk(struct blockdev *dev)
     return magic == KERNEL_MAGIC;
 }
 
+static struct blockdev *boot_disk;
+
+struct blockdev *hal_boot_disk(void)
+{
+    return boot_disk;
+}
+
+uint32_t hal_system_sectors(void)
+{
+    return DISK_DATA_LBA;
+}
+
 static bool attach_boot_disk(void)
 {
     for (struct blockdev *dev = block_list(); dev; dev = dev->next) {
         if (dev->parent || !bootinfo->kernel_lba || !is_boot_disk(dev))
             continue;
+        boot_disk = dev;
         if (bootinfo->kernel_lba + bootinfo->kernel_sectors > DISK_DATA_LBA) {
             klog("disk: kernel image overlaps the data area, persistence disabled");
             return true;
