@@ -45,6 +45,7 @@ SECTIONS
     }
 
     image_end = .;
+    pack_start = ALIGN(image_end, 16);
 
     .bss : ALIGN(16) {
         __bss_start = .;

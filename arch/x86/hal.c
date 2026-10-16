@@ -14,8 +14,8 @@
 #define KERNEL_MAGIC 0x4b4e5953u
 #define DISK_DATA_LBA 16384u
 
-extern const char synth_ramdisk_start[];
-extern const char synth_ramdisk_end[];
+#define PACK_ADDR 0x400000u
+#define PACK_MAGIC 0x4b505953u
 extern char kernel_end[];
 
 static const struct x86_bootinfo *bootinfo;
@@ -259,11 +259,30 @@ static void setup_heap(struct boot_info *bi)
         best_base = start;
         best_end = low_end;
     }
+    const uint32_t *pack = (const uint32_t *)PACK_ADDR;
+    uint32_t pack_bytes = pack[0] == PACK_MAGIC ? ALIGN_UP(pack[1] + 8u, 4096u) : 0;
+    if (pack_bytes) {
+        uint64_t at = ALIGN_UP(MAX(best_base, (uint64_t)PACK_ADDR), 2u << 20);
+        if (at + pack_bytes + (4u << 20) <= best_end) {
+            if (at != PACK_ADDR)
+                memmove((void *)(uintptr_t)at, pack, pack_bytes);
+            best_base = at;
+        } else {
+            pack_bytes = 0;
+        }
+    }
     bi->heap = paging_init((uint32_t)start, (uint32_t)MIN(low_end, 0x400000ull), (uint32_t)best_base,
                            (uint32_t)best_end, &bi->heap_size);
     if (!bi->heap) {
         bi->heap = (void *)start;
         bi->heap_size = (size_t)(low_end - start);
+        pack_bytes = 0;
+    }
+    if (pack_bytes && bi->heap_size > pack_bytes) {
+        bi->initrd = (const uint8_t *)bi->heap + 8;
+        bi->initrd_size = ((const uint32_t *)bi->heap)[1];
+        bi->heap = (uint8_t *)bi->heap + pack_bytes;
+        bi->heap_size -= pack_bytes;
     }
     bi->mem_total = (size_t)MIN(total, 0xffffffffull);
 }
@@ -294,8 +313,6 @@ void x86_main(uint32_t magic, const struct x86_bootinfo *info)
     if (!display && !(display = framebuffer_display()))
         display = serial_display();
 #endif
-    bi.initrd = synth_ramdisk_start;
-    bi.initrd_size = (size_t)(synth_ramdisk_end - synth_ramdisk_start);
 #ifdef CONFIG_CMDLINE
     bi.cmdline = CONFIG_CMDLINE;
 #else

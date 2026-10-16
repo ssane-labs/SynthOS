@@ -48,7 +48,7 @@ ifeq ($(CONFIG_EDITOR),0)
 KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm arch/x86/long.asm
-KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/ramdisk.o $(OUT)/obj/biosblob.o
+KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/biosblob.o
 
 SX_SRC   := $(wildcard programs/sx/*.sasm)
 SX_BIN   := $(SX_SRC:programs/sx/%.sasm=$(BUILD)/rootfs/bin/%.sx)
@@ -122,8 +122,9 @@ $(OUT)/stage2.bin: arch/x86/boot/stage2.asm arch/x86/boot/layout.inc
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -Iarch/x86/boot/ $(BOOT_DEFS) -o $@ $<
 
-$(OUT)/kernel.bin: $(OUT)/kernel.elf
-	@$(OBJCOPY) -O binary $< $@
+$(OUT)/kernel.bin: $(OUT)/kernel.elf $(BUILD)/ramdisk.bin $(BUILD)/tools/mkrd
+	@$(OBJCOPY) -O binary $< $(OUT)/image.bin
+	@$(BUILD)/tools/mkrd --kernel $(OUT)/image.bin $(BUILD)/ramdisk.bin $@
 
 $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/linker.ld
 	@echo "  LD      $@"
@@ -153,11 +154,6 @@ $(OUT)/obj/biosblob.o: arch/x86/biosblob.asm $(OUT)/biosthunk.bin
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
 	@$(NASM) -f elf32 -DTHUNK_FILE='"$(OUT)/biosthunk.bin"' -o $@ $<
-
-$(OUT)/obj/ramdisk.o: arch/x86/ramdisk.asm $(BUILD)/ramdisk.bin
-	@mkdir -p $(@D)
-	@echo "  NASM    $<"
-	@$(NASM) -f elf32 -DRAMDISK_FILE='"$(BUILD)/ramdisk.bin"' -o $@ $<
 
 $(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(W32_BIN) $(wildcard programs/sx/*)
 	@mkdir -p $(BUILD)/rootfs

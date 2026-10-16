@@ -124,7 +124,7 @@ struct e820 {
 #define BOOT_MAGIC 0x5359424fu
 #define KERNEL_MAGIC 0x4b4e5953u
 #define KERNEL_ADDR 0x100000ull
-#define KERNEL_LIMIT 0x380000ull
+#define KERNEL_LIMIT 0x800000ull
 #define KERNEL_LBA 17
 #define MMAP_MAX 160
 #define BOOT_UEFI 1

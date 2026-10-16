@@ -25,7 +25,8 @@
 LBA 0          stage1 (MBR, 512 байт) + таблица разделов   arch/x86/boot/stage1.asm
 LBA 1..16      stage2 (8 КБ)                                arch/x86/boot/stage2.asm
 LBA 17..       ядро (плоский бинарник, заголовок SYNK,      build/*/kernel.bin
-               до 3.5 МБ вместе с ramdisk)
+               код до 3.5 МБ в памяти) + пакет SYPK с ramdisk
+               (вместе до ~3.75 МБ)
 LBA 8192..     раздел EFI (4 МБ, тип 0xEF):                 build/*/esp.img
                  \EFI\BOOT\BOOTX64.EFI, \SYNTHOS\KERNEL.BIN
 LBA 16384..    раздел SynthFS (/home, тип 0x7F, до конца    форматируется при первой загрузке
@@ -59,7 +60,9 @@ LBA 16384..    раздел SynthFS (/home, тип 0x7F, до конца    фо
    файлы встроенных DLL в `/system/win32` → оболочка → стартовые скрипты → приветствие → REPL.
 
 Ramdisk — каталог `rootfs/` плюс собранные программы, упакованные утилитой `tools/mkrd` в формат
-`SRD1` и вшитые в ядро (`arch/x86/ramdisk.asm`, `incbin`).
+`SRD1` (сжатие LZ4) и дописанные после образа ядра пакетом `SYPK` (`mkrd --kernel`). Точка входа
+переносит пакет на адрес 4 МБ, `setup_heap` (`arch/x86/hal.c`) начинает кучу с этого места и отдаёт
+пакет ядру как `boot_info.initrd`, так что ramdisk не занимает место в нижних 4 МБ, где живёт код.
 
 ## HAL — граница с железом
 

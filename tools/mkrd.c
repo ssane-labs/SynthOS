@@ -150,8 +150,42 @@ static int compress_file(const char *path)
     return 0;
 }
 
+static int pack_kernel(const char *image, const char *ramdisk, const char *path)
+{
+    FILE *a = fopen(image, "rb"), *b = fopen(ramdisk, "rb");
+    if (!a || !b)
+        return 1;
+    fseek(a, 0, SEEK_END);
+    long n = ftell(a), m;
+    fseek(b, 0, SEEK_END);
+    m = ftell(b);
+    long total = (n + 15) / 16 * 16 + 8 + m;
+    uint8_t *buf = calloc(1, (size_t)total);
+    if (!buf || n < 16)
+        return 1;
+    fseek(a, 0, SEEK_SET);
+    fseek(b, 0, SEEK_SET);
+    uint8_t *pack = buf + (n + 15) / 16 * 16;
+    if (fread(buf, 1, (size_t)n, a) != (size_t)n || fread(pack + 8, 1, (size_t)m, b) != (size_t)m)
+        return 1;
+    fclose(a);
+    fclose(b);
+    memcpy(pack, "SYPK", 4);
+    uint32_t v = (uint32_t)m;
+    memcpy(pack + 4, &v, 4);
+    v = (uint32_t)((total + 511) / 512);
+    memcpy(buf + 12, &v, 4);
+    FILE *out = fopen(path, "wb");
+    if (!out || fwrite(buf, 1, (size_t)total, out) != (size_t)total)
+        return 1;
+    fclose(out);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 5 && strcmp(argv[1], "--kernel") == 0)
+        return pack_kernel(argv[2], argv[3], argv[4]);
     if (argc != 3) {
         fprintf(stderr, "usage: mkrd <directory> <output>\n");
         return 1;

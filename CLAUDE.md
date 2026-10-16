@@ -33,7 +33,8 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
   tables in `win64*.c` (flags or a translating handler).
 - Network: drivers fill `struct netdev`; HTTP(S) in the kernel goes through `http_fetch` (`synth/http.h`),
   HTML through `html_parse` (`synth/html.h`).
-- The kernel image (with the ramdisk) must stay below 3.5 MiB (`kernel_end < 0x380000`): put big tables on the heap.
+- The kernel code must stay below 3.5 MiB (`kernel_end < 0x380000`): put big tables on the heap. The ramdisk is a
+  separate pack after the image (`mkrd --kernel`), loaded into the heap; kernel.bin + pack must fit the 4 MiB ESP.
 - Commands print via `sh_printf`/`sh_puts` to `sh->out`, colors only via theme roles (`sh_role`).
 - Errors are negative `E_*` codes. C11 (gnu11), 4 spaces, very few comments, `module_action` names.
 - Build must be warning-free; add a test case to `tests/run.sh` for new behavior.

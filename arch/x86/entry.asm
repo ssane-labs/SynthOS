@@ -8,6 +8,9 @@ extern x86_main
 extern kernel_sectors
 extern __bss_start
 extern __bss_end
+extern pack_start
+
+PACK_ADDR equ 0x400000
 
 _start:
     jmp short begin
@@ -16,6 +19,18 @@ _start:
     dd kernel_sectors
 
 begin:
+    cmp dword [pack_start], 0x4b505953
+    jne .no_pack
+    mov ecx, [pack_start + 4]
+    add ecx, 8
+    lea esi, [pack_start + ecx - 1]
+    lea edi, [PACK_ADDR + ecx - 1]
+    std
+    rep movsb
+    jmp .moved
+.no_pack:
+    mov dword [PACK_ADDR], 0
+.moved:
     cld
     mov esi, eax
     mov edi, __bss_start
