@@ -340,7 +340,8 @@ static void scan_desktop(void)
     if (selected_icon >= n)
         selected_icon = -1;
     struct rect s = wm_screen_rect(0);
-    wm_damage_z((struct rect){s.x + s.w - 4 * CELL_W, s.y, 4 * CELL_W, s.h}, Z_DESKTOP);
+    wm_damage_z((struct rect){s.x + s.w - 4 * CELL_W - widgets_right_reserved(), s.y, 4 * CELL_W + widgets_right_reserved(), s.h},
+                Z_DESKTOP);
 }
 
 static struct rect icon_cell(int i)
@@ -348,8 +349,8 @@ static struct rect icon_cell(int i)
     struct rect s = wm_work_area(0);
     int top = MAX(s.y + 10, status_bottom() + 10);
     int per_column = MAX(1, (s.y + s.h - top - 6) / CELL_H);
-    return (struct rect){s.x + s.w - 12 - (i / per_column + 1) * CELL_W, top + (i % per_column) * CELL_H, CELL_W,
-                         CELL_H - 6};
+    int right = s.x + s.w - 12 - widgets_right_reserved();
+    return (struct rect){right - (i / per_column + 1) * CELL_W, top + (i % per_column) * CELL_H, CELL_W, CELL_H - 6};
 }
 
 static void icon_label(struct canvas *c, struct rect cell, const char *label, bool selected)
@@ -373,6 +374,7 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
     }
     if (screen != 0)
         return;
+    widgets_paint(c, area);
     for (int i = 0; i < icon_count; i++) {
         struct rect cell = icon_cell(i);
         if (rect_empty(rect_intersect(cell, c->clip)))
@@ -425,7 +427,7 @@ static void volume_pick(struct window *owner, int index);
 
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
 {
-    if (!down)
+    if (widgets_mouse(x, y, button, down, clicks) || !down)
         return;
     int hit = -1;
     for (int i = 0; i < icon_count; i++)
@@ -675,6 +677,7 @@ static void close_app_window(struct window *w, void *ctx)
 void gui_session_login(const char *name)
 {
     user_switch(session, name);
+    widgets_user_changed();
     icon_count = -1;
     scan_desktop();
     chrome_changed();
@@ -938,7 +941,7 @@ static void pump(int timeout_ms)
 
 static void prepare_home(void)
 {
-    static const char *const dirs[] = {"Desktop", "Documents", "Downloads", "Pictures"};
+    static const char *const dirs[] = {"Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"};
     for (size_t i = 0; i < ARRAY_SIZE(dirs); i++) {
         char path[PATH_MAX_LEN];
         path_join(user_home(), dirs[i], path, sizeof(path));
@@ -971,6 +974,7 @@ int gui_run(struct shell *sh)
     gui_style_refresh();
     gui_wallpaper_refresh();
     chrome_start();
+    widgets_start();
     scan_desktop();
     wm_set_app(gui_app_find("Terminal"));
     struct window *term = terminal_open();
@@ -994,6 +998,8 @@ int gui_run(struct shell *sh)
 
     sh->ctl = CTL_NONE;
     input_set_pump(NULL);
+    media_stop();
+    widgets_stop();
     chrome_stop();
     terminal_close();
     wm_stop();
@@ -1043,13 +1049,24 @@ static void refresh_all(void)
     chrome_changed();
 }
 
+void gui_desktop_changed(void)
+{
+    if (!active)
+        return;
+    icon_count = -1;
+    scan_desktop();
+    wm_damage_all();
+}
+
 void gui_look_changed(void)
 {
     if (!active)
         return;
     chrome_stop();
+    widgets_stop();
     gui_style_refresh();
     chrome_start();
+    widgets_start();
     gui_wallpaper_refresh();
     wm_foreach(invalidate_one, NULL);
     wm_reflow();

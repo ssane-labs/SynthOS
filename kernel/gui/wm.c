@@ -605,6 +605,7 @@ static void wm_animate(void)
     }
     dock_animate();
     panel_animate();
+    widgets_animate();
     uint64_t now = hal_ticks_ms();
     int dt = chrome_tick ? (int)MIN(now - chrome_tick, 64u) : 16;
     chrome_tick = now;
@@ -629,6 +630,13 @@ static bool alloc_surface(struct window *w)
 static int64_t overlap_cost(struct rect r, const struct window *self)
 {
     int64_t cost = 0;
+    struct rect obstacles[8];
+    int n = widgets_obstacles(obstacles, 8);
+    for (int i = 0; i < n; i++) {
+        struct rect o = rect_intersect(r, obstacles[i]);
+        if (!rect_empty(o))
+            cost += (int64_t)o.w * o.h * 2;
+    }
     for (struct window *it = bottom; it; it = it->above) {
         if (it == self || !visible(it) || floating(it))
             continue;
@@ -1508,9 +1516,7 @@ static void mouse_up(unsigned button)
         return;
     }
     if (!w || !wm_window_alive(w)) {
-        struct window *at;
-        if (hit_test(mouse_x, mouse_y, &at) == HIT_DESKTOP)
-            desktop_mouse(mouse_x, mouse_y, button, false, click_count);
+        desktop_mouse(mouse_x, mouse_y, button, false, click_count);
         return;
     }
     if (mode == DRAG_TRAFFIC) {
@@ -1589,6 +1595,7 @@ static void mouse_moved(void)
     struct window *w;
     enum hit_kind hit = hit_test(mouse_x, mouse_y, &w);
     chrome_hover(mouse_x, hit == HIT_CHROME ? mouse_y : -1);
+    desktop_hover(mouse_x, mouse_y, hit == HIT_DESKTOP);
     if (hit != HIT_WINDOW || !w) {
         set_hover(NULL);
         set_traffic(NULL);

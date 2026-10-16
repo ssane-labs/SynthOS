@@ -236,7 +236,7 @@ struct window *terminal_open(void)
     struct rect work = wm_work_area(0);
     UNUSED(sw);
     UNUSED(sh);
-    int cols = MIN(100, (work.w - 80) / FONT_WIDTH), rows = MIN(30, (work.h - TITLE_HEIGHT - 60) / FONT_HEIGHT);
+    int cols = MIN(76, (work.w - 80) / FONT_WIDTH), rows = MIN(22, (work.h - TITLE_HEIGHT - 60) / FONT_HEIGHT);
     term->win = wm_open("Terminal", ICON_TERMINAL, cols * FONT_WIDTH + 2 * PAD, rows * FONT_HEIGHT + 2 * PAD, &ops,
                         term, WIN_RESIZABLE | WIN_KEEP);
     if (!term->win) {

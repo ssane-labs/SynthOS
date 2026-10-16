@@ -169,6 +169,39 @@ void calendar_toggle(int right, int y);
 void shell_system_menu(int x, int y);
 void shell_power_menu(bool restart);
 
+#define MEDIA_BANDS 12
+
+struct media_track {
+    const char *title, *artist;
+    int length_ms, position_ms, index;
+    bool playing;
+};
+
+const struct media_track *media_track(void);
+int media_count(void);
+const char *media_song_title(int i);
+const char *media_song_artist(int i);
+void media_play(int index);
+int media_open(const char *path);
+void media_toggle(void);
+void media_next(void);
+void media_prev(void);
+void media_stop(void);
+int media_levels(int *out, int n);
+bool media_tick(void);
+
+void widgets_paint(struct canvas *c, struct rect area);
+bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks);
+void widgets_hover(int x, int y);
+bool widgets_animate(void);
+void widgets_start(void);
+void widgets_stop(void);
+void widgets_user_changed(void);
+int widgets_right_reserved(void);
+int widgets_obstacles(struct rect *out, int max);
+void gui_desktop_changed(void);
+void desktop_hover(int x, int y, bool over);
+
 void desktop_paint(struct canvas *c, int screen, struct rect area);
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks);
 
