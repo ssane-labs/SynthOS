@@ -552,6 +552,8 @@ static int resolve_imports(struct w32_image *img, const struct pe_info *pe, cons
 }
 
 #define CACHE_MIN (4u * 1024 * 1024)
+/* The cache lives on the kernel heap: shared DLLs belong there, a huge program (an installer) does not. */
+#define CACHE_EXE_MAX (64u * 1024 * 1024)
 
 struct image_cache {
     char path[PATH_MAX_LEN];
@@ -647,7 +649,7 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     uint32_t base = pick_base(pe.image_base, pe.image_size, relocatable);
     struct image_cache *cache = NULL;
     bool cached = false;
-    if (base && pe.image_size >= CACHE_MIN) {
+    if (base && pe.image_size >= CACHE_MIN && ((pe.characteristics & 0x2000) || pe.image_size < CACHE_EXE_MAX)) {
         if ((cache = cache_find(path, base, ALIGN_UP(pe.image_size, 4096u), (uint32_t)size)) &&
             vmm_map_pages(base, cache->pages, cache->size / 4096u, true) == 0) {
             cache->users++;

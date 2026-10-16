@@ -27,9 +27,11 @@ SynthOS 0.1.0 «Neon» — рабочая система:
 * устройства: клавиатура и мышь PS/2, **USB** (xHCI, хабы, клавиатуры, мыши, флешки), диски
   IDE/ATA (**bus-master DMA**), **AHCI**, **NVMe**, на BIOS-машинах — любой диск через BIOS;
   сетевые карты **e1000/e1000e, RTL8139, RTL8169**;
-* файловые системы: ramfs (корень), devfs, своя дисковая **SynthFS** (`/home` сохраняется),
+* файловые системы: ramfs (корень), devfs, своя дисковая **SynthFS** (`/home` сохраняется, файлы до ~1 ГБ),
   **FAT12/16/32** с длинными именами (флешки и разделы монтируются сами в `/mnt/…`);
   структура каталогов в стиле Windows: `C:\Windows`, `C:\Program Files`, `C:\Users\<имя>`;
+  `C:\Program Files`, `C:\ProgramData` и `C:\Windows\Temp` лежат на постоянном диске
+  (`/home/apps`, `/home/programdata`, `/home/tmp`), так что установленные программы не пропадают;
 * **сеть**: свой TCP/IP, DHCP, DNS, сокеты; **TLS 1.3 и 1.2** (AES-GCM, ChaCha20-Poly1305, X25519,
   P-256/P-384, RSA/ECDSA) с проверкой цепочки сертификатов по корням Mozilla; HTTP/HTTPS-клиент
   с редиректами и cookies; команды `wget`, `browse`, `ping`, `nslookup`, `httpd`, `certs`;
@@ -42,7 +44,9 @@ SynthOS 0.1.0 «Neon» — рабочая система:
   (в 64-битных — табличная раскрутка x64 SEH); многопроцессный **Google Chrome** (32-битный) открывается
   окном на рабочем столе (вкладки, адресная строка, страницы `file://` и `http://` с JavaScript),
   а в режиме `--headless` печатает DOM (`--dump-dom`) и сохраняет снимок страницы (`--screenshot`);
-  запуск: `chrome.exe --no-sandbox --in-process-gpu --disable-gpu --disable-software-rasterizer`;
+  запускается как обычно — двойным щелчком по `chrome.exe` или ярлыку: нужные ключи
+  (`--no-sandbox --test-type --in-process-gpu --disable-gpu --disable-software-rasterizer`) система
+  добавляет сама; свои кнопки «свернуть/развернуть/закрыть» Chrome скрыты, остаются кнопки окна ОС;
   работают клавиатура (Ctrl+L, ввод адреса) и мышь (ссылки); HTTPS проверяется встроенными корнями Chrome
   плюс хранилищем Windows `ROOT` (корни Mozilla и сертификаты из `/home/certs` после `certs reload`); шрифты для DirectWrite — встроенный
   `C:\Windows\Fonts\DejaVuSans.ttf` (латиница и кириллица, `tools/mksysfont.sh`) и любые TrueType-файлы,
@@ -50,7 +54,7 @@ SynthOS 0.1.0 «Neon» — рабочая система:
 * пользователи с паролями (`useradd`, `passwd`, `su`, `lock`), у каждого свой `/home`;
 * виртуальная машина **SX** для своих программ + ассемблер/дизассемблер внутри ОС;
 * эмулятор **MS-DOS** (8086/186) для `.COM` и `.EXE`;
-* автотесты: `make test` (158 проверок), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI, i486;
+* автотесты: `make test` (165 проверок), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI, i486;
   29 проверок), `make test-crypto` (криптография против эталонов).
 
 ---
@@ -155,6 +159,8 @@ make clean        # удалить build/
 Win или Ctrl+Esc          Launchpad (все приложения);  Ctrl+Space — поиск
 Alt+Tab, Alt+F4           следующее окно, закрыть окно; меню приложения — в строке меню сверху
 launch                    список приложений;  launch paint, launch files /home, launch файл.bmp
+двойной щелчок по .exe    оконная программа Windows (или ярлык .lnk) запускается без терминала,
+                          со своим значком на рабочем столе и в Dock; консольные — в терминале
 desktop off / exit        не запускать стол при загрузке (config save) / выйти в текстовый режим
 desktop (или startx)      снова запустить рабочий стол из текстового режима
 lock, logout              заблокировать экран, сменить пользователя
@@ -169,8 +175,10 @@ cd "C:\Program Files"     пути Windows понимаются напрямую
 theme, prompt, color      оформление; config — все настройки; config save — сохранить
 hello, fib 20, snake      программы SX из /bin
 hello.com, box.com        программы DOS из /dos
-winhello, wincpp, hello64 программы Windows из /apps (= C:\Program Files)
+winhello, wincpp, hello64 встроенные программы Windows из /apps
 windialog, wingdi         оконные программы Windows
+shortcut программа [имя]  ярлык Windows (.lnk) на рабочем столе; shortcut -l файл.lnk — куда ведёт
+pkg install chrome        скачать официальный установщик Google Chrome в ~/Downloads и запустить его
 asm файл.sasm             собрать свою программу; dis файл.sx — дизассемблировать
 ```
 
@@ -482,7 +490,7 @@ DOS переносятся без изменений (эмулятор DOS тр�
 ## 10. Для Claude в новом чате
 
 1. Прочитать этот файл, затем `docs/ARCHITECTURE.md` и `CLAUDE.md`.
-2. Проверить окружение: `make && make test` — должно быть `tests: 136 passed, 0 failed`;
+2. Проверить окружение: `make && make test` — должно быть `tests: 165 passed, 0 failed`;
    при наличии `ovmf` — `make test-hw` (`hardware tests: 29 passed, 0 failed`);
    при наличии Python-пакета `cryptography` — `make test-crypto`.
 3. Визуальная проверка: `tests/shot.sh build/vga/synthos.img /tmp/shot.png 12 f e t c h ret`

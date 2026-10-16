@@ -690,7 +690,6 @@ static bool build_teb_peb(void)
 }
 
 
-static size_t image_reserve;
 static bool image_win64;
 
 static void cleanup(void)
@@ -820,6 +819,9 @@ uint32_t w32_kernel_call(uint32_t (*fn)(void *), void *arg)
     kfree(stack);
     return r;
 }
+
+/* Programs started by the shell see it as their parent process. */
+#define SHELL_PID 0x1000
 
 static struct w32_process *ring;
 static uint32_t next_pid = 0x2000;
@@ -1126,7 +1128,7 @@ static int run_process(struct exec_ctx *ctx)
     }
     struct vmm_space *outer = vmm_space_current();
     p->parent = parent;
-    p->parent_pid = parent && parent->child ? parent->child->pid : 0;
+    p->parent_pid = parent && parent->child ? parent->child->pid : SHELL_PID;
     if ((p->child = kzalloc(sizeof(*p->child)))) {
         next_pid += 8;
         p->child->refs = 1;
@@ -1196,7 +1198,6 @@ static void child_entry(void)
     struct w32_process *p = w32;
     arch_set_irq_depth(0);
     image_win64 = false;
-    image_reserve = 0;
     int rc = run(p->spawn_ctx);
     bool started = w32->main != NULL;
     if (w32->message[0])
@@ -1238,6 +1239,7 @@ struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own)
     p->spawn_ctx = ctx;
     p->own_streams = own;
     p->detached = w32 && (w32_is_host(w32) || w32->detached);
+    p->parent_pid = w32 && w32->child ? w32->child->pid : SHELL_PID;
     boot->proc = p;
     boot->boot = true;
     boot->id = 0x104;
@@ -1351,7 +1353,6 @@ static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
         return E_NOSYS;
     if (!pristine_state && !w32 && (pristine_state = kmalloc(state_size())))
         memcpy(pristine_state, __start_w32state, state_size());
-    image_reserve = size * 3 + 256 * 1024;
     image_win64 = w32_is_pe64(image, size);
     return w32 ? run_nested(ctx) : run_process(ctx);
 }

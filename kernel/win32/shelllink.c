@@ -84,6 +84,14 @@ static ULONG WINAPI CoReleaseServerProcess(void)
     return server_refs > 0 ? (ULONG)--server_refs : 0;
 }
 
+static uint32_t WINAPI CoIncrementMTAUsage(void **cookie)
+{
+    if (!cookie)
+        return E_POINTER;
+    *cookie = (void *)(uintptr_t)++server_refs;
+    return S_OK;
+}
+
 static uint32_t WINAPI CoGetCallContext(const void *iid, void **out)
 {
     UNUSED(iid);
@@ -444,6 +452,8 @@ static const struct w32_export shelllink_exports[] = {
     W32_FN(CoAddRefServerProcess),
     W32_FN(CoReleaseServerProcess),
     W32_FN(CoGetCallContext),
+    W32_FN(CoIncrementMTAUsage),
+    W32_AS("CoDecrementMTAUsage", w32_zero1),
     W32_AS("CoResumeClassObjects", w32_zero0),
     W32_AS("CoSuspendClassObjects", w32_zero0),
 };

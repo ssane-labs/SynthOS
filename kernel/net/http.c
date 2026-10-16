@@ -490,8 +490,8 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         conn_close(&c);
         return E_NOMEM;
     }
-    size_t header_len = 0, expected = (size_t)-1;
-    bool chunked = false, have_headers = false;
+    size_t header_len = 0, expected = (size_t)-1, streamed = 0;
+    bool chunked = false, have_headers = false, stream = false;
     uint64_t last = hal_ticks_ms();
     for (;;) {
         if (req->cancelled && req->cancelled()) {
@@ -516,11 +516,20 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         if (k > 0) {
             got += (size_t)k;
             last = hal_ticks_ms();
-            if (!have_headers)
+            if (!have_headers) {
                 have_headers = body_state(buf, got, &header_len, &expected, &chunked);
+                stream = have_headers && req->sink && !chunked && strchr(buf, ' ') && strchr(buf, ' ')[1] == '2';
+            }
+            if (stream && (got - header_len >= (256u << 10) || got - header_len + streamed >= expected)) {
+                size_t n = MIN(got - header_len, expected - streamed);
+                if ((err = req->sink(req->ctx, buf + header_len, n)) != 0)
+                    break;
+                streamed += n;
+                got = header_len;
+            }
             if (have_headers && req->progress)
-                req->progress(req->ctx, "downloading", got - header_len, expected == (size_t)-1 ? 0 : expected);
-            if (have_headers && expected != (size_t)-1 && got - header_len >= expected)
+                req->progress(req->ctx, "downloading", streamed + got - header_len, expected == (size_t)-1 ? 0 : expected);
+            if (have_headers && expected != (size_t)-1 && streamed + got - header_len >= expected)
                 break;
             if (have_headers && chunked && chunked_done(buf + header_len, got - header_len))
                 break;
@@ -542,6 +551,11 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         net_wait(1);
     }
     conn_close(&c);
+    if (!err && stream && got > header_len) {
+        err = req->sink(req->ctx, buf + header_len, got - header_len);
+        streamed += got - header_len;
+        got = header_len;
+    }
     if (!err && !have_headers)
         err = got ? E_INVAL : E_CONNRESET;
     if (err) {
@@ -574,7 +588,7 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         cookies_from(&u, resp->headers);
     memcpy(resp->body, buf + header_len, body_len);
     resp->body[body_len] = 0;
-    resp->length = body_len;
+    resp->length = stream ? streamed : body_len;
     kfree(buf);
     return 0;
 }

@@ -25,6 +25,8 @@ struct http_request {
     bool (*cancelled)(void);
     void (*progress)(void *ctx, const char *stage, size_t done, size_t total);
     void *ctx;
+    /* When set, the body of a successful response goes here in pieces instead of resp->body. */
+    int (*sink)(void *ctx, const void *data, size_t n);
 };
 
 struct http_response {
