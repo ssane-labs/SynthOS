@@ -205,6 +205,15 @@ int widgets_right_reserved(void);
 int widgets_obstacles(struct rect *out, int max);
 void gui_desktop_changed(void);
 void desktop_hover(int x, int y, bool over);
+bool viewer_is_binary(const char *path);
+
+#define AUTOSTART_MAX 16
+#define AUTOSTART_LEN 128
+
+int autostart_items(char (*out)[AUTOSTART_LEN], int max);
+int autostart_add(const char *item);
+int autostart_remove(int index);
+void autostart_run(void);
 
 void desktop_paint(struct canvas *c, int screen, struct rect area);
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks);

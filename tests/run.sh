@@ -319,6 +319,10 @@ wc -c /home/big.txt; rm /home/big.txt
 9288896
 pkg list | grep chrome
 Google Chrome (32-bit)
+autostart add Notepad; autostart add !echo hi; autostart list
+2  !echo hi
+autostart remove 1; autostart remove 1; autostart list
+nothing starts at login
 music list
 2  Better Days - SynthOS Lofi
 music play 3; music status

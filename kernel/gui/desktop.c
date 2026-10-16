@@ -44,6 +44,7 @@ static bool autostart = true;
 static char clipboard[4096];
 static int last_minute = -1;
 static uint64_t last_scan;
+static bool autostart_pending;
 
 struct desktop_icon {
     char label[64];
@@ -647,7 +648,7 @@ bool gui_open_file(const char *path)
         gui_terminal_run(line);
         return true;
     }
-    gui_app_launch(gui_app_find("Notepad"), path);
+    gui_app_launch(gui_app_find(viewer_is_binary(path) ? "Viewer" : "Notepad"), path);
     return true;
 }
 
@@ -686,6 +687,7 @@ void gui_session_login(const char *name)
     last_input = hal_ticks_ms();
     if (session && session->idle)
         gui_terminal_run("clear");
+    autostart_pending = true;
 }
 
 void gui_terminal_show(void)
@@ -932,6 +934,10 @@ static void pump(int timeout_ms)
     terminal_flush();
     wm_render();
     pumping = false;
+    if (autostart_pending && session && session->idle && !gui_locked()) {
+        autostart_pending = false;
+        autostart_run();
+    }
 #if CONFIG_WIN32
     if (timeout_ms != 0)
         w32_background();
@@ -1019,6 +1025,8 @@ int gui_run(struct shell *sh)
     last_input = hal_ticks_ms();
     if (!user_logged_in())
         gui_login();
+    else
+        autostart_pending = true;
     con_reset();
 
     shell_repl(sh);
