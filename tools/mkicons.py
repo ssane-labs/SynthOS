@@ -929,6 +929,66 @@ def sym_eject(d):
     d.rounded_rectangle([14, 90, 114, 110], radius=4, fill=255)
 
 
+def sym_music(d):
+    d.polygon([(44, 26), (104, 12), (104, 30), (44, 44)], fill=255)
+    d.line([(48, 30), (48, 96)], fill=255, width=W)
+    d.line([(100, 18), (100, 82)], fill=255, width=W)
+    d.ellipse([18, 82, 52, 110], fill=255)
+    d.ellipse([70, 68, 104, 96], fill=255)
+
+
+def sym_video(d):
+    d.rounded_rectangle([8, 30, 88, 98], radius=14, outline=255, width=W)
+    d.polygon([(92, 56), (120, 36), (120, 92), (92, 72)], fill=255)
+
+
+def sym_play(d):
+    d.polygon([(34, 16), (110, 64), (34, 112)], fill=255)
+
+
+def sym_pause(d):
+    d.rounded_rectangle([28, 18, 54, 110], radius=6, fill=255)
+    d.rounded_rectangle([74, 18, 100, 110], radius=6, fill=255)
+
+
+def sym_prev(d):
+    d.rounded_rectangle([16, 22, 32, 106], radius=4, fill=255)
+    d.polygon([(110, 22), (110, 106), (38, 64)], fill=255)
+
+
+def sym_next(d):
+    d.rounded_rectangle([96, 22, 112, 106], radius=4, fill=255)
+    d.polygon([(18, 22), (18, 106), (90, 64)], fill=255)
+
+
+def sym_volume(d):
+    d.polygon([(10, 46), (34, 46), (64, 18), (64, 110), (34, 82), (10, 82)], fill=255)
+    for r in (22, 42):
+        d.arc([64 - r, 64 - r, 64 + r, 64 + r], 300, 60, fill=255, width=W)
+
+
+def sym_more(d):
+    for x in (24, 64, 104):
+        d.ellipse([x - 12, 52, x + 12, 76], fill=255)
+
+
+def sym_weather(d):
+    d.ellipse([20, 14, 76, 70], outline=255, width=W)
+    d.ellipse([34, 54, 82, 102], fill=255)
+    d.ellipse([62, 40, 116, 94], fill=255)
+    d.rounded_rectangle([20, 74, 120, 112], radius=19, fill=255)
+
+
+def sym_calendar(d):
+    d.rounded_rectangle([12, 22, 116, 114], radius=14, outline=255, width=W)
+    d.rectangle([12, 22, 116, 46], fill=255)
+    for x in (38, 90):
+        d.line([(x, 8), (x, 30)], fill=255, width=W)
+    for i in range(6):
+        x, y = 32 + (i % 3) * 32, 64 + (i // 3) * 26
+        d.rounded_rectangle([x - 7, y - 7, x + 7, y + 7], radius=3, fill=255)
+
+
 SYMBOLS = [
     ("SYM_LOGO", sym_logo), ("SYM_SEARCH", sym_search), ("SYM_CONTROL", sym_control), ("SYM_WIFI", sym_wifi),
     ("SYM_HOME", sym_home), ("SYM_DESKTOP", sym_desktop), ("SYM_DOC", sym_doc), ("SYM_APPS", sym_apps),
@@ -945,6 +1005,9 @@ SYMBOLS = [
     ("SYM_TERMINAL", sym_terminal), ("SYM_CHIP", sym_chip), ("SYM_MEMORY", sym_memory),
     ("SYM_NETWORK", sym_network), ("SYM_SIDEBAR", sym_sidebar), ("SYM_STAR", sym_star),
     ("SYM_NEWFOLDER", sym_newfolder), ("SYM_USB", sym_usb), ("SYM_BATTERY", sym_battery), ("SYM_EJECT", sym_eject),
+    ("SYM_MUSIC", sym_music), ("SYM_VIDEO", sym_video), ("SYM_PLAY", sym_play), ("SYM_PAUSE", sym_pause),
+    ("SYM_PREV", sym_prev), ("SYM_NEXT", sym_next), ("SYM_VOLUME", sym_volume), ("SYM_MORE", sym_more),
+    ("SYM_WEATHER", sym_weather), ("SYM_CALENDAR", sym_calendar),
 ]
 
 

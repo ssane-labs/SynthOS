@@ -722,10 +722,10 @@ static int wrap_centered(struct canvas *c, struct rect r, const struct ui_font *
     return y - r.y;
 }
 
-#define MENU_PAD 5
-#define MENU_ITEM_H 22
+#define MENU_PAD 6
+#define MENU_ITEM_H 26
 #define MENU_SEP_H 11
-#define MENU_MAX 32
+#define MENU_MAX 48
 
 struct menu {
     struct menu_item items[MENU_MAX];
@@ -733,6 +733,8 @@ struct menu {
     int hover;
     ui_pick_fn pick;
     struct window *owner;
+    struct spring hl, fade;
+    uint64_t tick;
 };
 
 static int menu_item_y(struct menu *m, int index)
@@ -759,23 +761,31 @@ static void menu_paint(struct window *w, struct canvas *c)
 {
     struct menu *m = w->data;
     gfx_clear(c, (struct rect){0, 0, c->w, c->h}, 0);
+    if (m->fade.pos > 8) {
+        struct rect row = {MENU_PAD, m->hl.pos, c->w - 2 * MENU_PAD, MENU_ITEM_H};
+        gfx_round(c, row, 9, ALPHA(style.accent, CLAMP(m->fade.pos, 0, 1024) * 255 / 1024));
+    }
     for (int i = 0; i < m->count; i++) {
         int y = menu_item_y(m, i);
         if (!m->items[i].label[0]) {
-            gfx_fill(c, (struct rect){MENU_PAD + 9, y + MENU_SEP_H / 2, c->w - 2 * MENU_PAD - 18, 1}, style.separator);
+            gfx_fill(c, (struct rect){MENU_PAD + 10, y + MENU_SEP_H / 2, c->w - 2 * MENU_PAD - 20, 1}, style.separator);
             continue;
         }
         struct rect row = {MENU_PAD, y, c->w - 2 * MENU_PAD, MENU_ITEM_H};
-        bool hot = i == m->hover;
+        if (m->items[i].key == MENU_HEADER) {
+            gfx_text_box(c, (struct rect){row.x + 12, row.y + 4, row.w - 24, row.h - 4}, &font_small, m->items[i].label,
+                         style.secondary, ALIGN_LEFT);
+            continue;
+        }
+        bool hot = i == m->hover && m->fade.pos > 512;
         bool disabled = m->items[i].key < 0;
-        if (hot)
-            gfx_round(c, row, 5, style.accent);
-        uint32_t ink = disabled ? style.tertiary : hot ? RGB(255, 255, 255) : style.text;
-        gfx_text_box(c, (struct rect){row.x + 10, row.y, row.w - 20, row.h}, &font_sans, m->items[i].label, ink,
+        uint32_t ink = disabled ? style.tertiary : hot ? style.accent_text : style.text;
+        int push = i == m->hover ? 2 : 0;
+        gfx_text_box(c, (struct rect){row.x + 12 + push, row.y, row.w - 24, row.h}, &font_sans, m->items[i].label, ink,
                      ALIGN_LEFT);
         if (m->items[i].shortcut)
-            gfx_text_box(c, (struct rect){row.x + 10, row.y, row.w - 20, row.h}, &font_sans, m->items[i].shortcut,
-                         hot ? ALPHA(0xffffffffu, 210) : style.tertiary, ALIGN_RIGHT);
+            gfx_text_box(c, (struct rect){row.x + 12, row.y, row.w - 24, row.h}, &font_sans, m->items[i].shortcut,
+                         hot ? ALPHA(style.accent_text, 200) : style.tertiary, ALIGN_RIGHT);
     }
 }
 
@@ -784,6 +794,16 @@ static void menu_event(struct window *w, struct gui_event *e)
     struct menu *m = w->data;
     int old = m->hover;
     int index = menu_index_at(m, e->y);
+    if (e->type == EV_TIMER) {
+        uint64_t now = hal_ticks_ms();
+        int dt = (int)MIN(now - m->tick, 64u);
+        m->tick = now;
+        bool busy = spring_step(&m->hl, 700, 46, dt);
+        busy |= spring_step(&m->fade, 600, 50, dt);
+        if (busy)
+            wm_invalidate(w);
+        return;
+    }
     if (e->type == EV_MOUSE_MOVE)
         m->hover = index;
     else if (e->type == EV_LEAVE)
@@ -820,8 +840,16 @@ static void menu_event(struct window *w, struct gui_event *e)
             pick(owner, index);
         return;
     }
-    if (old != m->hover)
+    if (old != m->hover) {
+        if (m->hover >= 0) {
+            int y = menu_item_y(m, m->hover);
+            if (m->fade.target == 0)
+                spring_set(&m->hl, y);
+            m->hl.target = y;
+        }
+        m->fade.target = m->hover >= 0 ? 1024 : 0;
         wm_invalidate(w);
+    }
 }
 
 static void menu_destroy(struct window *w)
@@ -843,7 +871,7 @@ struct window *ui_menu_items(struct window *owner, int x, int y, const struct me
     m->hover = -1;
     m->pick = pick;
     m->owner = owner;
-    int width = 180, height = 2 * MENU_PAD;
+    int width = 200, height = 2 * MENU_PAD;
     for (int i = 0; i < m->count; i++) {
         int w = gfx_text_width(&font_sans, items[i].label) + 40;
         if (items[i].shortcut)
@@ -856,9 +884,14 @@ struct window *ui_menu_items(struct window *owner, int x, int y, const struct me
         x += cr.x;
         y += cr.y;
     }
+    m->tick = hal_ticks_ms();
     struct window *w = wm_popup(x, y, width, height, &menu_ops, m, owner);
     if (!w)
         kfree(m);
+    else {
+        w->radius = 14;
+        wm_set_timer(w, 16);
+    }
     return w;
 }
 

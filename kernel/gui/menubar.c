@@ -23,7 +23,7 @@ enum title_kind {
     T_HELP,
 };
 
-enum status_kind {
+enum status_part {
     S_CONTROL,
     S_SEARCH,
     S_CLOCK,
@@ -116,6 +116,9 @@ void menubar_paint(struct canvas *c, int screen)
 {
     if (!started)
         return;
+    panel_paint(c, screen);
+    if (!menubar_height())
+        return;
     struct rect bar = bar_rect(screen);
     if (rect_empty(rect_intersect(bar, c->clip)))
         return;
@@ -180,6 +183,13 @@ static void about_box(void)
 
 static void confirm_quit(struct window *owner, const char *value);
 static int pending_quit;
+static void pick_logo(struct window *owner, int index);
+
+void shell_system_menu(int x, int y)
+{
+    wm_close_popups();
+    ui_menu_items(NULL, x, y, logo_items, ARRAY_SIZE(logo_items), pick_logo);
+}
 
 static void ask_quit(int action, const char *title, const char *text)
 {
@@ -192,6 +202,14 @@ static void confirm_quit(struct window *owner, const char *value)
     UNUSED(owner);
     UNUSED(value);
     gui_quit(pending_quit);
+}
+
+void shell_power_menu(bool restart)
+{
+    if (restart)
+        ask_quit(QUIT_REBOOT, "Restart", "Are you sure you want to restart your computer now?");
+    else
+        ask_quit(QUIT_POWEROFF, "Shut Down", "Are you sure you want to shut down your computer now?");
 }
 
 static void pick_logo(struct window *owner, int index)
@@ -374,6 +392,8 @@ static bool menu_open(void)
 
 static bool in_bar(int x, int y)
 {
+    if (!menubar_height())
+        return false;
     for (int i = 0; i < wm_screen_count(); i++)
         if (rect_contains(bar_rect(i), x, y))
             return true;
@@ -384,13 +404,21 @@ bool chrome_hit(int x, int y)
 {
     if (!started)
         return false;
-    if (in_bar(x, y))
+    if (in_bar(x, y) || panel_hit(x, y))
         return true;
     return dock_hit(x, y);
 }
 
+static bool panel_drag;
+
 void chrome_mouse(int x, int y, unsigned button, bool down, int clicks)
 {
+    if (down)
+        panel_drag = panel_hit(x, y);
+    if (panel_drag) {
+        panel_mouse(x, y, button, down);
+        return;
+    }
     if (!in_bar(x, y)) {
         if (down)
             wm_close_popups();
@@ -430,6 +458,7 @@ void chrome_hover(int x, int y)
     if (!started)
         return;
     dock_hover(x, y);
+    panel_hover(x, y);
     if (y < 0 || !in_bar(x, y))
         return;
     struct rect s = wm_screen_rect(wm_screen_at(x, y));
@@ -448,6 +477,7 @@ void chrome_changed(void)
     layout();
     damage_bars();
     dock_changed();
+    panel_changed();
 }
 
 void chrome_start(void)
@@ -456,13 +486,15 @@ void chrome_start(void)
         bars[i] = (struct glass){0};
         bars[i].frame = bar_rect(i);
         bars[i].z = Z_MENUBAR;
-        glass_register(&bars[i]);
+        if (menubar_height())
+            glass_register(&bars[i]);
     }
     open_menu = NULL;
     open_title = hover_title = -1;
     started = true;
     layout();
     dock_start();
+    panel_start();
 }
 
 void chrome_stop(void)
@@ -473,4 +505,6 @@ void chrome_stop(void)
     for (int i = 0; i < MAX_SCREENS; i++)
         glass_unregister(&bars[i]);
     dock_stop();
+    panel_stop();
+    damage_bars();
 }

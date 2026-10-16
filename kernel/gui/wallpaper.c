@@ -326,6 +326,336 @@ static void paint_synthwave(struct canvas *c)
     }
 }
 
+static int smooth(int t)
+{
+    return t * t * (768 - 2 * t) >> 16;
+}
+
+static int vnoise(int x, int y, uint32_t seed)
+{
+    int xi = x >> 8, yi = y >> 8, fx = smooth(x & 255), fy = smooth(y & 255);
+    uint32_t k = seed * 0x9e3779b9u;
+    int a = (int)(hash((uint32_t)xi * 73856093u ^ (uint32_t)yi * 19349663u ^ k) & 4095);
+    int b = (int)(hash((uint32_t)(xi + 1) * 73856093u ^ (uint32_t)yi * 19349663u ^ k) & 4095);
+    int c = (int)(hash((uint32_t)xi * 73856093u ^ (uint32_t)(yi + 1) * 19349663u ^ k) & 4095);
+    int d = (int)(hash((uint32_t)(xi + 1) * 73856093u ^ (uint32_t)(yi + 1) * 19349663u ^ k) & 4095);
+    int top = a + ((b - a) * fx >> 8), bottom = c + ((d - c) * fx >> 8);
+    return top + ((bottom - top) * fy >> 8);
+}
+
+static int fbm(int x, int y, int octaves, uint32_t seed)
+{
+    int sum = 0, amp = 512, total = 0;
+    for (int i = 0; i < octaves; i++) {
+        sum += vnoise(x, y, seed + (uint32_t)i) * amp;
+        total += amp;
+        amp /= 2;
+        x = x * 2 + 1371;
+        y = y * 2 + 917;
+    }
+    return sum / total;
+}
+
+static uint32_t ramp(const uint32_t *stops, int n, int t)
+{
+    t = CLAMP(t, 0, 1023);
+    int seg = t * (n - 1) / 1024, off = t * (n - 1) - seg * 1024;
+    return color_mix(stops[seg], stops[MIN(seg + 1, n - 1)], off >> 2);
+}
+
+static uint32_t add_light(uint32_t p, uint32_t light, int a)
+{
+    a = CLAMP(a, 0, 255);
+    int r = (int)(p >> 16 & 0xff) + (int)(light >> 16 & 0xff) * a / 255;
+    int g = (int)(p >> 8 & 0xff) + (int)(light >> 8 & 0xff) * a / 255;
+    int b = (int)(p & 0xff) + (int)(light & 0xff) * a / 255;
+    return RGB(MIN(r, 255), MIN(g, 255), MIN(b, 255));
+}
+
+static int glow_at(int x, int y, int cx, int cy, int r)
+{
+    int64_t d2 = (int64_t)(x - cx) * (x - cx) + (int64_t)(y - cy) * (y - cy), r2 = (int64_t)r * r;
+    if (d2 >= r2)
+        return 0;
+    int t = (int)(1024 - d2 * 1024 / r2);
+    return t * t / 1024;
+}
+
+static void stars(struct canvas *c, int limit, int density, int strength)
+{
+    for (int y = 0; y < limit; y++)
+        for (int x = 0; x < c->w; x++) {
+            uint32_t r = hash((uint32_t)(y * 7919 + x * 104729) ^ 0x51ed27u);
+            if (r % (uint32_t)density)
+                continue;
+            int a = (int)(r >> 24) * strength / 255 * (limit - y) / MAX(limit, 1);
+            uint32_t tint = (r >> 8 & 3) == 0 ? RGB(255, 220, 190) : (r >> 8 & 3) == 1 ? RGB(190, 210, 255) : RGB(255, 255, 255);
+            uint32_t *p = &c->px[y * c->stride + x];
+            *p = add_light(*p, tint, a);
+            if ((r >> 12 & 31) == 0) {
+                for (int k = 1; k <= 2; k++) {
+                    int fade = a / (k * 3);
+                    if (x - k >= 0)
+                        p[-k] = add_light(p[-k], tint, fade);
+                    if (x + k < c->w)
+                        p[k] = add_light(p[k], tint, fade);
+                    if (y - k >= 0)
+                        p[-k * c->stride] = add_light(p[-k * c->stride], tint, fade);
+                    if (y + k < c->h)
+                        p[k * c->stride] = add_light(p[k * c->stride], tint, fade);
+                }
+            }
+        }
+}
+
+static int dune_profile(int u)
+{
+    int t = u & 4095;
+    const int crest = 2800;
+    if (t < crest) {
+        int64_t q = (int64_t)t * 4096 / crest;
+        return (int)(q * q * (3 * 4096 - 2 * q) / (4096LL * 4096 * 4));
+    }
+    int64_t f = (int64_t)(4095 - t) * 4096 / (4096 - crest);
+    return (int)(f * f / 16384);
+}
+
+static void paint_dune(struct canvas *c, bool dark)
+{
+    sin_init();
+    int w = c->w, h = c->h;
+    enum { N = 5 };
+    static const int base[N] = {500, 575, 655, 760, 900}, amp1[N] = {70, 90, 105, 130, 150}, amp2[N] = {25, 35, 40, 50, 60};
+    static const int wave1[N] = {900, 1150, 1400, 1700, 2100}, wave2[N] = {340, 420, 520, 640, 760};
+    uint32_t lit[N], shade[N], sky[4];
+    if (dark) {
+        static const uint32_t l[N] = {RGB(84, 72, 120), RGB(88, 68, 112), RGB(92, 64, 102), RGB(96, 60, 92), RGB(98, 56, 80)};
+        static const uint32_t s2[N] = {RGB(58, 50, 92), RGB(54, 44, 84), RGB(48, 38, 74), RGB(42, 32, 64), RGB(34, 26, 52)};
+        memcpy(lit, l, sizeof(lit));
+        memcpy(shade, s2, sizeof(shade));
+        sky[0] = RGB(14, 14, 36), sky[1] = RGB(36, 30, 70), sky[2] = RGB(86, 60, 104), sky[3] = RGB(150, 96, 120);
+    } else {
+        static const uint32_t l[N] = {RGB(240, 192, 150), RGB(238, 176, 124), RGB(234, 158, 100), RGB(226, 138, 78), RGB(214, 118, 60)};
+        static const uint32_t s2[N] = {RGB(214, 158, 132), RGB(198, 132, 104), RGB(178, 108, 80), RGB(156, 86, 60), RGB(128, 66, 44)};
+        memcpy(lit, l, sizeof(lit));
+        memcpy(shade, s2, sizeof(shade));
+        sky[0] = RGB(122, 104, 150), sky[1] = RGB(214, 150, 140), sky[2] = RGB(246, 196, 150), sky[3] = RGB(255, 226, 180);
+    }
+    int *crest = kmalloc(sizeof(int) * (size_t)w * N), *slope = kmalloc(sizeof(int) * (size_t)w * N);
+    if (!crest || !slope) {
+        kfree(crest);
+        kfree(slope);
+        return;
+    }
+    for (int i = 0; i < N; i++) {
+        for (int x = 0; x < w; x++) {
+            int u1 = (x * 4096 / MAX(1, wave1[i] * w / 1024)) + i * 1337;
+            int u2 = (x * 4096 / MAX(1, wave2[i] * w / 1024)) + i * 3911;
+            slope[i * w + x] = h * 16 * base[i] / 1000 - h * 16 * amp1[i] / 1000 * dune_profile(u1) / 1024 -
+                               h * 16 * amp2[i] / 1000 * dune_profile(u2) / 1024 + (fbm(x * 2, i * 4096, 3, 7) - 2048) * h / 4000;
+        }
+        for (int x = 0; x < w; x++)
+            crest[i * w + x] = slope[i * w + x];
+        for (int x = 0; x < w; x++) {
+            int l = MAX(x - 4, 0), r = MIN(x + 4, w - 1);
+            slope[i * w + x] = (crest[i * w + r] - crest[i * w + l]) * 8 / MAX(r - l, 1);
+        }
+        for (int x = 0; x < w; x++)
+            crest[i * w + x] >>= 4;
+    }
+    int sun_x = w * 70 / 100, sun_y = h * 46 / 100;
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        uint32_t sky_px = ramp(sky, 4, y * 1024 / MAX(1, h * 55 / 100));
+        for (int x = 0; x < w; x++) {
+            int layer = -1;
+            for (int i = N - 1; i >= 0; i--)
+                if (y >= crest[i * w + x]) {
+                    layer = i;
+                    break;
+                }
+            uint32_t p;
+            if (layer < 0) {
+                p = sky_px;
+                int haze = fbm(x, y * 4, 4, 3);
+                p = color_mix(p, dark ? RGB(70, 60, 110) : RGB(255, 236, 214), CLAMP((haze - 2000) / 12, 0, 60));
+                p = add_light(p, dark ? RGB(170, 170, 220) : RGB(255, 240, 210), glow_at(x, y, sun_x, sun_y, h * 45 / 100) * (dark ? 70 : 160) / 1024);
+            } else {
+                int top = crest[layer * w + x], d = y - top;
+                int sl = slope[layer * w + x];
+                int light = CLAMP(600 - sl * 4, 0, 1024);
+                light = light * light / 1024;
+                uint32_t lc = color_mix(shade[layer], lit[layer], light >> 2);
+                int depth = CLAMP(d * 1024 / MAX(1, h / 5), 0, 1024);
+                lc = color_mix(lc, color_shade(shade[layer], -30), depth / 6);
+                if (d < 3)
+                    lc = color_mix(lc, dark ? RGB(180, 170, 230) : RGB(255, 236, 200), (3 - d) * 50 * light / 1024);
+                if (layer >= 2) {
+                    int rip = isin(d * 48 * (8 - layer) / 6 + (fbm(x * 3, y * 3, 2, 9) >> 3) + x / 3) / 1024;
+                    lc = color_shade(lc, rip * (layer - 1) * light / 4096);
+                }
+                int haze = (N - 1 - layer) * 34;
+                p = color_mix(lc, sky[3], haze);
+                p = add_light(p, dark ? RGB(80, 80, 120) : RGB(255, 200, 140), glow_at(x, y, sun_x, sun_y, h * 50 / 100) * 40 / 1024);
+            }
+            int grain = (int)(hash((uint32_t)(x * 1973 + y * 9277)) & 7) - 3;
+            row[x] = color_shade(p, grain);
+        }
+    }
+    if (dark)
+        stars(c, h * 40 / 100, 260, 200);
+    kfree(crest);
+    kfree(slope);
+}
+
+static void paint_mist(struct canvas *c, bool dark)
+{
+    int w = c->w, h = c->h;
+    enum { N = 5 };
+    static const int base[N] = {450, 540, 640, 750, 880}, amp[N] = {150, 160, 170, 180, 190};
+    uint32_t far = dark ? RGB(62, 74, 100) : RGB(188, 200, 216), near = dark ? RGB(12, 16, 26) : RGB(52, 66, 84);
+    uint32_t sky_top = dark ? RGB(12, 16, 30) : RGB(200, 212, 228), sky_low = dark ? RGB(44, 54, 78) : RGB(242, 244, 247);
+    uint32_t fog = dark ? RGB(96, 110, 136) : RGB(250, 251, 252);
+    int *ridge = kmalloc(sizeof(int) * (size_t)w * N);
+    if (!ridge)
+        return;
+    for (int i = 0; i < N; i++)
+        for (int x = 0; x < w; x++) {
+            int n = fbm(x * (3 + i) * 512 / MAX(w, 1), i * 3000, 4, 11 + (uint32_t)i);
+            int rn = fbm(x * (5 + 2 * i) * 1024 / MAX(w, 1), i * 3000 + 700, 3, 17 + (uint32_t)i);
+            int sharp = 4096 - (rn > 2048 ? rn - 2048 : 2048 - rn) * 2;
+            int peak = CLAMP((n - 1000) * 4096 / 2100, 0, 4096) * 7 / 8 + sharp / 8;
+            ridge[i * w + x] = h * base[i] / 1000 - h * amp[i] / 1000 * peak / 4096;
+        }
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        uint32_t sky = lerp(sky_top, sky_low, y, h * 6 / 10);
+        int band = 0;
+        for (int i = 1; i < N; i++) {
+            int mid = h * (base[i] - 40) / 1000, spread = h * 7 / 100;
+            int dy = y > mid ? y - mid : mid - y;
+            band = MAX(band, CLAMP(1024 - dy * 1024 / spread, 0, 1024));
+        }
+        for (int x = 0; x < w; x++) {
+            int layer = -1;
+            for (int i = N - 1; i >= 0; i--)
+                if (y >= ridge[i * w + x]) {
+                    layer = i;
+                    break;
+                }
+            uint32_t p = sky;
+            if (layer < 0) {
+                p = add_light(p, dark ? RGB(160, 170, 210) : RGB(255, 250, 240), glow_at(x, y, w * 30 / 100, h * 30 / 100, h * 40 / 100) * (dark ? 60 : 90) / 1024);
+            } else {
+                uint32_t col = color_mix(far, near, layer * 255 / (N - 1));
+                int d = y - ridge[layer * w + x];
+                col = color_mix(col, color_shade(col, dark ? -40 : -24), CLAMP(d * 255 / MAX(1, h / 5), 0, 255) / 3);
+                p = col;
+            }
+            int wisp = fbm(x * 256 / 300, y * 256 / 26, 4, 31);
+            int a = band * CLAMP((wisp - 1500) / 5, 0, 255) / 1024 * (dark ? 120 : 210) / 255;
+            p = color_mix(p, fog, a);
+            int low = CLAMP((y - h * 78 / 100) * 255 / MAX(1, h * 22 / 100), 0, 255);
+            p = color_mix(p, fog, low * CLAMP((fbm(x * 256 / 260, y * 256 / 30, 3, 77) - 1300) / 4, 0, 255) / 255 * 170 / 255);
+            int grain = (int)(hash((uint32_t)(x * 1973 + y * 9277)) & 3) - 1;
+            row[x] = color_shade(p, grain);
+        }
+    }
+    if (dark)
+        stars(c, h * 35 / 100, 340, 160);
+    kfree(ridge);
+}
+
+static void paint_night(struct canvas *c, bool dark)
+{
+    int w = c->w, h = c->h;
+    uint32_t top = dark ? RGB(5, 6, 11) : RGB(46, 44, 84), bottom = dark ? RGB(14, 14, 28) : RGB(120, 100, 150);
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        uint32_t base = lerp(top, bottom, y, h);
+        for (int x = 0; x < w; x++) {
+            int band = (x * 2 - y * 3 + h * 2) * 1024 / MAX(1, w * 2 + h * 3);
+            int n = fbm(x, y, 5, 101);
+            int m = fbm(x * 2 + 9000, y * 2, 4, 211);
+            int center = 1024 - CLAMP((band > 560 ? band - 560 : 560 - band) * 4, 0, 1024);
+            int a = CLAMP((n - 1700) / 6, 0, 255) * center / 1024;
+            uint32_t p = base;
+            p = add_light(p, RGB(90, 60, 200), a * 70 / 255);
+            p = add_light(p, RGB(30, 150, 170), CLAMP((m - 2100) / 7, 0, 255) * center / 1024 * 45 / 255);
+            int horizon = h * 88 / 100 - (fbm(x * 3, 0, 4, 5) - 2048) * h / 40000;
+            if (y >= horizon)
+                p = color_mix(RGB(4, 4, 8), RGB(10, 10, 18), CLAMP((y - horizon) * 255 / MAX(1, h - horizon), 0, 255));
+            else
+                p = add_light(p, RGB(120, 70, 160), CLAMP(255 - (horizon - y) * 255 / MAX(1, h / 4), 0, 255) * 40 / 255);
+            row[x] = dither(p, x, y);
+        }
+    }
+    stars(c, h * 86 / 100, 130, 255);
+    int mx = w * 82 / 100, my = h * 18 / 100, mr = h * 4 / 100;
+    for (int y = my - mr * 6; y < my + mr * 6; y++)
+        for (int x = mx - mr * 6; x < mx + mr * 6; x++) {
+            if (x < 0 || y < 0 || x >= w || y >= h)
+                continue;
+            uint32_t *p = &c->px[y * c->stride + x];
+            int g = glow_at(x, y, mx, my, mr * 6);
+            *p = add_light(*p, RGB(150, 150, 210), g * 50 / 1024);
+            int dx = x - mx, dy = y - my, ex = x - mx - mr * 45 / 100, ey = y - my + mr * 20 / 100;
+            if (dx * dx + dy * dy <= mr * mr && ex * ex + ey * ey > mr * mr * 80 / 100)
+                *p = color_mix(*p, RGB(240, 236, 220), 235);
+        }
+}
+
+static void paint_sunset(struct canvas *c, bool dark)
+{
+    int w = c->w, h = c->h, horizon = h * 64 / 100;
+    static const uint32_t sky_light[] = {RGB(44, 18, 92), RGB(112, 34, 120), RGB(208, 62, 112), RGB(250, 118, 92), RGB(255, 186, 112)};
+    static const uint32_t sky_dark[] = {RGB(12, 6, 32), RGB(46, 14, 70), RGB(110, 30, 90), RGB(170, 56, 86), RGB(220, 110, 90)};
+    const uint32_t *sky = dark ? sky_dark : sky_light;
+    int sun_x = w / 2, sun_r = h * 14 / 100;
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        for (int x = 0; x < w; x++) {
+            uint32_t p;
+            if (y < horizon) {
+                p = ramp(sky, 5, y * 1024 / horizon);
+                int cloud = fbm(x * 256 / 400, y * 256 / 30, 5, 404);
+                int band = CLAMP(1024 - (y > horizon * 55 / 100 ? y - horizon * 55 / 100 : horizon * 55 / 100 - y) * 1024 / MAX(1, horizon / 3), 0, 1024);
+                int a = CLAMP((cloud - 2000) / 5, 0, 255) * band / 1024;
+                uint32_t lit = color_mix(RGB(255, 140, 120), RGB(255, 210, 150), y * 255 / horizon);
+                p = color_mix(p, color_mix(RGB(120, 40, 110), lit, CLAMP((cloud - 2000) / 4, 0, 255)), a * 3 / 4);
+                p = add_light(p, RGB(255, 130, 80), glow_at(x, y, sun_x, horizon, h * 55 / 100) * 80 / 1024);
+                int dx = x - sun_x, dy = y - horizon + sun_r / 3;
+                if (dx * dx + dy * dy <= sun_r * sun_r) {
+                    uint32_t sun = lerp(RGB(255, 236, 140), RGB(255, 110, 120), y - (horizon - sun_r - sun_r / 3), sun_r + sun_r / 3);
+                    int edge = sun_r * sun_r - dx * dx - dy * dy;
+                    p = color_mix(p, sun, CLAMP(edge * 2 / MAX(1, sun_r) * 255 / 4, 0, 255));
+                }
+                int left = horizon - h * 9 / 100 + (fbm(x * 256 / 60, 100, 4, 21) - 2048) * h / 30000 + CLAMP((x - w / 3) * h / MAX(1, w * 2), 0, h) * 3;
+                int right = horizon - h * 7 / 100 + (fbm(x * 256 / 60, 300, 4, 22) - 2048) * h / 30000 + CLAMP((w * 2 / 3 - x) * h / MAX(1, w * 2), 0, h) * 3;
+                int ridge = MIN(left, right);
+                if (y >= ridge) {
+                    p = color_mix(RGB(70, 22, 74), RGB(30, 10, 44), CLAMP((y - ridge) * 255 / MAX(1, horizon - ridge), 0, 255));
+                    if (y - ridge < 2)
+                        p = color_mix(p, RGB(255, 130, 140), 120);
+                }
+            } else {
+                int d = y - horizon;
+                p = lerp(dark ? RGB(70, 24, 70) : RGB(120, 40, 100), dark ? RGB(8, 4, 20) : RGB(26, 10, 44), d, h - horizon);
+                int spread = sun_r + d * 2 / 3;
+                int dx = x - sun_x;
+                int col = CLAMP(1024 - (dx < 0 ? -dx : dx) * 1024 / MAX(1, spread), 0, 1024);
+                int streak = fbm(x * 256 / 40, y * 128, 3, 505);
+                int s = CLAMP((streak - 1800) / 5, 0, 255) * col / 1024;
+                p = add_light(p, RGB(255, 150, 100), s * CLAMP(255 - d * 255 / MAX(1, h - horizon), 40, 255) / 255);
+                int wave = fbm(x * 256 / 30, y * 128, 2, 606);
+                p = color_shade(p, (wave - 2048) / 160);
+            }
+            row[x] = dither(p, x, y);
+        }
+    }
+    stars(c, horizon / 3, 400, 140);
+}
+
 static bool paint_image(struct canvas *c, const char *path)
 {
     struct image img;
@@ -352,7 +682,15 @@ static bool paint_image(struct canvas *c, const char *path)
 void wallpaper_paint(struct canvas *c, const char *kind, bool dark)
 {
     c->clip = (struct rect){0, 0, c->w, c->h};
-    if (!strcmp(kind, "hills"))
+    if (!strcmp(kind, "dune"))
+        paint_dune(c, dark);
+    else if (!strcmp(kind, "mist"))
+        paint_mist(c, dark);
+    else if (!strcmp(kind, "night"))
+        paint_night(c, dark);
+    else if (!strcmp(kind, "sunset"))
+        paint_sunset(c, dark);
+    else if (!strcmp(kind, "hills"))
         paint_hills(c, dark);
     else if (!strcmp(kind, "aurora"))
         paint_aurora(c, dark);

@@ -35,9 +35,9 @@ static struct canvas wallpapers[MAX_SCREENS];
 static bool active;
 static int quit_action = -1;
 static struct shell *session;
-static char wallpaper_setting[PATH_MAX_LEN] = "waves";
-static char appearance_setting[8] = "light";
-static char accent_setting[12] = "blue";
+static char wallpaper_setting[PATH_MAX_LEN] = "auto";
+static char appearance_setting[8] = "auto";
+static char accent_setting[12] = "auto";
 static char glass_setting[10] = "liquid";
 static bool autostart = true;
 static char clipboard[4096];
@@ -163,68 +163,71 @@ static bool want_dark(void)
 {
     if (!strcmp(appearance_setting, "dark"))
         return true;
-    if (!strcmp(appearance_setting, "auto"))
-        return color_luma(palette_color(ATTR_BG(theme_attr(ROLE_TEXT)))) < 128;
-    return false;
+    if (!strcmp(appearance_setting, "light"))
+        return false;
+    return look_current()->dark;
 }
 
 void gui_style_refresh(void)
 {
+    const struct gui_look *look = look_current();
     bool dark = want_dark();
+    uint32_t t = look->tint;
     style.dark = dark;
+    style.tint = t;
     style.glass = !strcmp(glass_setting, "solid") ? GLASS_SOLID : !strcmp(glass_setting, "frosted") ? GLASS_FROSTED
                                                                                                       : GLASS_LIQUID;
-    uint32_t accent = dark ? accents[0].dark : accents[0].light;
+    uint32_t accent = look->accent;
     for (size_t i = 0; i < ARRAY_SIZE(accents); i++)
         if (!strcmp(accent_setting, accents[i].name))
             accent = dark ? accents[i].dark : accents[i].light;
     for (int i = 0; i < 16; i++)
         style.palette[i] = palette_color(i);
     style.accent = accent;
-    style.accent_text = RGB(255, 255, 255);
-    style.error = dark ? RGB(255, 69, 58) : RGB(255, 59, 48);
-    style.ok = dark ? RGB(48, 209, 88) : RGB(52, 199, 89);
-    style.warning = dark ? RGB(255, 159, 10) : RGB(255, 149, 0);
+    style.accent_text = color_luma(accent) > 186 ? RGB(30, 24, 20) : RGB(255, 255, 255);
+    style.error = dark ? RGB(255, 92, 84) : RGB(232, 64, 56);
+    style.ok = dark ? RGB(72, 214, 120) : RGB(48, 176, 86);
+    style.warning = dark ? RGB(255, 176, 60) : RGB(232, 140, 20);
     if (dark) {
-        style.window = RGB(36, 36, 38);
-        style.content = RGB(30, 30, 31);
-        style.sidebar = RGBA(44, 44, 48, 196);
-        style.titlebar = RGB(48, 48, 50);
-        style.titlebar_inactive = RGB(38, 38, 40);
-        style.separator = ALPHA(0xffffffffu, 30);
-        style.text = RGB(236, 236, 240);
-        style.secondary = RGB(152, 152, 157);
-        style.tertiary = RGB(104, 104, 108);
-        style.selection_inactive = RGB(70, 70, 74);
+        style.window = color_mix(RGB(26, 26, 30), t, 18);
+        style.content = color_mix(RGB(18, 18, 22), t, 12);
+        style.sidebar = ALPHA(color_mix(RGB(34, 34, 40), t, 40), 196);
+        style.titlebar = color_mix(RGB(30, 30, 35), t, 22);
+        style.titlebar_inactive = color_mix(RGB(24, 24, 28), t, 14);
+        style.separator = ALPHA(0xffffffffu, 26);
+        style.text = color_mix(RGB(242, 240, 246), t, 10);
+        style.secondary = color_mix(RGB(150, 150, 158), t, 34);
+        style.tertiary = color_mix(RGB(98, 98, 106), t, 34);
+        style.selection_inactive = color_mix(RGB(60, 60, 66), t, 40);
         style.hover = ALPHA(0xffffffffu, 18);
-        style.control = RGB(80, 80, 84);
-        style.control_pressed = RGB(104, 104, 108);
+        style.control = color_mix(RGB(64, 64, 70), t, 30);
+        style.control_pressed = color_mix(RGB(88, 88, 94), t, 30);
         style.control_border = ALPHA(0, 90);
-        style.field = RGB(28, 28, 30);
-        style.field_border = ALPHA(0xffffffffu, 40);
-        style.zebra = RGB(38, 38, 40);
-        style.group = RGB(46, 46, 48);
-        style.menu = RGB(44, 44, 48);
+        style.field = color_mix(RGB(16, 16, 20), t, 10);
+        style.field_border = ALPHA(0xffffffffu, 34);
+        style.zebra = color_mix(RGB(24, 24, 28), t, 12);
+        style.group = color_mix(RGB(32, 32, 37), t, 20);
+        style.menu = color_mix(RGB(36, 36, 42), t, 30);
     } else {
-        style.window = RGB(236, 236, 238);
-        style.content = RGB(255, 255, 255);
-        style.sidebar = RGBA(232, 232, 236, 200);
-        style.titlebar = RGB(232, 232, 234);
-        style.titlebar_inactive = RGB(244, 244, 246);
-        style.separator = ALPHA(0, 26);
-        style.text = RGB(29, 29, 31);
-        style.secondary = RGB(120, 120, 126);
-        style.tertiary = RGB(176, 176, 180);
-        style.selection_inactive = RGB(218, 218, 222);
-        style.hover = ALPHA(0, 14);
-        style.control = RGB(255, 255, 255);
-        style.control_pressed = RGB(226, 226, 230);
-        style.control_border = ALPHA(0, 42);
-        style.field = RGB(255, 255, 255);
-        style.field_border = ALPHA(0, 48);
-        style.zebra = RGB(244, 245, 246);
-        style.group = RGB(255, 255, 255);
-        style.menu = RGB(246, 246, 248);
+        style.window = color_mix(RGB(246, 246, 248), t, 14);
+        style.content = color_mix(RGB(255, 255, 255), t, 6);
+        style.sidebar = ALPHA(color_mix(RGB(238, 238, 242), t, 36), 200);
+        style.titlebar = color_mix(RGB(242, 242, 245), t, 18);
+        style.titlebar_inactive = color_mix(RGB(248, 248, 250), t, 10);
+        style.separator = ALPHA(color_mix(RGB(0, 0, 0), t, 60), 26);
+        style.text = color_mix(RGB(28, 28, 32), t, 46);
+        style.secondary = color_mix(RGB(118, 118, 126), t, 50);
+        style.tertiary = color_mix(RGB(176, 176, 182), t, 40);
+        style.selection_inactive = color_mix(RGB(220, 220, 224), t, 30);
+        style.hover = ALPHA(color_mix(RGB(0, 0, 0), t, 80), 16);
+        style.control = color_mix(RGB(255, 255, 255), t, 8);
+        style.control_pressed = color_mix(RGB(226, 226, 230), t, 30);
+        style.control_border = ALPHA(0, 40);
+        style.field = color_mix(RGB(255, 255, 255), t, 4);
+        style.field_border = ALPHA(0, 44);
+        style.zebra = color_mix(RGB(246, 246, 247), t, 10);
+        style.group = color_mix(RGB(255, 255, 255), t, 6);
+        style.menu = color_mix(RGB(248, 248, 250), t, 12);
     }
     style.selection = accent;
     style.desktop = style.window;
@@ -234,6 +237,12 @@ void gui_style_refresh(void)
     style.button = style.control;
     style.button_hover = style.control_pressed;
     style.accent2 = color_mix(accent, dark ? 0xff000000u : 0xffffffffu, 60);
+    const char *console = theme_current()->name;
+    if (!strcmp(console, "mirage") || !strcmp(console, "mirage-light")) {
+        const char *want = dark ? "mirage" : "mirage-light";
+        if (strcmp(console, want))
+            theme_load(want);
+    }
 }
 
 void gui_wallpaper_refresh(void)
@@ -244,7 +253,8 @@ void gui_wallpaper_refresh(void)
             canvas_free(&wallpapers[i]);
         if (!wallpapers[i].px && !canvas_alloc(&wallpapers[i], a.w, a.h))
             continue;
-        wallpaper_paint(&wallpapers[i], wallpaper_setting, style.dark);
+        wallpaper_paint(&wallpapers[i], strcmp(wallpaper_setting, "auto") ? wallpaper_setting : look_current()->name,
+                        style.dark);
     }
     wm_damage_all();
 }
@@ -336,8 +346,9 @@ static void scan_desktop(void)
 static struct rect icon_cell(int i)
 {
     struct rect s = wm_work_area(0);
-    int per_column = MAX(1, (s.h - 16) / CELL_H);
-    return (struct rect){s.x + s.w - 12 - (i / per_column + 1) * CELL_W, s.y + 10 + (i % per_column) * CELL_H, CELL_W,
+    int top = MAX(s.y + 10, status_bottom() + 10);
+    int per_column = MAX(1, (s.y + s.h - top - 6) / CELL_H);
+    return (struct rect){s.x + s.w - 12 - (i / per_column + 1) * CELL_W, top + (i % per_column) * CELL_H, CELL_W,
                          CELL_H - 6};
 }
 
@@ -766,7 +777,7 @@ void gui_notify(const char *title, const char *text)
     str_copy(n->text, text, sizeof(n->text));
     n->until = hal_ticks_ms() + 6000;
     struct rect s = wm_screen_rect(0);
-    int y = s.y + MENUBAR_HEIGHT + 10;
+    int y = s.y + menubar_height() + 10;
     wm_foreach(note_below, &y);
     struct window *w = wm_popup(s.x + s.w - NOTE_W - 12, y, NOTE_W, NOTE_H, &note_ops, n, NULL);
     if (!w) {
@@ -977,10 +988,6 @@ int gui_run(struct shell *sh)
     last_input = hal_ticks_ms();
     if (!user_logged_in())
         gui_login();
-    con_role(ROLE_ACCENT);
-    kprintf("SynthOS desktop");
-    con_role(ROLE_MUTED);
-    kprintf(" - this terminal runs the shell. Type 'exit' or use the SynthOS menu to leave.\n");
     con_reset();
 
     shell_repl(sh);
@@ -1016,7 +1023,7 @@ static int set_wallpaper(struct shell *sh, const char *value)
     return 0;
 }
 
-static const struct setting s_wallpaper = {"wallpaper", "waves|hills|aurora|synthwave|solid|<file.bmp>",
+static const struct setting s_wallpaper = {"wallpaper", "auto|dune|mist|night|sunset|waves|hills|aurora|synthwave|solid|<file.bmp>",
                                            "desktop background", get_wallpaper, set_wallpaper};
 SETTING(s_wallpaper);
 
@@ -1036,6 +1043,21 @@ static void refresh_all(void)
     chrome_changed();
 }
 
+void gui_look_changed(void)
+{
+    if (!active)
+        return;
+    chrome_stop();
+    gui_style_refresh();
+    chrome_start();
+    gui_wallpaper_refresh();
+    wm_foreach(invalidate_one, NULL);
+    wm_reflow();
+    icon_count = -1;
+    scan_desktop();
+    chrome_changed();
+}
+
 static void get_appearance(char *buf, size_t cap)
 {
     str_copy(buf, appearance_setting, cap);
@@ -1051,7 +1073,7 @@ static int set_appearance(struct shell *sh, const char *value)
     return 0;
 }
 
-static const struct setting s_appearance = {"appearance", "light|dark|auto", "desktop light or dark mode",
+static const struct setting s_appearance = {"appearance", "auto|light|dark", "light or dark mode (auto follows the look)",
                                             get_appearance, set_appearance};
 SETTING(s_appearance);
 
@@ -1063,16 +1085,17 @@ static void get_accent(char *buf, size_t cap)
 static int set_accent(struct shell *sh, const char *value)
 {
     UNUSED(sh);
+    bool known = !strcmp(value, "auto");
     for (size_t i = 0; i < ARRAY_SIZE(accents); i++)
-        if (!strcmp(value, accents[i].name)) {
-            str_copy(accent_setting, value, sizeof(accent_setting));
-            refresh_all();
-            return 0;
-        }
-    return E_INVAL;
+        known |= !strcmp(value, accents[i].name);
+    if (!known)
+        return E_INVAL;
+    str_copy(accent_setting, value, sizeof(accent_setting));
+    refresh_all();
+    return 0;
 }
 
-static const struct setting s_accent = {"accent", "blue|purple|pink|red|orange|yellow|green|graphite",
+static const struct setting s_accent = {"accent", "auto|blue|purple|pink|red|orange|yellow|green|graphite",
                                         "desktop accent color", get_accent, set_accent};
 SETTING(s_accent);
 

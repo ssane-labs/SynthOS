@@ -274,7 +274,7 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
 {
     int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
     unsigned tint_a = look->tint >> 24, sat = (unsigned)look->saturation;
-    int band = look->liquid ? MIN(look->band, MIN(f.w, f.h) / 2) : 0;
+    int band = look->liquid && !look->shape ? MIN(look->band, MIN(f.w, f.h) / 2) : 0;
     int band16 = MAX(band, 1) * 16;
     int refract = look->refract * 256;
     int inner = band + radius;
@@ -285,7 +285,18 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
         bool edge_row = y < f.y + inner || y >= f.y + f.h - inner;
         for (int x = f.x; x < f.x + f.w; x++) {
             int cov = 256, d = band16, nx = 0, ny = 0;
-            if (edge_row || x < f.x + inner || x >= f.x + f.w - inner) {
+            int shape_rim = 0;
+            if (look->shape) {
+                cov = look->shape(x, y, look->shape_ctx);
+                if (cov <= 0) {
+                    row[x] = 0;
+                    continue;
+                }
+                const void *k = look->shape_ctx;
+                int inner = MIN(MIN(look->shape(x - 2, y, k), look->shape(x + 2, y, k)),
+                                MIN(look->shape(x, y - 2, k), look->shape(x, y + 2, k)));
+                shape_rim = (256 - inner) * (y < f.y + f.h / 2 ? 150 : 90) >> 8;
+            } else if (edge_row || x < f.x + inner || x >= f.x + f.w - inner) {
                 if (geo) {
                     const struct geo *e = &geo[(y - f.y) * f.w + (x - f.x)];
                     d = e->d;
@@ -336,6 +347,7 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
             uint32_t out = (uint32_t)r << 16 | (uint32_t)gg << 8 | (uint32_t)b;
             if (tint_a)
                 out = color_mix(out | 0xff000000u, look->tint | 0xff000000u, (int)tint_a) & 0xffffffu;
+            spec += shape_rim;
             if (spec > 0) {
                 spec = MIN(spec, 255);
                 r = (int)(out >> 16 & 0xff);
@@ -370,7 +382,10 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
         g->valid = false;
     if (look->solid || (!g->valid && !capture(c, g, look->blur, scale))) {
         uint32_t fallback = look->solid ? look->solid_color : ALPHA(look->tint, 255);
-        gfx_round(c, f, look->radius, fallback);
+        if (look->shape)
+            gfx_shape(c, f, look->shape, look->shape_ctx, fallback);
+        else
+            gfx_round(c, f, look->radius, fallback);
         return;
     }
     bool near = pointer_near(look, f);
@@ -405,6 +420,8 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
         }
     }
     int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
+    if (look->shape)
+        return;
     if (!look->liquid && look->rim)
         gfx_round_frame_gradient(c, f, radius, ALPHA(0xffffffffu, look->rim), ALPHA(0xffffffffu, look->rim / 3));
     if (look->outline)
@@ -428,14 +445,15 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
     look->outline = dark ? ALPHA(0, 110) : ALPHA(0, 26);
     switch (kind) {
     case GLASS_MENUBAR:
-        look->tint = dark ? RGBA(30, 30, 34, 90) : RGBA(250, 250, 252, 110);
+        look->tint = ALPHA(color_mix(dark ? RGB(30, 30, 34) : RGB(250, 250, 252), style.tint | 0xff000000u, dark ? 40 : 30), dark ? 90 : 110);
         look->solid_color = dark ? RGB(44, 44, 48) : RGB(236, 236, 238);
         look->rim = 0;
         look->outline = 0;
         look->liquid = false;
         break;
     case GLASS_DOCK:
-        look->tint = dark ? RGBA(30, 30, 36, look->liquid ? 60 : 120) : RGBA(255, 255, 255, look->liquid ? 34 : 100);
+        look->tint = ALPHA(color_mix(dark ? RGB(30, 30, 36) : RGB(255, 255, 255), style.tint | 0xff000000u, dark ? 60 : 40),
+                           look->liquid ? (dark ? 90 : 70) : (dark ? 150 : 130));
         look->solid_color = dark ? RGB(52, 52, 56) : RGB(232, 232, 236);
         if (look->liquid) {
             look->scale = 2;
@@ -449,7 +467,8 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         }
         break;
     case GLASS_MENU:
-        look->tint = dark ? RGBA(34, 34, 38, look->liquid ? 175 : 185) : RGBA(250, 250, 252, look->liquid ? 185 : 200);
+        look->tint = ALPHA(color_mix(dark ? RGB(34, 34, 38) : RGB(250, 250, 252), style.tint | 0xff000000u, dark ? 50 : 26),
+                           look->liquid ? 185 : 200);
         look->solid_color = dark ? RGB(44, 44, 48) : RGB(246, 246, 248);
         look->band = 12;
         look->refract = 10;
@@ -458,7 +477,9 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
             look->outline = dark ? ALPHA(0, 90) : ALPHA(0, 14);
         break;
     case GLASS_PANEL:
-        look->tint = dark ? RGBA(34, 34, 38, look->liquid ? 110 : 170) : RGBA(250, 250, 252, look->liquid ? 105 : 170);
+        look->tint = ALPHA(color_mix(dark ? RGB(58, 54, 68) : RGB(250, 250, 252), style.tint | 0xff000000u, dark ? 40 : 34),
+                           look->liquid ? (dark ? 120 : 120) : 170);
+        look->brightness = dark ? 10 : 10;
         look->solid_color = dark ? RGB(44, 44, 48) : RGB(244, 244, 246);
         look->blur = look->liquid ? 4 : 6;
         look->band = 18;

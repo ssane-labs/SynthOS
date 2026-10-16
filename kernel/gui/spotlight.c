@@ -553,7 +553,7 @@ void control_center_toggle(int right)
     if (!cc)
         return;
     int w = 330, h = 12 + 74 * 4 + 42;
-    control_win = wm_popup(right - w, MENUBAR_HEIGHT + 6, w, h, &control_ops, cc, NULL);
+    control_win = wm_popup(right - w, menubar_height() + 6, w, h, &control_ops, cc, NULL);
     if (!control_win) {
         kfree(cc);
         return;

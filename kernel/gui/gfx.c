@@ -377,7 +377,60 @@ static const struct shadow_table *shadow_lookup(int radius, int size, int streng
     return t;
 }
 
+static void shadow_impl(struct canvas *c, struct rect r, int radius, int size, int strength, int dy, uint32_t color);
+
 void gfx_drop_shadow(struct canvas *c, struct rect r, int radius, int size, int strength, int dy)
+{
+    shadow_impl(c, r, radius, size, strength, dy, 0);
+}
+
+void gfx_glow(struct canvas *c, struct rect r, int radius, int size, int strength, uint32_t color)
+{
+    shadow_impl(c, r, radius, size, strength, 0, color & 0xffffffu);
+}
+
+static int isqrt_i(uint32_t v)
+{
+    uint32_t r = 0, bit = 1u << 30;
+    while (bit > v)
+        bit >>= 2;
+    while (bit) {
+        if (v >= r + bit) {
+            v -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    return (int)r;
+}
+
+int gfx_dist16(int dx16, int dy16)
+{
+    return isqrt_i((uint32_t)(dx16 * dx16 + dy16 * dy16));
+}
+
+int gfx_cover(int d16)
+{
+    return CLAMP((d16 + 8) * 16, 0, 256);
+}
+
+void gfx_shape(struct canvas *c, struct rect bounds, gfx_cover_fn cover, const void *ctx, uint32_t color)
+{
+    struct rect area = rect_intersect(bounds, c->clip);
+    unsigned alpha = color >> 24;
+    for (int y = area.y; y < area.y + area.h; y++)
+        for (int x = area.x; x < area.x + area.w; x++) {
+            int cov = cover(x, y, ctx);
+            if (cov <= 0)
+                continue;
+            uint32_t *p = &c->px[y * c->stride + x];
+            *p = blend(*p, color, alpha * (unsigned)MIN(cov, 256) >> 8);
+        }
+}
+
+static void shadow_impl(struct canvas *c, struct rect r, int radius, int size, int strength, int dy, uint32_t color)
 {
     if (size <= 0 || strength <= 0)
         return;
@@ -413,7 +466,7 @@ void gfx_drop_shadow(struct canvas *c, struct rect r, int radius, int size, int 
                 continue;
             unsigned a = trow[dx0];
             if (a)
-                row[x] = over(row[x], 0, a);
+                row[x] = over(row[x], color, a);
         }
     }
 }

@@ -70,6 +70,11 @@ static int drag_x, drag_y, drag_edges;
 static struct rect drag_frame;
 static struct window *hover_win, *traffic_win;
 static int pressed_light = -1;
+static struct spring lights_grow;
+static struct window *more_hover_win, *more_target;
+static uint64_t chrome_tick;
+static struct menu_item more_items[48];
+static int more_action[48];
 static uint64_t last_click_time;
 static int last_click_x, last_click_y, click_count;
 static struct window *last_click_win;
@@ -199,10 +204,15 @@ void wm_screen_size(int *w, int *h)
 struct rect wm_work_area(int index)
 {
     struct rect a = wm_screen_rect(index);
-    a.y += MENUBAR_HEIGHT;
-    a.h -= MENUBAR_HEIGHT;
-    if (index == 0)
+    int top = menubar_height() ? menubar_height() : 8;
+    a.y += top;
+    a.h -= top;
+    if (index == 0) {
+        int left = shell_left_reserved();
+        a.x += left;
+        a.w -= left;
         a.h -= dock_reserved();
+    }
     return a;
 }
 
@@ -232,7 +242,7 @@ static struct rect outer_rect(const struct window *w)
 {
     if (w->flags & WIN_NOSHADOW)
         return w->frame;
-    int size = floating(w) ? 18 : SHADOW, dy = floating(w) ? 6 : SHADOW_DY;
+    int size = w->flags & WIN_GLOW ? 30 : floating(w) ? 18 : SHADOW, dy = floating(w) ? 6 : SHADOW_DY;
     struct rect s = {w->frame.x - size, w->frame.y + dy - size, w->frame.w + 2 * size, w->frame.h + 2 * size};
     return rect_union(s, w->frame);
 }
@@ -594,6 +604,12 @@ static void wm_animate(void)
         pp = &g->next;
     }
     dock_animate();
+    panel_animate();
+    uint64_t now = hal_ticks_ms();
+    int dt = chrome_tick ? (int)MIN(now - chrome_tick, 64u) : 16;
+    chrome_tick = now;
+    if (spring_step(&lights_grow, 500, 22, dt) && traffic_win && wm_window_alive(traffic_win))
+        damage_title(traffic_win);
 }
 
 static bool alloc_surface(struct window *w)
@@ -774,6 +790,10 @@ void wm_destroy(struct window *w)
         hover_win = NULL;
     if (traffic_win == w)
         traffic_win = NULL;
+    if (more_hover_win == w)
+        more_hover_win = NULL;
+    if (more_target == w)
+        more_target = NULL;
     if (last_click_win == w)
         last_click_win = NULL;
     if (w->ops && w->ops->destroy)
@@ -1058,6 +1078,27 @@ static bool light_enabled(const struct window *w, int i)
     return i == 0 || i == 1 || (w->flags & WIN_RESIZABLE);
 }
 
+
+static bool has_more(const struct window *w)
+{
+    return framed(w) && (w->menus || w->app) && !(w->flags & WIN_NOTITLE);
+}
+
+static struct rect more_rect(const struct window *w)
+{
+    int cy = traffic_cy(w);
+    return (struct rect){w->frame.x + w->frame.w - 36, cy - 11, 28, 22};
+}
+
+static void draw_more(struct canvas *c, struct window *w)
+{
+    struct rect r = more_rect(w);
+    bool hot = more_hover_win == w;
+    if (hot)
+        gfx_round(c, r, 11, style.hover);
+    gfx_symbol(c, r.x + 6, r.y + 3, SYM_MORE, 16, hot || w == focus ? style.text : style.tertiary);
+}
+
 static void draw_lights(struct canvas *c, struct window *w)
 {
     static const uint32_t colors[3] = {RGB(255, 95, 87), RGB(254, 188, 46), RGB(40, 200, 64)};
@@ -1065,15 +1106,19 @@ static void draw_lights(struct canvas *c, struct window *w)
     bool active = w == focus;
     bool hover = traffic_win == w;
     int cy = traffic_cy(w);
+    int grow = hover ? CLAMP(lights_grow.pos, 0, 1200) : 0;
+    uint32_t idle = color_mix(active ? style.titlebar : style.titlebar_inactive, style.text, active ? 70 : 40);
     for (int i = 0; i < 3; i++) {
         int cx = traffic_cx(w, i);
         bool on = light_enabled(w, i);
-        uint32_t color = (active || hover) && on ? colors[i] : style.dark ? RGB(76, 76, 80) : RGB(208, 208, 210);
+        int rad = 5 + grow * 2 / 1024;
+        uint32_t color = hover && on ? color_mix(idle, colors[i], MIN(grow, 1024) * 255 / 1024) : idle;
+        if (!on)
+            color = ALPHA(idle, 90);
         if (hover && pressed_light == i)
             color = color_shade(color, -50);
-        gfx_circle(c, cx, cy, 6, color);
-        gfx_ring(c, cx, cy, 6, ALPHA(0, style.dark ? 70 : 34));
-        if (!hover || !on)
+        gfx_circle(c, cx, cy, rad, color);
+        if (!hover || !on || grow < 500)
             continue;
         uint32_t g = glyphs[i];
         if (i == 0) {
@@ -1095,7 +1140,10 @@ static void draw_window(struct canvas *c, struct window *w)
     struct rect f = w->frame;
     bool active = w == focus || floating(w);
     if (!(w->flags & WIN_NOSHADOW)) {
-        if (floating(w))
+        if (w->flags & WIN_GLOW) {
+            gfx_glow(c, f, w->radius, 28, style.dark ? 150 : 110, style.accent);
+            gfx_drop_shadow(c, f, w->radius, 12, style.dark ? 120 : 50, 4);
+        } else if (floating(w))
             gfx_drop_shadow(c, f, w->radius, 18, style.dark ? 140 : 70, 6);
         else
             gfx_drop_shadow(c, f, w->radius, active ? SHADOW : 24, style.dark ? (active ? 200 : 140) : (active ? 105 : 60),
@@ -1125,9 +1173,13 @@ static void draw_window(struct canvas *c, struct window *w)
     if (framed(w)) {
         if (!(w->flags & WIN_NOTITLE)) {
             struct rect tr = {f.x + 76, f.y, f.w - 152, title_band(w)};
+            if (w->flags & WIN_FULLSIZE)
+                tr.w = 0;
             gfx_text_box(c, tr, &font_bold, w->title, active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_CENTER);
         }
         draw_lights(c, w);
+        if (has_more(w))
+            draw_more(c, w);
     }
     if (!(w->flags & WIN_OVERLAY)) {
         gfx_round_frame(c, f, w->radius, style.dark ? ALPHA(0, 230) : ALPHA(0, 44));
@@ -1286,6 +1338,9 @@ static void set_traffic(struct window *w)
 {
     if (traffic_win == w)
         return;
+    lights_grow.target = w ? 1024 : 0;
+    if (w && !traffic_win)
+        spring_set(&lights_grow, 0), lights_grow.target = 1024;
     if (traffic_win && wm_window_alive(traffic_win))
         damage_title(traffic_win);
     traffic_win = w;
@@ -1312,6 +1367,64 @@ static void close_popups(struct window *except)
     }
 }
 
+
+enum {
+    ACT_NONE,
+    ACT_KEY,
+    ACT_MINIMIZE,
+    ACT_ZOOM,
+    ACT_CLOSE,
+};
+
+static void more_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    struct window *w = more_target;
+    if (!w || !wm_window_alive(w) || index < 0 || index >= 48)
+        return;
+    int act = more_action[index];
+    if (act == ACT_MINIMIZE)
+        wm_minimize(w);
+    else if (act == ACT_ZOOM)
+        wm_toggle_maximize(w);
+    else if (act == ACT_CLOSE)
+        wm_close(w);
+    else if (act == ACT_KEY && more_items[index].key > 0) {
+        wm_focus(w);
+        wm_key(more_items[index].key);
+    }
+}
+
+void wm_window_menu(struct window *w, int x, int y)
+{
+    int n = 0;
+    more_target = w;
+    for (int i = 0; w->menus && i < w->menu_count; i++) {
+        const struct app_menu *m = &w->menus[i];
+        if (n > 40)
+            break;
+        if (n)
+            more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
+        more_action[n] = ACT_NONE;
+        more_items[n++] = (struct menu_item){m->title, MENU_HEADER, NULL};
+        for (int k = 0; k < m->count && n < 42; k++) {
+            more_action[n] = m->items[k].label[0] ? ACT_KEY : ACT_NONE;
+            more_items[n++] = m->items[k];
+        }
+    }
+    if (n)
+        more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
+    more_action[n] = ACT_MINIMIZE;
+    more_items[n++] = (struct menu_item){"Minimize", 0, "\xe2\x8c\x98M"};
+    if (w->flags & WIN_RESIZABLE) {
+        more_action[n] = ACT_ZOOM;
+        more_items[n++] = (struct menu_item){w->flags & WIN_MAXIMIZED ? "Restore Size" : "Fill Screen", 0, NULL};
+    }
+    more_action[n] = ACT_CLOSE;
+    more_items[n++] = (struct menu_item){"Close", 0, "\xe2\x8c\x98W"};
+    ui_menu_items(NULL, x, y, more_items, n, more_pick);
+}
+
 static void mouse_down(unsigned button)
 {
     struct window *w;
@@ -1330,6 +1443,11 @@ static void mouse_down(unsigned button)
     }
     if (!floating(w))
         wm_focus(w);
+    if (has_more(w) && rect_contains(more_rect(w), mouse_x, mouse_y)) {
+        struct rect r = more_rect(w);
+        wm_window_menu(w, r.x + r.w - 230, r.y + r.h + 6);
+        return;
+    }
     int light = button == BUTTON_LEFT ? light_at(w, mouse_x, mouse_y) : -1;
     if (light >= 0) {
         drag = DRAG_TRAFFIC;
@@ -1436,7 +1554,7 @@ static void mouse_moved(void)
             drag_x = rel;
         }
         struct rect s = wm_screen_rect(wm_screen_at(mouse_x, mouse_y));
-        int y = MAX(mouse_y - drag_y, s.y + MENUBAR_HEIGHT);
+        int y = MAX(mouse_y - drag_y, s.y + menubar_height());
         wm_move(drag_win, mouse_x - drag_x, y);
         return;
     }
@@ -1454,7 +1572,7 @@ static void mouse_moved(void)
         }
         if (drag_edges & 8) {
             int h = MAX(drag_win->min_h, drag_frame.h - dy);
-            f.y = MAX(drag_frame.y + drag_frame.h - h, MENUBAR_HEIGHT);
+            f.y = MAX(drag_frame.y + drag_frame.h - h, menubar_height());
             f.h = drag_frame.y + drag_frame.h - f.y;
         }
         set_frame(drag_win, f);
@@ -1474,11 +1592,22 @@ static void mouse_moved(void)
     if (hit != HIT_WINDOW || !w) {
         set_hover(NULL);
         set_traffic(NULL);
+        if (more_hover_win && wm_window_alive(more_hover_win))
+            damage_title(more_hover_win);
+        more_hover_win = NULL;
         set_cursor(CUR_ARROW);
         return;
     }
     if (drag != DRAG_TRAFFIC)
         set_traffic(in_traffic_zone(w, mouse_x, mouse_y) ? w : NULL);
+    struct window *mh = has_more(w) && rect_contains(more_rect(w), mouse_x, mouse_y) ? w : NULL;
+    if (mh != more_hover_win) {
+        if (more_hover_win && wm_window_alive(more_hover_win))
+            damage_title(more_hover_win);
+        more_hover_win = mh;
+        if (mh)
+            damage_title(mh);
+    }
     set_cursor(cursor_for_edges(edges_at(w, mouse_x, mouse_y)));
     set_hover(w);
     if (rect_contains(wm_client_rect(w), mouse_x, mouse_y))
@@ -1780,6 +1909,12 @@ static void keep_visible(struct window *w, void *ctx)
         set_frame(w, f);
 }
 
+void wm_reflow(void)
+{
+    wm_foreach(keep_visible, NULL);
+    wm_damage_all();
+}
+
 bool wm_reconfigure(const struct framebuffer *fbs, const struct rect *origins, int count)
 {
     free_screens();
@@ -1881,7 +2016,6 @@ COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redr
         wm_render();
     }
     uint64_t full = hal_ticks_ms() - t0;
-    struct rect area = wm_work_area(0);
     t0 = hal_ticks_ms();
     long anim = 0;
     struct window *w = top && framed(top) ? top : NULL;
@@ -1894,7 +2028,7 @@ COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redr
         }
     }
     uint64_t part = hal_ticks_ms() - t0;
-    sh_printf(sh, "full screen %dx%d: %u ms per frame\n", area.w, area.h + MENUBAR_HEIGHT,
+    sh_printf(sh, "full screen %dx%d: %u ms per frame\n", wm_screen_rect(0).w, wm_screen_rect(0).h,
               (unsigned)(full / (uint64_t)frames));
     if (anim)
         sh_printf(sh, "front window area: %u ms per frame\n", (unsigned)(part / (uint64_t)anim));

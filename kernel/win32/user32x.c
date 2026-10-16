@@ -272,7 +272,7 @@ static BOOL monitor_info(HANDLE mon, uint32_t *info, bool wide)
     }
     int w, h;
     screen_size(&w, &h);
-    int top = gui_active() ? MENUBAR_HEIGHT : 0;
+    int top = gui_active() ? wm_work_area(0).y : 0;
     uint32_t v[9] = {0, 0, (uint32_t)w, (uint32_t)h, 0, (uint32_t)top, (uint32_t)w, (uint32_t)h, 1};
     memcpy(info + 1, v, sizeof(v));
     static const char device[] = "\\\\.\\DISPLAY1";

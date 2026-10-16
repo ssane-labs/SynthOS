@@ -11,7 +11,7 @@
 
 #include "internal.h"
 
-#define PAD 8
+#define PAD 14
 #define FRAME_MS 33
 
 struct term {
@@ -173,14 +173,34 @@ void terminal_retitle(void)
 {
     if (!term)
         return;
-    char title[64];
-    ksnprintf(title, sizeof(title), "%s — synsh — %d×%d", gui_user(), term->display.cols, term->display.rows);
-    wm_set_title(term->win, title);
+    wm_set_title(term->win, "Terminal");
+}
+
+static const struct menu_item shell_items[] = {
+    {"Paste", KEY_APP(1), "Right click"},
+    {"Interrupt", KEY_CTRL('c'), "Ctrl+C"},
+    {"Clear", KEY_APP(2), NULL},
+};
+static const struct menu_item look_items[] = {
+    {"Terminal Settings…", KEY_APP(3), NULL},
+};
+static const struct app_menu term_menus[] = {{"Shell", shell_items, 3}, {"View", look_items, 1}};
+
+static void paste(void)
+{
+    for (const char *p = gui_clipboard(); *p; p++)
+        input_inject(*p == '\n' ? KEY_ENTER : (uint8_t)*p);
 }
 
 static void event(struct window *w, struct gui_event *e)
 {
-    if (e->type == EV_KEY) {
+    if (e->type == EV_KEY && e->key == KEY_APP(1)) {
+        paste();
+    } else if (e->type == EV_KEY && e->key == KEY_APP(2)) {
+        gui_terminal_run("clear");
+    } else if (e->type == EV_KEY && e->key == KEY_APP(3)) {
+        gui_app_launch(gui_app_find("System Settings"), "terminal");
+    } else if (e->type == EV_KEY) {
         input_inject(e->key);
     } else if (e->type == EV_RESIZE) {
         int cols, rows;
@@ -192,8 +212,7 @@ static void event(struct window *w, struct gui_event *e)
         con_redraw();
         terminal_retitle();
     } else if (e->type == EV_MOUSE_DOWN && e->button == BUTTON_RIGHT) {
-        for (const char *p = gui_clipboard(); *p; p++)
-            input_inject(*p == '\n' ? KEY_ENTER : (uint8_t)*p);
+        paste();
     }
 }
 
@@ -241,6 +260,7 @@ struct window *terminal_open(void)
     invalidate_all();
     con_init(&term->display);
     terminal_retitle();
+    wm_set_menus(term->win, term_menus, 2);
     return term->win;
 }
 

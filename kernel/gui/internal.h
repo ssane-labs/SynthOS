@@ -12,6 +12,54 @@
 
 struct framebuffer;
 
+enum dock_kind {
+    DOCK_CENTER,
+    DOCK_CORNER,
+    DOCK_RAIL,
+    DOCK_ARC,
+};
+
+enum status_kind {
+    STATUS_MENUBAR,
+    STATUS_PILL,
+    STATUS_CORNER,
+};
+
+enum widget_id {
+    WIDGET_CLOCK,
+    WIDGET_WEATHER,
+    WIDGET_MUSIC,
+    WIDGET_CALENDAR,
+    WIDGET_VISUALIZER,
+    WIDGET_COUNT,
+};
+
+struct gui_look {
+    const char *name;
+    const char *title;
+    const char *description;
+    bool dark;
+    uint32_t tint, accent;
+    enum dock_kind dock;
+    enum status_kind status;
+    bool places;
+    unsigned widgets;
+};
+
+const struct gui_look *look_current(void);
+const struct gui_look *look_get(int index);
+int look_count(void);
+int menubar_height(void);
+void gui_look_changed(void);
+
+struct spring {
+    int pos, vel, target, rem;
+};
+
+void spring_set(struct spring *s, int value);
+bool spring_step(struct spring *s, int stiffness, int damping, int dt);
+bool spring_busy(const struct spring *s);
+
 extern int mouse_x, mouse_y;
 
 
@@ -40,6 +88,9 @@ struct glass_look {
     bool dispersion;
     bool liquid;
     bool solid;
+    gfx_cover_fn shape;
+    const void *shape_ctx;
+    int shape_key;
 };
 
 struct glass {
@@ -95,6 +146,28 @@ struct window *wm_app_window(const struct gui_app *app);
 int wm_app_window_count(const struct gui_app *app);
 void wm_focus_app(const struct gui_app *app);
 void wm_bring_all(void);
+void wm_reflow(void);
+void wm_window_menu(struct window *w, int x, int y);
+int shell_left_reserved(void);
+
+#define PLACES_W 190
+
+void panel_paint(struct canvas *c, int screen);
+bool panel_hit(int x, int y);
+void panel_mouse(int x, int y, unsigned button, bool down);
+void panel_hover(int x, int y);
+void panel_changed(void);
+void panel_start(void);
+void panel_stop(void);
+bool panel_animate(void);
+int status_bottom(void);
+int panel_weekday(int y, int m, int d);
+const char *panel_day_name(int i);
+const char *panel_month_name(int i);
+void launcher_toggle(int x, int y);
+void calendar_toggle(int right, int y);
+void shell_system_menu(int x, int y);
+void shell_power_menu(bool restart);
 
 void desktop_paint(struct canvas *c, int screen, struct rect area);
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks);

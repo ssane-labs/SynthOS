@@ -131,6 +131,16 @@ enum symbol_id {
     SYM_USB,
     SYM_BATTERY,
     SYM_EJECT,
+    SYM_MUSIC,
+    SYM_VIDEO,
+    SYM_PLAY,
+    SYM_PAUSE,
+    SYM_PREV,
+    SYM_NEXT,
+    SYM_VOLUME,
+    SYM_MORE,
+    SYM_WEATHER,
+    SYM_CALENDAR,
     SYM_COUNT,
 };
 
@@ -170,6 +180,11 @@ void gfx_round_gradient(struct canvas *c, struct rect r, int radius, uint32_t to
 void gfx_round_frame_gradient(struct canvas *c, struct rect r, int radius, uint32_t top, uint32_t bottom);
 void gfx_shadow(struct canvas *c, struct rect r, int radius, int size, int strength);
 void gfx_drop_shadow(struct canvas *c, struct rect r, int radius, int size, int strength, int dy);
+void gfx_glow(struct canvas *c, struct rect r, int radius, int size, int strength, uint32_t color);
+typedef int (*gfx_cover_fn)(int x, int y, const void *ctx);
+void gfx_shape(struct canvas *c, struct rect bounds, gfx_cover_fn cover, const void *ctx, uint32_t color);
+int gfx_dist16(int dx16, int dy16);
+int gfx_cover(int d16);
 void gfx_line(struct canvas *c, int x0, int y0, int x1, int y1, uint32_t color);
 void gfx_thick_line(struct canvas *c, int x0, int y0, int x1, int y1, int width, uint32_t color);
 void gfx_circle(struct canvas *c, int cx, int cy, int r, uint32_t color);
@@ -213,6 +228,7 @@ enum glass_level {
 struct gui_style {
     bool dark;
     int glass;
+    uint32_t tint;
     uint32_t window;
     uint32_t content;
     uint32_t sidebar;
@@ -295,7 +311,11 @@ enum window_flags {
     WIN_OVERLAY = 1u << 10,
     WIN_NOSHADOW = 1u << 11,
     WIN_PASSIVE = 1u << 12,
+    WIN_GLOW = 1u << 13,
 };
+
+#define MENU_HEADER (-2)
+#define KEY_APP(n) (0x100000 + (n))
 
 struct menu_item {
     const char *label;

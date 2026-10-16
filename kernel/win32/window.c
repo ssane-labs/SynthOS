@@ -597,7 +597,7 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         if (caption)
             w->caption_due = hal_ticks_ms() + 500;
         if (x != W32_CW_USEDEFAULT)
-            wm_move(w->wm, x, MAX(y, MENUBAR_HEIGHT));
+            wm_move(w->wm, x, MAX(y, wm_work_area(0).y));
         struct rect cr = wm_client_rect(w->wm);
         w->rect = (struct rect){0, 0, cr.w, cr.h};
         w->menu = menu;
@@ -925,7 +925,7 @@ static void move_window(struct w32_window *w, int x, int y, int width, int heigh
 {
     if (w->wm) {
         if (move)
-            wm_move(w->wm, x, MAX(y, MENUBAR_HEIGHT));
+            wm_move(w->wm, x, MAX(y, wm_work_area(0).y));
         if (size) {
             int ch = height - (w->wm->flags & WIN_FULLSIZE ? 0 : TITLE_HEIGHT);
             wm_resize_client(w->wm, MAX(width, 120), MAX(ch, 40));
@@ -2060,7 +2060,7 @@ static int WINAPI GetSystemMetrics(int index)
     case 78: return sw;
     case 1:
     case 79: return sh;
-    case 17: return sh - MENUBAR_HEIGHT - TITLE_HEIGHT;
+    case 17: return wm_work_area(0).h - TITLE_HEIGHT;
     case 2:
     case 3:
     case 20:

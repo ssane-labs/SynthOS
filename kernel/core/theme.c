@@ -20,10 +20,31 @@
     [ROLE_SUGGESTION] = ATTR(8, 0), [ROLE_LOGO1] = ATTR(13, 0), [ROLE_LOGO2] = ATTR(12, 0), \
     [ROLE_LOGO3] = ATTR(11, 0)
 
+#define MIRAGE_ROLES                                                                                \
+    DEFAULT_ROLES, [ROLE_ACCENT] = ATTR(15, 0), [ROLE_ACCENT2] = ATTR(11, 0), [ROLE_HIGHLIGHT] = ATTR(15, 0), \
+    [ROLE_PROMPT_USER] = ATTR(15, 0), [ROLE_PROMPT_HOST] = ATTR(8, 0), [ROLE_PROMPT_PATH] = ATTR(7, 0),       \
+    [ROLE_PROMPT_SYMBOL] = ATTR(13, 0), [ROLE_STATUS] = ATTR(7, 1), [ROLE_STATUS_ACCENT] = ATTR(0, 15),      \
+    [ROLE_SELECTION] = ATTR(0, 7), [ROLE_SYNTAX_COMMAND] = ATTR(15, 0), [ROLE_SYNTAX_OPERATOR] = ATTR(13, 0), \
+    [ROLE_LOGO1] = ATTR(15, 0), [ROLE_LOGO2] = ATTR(13, 0), [ROLE_LOGO3] = ATTR(8, 0)
+
 static const struct theme builtin_themes[] = {
     {
+        .name = "mirage",
+        .description = "Calm black and white (default, follows the desktop)",
+        .palette = {0x0c0c0f, 0x2a2c3a, 0x86c495, 0x86bccb, 0xe08686, 0xb7a6e6, 0xd2b07a, 0xd8d8de,
+                    0x62626c, 0x9cb8f2, 0xa8dcac, 0xa8dce4, 0xf2a0a0, 0xc9b8f4, 0xf0d690, 0xffffff},
+        .roles = {MIRAGE_ROLES},
+    },
+    {
+        .name = "mirage-light",
+        .description = "Black ink on white, used when the desktop is light",
+        .palette = {0xfbfbfc, 0xe6e7ee, 0x2f7d3e, 0x1f7a8a, 0xc03b3b, 0x7a4fc0, 0x9a6a20, 0x2c2c32,
+                    0x9a9aa2, 0x2f5fd0, 0x2e8b48, 0x16879a, 0xd04848, 0x6d4ac4, 0xa07a10, 0x000000},
+        .roles = {MIRAGE_ROLES},
+    },
+    {
         .name = "synthwave",
-        .description = "Neon sunset over a retro grid (default)",
+        .description = "Neon sunset over a retro grid",
         .palette = {0x140c26, 0x2d1b69, 0x1b998b, 0x2de2e6, 0xc71e5a, 0x7b2cbf, 0xf6a21e, 0xd7cdf2,
                     0x5f4d85, 0x6d7cff, 0x3df5a6, 0x3fe8ff, 0xff3864, 0xff6ad5, 0xffd319, 0xffffff},
         .roles = {DEFAULT_ROLES, [ROLE_STATUS] = ATTR(15, 1), [ROLE_LOGO2] = ATTR(14, 0)},
