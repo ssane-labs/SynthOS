@@ -17,13 +17,16 @@
 #define SIDEBAR_W 220
 #define ROW 40
 #define SETTINGS_FILE "/home/.synth.conf"
-#define WALLS 5
+#define WALLS 10
+#define LOOK_W 132
+#define LOOK_H 84
 #define THUMB_W 132
 #define THUMB_H 82
 
 enum pane {
     P_APPEARANCE,
     P_DOCK,
+    P_LOGIN,
     P_WALLPAPER,
     P_DISPLAYS,
     P_NETWORK,
@@ -41,8 +44,9 @@ static const struct {
     enum symbol_id sym;
     uint32_t color;
 } panes[P_COUNT] = {
-    {"Appearance", "appearance", SYM_APPEARANCE, RGB(44, 44, 48)},
-    {"Desktop & Dock", "dock", SYM_DOCK, RGB(44, 44, 48)},
+    {"Looks", "appearance", SYM_APPEARANCE, RGB(232, 120, 70)},
+    {"Desktop & Widgets", "dock", SYM_DOCK, RGB(44, 44, 48)},
+    {"Login Items", "login", SYM_LIST, RGB(120, 110, 220)},
     {"Wallpaper", "wallpaper", SYM_PHOTO, RGB(36, 168, 220)},
     {"Displays", "displays", SYM_DISPLAY, RGB(28, 118, 240)},
     {"Network", "network", SYM_WIFI, RGB(28, 118, 240)},
@@ -53,8 +57,10 @@ static const struct {
     {"About", "about", SYM_INFO, RGB(142, 142, 148)},
 };
 
-static const char *const wall_names[WALLS] = {"Waves", "Hills", "Aurora", "Synthwave", "Solid"};
-static const char *const wall_values[WALLS] = {"waves", "hills", "aurora", "synthwave", "solid"};
+static const char *const wall_names[WALLS] = {"From the look", "Dune", "Mist", "Night", "Sunset",
+                                              "Waves", "Hills", "Aurora", "Synthwave", "Solid"};
+static const char *const wall_values[WALLS] = {"auto", "dune", "mist", "night", "sunset",
+                                               "waves", "hills", "aurora", "synthwave", "solid"};
 
 struct settings {
     struct ui_state st;
@@ -67,6 +73,9 @@ struct settings {
     struct ui_text wallpaper_file;
     struct canvas thumbs[WALLS];
     bool thumbs_dark;
+    const struct gui_look *thumbs_look;
+    struct canvas look_thumbs[8];
+    struct ui_text login_item, city;
     int user_sel;
     char pending_user[USER_NAME_MAX];
 };
@@ -138,14 +147,60 @@ static void load_themes(struct settings *s)
 
 static void make_thumbs(struct settings *s)
 {
-    if (s->thumbs[0].px && s->thumbs_dark == style.dark)
+    if (s->thumbs[0].px && s->thumbs_dark == style.dark && s->thumbs_look == look_current())
         return;
     for (int i = 0; i < WALLS; i++) {
         if (!s->thumbs[i].px && !canvas_alloc(&s->thumbs[i], THUMB_W, THUMB_H))
             continue;
-        wallpaper_paint(&s->thumbs[i], wall_values[i], style.dark);
+        wallpaper_paint(&s->thumbs[i], i ? wall_values[i] : look_current()->name, style.dark);
     }
     s->thumbs_dark = style.dark;
+    s->thumbs_look = look_current();
+}
+
+static void make_look_thumbs(struct settings *s)
+{
+    for (int i = 0; i < look_count() && i < 8; i++) {
+        if (s->look_thumbs[i].px || !canvas_alloc(&s->look_thumbs[i], LOOK_W, LOOK_H))
+            continue;
+        const struct gui_look *l = look_get(i);
+        wallpaper_paint(&s->look_thumbs[i], l->name, l->dark);
+    }
+}
+
+static void draw_layout(struct canvas *c, struct rect r, const struct gui_look *l)
+{
+    uint32_t glass = l->dark ? RGBA(70, 64, 90, 200) : RGBA(255, 255, 255, 190);
+    struct canvas k = *c;
+    k.clip = rect_intersect(c->clip, r);
+    int u = r.w / 44;
+    struct rect win = {r.x + r.w / 4, r.y + r.h / 4, r.w / 2, r.h / 2};
+    switch (l->dock) {
+    case DOCK_CENTER:
+        gfx_fill(&k, (struct rect){r.x, r.y, r.w, 4 * u}, glass);
+        gfx_round(&k, (struct rect){r.x + r.w / 4, r.y + r.h - 9 * u, r.w / 2, 6 * u}, 3 * u, glass);
+        break;
+    case DOCK_RAIL:
+        gfx_round(&k, (struct rect){r.x + 2 * u, r.y + 2 * u, 7 * u, r.h - 4 * u}, 3 * u, glass);
+        win.x += 4 * u;
+        break;
+    case DOCK_CORNER:
+        gfx_round(&k, (struct rect){r.x + 2 * u, r.y + 2 * u, 12 * u, r.h / 2}, 3 * u, glass);
+        gfx_round(&k, (struct rect){r.x - 4 * u, r.y + r.h - 9 * u, 22 * u, 14 * u}, 4 * u, glass);
+        win.x += 4 * u;
+        break;
+    case DOCK_ARC:
+        gfx_ring(&k, r.x, r.y + r.h, 15 * u, glass);
+        gfx_ring(&k, r.x, r.y + r.h, 15 * u + 1, glass);
+        gfx_ring(&k, r.x, r.y + r.h, 15 * u + 2, glass);
+        gfx_circle(&k, r.x, r.y + r.h, 6 * u, ALPHA(l->accent, 230));
+        gfx_circle(&k, r.x + r.w, r.y, 11 * u, glass);
+        break;
+    }
+    if (l->status == STATUS_PILL)
+        gfx_round(&k, (struct rect){r.x + r.w - 15 * u, r.y + 2 * u, 13 * u, 3 * u}, (3 * u) / 2, glass);
+    gfx_round(&k, win, 2 * u, l->dark ? RGB(32, 30, 40) : RGB(250, 250, 252));
+    gfx_round(&k, (struct rect){win.x, win.y, win.w, 3 * u}, 2 * u, l->dark ? RGB(46, 44, 56) : RGB(236, 236, 240));
 }
 
 static struct rect control(struct rect row, int w, int h)
@@ -164,63 +219,61 @@ static int heading(struct ui *ui, int x, int y, int w, const char *text)
     return y + 26;
 }
 
-static void draw_preview(struct canvas *c, struct rect r, bool dark, bool half)
-{
-    uint32_t desk = dark ? RGB(40, 44, 90) : RGB(170, 200, 255);
-    gfx_round(c, r, 8, desk);
-    struct rect win = {r.x + 10, r.y + 12, r.w - 20, r.h - 18};
-    gfx_round(c, win, 5, dark ? RGB(44, 44, 48) : RGB(250, 250, 252));
-    gfx_fill(c, (struct rect){win.x, win.y + 10, win.w, 1}, dark ? ALPHA(0xffffffffu, 30) : ALPHA(0, 26));
-    for (int i = 0; i < 3; i++)
-        gfx_circle(c, win.x + 7 + i * 7, win.y + 5, 2,
-                   i == 0 ? RGB(255, 95, 87) : i == 1 ? RGB(254, 188, 46) : RGB(40, 200, 64));
-    gfx_round(c, (struct rect){win.x + 6, win.y + 16, win.w / 3, win.h - 22}, 3,
-              dark ? RGB(60, 60, 66) : RGB(228, 228, 232));
-    gfx_round(c, (struct rect){win.x + win.w / 3 + 12, win.y + 18, win.w / 2 - 6, 5}, 2, style.accent);
-    if (half) {
-        struct canvas right = *c;
-        right.clip = rect_intersect(c->clip, (struct rect){r.x + r.w / 2, r.y, r.w / 2, r.h});
-        draw_preview(&right, r, true, false);
-    }
-}
-
 static void pane_appearance(struct ui *ui, struct settings *s, int x, int y, int w)
 {
     char value[32];
-    current("appearance", value, sizeof(value));
-    int mode = !strcmp(value, "dark") ? 1 : !strcmp(value, "auto") ? 2 : 0;
-    y = heading(ui, x, y, w, "Appearance");
-    struct rect g = ui_group(ui, x, y, w, 1, 130);
-    static const char *const labels[3] = {"Light", "Dark", "Auto"};
-    static const char *const values[3] = {"light", "dark", "auto"};
-    for (int i = 0; i < 3; i++) {
-        struct rect tile = {g.x + 24 + i * 126, g.y + 18, 100, 66};
-        if (ui->c) {
-            draw_preview(ui->c, tile, i == 1, i == 2);
-            if (i == mode)
-                gfx_round_frame(ui->c, rect_inset(tile, -3), 10, style.accent);
-            gfx_text_box(ui->c, (struct rect){tile.x, tile.y + tile.h + 8, tile.w, 18}, i == mode ? &font_bold : &font_sans,
-                         labels[i], style.text, ALIGN_CENTER);
+    make_look_thumbs(s);
+    y = heading(ui, x, y, w, "Look");
+    int n = look_count(), gap = (w - n * LOOK_W) / MAX(n - 1, 1);
+    gap = CLAMP(gap, 8, 24);
+    for (int i = 0; i < n; i++) {
+        const struct gui_look *l = look_get(i);
+        struct rect t = {x + i * (LOOK_W + gap), y, LOOK_W, LOOK_H};
+        bool sel = l == look_current();
+        bool hot = ui_hover(ui, (struct rect){t.x, t.y, t.w, t.h + 40});
+        if (ui->c && s->look_thumbs[i].px) {
+            if (hot || sel)
+                gfx_glow(ui->c, t, 12, 16, sel ? 120 : 60, l->accent);
+            gfx_drop_shadow(ui->c, t, 12, 8, 60, 3);
+            gfx_blit_round(ui->c, t, &s->look_thumbs[i], 12, false);
+            draw_layout(ui->c, t, l);
+            if (sel)
+                gfx_round_frame(ui->c, rect_inset(t, -3), 15, style.accent);
+            gfx_text_box(ui->c, (struct rect){t.x, t.y + t.h + 8, t.w, 18}, sel ? &font_bold : &font_sans, l->title,
+                         style.text, ALIGN_CENTER);
         }
-        if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, (struct rect){tile.x, tile.y, tile.w, tile.h + 26})) {
+        if (ui->e && ui->e->type == EV_MOUSE_DOWN && hot) {
             ui->consumed = true;
-            apply("appearance", values[i]);
+            apply("look", l->name);
         }
     }
-    y += 130 + 20;
-    g = ui_group(ui, x, y, w, 2, ROW);
+    y += LOOK_H + 34;
+    ui_label(ui, (struct rect){x + 4, y, w, 18}, look_current()->description, &font_small, style.secondary, ALIGN_LEFT);
+    y += 30;
+    struct rect g = ui_group(ui, x, y, w, 3, ROW);
     struct rect r = row_at(g, 0);
+    ui_group_label(ui, r, "Mode", NULL, false);
+    current("appearance", value, sizeof(value));
+    static const char *const modes[] = {"Auto", "Light", "Dark"};
+    static const char *const mode_values[] = {"auto", "light", "dark"};
+    int sel = !strcmp(value, "light") ? 1 : !strcmp(value, "dark") ? 2 : 0;
+    if (ui_segmented(ui, control(r, 240, 24), modes, 3, &sel))
+        apply("appearance", mode_values[sel]);
+    r = row_at(g, 1);
     ui_group_label(ui, r, "Accent color", NULL, false);
-    static const char *const accents[] = {"blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"};
-    static const uint32_t swatches[] = {RGB(0, 122, 255), RGB(149, 61, 150), RGB(247, 79, 158), RGB(224, 56, 62),
+    static const char *const accents[] = {"auto", "blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"};
+    static const uint32_t swatches[] = {0, RGB(0, 122, 255), RGB(149, 61, 150), RGB(247, 79, 158), RGB(224, 56, 62),
                                         RGB(247, 130, 27), RGB(230, 168, 0), RGB(98, 186, 70), RGB(140, 140, 140)};
     current("accent", value, sizeof(value));
-    for (int i = 0; i < 8; i++) {
-        struct rect dot = control(r, 8 * 24, 18);
+    for (int i = 0; i < 9; i++) {
+        struct rect dot = control(r, 9 * 24, 18);
         dot.x += i * 24;
         dot.w = 18;
+        uint32_t col = i ? swatches[i] : look_current()->accent;
         if (ui->c) {
-            gfx_circle(ui->c, dot.x + 9, dot.y + 9, 8, swatches[i]);
+            gfx_circle(ui->c, dot.x + 9, dot.y + 9, 8, col);
+            if (!i)
+                gfx_ring(ui->c, dot.x + 9, dot.y + 9, 8, ALPHA(0xffffffffu, 200));
             if (!strcmp(value, accents[i]))
                 gfx_circle(ui->c, dot.x + 9, dot.y + 9, 3, RGB(255, 255, 255));
         }
@@ -229,15 +282,77 @@ static void pane_appearance(struct ui *ui, struct settings *s, int x, int y, int
             apply("accent", accents[i]);
         }
     }
-    r = row_at(g, 1);
+    r = row_at(g, 2);
     ui_group_label(ui, r, "Transparency", NULL, true);
     current("glass", value, sizeof(value));
     static const char *const glass[] = {"Liquid Glass", "Frosted", "Solid"};
     static const char *const glass_values[] = {"liquid", "frosted", "solid"};
-    int sel = !strcmp(value, "frosted") ? 1 : !strcmp(value, "solid") ? 2 : 0;
+    sel = !strcmp(value, "frosted") ? 1 : !strcmp(value, "solid") ? 2 : 0;
     if (ui_segmented(ui, control(r, 270, 24), glass, 3, &sel))
         apply("glass", glass_values[sel]);
-    UNUSED(s);
+}
+
+static void switch_row(struct ui *ui, struct rect r, const char *label, const char *setting, bool last);
+
+static bool widget_on(const char *name)
+{
+    char v[96];
+    current("widgets", v, sizeof(v));
+    return strstr(v, name) != NULL;
+}
+
+static void widget_toggle(const char *name, bool on)
+{
+    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer"};
+    char out[96] = "";
+    for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
+        bool want = !strcmp(names[i], name) ? on : widget_on(names[i]);
+        if (want) {
+            if (out[0])
+                str_append(out, ",", sizeof(out));
+            str_append(out, names[i], sizeof(out));
+        }
+    }
+    apply("widgets", out[0] ? out : "none");
+}
+
+static void pane_login(struct ui *ui, struct settings *s, int x, int y, int w)
+{
+    static char items[AUTOSTART_MAX][AUTOSTART_LEN];
+    int n = autostart_items(items, AUTOSTART_MAX);
+    y = heading(ui, x, y, w, "Open when you log in");
+    struct rect g = ui_group(ui, x, y, w, MAX(n, 1), ROW);
+    if (!n)
+        ui_group_label(ui, row_at(g, 0), "Nothing yet", NULL, true);
+    for (int i = 0; i < n; i++) {
+        struct rect r = row_at(g, i);
+        const struct gui_app *app = gui_app_find(items[i]);
+        bool is_app = app && !str_casecmp(app->name, items[i]);
+        if (ui->c)
+            gfx_icon(ui->c, r.x + 12, r.y + 8, is_app ? app->icon : items[i][0] == '!' ? ICON_TERMINAL : ICON_FILE, 24);
+        ui_label(ui, (struct rect){r.x + 46, r.y, r.w - 120, r.h}, items[i][0] == '!' ? items[i] + 1 : items[i], &font_sans,
+                 style.text, ALIGN_LEFT);
+        if (i + 1 < n && ui->c)
+            gfx_fill(ui->c, (struct rect){r.x + 46, r.y + r.h - 1, r.w - 46, 1}, style.separator);
+        if (ui_symbol_button(ui, control(r, 26, 26), SYM_MINUS, false))
+            autostart_remove(i);
+    }
+    y += MAX(n, 1) * ROW + 20;
+    y = heading(ui, x, y, w, "Add");
+    g = ui_group(ui, x, y, w, 1, ROW + 8);
+    struct rect field = {g.x + 14, g.y + 10, g.w - 120, 28};
+    bool go = ui_textbox_hint(ui, field, &s->login_item, "App name, file path or !command");
+    if ((ui_button(ui, (struct rect){g.x + g.w - 96, g.y + 10, 82, 28}, "Add") || go) && s->login_item.len) {
+        autostart_add(s->login_item.buf);
+        ui_text_set(&s->login_item, "");
+    }
+    y += ROW + 8 + 14;
+    static const char *const quick[] = {"Music", "Notepad", "Files", "Browser", "Photos"};
+    for (size_t i = 0; i < ARRAY_SIZE(quick); i++) {
+        struct rect b = {x + (int)i * 104, y, 96, 28};
+        if (ui_button(ui, b, quick[i]))
+            autostart_add(quick[i]);
+    }
 }
 
 static void switch_row(struct ui *ui, struct rect r, const char *label, const char *setting, bool last)
@@ -250,10 +365,33 @@ static void switch_row(struct ui *ui, struct rect r, const char *label, const ch
 
 static void pane_dock(struct ui *ui, struct settings *s, int x, int y, int w)
 {
-    UNUSED(s);
-    y = heading(ui, x, y, w, "Dock");
-    struct rect g = ui_group(ui, x, y, w, 3, ROW);
-    struct rect r = row_at(g, 0);
+    y = heading(ui, x, y, w, "Widgets");
+    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer"};
+    static const char *const labels[] = {"Clock", "Weather", "Music", "Calendar and tasks", "Visualizer"};
+    struct rect g = ui_group(ui, x, y, w, 6, ROW);
+    for (int i = 0; i < 5; i++) {
+        struct rect r = row_at(g, i);
+        bool here = look_current()->widgets >> i & 1;
+        ui_group_label(ui, r, labels[i], here ? NULL : "not in this look", false);
+        bool on = widget_on(names[i]);
+        if (ui_switch(ui, control(r, 36, 22), &on))
+            widget_toggle(names[i], on);
+    }
+    struct rect r = row_at(g, 5);
+    ui_group_label(ui, r, "Weather city", NULL, true);
+    struct rect field = control(r, 200, 26);
+    if (!s->city.len && !ui->st->focus) {
+        char city[48];
+        current("weathercity", city, sizeof(city));
+        if (strcmp(city, "auto"))
+            ui_text_set(&s->city, city);
+    }
+    if (ui_textbox_hint(ui, field, &s->city, "By address"))
+        apply("weathercity", s->city.len ? s->city.buf : "auto");
+    y += 6 * ROW + 20;
+    y = heading(ui, x, y, w, look_current()->dock == DOCK_CENTER ? "Dock" : "Dock (in the Mist look)");
+    g = ui_group(ui, x, y, w, 3, ROW);
+    r = row_at(g, 0);
     ui_group_label(ui, r, "Size", NULL, false);
     char value[16];
     current("docksize", value, sizeof(value));
@@ -266,8 +404,9 @@ static void pane_dock(struct ui *ui, struct settings *s, int x, int y, int w)
     switch_row(ui, row_at(g, 2), "Automatically hide and show the Dock", "dockhide", true);
     y += 3 * ROW + 20;
     y = heading(ui, x, y, w, "Desktop");
-    g = ui_group(ui, x, y, w, 1, ROW);
-    switch_row(ui, row_at(g, 0), "Start the desktop when SynthOS starts", "desktop", true);
+    g = ui_group(ui, x, y, w, 2, ROW);
+    switch_row(ui, row_at(g, 0), "Start the desktop when SynthOS starts", "desktop", false);
+    switch_row(ui, row_at(g, 1), "Animations", "animations", true);
 }
 
 static void pane_wallpaper(struct ui *ui, struct settings *s, int x, int y, int w)
@@ -296,7 +435,7 @@ static void pane_wallpaper(struct ui *ui, struct settings *s, int x, int y, int 
     ui_label(ui, (struct rect){big.x + big.w + 20, big.y + 50, w - 220, 18},
              style.dark ? "Dark variant shown" : "Light variant shown", &font_sans, style.secondary, ALIGN_LEFT);
     y += 128 + 20;
-    y = heading(ui, x, y, w, "Dynamic wallpapers");
+    y = heading(ui, x, y, w, "Wallpapers");
     int cols = MAX(1, (w + 16) / (THUMB_W + 16));
     for (int i = 0; i < WALLS; i++) {
         struct rect t = {x + (i % cols) * (THUMB_W + 16), y + (i / cols) * (THUMB_H + 34), THUMB_W, THUMB_H};
@@ -319,7 +458,7 @@ static void pane_wallpaper(struct ui *ui, struct settings *s, int x, int y, int 
     g = ui_group(ui, x, y, w, 1, ROW + 8);
     struct rect r = {g.x, g.y, g.w, ROW + 8};
     struct rect field = {r.x + 14, r.y + 10, r.w - 120, 28};
-    bool go = ui_textbox_hint(ui, field, &s->wallpaper_file, "/home/Pictures/photo.bmp");
+    bool go = ui_textbox_hint(ui, field, &s->wallpaper_file, "/home/Pictures/photo.jpg");
     if (ui_button(ui, (struct rect){r.x + r.w - 96, r.y + 10, 82, 28}, "Use") || go)
         apply("wallpaper", s->wallpaper_file.buf);
 }
@@ -776,6 +915,7 @@ static void frame(struct ui *ui, void *data)
     switch (s->pane) {
     case P_APPEARANCE: pane_appearance(ui, s, x, y, wdt); break;
     case P_DOCK: pane_dock(ui, s, x, y, wdt); break;
+    case P_LOGIN: pane_login(ui, s, x, y, wdt); break;
     case P_WALLPAPER: pane_wallpaper(ui, s, x, y, wdt); break;
     case P_DISPLAYS: pane_displays(ui, s, x, y, wdt); break;
     case P_NETWORK: pane_network(ui, s, x, y, wdt); break;
@@ -806,6 +946,8 @@ static void destroy(struct window *w)
     struct settings *s = w->data;
     for (int i = 0; i < WALLS; i++)
         canvas_free(&s->thumbs[i]);
+    for (int i = 0; i < 8; i++)
+        canvas_free(&s->look_thumbs[i]);
     if (instance == w)
         instance = NULL;
     kfree(s);
