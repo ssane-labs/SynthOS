@@ -225,8 +225,9 @@ static void draw_cell(struct canvas *c, struct mines *m, int x, int y, struct re
     struct rect in = rect_inset(r, 1);
     int cx = r.x + r.w / 2, cy = r.y + r.h / 2;
     if (!shown && !pressed) {
-        gfx_round_gradient(c, in, 4, color_shade(style.button, 18), style.button);
-        gfx_round_frame(c, in, 4, ALPHA(0xffffffffu, 28));
+        uint32_t tile = color_mix(style.content, style.accent, style.dark ? 60 : 50);
+        gfx_round_gradient(c, in, 5, color_shade(tile, 22), tile);
+        gfx_round_frame(c, in, 5, ALPHA(0xffffffffu, style.dark ? 30 : 90));
         if (v & C_FLAG) {
             draw_flag(c, cx, cy);
             if (over && !(v & C_MINE)) {

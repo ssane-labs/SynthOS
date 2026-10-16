@@ -23,35 +23,60 @@ Commands
   launch                    list the apps
   launch paint              start an app (any word of its name: mon, mines, calc)
   launch notepad file.txt   open a file in an app
-  launch /home/pic.bmp      open a file in the app that handles its type
+  launch /home/pic.jpg      open a file in the app that handles its type
   exit                      leave the desktop (text mode)
   desktop  (startx, gui)    start the desktop again from text mode
   config desktop off        boot into text mode; config save remembers it
-  config wallpaper aurora   synthwave, aurora, solid or a .bmp file
-  theme nord                themes color the desktop too
+  config look night         the design: dune, mist, night or sunset
+  config appearance dark    auto (what the look prefers), light or dark
+  config wallpaper sunset   auto, dune, mist, night, sunset, waves, hills,
+                            aurora, synthwave, solid or a picture file
+  config widgets all        clock, weather, music, calendar, visualizer
+  config weathercity Oslo   where the weather widget looks (auto: by address)
+  autostart add Music       open an app, a file or a !command at login
+  music play 2              built-in songs; music file.wav plays a WAV file
+  install                   copy SynthOS to another disk (Install SynthOS app)
   lock, logout              lock the screen, switch user
   displays                  monitors and their resolutions
-  config animations off     no window and Dock animations (for very slow PCs)
+  config animations off     no animations (for very slow PCs)
   wmbench                   how many milliseconds a desktop frame takes
 
-The menu bar at the top shows the menus of the active app; the Dock at the
-bottom starts apps and shows the running ones. Panels are made of "liquid
-glass": they bend the picture behind them at the edges and light up near
-the pointer. System Settings > Appearance > Transparency switches to
-Frosted or Solid if you prefer a calmer look (or a faster one).
+Looks
+  Dune      warm glass, places on the left, the launcher grows out of the
+            bottom-left corner, clock, weather and music on the desktop
+  Mist      menu bar on top, a floating Dock, calendar with tasks
+  Night     an app rail on the left that opens with names, a big clock,
+            the music player and a visualizer
+  Sunset    a Dock curved around the corner with a glowing launcher, the
+            time in a bubble at the top-right corner, the weather in a pill
+
+Every window has only its title and one small button: ... opens a list
+with all the commands of the app and Minimize, Fill Screen and Close.
+Widgets lift under the pointer and can be dragged; double-click the music
+widget for the Music app, click the weather to refresh it, + adds a task.
 
 Apps
   Browser         web pages over HTTP and HTTPS (more /docs/internet.txt)
   Terminal        the SynthOS shell in a window (closing only hides it)
-  Files           browse, open, copy, cut, paste, rename, delete, new folder
-  Notepad         text editor: selection, clipboard, auto-indent, line numbers
+  Files           browse, open, copy, cut, paste, rename, delete; type to
+                  search, picture thumbnails, sidebar from the ... menu
+  Notepad         text editor: selection, clipboard, auto-indent
+  Photos          PNG, JPEG, GIF (animated) and BMP: zoom, rotate,
+                  slideshow, set as wallpaper; arrows go to the next one
+  Music           the built-in songs and WAV files from ~/Music
+  Video           AVI videos with Motion JPEG pictures and PCM sound
+  Viewer          any file as text or hex
+  Install SynthOS put SynthOS on another disk of this computer
   Paint           pencil, brush, eraser, line, rectangle, ellipse, fill,
                   color picker; opens and saves 24-bit BMP files
   Calculator      keyboard or mouse, %, 1/x, x^2, square root
-  System Settings appearance, wallpaper, Dock, displays, network, users,
-                  lock screen, terminal, mouse, about
+  System Settings looks, widgets, login items, wallpaper, displays,
+                  network, users, lock screen, terminal, mouse, about
   System Monitor  memory graph, disks, open windows (End task), kernel log
   Minesweeper     three levels; left click opens, right click flags
+
+Sound needs an AC'97 card (QEMU: -device AC97). Without one the songs
+still play silently and the visualizer still moves.
 
 The desktop is cooperative: while a long command runs in the Terminal,
 other windows wait until it finishes or asks for a key.
