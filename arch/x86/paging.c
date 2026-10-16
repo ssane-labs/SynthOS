@@ -280,7 +280,8 @@ static void high_init(void)
     for (uint32_t i = 0; i < bi->mmap_count && region_count < MAX_REGIONS; i++) {
         if (map[i].type != 1)
             continue;
-        uint64_t start = MAX(map[i].base, 0x100000000ull), end = map[i].base + map[i].length;
+        /* Everything above the kernel heap, below and above 4 GB, holds pages for programs. */
+        uint64_t start = MAX(map[i].base, (uint64_t)heap_phys + heap_bytes), end = map[i].base + map[i].length;
         start = (start + 4095) & ~4095ull;
         end &= ~4095ull;
         if (end <= start || (start >> 12) > 0xffffffffull)
