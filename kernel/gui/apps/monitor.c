@@ -237,5 +237,5 @@ static void launch(const char *arg)
 }
 
 static const struct gui_app monitor_app = {"System Monitor", "Memory, storage, windows and kernel log",
-                                           ICON_MONITOR, launch, NULL};
+                                           ICON_MONITOR, launch, NULL, NULL};
 GUI_APP(monitor_app);

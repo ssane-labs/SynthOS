@@ -262,5 +262,5 @@ static void launch_terminal(const char *arg)
 }
 
 static const struct gui_app terminal_app = {"Terminal", "The SynthOS shell with all commands", ICON_TERMINAL,
-                                            launch_terminal, NULL};
+                                            launch_terminal, NULL, NULL};
 GUI_APP(terminal_app);

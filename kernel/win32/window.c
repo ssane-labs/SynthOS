@@ -98,6 +98,7 @@ static W32_STATE struct gui_app *process_app;
 struct process_app {
     struct gui_app app;
     char name[48];
+    struct canvas picture;
 };
 
 static const struct gui_app *app_of_process(void)
@@ -111,7 +112,9 @@ static const struct gui_app *app_of_process(void)
     char *dot = strrchr(p->name, '.');
     if (dot && dot != p->name)
         *dot = 0;
-    p->app = (struct gui_app){p->name, "Windows program", ICON_APP, NULL, NULL};
+    p->app = (struct gui_app){p->name, "Windows program", ICON_APP, NULL, NULL, NULL};
+    if (gui_program_icon(w32->ctx->path, 64, &p->picture))
+        p->app.picture = &p->picture;
     process_app = &p->app;
     return process_app;
 }
@@ -907,6 +910,17 @@ static BOOL WINAPI AdjustWindowRect(RECT *r, DWORD style, BOOL menu)
     return AdjustWindowRectEx(r, style, menu, 0);
 }
 
+static void send_pos_changed(struct w32_window *w, bool move, bool size)
+{
+    struct rect r = screen_rect(w);
+    struct {
+        HANDLE hwnd, after;
+        int x, y, cx, cy;
+        UINT flags;
+    } pos = {w, NULL, r.x, r.y, r.w, r.h, 0x4 | 0x10 | (move ? 0 : 0x2) | (size ? 0 : 0x1)};
+    w32_send(w, WM_WINDOWPOSCHANGED, 0, (LPARAM)&pos);
+}
+
 static void move_window(struct w32_window *w, int x, int y, int width, int height, bool move, bool size)
 {
     if (w->wm) {
@@ -935,6 +949,7 @@ static void move_window(struct w32_window *w, int x, int y, int width, int heigh
             w32_invalidate(w->parent, &local, true);
         }
     }
+    send_pos_changed(w, move, size);
     if (size)
         w32_send(w, WM_SIZE, 0, (LPARAM)((uint32_t)w->rect.w | (uint32_t)w->rect.h << 16));
     if (move)
@@ -2178,13 +2193,28 @@ static HANDLE WINAPI LoadIconA(HANDLE inst, LPCSTR name)
     return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
 }
 
+static HANDLE load_bitmap(HANDLE inst, const void *name)
+{
+    uint32_t size = 0;
+    const void *dib = w32_find_resource(inst, (const void *)2, name, &size);
+    HANDLE h = dib ? w32_bitmap_from_dib(dib, size) : NULL;
+    if (!h)
+        w32_set_error(1814);
+    return h;
+}
+
 static HANDLE WINAPI LoadImageA(HANDLE inst, LPCSTR name, UINT type, int cx, int cy, UINT flags)
 {
     UNUSED(cx);
     UNUSED(cy);
-    UNUSED(flags);
-    UNUSED(inst);
-    return type == 0 ? NULL : (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
+    if (type == 0)
+        return (flags & 0x10) || (uintptr_t)name >= 0x10000 ? NULL : load_bitmap(inst, name);
+    return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
+}
+
+static HANDLE WINAPI LoadBitmapA(HANDLE inst, LPCSTR name)
+{
+    return (uintptr_t)name < 0x10000 ? load_bitmap(inst, name) : NULL;
 }
 
 static HANDLE WINAPI SetCursor(HANDLE cursor)
@@ -2715,6 +2745,7 @@ static void bridge_dispatch(struct window *wm, struct gui_event *e)
             w->caption_due = hal_ticks_ms() + 200;
             w->caption_tries = 0;
         }
+        send_pos_changed(w, false, true);
         w32_post(w, WM_SIZE, wm->flags & WIN_MAXIMIZED ? 2 : 0, (LPARAM)((uint32_t)r.w | (uint32_t)r.h << 16));
         w32_invalidate(w, NULL, true);
         break;
@@ -2772,8 +2803,10 @@ void w32_gui_cleanup(void)
     capture = active = hover = NULL;
     next_atom = 0;
     box = NULL;
-    if (process_app)
+    if (process_app) {
+        kfree(((struct process_app *)process_app)->picture.px);
         kfree(process_app);
+    }
     process_app = NULL;
 }
 
@@ -2818,7 +2851,8 @@ static const struct w32_export window_exports[] = {
     W32_FN(SetCursorPos), W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(GetSystemMetrics),
     W32_FN(SystemParametersInfoA), W32_FN(SystemParametersInfoW), W32_FN(SystemParametersInfoForDpi), W32_FN(LoadCursorA),
     W32_AS("LoadCursorW", LoadCursorA), W32_FN(LoadIconA), W32_AS("LoadIconW", LoadIconA), W32_FN(LoadImageA),
-    W32_AS("LoadImageW", LoadImageA), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(CreateMenu),
+    W32_AS("LoadImageW", LoadImageA),
+    W32_FN(LoadBitmapA), W32_AS("LoadBitmapW", LoadBitmapA), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(CreateMenu),
     W32_AS("CreatePopupMenu", CreateMenu), W32_FN(DestroyMenu), W32_FN(AppendMenuA), W32_FN(AppendMenuW),
     W32_FN(InsertMenuA), W32_FN(SetMenu), W32_FN(GetMenu), W32_FN(DrawMenuBar), W32_FN(GetSubMenu),
     W32_FN(CheckMenuItem), W32_FN(EnableMenuItem), W32_FN(GetMenuItemCount), W32_FN(GetMenuState), W32_FN(IsMenu),

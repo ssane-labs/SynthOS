@@ -2036,6 +2036,25 @@ static int WINAPI SetDIBits(HANDLE h, HANDLE bitmap, UINT start, UINT lines, con
     return n;
 }
 
+/* A packed DIB from a program's resources (RT_BITMAP) as a bitmap object. */
+HANDLE w32_bitmap_from_dib(const void *dib, uint32_t size)
+{
+    const struct bitmap_info *bmi = dib;
+    if (!bmi || size < sizeof(*bmi) || bmi->size < sizeof(*bmi) || bmi->size > size || bmi->width <= 0 ||
+        bmi->width > 8192 || !bmi->height || bmi->height > 8192 || bmi->height < -8192)
+        return NULL;
+    uint32_t colors = bmi->used ? bmi->used : bmi->bpp <= 8 ? 1u << bmi->bpp : 0;
+    uint32_t offset = bmi->size + colors * 4 + (bmi->compression == 3 ? 12 : 0);
+    int height = bmi->height < 0 ? -bmi->height : bmi->height;
+    uint32_t stride = ((uint32_t)bmi->width * bmi->bpp + 31) / 32 * 4;
+    if (offset + stride * (uint32_t)height > size || (bmi->compression != 0 && bmi->compression != 3))
+        return NULL;
+    struct gdi_obj *o = new_bitmap(bmi->width, height, NULL, 32);
+    if (o)
+        SetDIBits(NULL, o, 0, (UINT)height, (const uint8_t *)dib + offset, bmi, 0);
+    return o;
+}
+
 static BOOL WINAPI BitBlt(HANDLE hd, int dx, int dy, int w, int h, HANDLE hs, int sx, int sy, DWORD rop)
 {
     return stretch(hd, dx, dy, w, h, hs, sx, sy, w, h, rop);

@@ -454,5 +454,5 @@ static void launch(const char *arg)
 }
 
 static const struct gui_app calc_app = {"Calculator", "Basic arithmetic with the keyboard or mouse", ICON_CALC, launch,
-                                        NULL};
+                                        NULL, NULL};
 GUI_APP(calc_app);

@@ -299,12 +299,15 @@ static DWORD WINAPI DiscardVirtualMemory(void *addr, SIZE_T size)
 
 static DWORD WINAPI RoInitialize(int type)
 {
-    UNUSED(type);
-    return 0;
+    DWORD(WINAPI * init)(void *, DWORD) = (DWORD(WINAPI *)(void *, DWORD))w32_builtin_lookup("ole32.dll", "CoInitializeEx");
+    return init ? init(NULL, type == 1 ? 0 : 2) : 0;
 }
 
 static void WINAPI RoUninitialize(void)
 {
+    void(WINAPI * uninit)(void) = (void(WINAPI *)(void))w32_builtin_lookup("ole32.dll", "CoUninitialize");
+    if (uninit)
+        uninit();
 }
 
 static DWORD WINAPI RoGetActivationFactory(void *cls, const void *iid, void **factory)
@@ -515,7 +518,6 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_AS("SetDllDirectoryW", w32_one1),
     W32_AS("SetDllDirectoryA", w32_one1),
     W32_FN(SetFileCompletionNotificationModes),
-    W32_AS("EnumResourceNamesW", w32_fail4),
     W32_AS("ClearCommError", w32_fail3),
     W32_AS("EscapeCommFunction", w32_fail2),
     W32_AS("GetCommModemStatus", w32_fail2),

@@ -3,13 +3,12 @@
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/exec.h>
-#include <synth/lnk.h>
-#include <synth/winpath.h>
 #include <synth/fbcon.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/keys.h>
+#include <synth/lnk.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -17,7 +16,9 @@
 #include <synth/time.h>
 #include <synth/users.h>
 #include <synth/vfs.h>
+#include <synth/winpath.h>
 
+#include "image.h"
 #include "internal.h"
 
 SYNTH_TABLE_DECLARE(synth_gui_apps, struct gui_app);
@@ -64,6 +65,7 @@ static int display_hal[MAX_SCREENS];
 static int display_count;
 
 static void scan_desktop(void);
+static const struct image *program_icon(const char *path);
 
 int gui_display_hal(int screen)
 {
@@ -366,9 +368,45 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
             continue;
         if (i == selected_icon)
             gfx_round(c, (struct rect){cell.x + 14, cell.y - 2, cell.w - 28, 70}, 8, ALPHA(0, 70));
-        gfx_icon(c, cell.x + (cell.w - 64) / 2, cell.y + 2, icons[i].icon, 64);
+        const struct image *img = program_icon(icons[i].path);
+        if (img)
+            gfx_scale(c, (struct rect){cell.x + (cell.w - 56) / 2, cell.y + 6, 56, 56},
+                      &(struct canvas){img->px, img->w, img->h, img->w, {0, 0, img->w, img->h}}, 255);
+        else
+            gfx_icon(c, cell.x + (cell.w - 64) / 2, cell.y + 2, icons[i].icon, 64);
         icon_label(c, cell, icons[i].label, i == selected_icon);
     }
+}
+
+/* Windows programs and shortcuts to them show the program's own icon. */
+#define PROGRAM_ICONS 16
+
+static struct program_icon {
+    char path[PATH_MAX_LEN];
+    struct image img;
+} program_icons[PROGRAM_ICONS];
+static int program_icon_next;
+
+static const struct image *program_icon(const char *path)
+{
+    const char *ext = path_ext(path);
+    if (!ext || (str_casecmp(ext, ".exe") && str_casecmp(ext, ".lnk")))
+        return NULL;
+    for (int i = 0; i < PROGRAM_ICONS; i++)
+        if (!strcmp(program_icons[i].path, path))
+            return program_icons[i].img.px ? &program_icons[i].img : NULL;
+    struct program_icon *p = &program_icons[program_icon_next++ % PROGRAM_ICONS];
+    image_free(&p->img);
+    str_copy(p->path, path, sizeof(p->path));
+    char target[PATH_MAX_LEN];
+    str_copy(target, path, sizeof(target));
+    struct lnk *l = str_casecmp(ext, ".lnk") ? NULL : kmalloc(sizeof(*l));
+    if (l && (lnk_read(path, l) != 0 || winpath_to_vfs("/", l->icon[0] ? l->icon : l->target, target, sizeof(target))))
+        target[0] = 0;
+    kfree(l);
+    if (!target[0] || !image_load_exe_icon(target, 64, &p->img))
+        p->img = (struct image){0};
+    return p->img.px ? &p->img : NULL;
 }
 
 static void desktop_pick(struct window *owner, int index);
@@ -488,7 +526,7 @@ void gui_app_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx
 
 void gui_app_launch(const struct gui_app *app, const char *arg)
 {
-    if (!app)
+    if (!app || !app->launch)
         return;
     wm_set_app(app);
     app->launch(arg);

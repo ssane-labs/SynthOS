@@ -13,12 +13,26 @@
 #define CO_E_CLASSSTRING 0x800401f3u
 #define REGDB_E_CLASSNOTREG 0x80040154u
 
+/* Chromium reads the apartment from the TEB's ReservedForOle block the way combase.dll lays it out. */
+static void ole_tls_flags(struct w32_thread *t, uint32_t flags)
+{
+    if (!t->teb)
+        return;
+    uint32_t *ole;
+    memcpy(&ole, t->teb + 0xf80, 4);
+    if (!ole && flags && (ole = w32_zalloc(64)))
+        memcpy(t->teb + 0xf80, &ole, 4);
+    if (ole)
+        ole[3] = flags;
+}
+
 static uint32_t init_apartment(uint8_t apartment)
 {
     struct w32_thread *t = w32->current;
     if (t->com_inits && t->com_apartment != apartment)
         return RPC_E_CHANGED_MODE;
     t->com_apartment = apartment;
+    ole_tls_flags(t, apartment == 1 ? 0x80 : 0x140);
     return t->com_inits++ ? S_FALSE : S_OK;
 }
 
@@ -36,8 +50,10 @@ static uint32_t WINAPI CoInitialize(void *reserved)
 static void WINAPI CoUninitialize(void)
 {
     struct w32_thread *t = w32->current;
-    if (t->com_inits > 0 && --t->com_inits == 0)
+    if (t->com_inits > 0 && --t->com_inits == 0) {
         t->com_apartment = 0;
+        ole_tls_flags(t, 0);
+    }
 }
 
 static uint32_t WINAPI OleInitialize(void *reserved)

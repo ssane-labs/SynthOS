@@ -65,15 +65,28 @@ static const struct w32_export dwmapi_exports[] = {
     W32_AS("DwmEnableBlurBehindWindow", w32_zero2),
 };
 
+/* One console session: numbers for the id and state classes, strings for the rest. */
 static BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session, int cls, WCHAR **buf, DWORD *size)
 {
     UNUSED(server);
-    UNUSED(session);
-    UNUSED(cls);
-    *buf = w32_zalloc(8);
+    const char *text = cls == 5 ? (w32_getenv("USERNAME") ? w32_getenv("USERNAME") : "root")
+                     : cls == 6 ? "Console" : cls == 7 ? "SYNTHOS" : "";
+    bool number = cls == 4 || cls == 8;
+    size_t n = number ? 4 : (strlen(text) + 1) * sizeof(WCHAR);
+    uint8_t *out = w32_zalloc(MAX(n, (size_t)8));
+    if (!out)
+        return FALSE;
+    if (cls == 4) {
+        uint32_t id = session == 0xffffffffu ? 1 : session;
+        memcpy(out, &id, 4);
+    } else if (!number) {
+        for (size_t i = 0; text[i]; i++)
+            ((WCHAR *)out)[i] = (uint8_t)text[i];
+    }
+    *buf = (WCHAR *)out;
     if (size)
-        *size = *buf ? 8 : 0;
-    return *buf != NULL;
+        *size = (DWORD)n;
+    return TRUE;
 }
 
 static BOOL WINAPI WTSEnumerateSessionsW(HANDLE server, DWORD reserved, DWORD version, uint32_t **out, DWORD *count)

@@ -106,6 +106,51 @@ static const struct data_entry *find_entry(HANDLE module, const void *type, cons
     return (const struct data_entry *)langs;
 }
 
+typedef BOOL(WINAPI *enum_names_fn)(HANDLE, const void *, const void *, intptr_t);
+
+static BOOL enum_names(HANDLE module, const void *type, enum_names_fn fn, intptr_t param, bool wide)
+{
+    const uint8_t *root = resource_root(module_base(module));
+    const uint8_t *dir = root ? lookup(root, root, type, wide) : NULL;
+    if (!dir || !fn) {
+        w32_set_error(1813);
+        return FALSE;
+    }
+    uint32_t count = (uint32_t)*(const uint16_t *)(dir + 12) + *(const uint16_t *)(dir + 14);
+    const uint32_t *entries = (const uint32_t *)(dir + 16);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t name = entries[i * 2];
+        void *arg = (void *)(uintptr_t)name, *copy = NULL;
+        if (name & 0x80000000u) {
+            const uint16_t *s = (const uint16_t *)(root + (name & 0x7fffffffu));
+            if (!(copy = w32_zalloc((size_t)(s[0] + 1) * 2)))
+                return FALSE;
+            for (uint16_t k = 0; k < s[0]; k++) {
+                if (wide)
+                    ((uint16_t *)copy)[k] = s[1 + k];
+                else
+                    ((char *)copy)[k] = (char)(s[1 + k] < 0x80 ? s[1 + k] : '?');
+            }
+            arg = copy;
+        }
+        BOOL go = fn(module, type, arg, param);
+        w32_free(copy);
+        if (!go)
+            break;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI EnumResourceNamesW(HANDLE module, const WCHAR *type, enum_names_fn fn, intptr_t param)
+{
+    return enum_names(module, type, fn, param, true);
+}
+
+static BOOL WINAPI EnumResourceNamesA(HANDLE module, const char *type, enum_names_fn fn, intptr_t param)
+{
+    return enum_names(module, type, fn, param, false);
+}
+
 const void *w32_find_resource(HANDLE module, const void *type, const void *name, uint32_t *size)
 {
     const struct data_entry *e = find_entry(module, type, name, false);
@@ -336,6 +381,7 @@ static BOOL WINAPI DestroyAcceleratorTable(HANDLE table)
 
 static const struct w32_export resource_exports[] = {
     W32_FN(FindResourceA), W32_FN(FindResourceW), W32_FN(FindResourceExA), W32_FN(FindResourceExW),
+    W32_FN(EnumResourceNamesW), W32_FN(EnumResourceNamesA),
     W32_FN(LoadResource),  W32_FN(LockResource),  W32_FN(SizeofResource),  W32_FN(FreeResource),
 };
 

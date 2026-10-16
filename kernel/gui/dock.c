@@ -84,9 +84,16 @@ static void build(void)
             items[count++] = (struct item){.kind = DI_APP, .app = app, .running = wm_app_window_count(app) > 0};
     }
     gui_app_foreach(add_running, NULL);
-    items[count++] = (struct item){.kind = DI_SEPARATOR};
     struct window *list[32];
     int n = wm_window_list(list, 32);
+    for (int i = 0; i < n && count < MAX_ITEMS - 4; i++) {
+        bool seen = !list[i]->app;
+        for (int k = 0; k < count && !seen; k++)
+            seen = items[k].kind == DI_APP && items[k].app == list[i]->app;
+        if (!seen)
+            items[count++] = (struct item){.kind = DI_APP, .app = list[i]->app, .running = true};
+    }
+    items[count++] = (struct item){.kind = DI_SEPARATOR};
     for (int i = 0; i < n && count < MAX_ITEMS - 1; i++)
         if ((list[i]->flags & WIN_MINIMIZED) && list[i]->thumb.px)
             items[count++] = (struct item){.kind = DI_WINDOW, .win = list[i]};
@@ -271,6 +278,9 @@ void dock_paint(struct canvas *c, int screen)
             gfx_drop_shadow(c, dst, 4, 6, 70, 2);
             gfx_scale(c, dst, t, alpha);
             gfx_icon(c, r.x + r.w - 20, r.y + r.h - 20, it->win->icon, 20);
+        } else if (it->kind == DI_APP && it->app->picture) {
+            gfx_scale(c, (struct rect){r.x + r.w / 16, r.y + r.w / 16, r.w - r.w / 8, r.h - r.w / 8}, it->app->picture,
+                      alpha);
         } else {
             gfx_icon_alpha(c, r.x, r.y, item_icon(it), r.w, alpha);
         }

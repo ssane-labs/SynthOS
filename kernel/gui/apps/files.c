@@ -991,5 +991,5 @@ static void launch(const char *arg)
     navigate(w, f, arg && *arg ? arg : user_home(), false);
 }
 
-static const struct gui_app files_app = {"Files", "Browse folders and open files", ICON_FILES, launch, NULL};
+static const struct gui_app files_app = {"Files", "Browse folders and open files", ICON_FILES, launch, NULL, NULL};
 GUI_APP(files_app);

@@ -1102,5 +1102,5 @@ static void launch(const char *arg)
     }
 }
 
-static const struct gui_app browser_app = {"Browser", "Browse the web", ICON_BROWSER, launch, ".html;.htm;.xhtml"};
+static const struct gui_app browser_app = {"Browser", "Browse the web", ICON_BROWSER, launch, ".html;.htm;.xhtml", NULL};
 GUI_APP(browser_app);

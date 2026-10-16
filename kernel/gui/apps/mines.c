@@ -411,5 +411,5 @@ static void launch(const char *arg)
 }
 
 static const struct gui_app mines_app = {"Minesweeper", "Clear the field without hitting a mine", ICON_MINES, launch,
-                                         NULL};
+                                         NULL, NULL};
 GUI_APP(mines_app);

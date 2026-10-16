@@ -851,5 +851,5 @@ static void launch(const char *arg)
 }
 
 static const struct gui_app settings_app = {"System Settings", "Appearance, wallpaper, users, displays and more",
-                                            ICON_SETTINGS, launch, NULL};
+                                            ICON_SETTINGS, launch, NULL, NULL};
 GUI_APP(settings_app);
