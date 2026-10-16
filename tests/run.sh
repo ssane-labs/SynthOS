@@ -127,6 +127,10 @@ winpath /home/a.txt /tmp /apps/x
 C:\Users\root\a.txt
 winpath 'C:\HOME\SRC\HELLO.SASM'
 /home/src/hello.sasm
+shortcut /apps/wintest.exe 'Win Test' info; shortcut -l '/home/Desktop/Win Test.lnk' | grep target
+target: C:\Program Files\wintest.exe
+shortcut -l '/home/Desktop/Win Test.lnk' | grep arguments
+arguments: info
 winhello one 7; echo win=$?
 win=0
 winhello 9 > /tmp/w.txt; echo st=$?; grep -c arg /tmp/w.txt
@@ -175,6 +179,10 @@ wintest compat | grep certs
 certs roots=many disallowed=0 collection=live sha1=found usage=any
 wintest compat | grep registered
 registered wait=ok hits=1 timeouts=ok unregister=ok
+wintest shortcut | grep shortcut
+shortcut saved=ok path=C:\Windows\notepad.exe args=--flag "a b"
+wintest shortcut | grep misc
+misc muldiv=11,-11 vartime=46311 2026-10-16 12:00 url=ok:dl.google.com:8443/chrome/install
 wintest font | grep collection
 collection hr=0 families=1 found=yes glyph=1
 wintest font | grep bounds

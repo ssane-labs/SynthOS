@@ -175,6 +175,20 @@ static bool shown(struct w32_window *w)
     return true;
 }
 
+/* Programs that draw their own minimize/maximize/close buttons get them covered: the title bar has the real ones. */
+static void cover_caption(struct w32_window *top)
+{
+    struct rect b = top->caption;
+    struct canvas *c = &top->wm->surface;
+    if (rect_empty(b) || b.x < 1 || b.x + b.w > c->w || b.y + b.h > c->h)
+        return;
+    struct rect clip = c->clip;
+    c->clip = (struct rect){0, 0, c->w, c->h};
+    for (int y = b.y; y < b.y + b.h; y++)
+        gfx_fill(c, (struct rect){b.x, y, b.w, 1}, c->px[y * c->stride + b.x - 1]);
+    c->clip = clip;
+}
+
 void w32_damage(struct w32_window *w, struct rect r)
 {
     struct w32_window *top = w32_top(w);
@@ -182,6 +196,8 @@ void w32_damage(struct w32_window *w, struct rect r)
         return;
     struct rect cr = wm_client_rect(top->wm);
     r = rect_intersect(r, (struct rect){0, 0, cr.w, cr.h});
+    if (!rect_empty(rect_intersect(r, top->caption)))
+        cover_caption(top);
     if (!rect_empty(r))
         wm_damage((struct rect){cr.x + r.x, cr.y + r.y, r.w, r.h});
 }
@@ -575,6 +591,8 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
             return NULL;
         }
         w->wm->app = app_of_process();
+        if (caption)
+            w->caption_due = hal_ticks_ms() + 500;
         if (x != W32_CW_USEDEFAULT)
             wm_move(w->wm, x, MAX(y, MENUBAR_HEIGHT));
         struct rect cr = wm_client_rect(w->wm);
@@ -1199,6 +1217,111 @@ static LRESULT WINAPI CallWindowProcA(WNDPROC proc, HANDLE h, UINT msg, WPARAM w
     return proc ? proc(h, msg, wp, lp) : 0;
 }
 
+/* comctl32 window subclassing: the newest subclass runs first, DefSubclassProc passes to the next one. */
+#define MAX_SUBCLASSES 8
+
+typedef LRESULT(WINAPI *SUBCLASSPROC)(HANDLE, UINT, WPARAM, LPARAM, uintptr_t, uintptr_t);
+
+struct subclasses {
+    WNDPROC original;
+    int count, level;
+    struct {
+        SUBCLASSPROC proc;
+        uintptr_t id, data;
+    } entry[MAX_SUBCLASSES];
+};
+
+static LRESULT subclass_chain(struct w32_window *w, int i, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct subclasses *s = w->subs;
+    if (i >= s->count)
+        return s->original ? s->original(w, msg, wp, lp) : 0;
+    s->level = i + 1;
+    int at = s->count - 1 - i;
+    return s->entry[at].proc(w, msg, wp, lp, s->entry[at].id, s->entry[at].data);
+}
+
+static LRESULT WINAPI subclass_thunk(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || !w->subs)
+        return 0;
+    int saved = w->subs->level;
+    LRESULT r = subclass_chain(w, 0, msg, wp, lp);
+    if (w->subs)
+        w->subs->level = saved;
+    return r;
+}
+
+static LRESULT WINAPI DefSubclassProc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w)
+        return 0;
+    if (!w->subs)
+        return w->proc ? w->proc(h, msg, wp, lp) : 0;
+    int saved = w->subs->level;
+    LRESULT r = subclass_chain(w, saved, msg, wp, lp);
+    w->subs->level = saved;
+    return r;
+}
+
+static BOOL WINAPI SetWindowSubclass(HANDLE h, SUBCLASSPROC proc, uintptr_t id, uintptr_t data)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || !proc)
+        return FALSE;
+    if (!w->subs) {
+        w->subs = w32_zalloc(sizeof(*w->subs));
+        if (!w->subs)
+            return FALSE;
+        w->subs->original = w->proc;
+        w->proc = subclass_thunk;
+    }
+    struct subclasses *s = w->subs;
+    for (int i = 0; i < s->count; i++)
+        if (s->entry[i].proc == proc && s->entry[i].id == id) {
+            s->entry[i].data = data;
+            return TRUE;
+        }
+    if (s->count >= MAX_SUBCLASSES)
+        return FALSE;
+    s->entry[s->count].proc = proc;
+    s->entry[s->count].id = id;
+    s->entry[s->count].data = data;
+    s->count++;
+    return TRUE;
+}
+
+static BOOL WINAPI GetWindowSubclass(HANDLE h, SUBCLASSPROC proc, uintptr_t id, uintptr_t *data)
+{
+    struct w32_window *w = w32_win(h);
+    for (int i = 0; w && w->subs && i < w->subs->count; i++)
+        if (w->subs->entry[i].proc == proc && w->subs->entry[i].id == id) {
+            if (data)
+                *data = w->subs->entry[i].data;
+            return TRUE;
+        }
+    return FALSE;
+}
+
+static BOOL WINAPI RemoveWindowSubclass(HANDLE h, SUBCLASSPROC proc, uintptr_t id)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || !w->subs)
+        return FALSE;
+    struct subclasses *s = w->subs;
+    for (int i = 0; i < s->count; i++)
+        if (s->entry[i].proc == proc && s->entry[i].id == id) {
+            memmove(&s->entry[i], &s->entry[i + 1], (size_t)(s->count - i - 1) * sizeof(s->entry[0]));
+            s->count--;
+            if (s->level > i)
+                s->level--;
+            return TRUE;
+        }
+    return FALSE;
+}
+
 LRESULT WINAPI w32_def_window_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
     return def_proc(h, msg, wp, lp, false);
@@ -1652,10 +1775,59 @@ static struct w32_window *paint_candidate(struct w32_window *w, uint32_t thread)
 
 static void gui_replay(void);
 
+enum { HT_MINBUTTON = 8, HT_MAXBUTTON = 9, HT_CLOSE = 20 };
+
+static bool caption_hit(struct w32_window *w, int x, int y)
+{
+    int sx, sy;
+    client_origin(w, &sx, &sy);
+    LRESULT r = w32_send(w, WM_NCHITTEST, 0, (LPARAM)((uint32_t)(uint16_t)(sx + x) | (uint32_t)(uint16_t)(sy + y) << 16));
+    return r == HT_MINBUTTON || r == HT_MAXBUTTON || r == HT_CLOSE;
+}
+
+static bool probe_caption(struct w32_window *w)
+{
+    int cw = w->rect.w, y = 10, right = -1;
+    for (int x = cw - 2; x > cw - 12 && x > 0 && right < 0; x -= 2)
+        if (caption_hit(w, x, y))
+            right = x;
+    if (right < 0)
+        return false;
+    int left = right, bottom = y;
+    while (left > 4 && caption_hit(w, left - 4, y))
+        left -= 4;
+    while (left > 1 && caption_hit(w, left - 1, y))
+        left--;
+    while (bottom < 80 && caption_hit(w, right, bottom + 4))
+        bottom += 4;
+    while (bottom < 84 && caption_hit(w, right, bottom + 1))
+        bottom++;
+    w->caption = (struct rect){left, 0, cw - left, bottom + 1};
+    return true;
+}
+
+static void probe_captions(uint32_t me)
+{
+    uint64_t now = hal_ticks_ms();
+    for (struct w32_window *w = windows; w; w = w->next_all) {
+        if (!w->caption_due || now < w->caption_due || w->thread != me || !w->wm || !w->visible || w->destroyed)
+            continue;
+        w->caption = (struct rect){0, 0, 0, 0};
+        if (probe_caption(w)) {
+            w->caption_due = 0;
+            cover_caption(w);
+            w32_damage(w, w->caption);
+        } else {
+            w->caption_due = ++w->caption_tries < 120 ? now + 1000 : 0;
+        }
+    }
+}
+
 static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
 {
     gui_replay();
     uint32_t me = w32_thread_id();
+    probe_captions(me);
     for (unsigned i = queue_head; i != queue_tail; i++) {
         struct queued *q = &queue[i % QUEUE_SIZE];
         if (q->thread != me || !in_filter(&q->msg, hwnd, lo, hi))
@@ -2228,6 +2400,28 @@ static BOOL WINAPI EnableMenuItem(HANDLE h, UINT id, UINT flags)
     return old;
 }
 
+static UINT WINAPI GetMenuState(HANDLE h, UINT id, UINT flags)
+{
+    struct w32_menu_item *it = find_item(menu_of(h), id, flags);
+    if (!it)
+        return 0xffffffffu;
+    return (it->flags & (MF_CHECKED | MF_GRAYED | MF_DISABLED)) | (it->sub ? 0x10 | (UINT)it->sub->count << 8 : 0);
+}
+
+static BOOL WINAPI IsMenu(HANDLE h)
+{
+    return menu_of(h) != NULL;
+}
+
+static HANDLE WINAPI CopyImage(HANDLE h, UINT type, int cx, int cy, UINT flags)
+{
+    UNUSED(type);
+    UNUSED(cx);
+    UNUSED(cy);
+    UNUSED(flags);
+    return h;
+}
+
 static int WINAPI GetMenuItemCount(HANDLE h)
 {
     struct w32_menu *m = menu_of(h);
@@ -2476,6 +2670,18 @@ static void bridge_dispatch(struct window *wm, struct gui_event *e)
     struct rect cr = wm_client_rect(wm);
     mouse_x = cr.x + e->x;
     mouse_y = cr.y + e->y;
+    bool mouse = e->type == EV_MOUSE_DOWN || e->type == EV_MOUSE_UP || e->type == EV_MOUSE_MOVE;
+    if (mouse && !capture && rect_contains(w->caption, e->x, e->y)) {
+        if (e->type == EV_MOUSE_DOWN)
+            mouse_buttons |= e->button;
+        else if (e->type == EV_MOUSE_UP)
+            mouse_buttons &= ~e->button;
+        if (hover && w32_win(hover))
+            w32_post(hover, WM_MOUSELEAVE, 0, 0);
+        hover = NULL;
+        e->handled = e->type == EV_MOUSE_DOWN;
+        return;
+    }
     switch (e->type) {
     case EV_MOUSE_DOWN:
         mouse_buttons |= e->button;
@@ -2504,6 +2710,11 @@ static void bridge_dispatch(struct window *wm, struct gui_event *e)
         struct rect r = wm_client_rect(wm);
         w->rect.w = r.w;
         w->rect.h = r.h;
+        w->caption = (struct rect){0, 0, 0, 0};
+        if (!(wm->flags & WIN_NOTITLE)) {
+            w->caption_due = hal_ticks_ms() + 200;
+            w->caption_tries = 0;
+        }
         w32_post(w, WM_SIZE, wm->flags & WIN_MAXIMIZED ? 2 : 0, (LPARAM)((uint32_t)r.w | (uint32_t)r.h << 16));
         w32_invalidate(w, NULL, true);
         break;
@@ -2610,8 +2821,21 @@ static const struct w32_export window_exports[] = {
     W32_AS("LoadImageW", LoadImageA), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(CreateMenu),
     W32_AS("CreatePopupMenu", CreateMenu), W32_FN(DestroyMenu), W32_FN(AppendMenuA), W32_FN(AppendMenuW),
     W32_FN(InsertMenuA), W32_FN(SetMenu), W32_FN(GetMenu), W32_FN(DrawMenuBar), W32_FN(GetSubMenu),
-    W32_FN(CheckMenuItem), W32_FN(EnableMenuItem), W32_FN(GetMenuItemCount),
+    W32_FN(CheckMenuItem), W32_FN(EnableMenuItem), W32_FN(GetMenuItemCount), W32_FN(GetMenuState), W32_FN(IsMenu),
+    W32_FN(CopyImage),
 };
 
 W32_EXPORTS(window_module, "user32.dll", window_exports, .attach = window_attach);
+
+static const struct w32_export subclass_exports[] = {
+    W32_FN(SetWindowSubclass), W32_FN(GetWindowSubclass), W32_FN(RemoveWindowSubclass), W32_FN(DefSubclassProc),
+};
+
+static const char *const subclass_ordinals[414] = {
+    [410] = "SetWindowSubclass", [411] = "GetWindowSubclass", [412] = "RemoveWindowSubclass",
+    [413] = "DefSubclassProc",
+};
+
+W32_EXPORTS(subclass_module, "comctl32.dll", subclass_exports, .ordinals = subclass_ordinals,
+            .ordinal_count = ARRAY_SIZE(subclass_ordinals));
 #endif

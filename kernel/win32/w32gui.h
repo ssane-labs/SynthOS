@@ -199,6 +199,10 @@ struct w32_window {
     bool dlg_ended;
     intptr_t dlg_msgresult;
     bool message_only;
+    struct rect caption;
+    uint64_t caption_due;
+    uint8_t caption_tries;
+    struct subclasses *subs;
 };
 
 struct w32_window *w32_win(HANDLE h);

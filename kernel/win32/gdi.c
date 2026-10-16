@@ -941,6 +941,57 @@ static int WINAPI GetRgnBox(HANDLE rgn, RECT *out)
     return region_kind(r);
 }
 
+static HANDLE WINAPI CreateRoundRectRgn(int l, int t, int r, int b, int w, int h)
+{
+    UNUSED(w);
+    UNUSED(h);
+    return CreateRectRgn(l, t, r, b);
+}
+
+static int WINAPI OffsetRgn(HANDLE rgn, int x, int y)
+{
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION)
+        return 0;
+    o->region.x += x;
+    o->region.y += y;
+    return region_kind(o->region);
+}
+
+static BOOL WINAPI FillRgn(HANDLE dc, HANDLE rgn, HANDLE brush)
+{
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION)
+        return FALSE;
+    struct rect g = o->region;
+    RECT r = {g.x, g.y, g.x + g.w, g.y + g.h};
+    return FillRect(dc, &r, brush);
+}
+
+static BOOL WINAPI FrameRgn(HANDLE dc, HANDLE rgn, HANDLE brush, int w, int h)
+{
+    UNUSED(w);
+    UNUSED(h);
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION)
+        return FALSE;
+    struct rect g = o->region;
+    RECT r = {g.x, g.y, g.x + g.w, g.y + g.h};
+    return FrameRect(dc, &r, brush);
+}
+
+static BOOL WINAPI OffsetWindowOrgEx(HANDLE h, int x, int y, POINT *old)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d)
+        return FALSE;
+    if (old)
+        *old = (POINT){d->s.org_x, d->s.org_y};
+    d->s.org_x += x;
+    d->s.org_y += y;
+    return TRUE;
+}
+
 static BOOL WINAPI EqualRgn(HANDLE a, HANDLE b)
 {
     struct gdi_obj *x = obj(a), *y = obj(b);
@@ -2084,7 +2135,8 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(GetObjectType), W32_FN(GetObjectA), W32_FN(GetObjectW), W32_FN(SetTextColor),
     W32_FN(GetTextColor), W32_FN(SetBkColor), W32_FN(GetBkColor), W32_FN(SetBkMode), W32_FN(GetBkMode),
     W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode),
-    W32_FN(SetStretchBltMode), W32_FN(SetGraphicsMode), W32_FN(SetViewportOrgEx), W32_FN(SetWindowOrgEx),
+    W32_FN(SetStretchBltMode), W32_FN(SetGraphicsMode), W32_FN(SetViewportOrgEx), W32_FN(SetWindowOrgEx), W32_FN(OffsetWindowOrgEx), W32_FN(CreateRoundRectRgn), W32_FN(OffsetRgn),
+    W32_FN(FillRgn), W32_FN(FrameRgn),
     W32_FN(OffsetViewportOrgEx), W32_FN(SaveDC), W32_FN(RestoreDC), W32_FN(CreateRectRgn),
     W32_FN(CreateRectRgnIndirect), W32_FN(SelectClipRgn), W32_FN(SetRectRgn), W32_FN(CombineRgn), W32_FN(GetRgnBox),
     W32_FN(EqualRgn), W32_FN(GetRegionData), W32_FN(GetClipRgn), W32_FN(GetCurrentObject), W32_FN(GetWorldTransform),

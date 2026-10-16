@@ -27,6 +27,8 @@ struct binfmt {
 #define BINFMT(object) SYNTH_REGISTER(synth_binfmts, struct binfmt, object)
 
 int exec_program(struct exec_ctx *ctx);
+int w32_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd);
+void w32_background(void);
 int exec_find(struct shell *sh, const char *name, char *out, size_t cap);
 const struct binfmt *exec_identify(const char *path, const uint8_t *head, size_t n);
 void exec_foreach_format(void (*fn)(const struct binfmt *fmt, void *ctx), void *ctx);

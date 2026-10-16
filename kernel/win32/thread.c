@@ -155,7 +155,7 @@ static struct w32_thread *pick_stale(struct w32_thread *cur)
         if (stale(t))
             return t;
     for (struct w32_process *p = w32_ring_next(w32); p && p != w32; p = w32_ring_next(p)) {
-        if (p->dead || p->frozen || !p->current)
+        if (p->dead || p->frozen || !p->current || w32_is_host(p))
             continue;
         struct w32_thread *t = p->current;
         do {
@@ -188,7 +188,7 @@ static struct w32_thread *sweep_next(struct w32_thread *cur)
         return NULL;
     struct w32_thread *t = w32->kicked ? stale_in(w32, cur) : NULL;
     for (struct w32_process *p = w32_ring_next(w32); !t && p && p != w32; p = w32_ring_next(p))
-        if (p->kicked && !p->dead && !p->frozen && p->current)
+        if (p->kicked && !p->dead && !p->frozen && p->current && !w32_is_host(p))
             t = stale_in(p, p->current);
     sweep_left = t ? sweep_left - 1 : 0;
     return t;
@@ -197,7 +197,7 @@ static struct w32_thread *sweep_next(struct w32_thread *cur)
 static struct w32_thread *pick_other(bool active_only)
 {
     for (struct w32_process *p = w32_ring_next(w32); p && p != w32; p = w32_ring_next(p)) {
-        if (p->dead || p->frozen || !p->current)
+        if (p->dead || p->frozen || !p->current || w32_is_host(p))
             continue;
         struct w32_thread *t = p->current;
         do {
@@ -245,6 +245,8 @@ NORETURN void w32_leave_forever(void)
     struct w32_thread *next = pick_other(true);
     if (!next)
         next = pick_other(false);
+    if (!next)
+        next = w32_host_thread();
     if (!next)
         panic("win32: no process left to run");
     w32_process_enter(next->proc);
@@ -311,6 +313,8 @@ void w32_block(void)
             next = pick_other(true);
         if (!next)
             next = pick_stale(cur);
+        if (!next)
+            next = w32_host_thread();
         if (!next) {
             w32_idle(1);
             signal_gen++;
@@ -320,7 +324,7 @@ void w32_block(void)
             switch_to(next);
         cur->waiting = false;
     }
-    if (sh_interrupted())
+    if (sh_interrupted() && !w32->detached)
         w32_exit(STATUS_CONTROL_C_EXIT);
 }
 
@@ -340,6 +344,8 @@ void w32_preempt(void)
     }
     if (!next)
         next = pick_other(true);
+    if (turn % 4 == 0 && w32_host_thread())
+        next = w32_host_thread();
     if (next)
         switch_to(next);
 }
@@ -701,6 +707,24 @@ static HANDLE WINAPI CreateMutexW(void *sa, BOOL owner, LPCWSTR name)
 {
     UNUSED(name);
     return CreateMutexA(sa, owner, NULL);
+}
+
+static HANDLE WINAPI OpenNamedObject(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    UNUSED(access);
+    UNUSED(inherit);
+    UNUSED(name);
+    w32_set_error(ERROR_FILE_NOT_FOUND);
+    return NULL;
+}
+
+static DWORD WINAPI QueueUserAPC(void *fn, HANDLE thread, uintptr_t data)
+{
+    UNUSED(fn);
+    UNUSED(thread);
+    UNUSED(data);
+    w32_set_error(ERROR_NOT_SUPPORTED);
+    return 0;
 }
 
 static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG initial, LONG max, LPCSTR name)
@@ -1306,6 +1330,8 @@ static const struct w32_export thread_exports[] = {
     W32_FN(SuspendThread), W32_FN(ResumeThread), W32_FN(GetCurrentThreadId), W32_FN(GetThreadId),
     W32_FN(SetThreadPriority), W32_FN(GetThreadPriority), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),
     W32_FN(CreateEventA), W32_FN(CreateEventW), W32_FN(CreateEventExW), W32_FN(CreateMutexA), W32_FN(CreateMutexW),
+    W32_AS("OpenMutexW", OpenNamedObject), W32_AS("OpenMutexA", OpenNamedObject), W32_AS("OpenEventW", OpenNamedObject),
+    W32_AS("OpenEventA", OpenNamedObject), W32_AS("OpenSemaphoreW", OpenNamedObject), W32_FN(QueueUserAPC),
     W32_FN(CreateSemaphoreA), W32_FN(CreateSemaphoreW), W32_FN(SetEvent), W32_FN(ResetEvent), W32_FN(PulseEvent),
     W32_FN(ReleaseMutex), W32_FN(ReleaseSemaphore), W32_FN(WaitForSingleObject), W32_FN(WaitForSingleObjectEx),
     W32_FN(WaitForMultipleObjects), W32_FN(WaitForMultipleObjectsEx), W32_FN(SignalObjectAndWait),

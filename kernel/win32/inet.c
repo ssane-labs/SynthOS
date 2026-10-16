@@ -562,6 +562,118 @@ static BOOL WINAPI WinHttpSendRequest(HANDLE request, LPCWSTR headers, DWORD len
     return TRUE;
 }
 
+static BOOL WINAPI WinHttpWriteData(HANDLE request, const void *buf, DWORD len, DWORD *written)
+{
+    struct inet *r = get(request);
+    if (!r)
+        return FALSE;
+    uint8_t *grown = len ? w32_realloc(r->body, r->body_len + len) : r->body;
+    if (len && !grown) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    if (len)
+        memcpy(grown + r->body_len, buf, len);
+    r->body = grown;
+    r->body_len += len;
+    if (written)
+        *written = len;
+    return TRUE;
+}
+
+struct url_part {
+    WCHAR *text;
+    DWORD len;
+};
+
+struct url_components {
+    DWORD size;
+    struct url_part scheme;
+    int nscheme;
+    struct url_part host;
+    uint16_t port, pad;
+    struct url_part user, password, path, extra;
+};
+
+static bool url_part(struct url_part *p, const WCHAR *start, DWORD len)
+{
+    if (!p->len && !p->text)
+        return true;
+    if (!p->text) {
+        p->text = (WCHAR *)start;
+        p->len = len;
+        return true;
+    }
+    if (p->len <= len) {
+        p->len = len + 1;
+        return false;
+    }
+    memcpy(p->text, start, len * sizeof(WCHAR));
+    p->text[len] = 0;
+    p->len = len;
+    return true;
+}
+
+static BOOL WINAPI WinHttpCrackUrl(const WCHAR *url, DWORD len, DWORD flags, struct url_components *uc)
+{
+    UNUSED(flags);
+    if (!url || !uc) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (!len)
+        while (url[len])
+            len++;
+    const WCHAR *end = url + len, *p = url;
+    while (p < end && *p != ':')
+        p++;
+    if (p + 2 >= end || p[1] != '/' || p[2] != '/') {
+        w32_set_error(12006);
+        return FALSE;
+    }
+    DWORD scheme_len = (DWORD)(p - url);
+    bool https = scheme_len == 5 && (url[4] | 0x20) == 's';
+    const WCHAR *auth = p + 3, *q = auth;
+    while (q < end && *q != '/' && *q != '?' && *q != '#')
+        q++;
+    const WCHAR *host = auth, *at = NULL;
+    for (const WCHAR *c = auth; c < q; c++)
+        if (*c == '@')
+            at = c;
+    const WCHAR *user_end = NULL;
+    if (at) {
+        host = at + 1;
+        user_end = auth;
+        while (user_end < at && *user_end != ':')
+            user_end++;
+    }
+    const WCHAR *colon = NULL;
+    for (const WCHAR *c = host; c < q; c++)
+        if (*c == ':')
+            colon = c;
+    unsigned port = https ? 443 : 80;
+    if (colon) {
+        port = 0;
+        for (const WCHAR *c = colon + 1; c < q; c++)
+            port = port * 10 + (unsigned)(*c - '0');
+    }
+    const WCHAR *extra = q;
+    while (extra < end && *extra != '?' && *extra != '#')
+        extra++;
+    bool ok = url_part(&uc->scheme, url, scheme_len);
+    ok &= url_part(&uc->host, host, (DWORD)((colon ? colon : q) - host));
+    ok &= url_part(&uc->user, auth, at ? (DWORD)(user_end - auth) : 0);
+    ok &= url_part(&uc->password, at && user_end < at ? user_end + 1 : auth,
+                   at && user_end < at ? (DWORD)(at - user_end - 1) : 0);
+    ok &= url_part(&uc->path, q, (DWORD)(extra - q));
+    ok &= url_part(&uc->extra, extra, (DWORD)(end - extra));
+    uc->nscheme = https ? 2 : 1;
+    uc->port = (uint16_t)port;
+    if (!ok)
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+    return ok;
+}
+
 static BOOL WINAPI WinHttpReceiveResponse(HANDLE request, void *reserved)
 {
     UNUSED(reserved);
@@ -627,7 +739,8 @@ static const struct w32_export winhttp_exports[] = {
     W32_FN(WinHttpReceiveResponse), W32_FN(WinHttpQueryHeaders), W32_FN(WinHttpAddRequestHeaders),
     W32_FN(WinHttpQueryDataAvailable), W32_AS("WinHttpReadData", InternetReadFile),
     W32_AS("WinHttpCloseHandle", InternetCloseHandle), W32_FN(WinHttpSetOption), W32_FN(WinHttpSetTimeouts),
-    W32_FN(WinHttpGetIEProxyConfigForCurrentUser), W32_FN(WinHttpSetStatusCallback),
+    W32_FN(WinHttpGetIEProxyConfigForCurrentUser), W32_FN(WinHttpSetStatusCallback), W32_FN(WinHttpWriteData),
+    W32_FN(WinHttpCrackUrl),
 };
 W32_EXPORTS(winhttp_module, "winhttp.dll", winhttp_exports);
 
@@ -665,6 +778,7 @@ static uint32_t WINAPI URLDownloadToFileW(void *caller, LPCWSTR url, LPCWSTR fil
 
 static const struct w32_export urlmon_exports[] = {
     W32_AS("CoInternetCreateSecurityManager", w32_notimpl3),
+    W32_AS("CreateURLMonikerEx", w32_notimpl4),
     W32_FN(URLDownloadToFileA),
     W32_FN(URLDownloadToFileW),
 };

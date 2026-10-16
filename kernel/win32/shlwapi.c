@@ -237,7 +237,23 @@ static DWORD WINAPI SHGetValueW(HANDLE key, const WCHAR *sub, const WCHAR *value
     return ERROR_FILE_NOT_FOUND;
 }
 
+static uint32_t WINAPI UrlCanonicalizeW(const WCHAR *url, WCHAR *out, DWORD *len, DWORD flags)
+{
+    UNUSED(flags);
+    if (!url || !out || !len)
+        return 0x80070057u;
+    DWORD n = (DWORD)w32_wcslen(url);
+    if (*len <= n) {
+        *len = n + 1;
+        return 0x80004003u;
+    }
+    memmove(out, url, (n + 1) * sizeof(WCHAR));
+    *len = n;
+    return 0;
+}
+
 static const struct w32_export shlwapi_exports[] = {
+    W32_FN(UrlCanonicalizeW),
     W32_FN(PathFindFileNameW),
     W32_FN(PathFindExtensionW),
     W32_FN(PathRemoveExtensionW),

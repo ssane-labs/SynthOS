@@ -767,17 +767,6 @@ static const struct w32_export rpcrt4_exports[] = {
     W32_AS("RpcStringFreeA", RpcStringFreeW),
 };
 
-static uint32_t WINAPI com_not_registered(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t out)
-{
-    UNUSED(a);
-    UNUSED(b);
-    UNUSED(c);
-    UNUSED(d);
-    if (out)
-        *(void **)(uintptr_t)out = NULL;
-    return REGDB_E_CLASSNOTREG;
-}
-
 static uint32_t WINAPI com_ok9(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g,
                                uint32_t h, uint32_t i)
 {
@@ -824,7 +813,6 @@ static void *WINAPI CoTaskMemRealloc(void *p, SIZE_T n)
 
 static const struct w32_export ole32_exports[] = {
     W32_AS("CoInitializeSecurity", com_ok9),
-    W32_AS("CoCreateInstance", com_not_registered),
     W32_AS("CoSetProxyBlanket", com_notimpl8),
     W32_AS("ProgIDFromCLSID", not_implemented2),
     W32_AS("CLSIDFromProgID", not_implemented2),
@@ -1108,6 +1096,25 @@ static uint32_t WINAPI LoadRegTypeLib(const void *guid, uint16_t major, uint16_t
     return 0x8002801du;
 }
 
+static uint32_t WINAPI LoadTypeLib(const WCHAR *file, void **out)
+{
+    UNUSED(file);
+    *out = NULL;
+    return 0x80029c4au;
+}
+
+static uint32_t WINAPI OleLoadPicturePath(const WCHAR *path, void *unk, DWORD reserved, DWORD color, const void *iid,
+                                          void **out)
+{
+    UNUSED(path);
+    UNUSED(unk);
+    UNUSED(reserved);
+    UNUSED(color);
+    UNUSED(iid);
+    *out = NULL;
+    return 0x80004001u;
+}
+
 static uint32_t WINAPI GetErrorInfo(uint32_t reserved, void **out)
 {
     UNUSED(reserved);
@@ -1124,7 +1131,7 @@ static const struct w32_export oleaut32_exports[] = {
     W32_FN(SafeArrayDestroy), W32_FN(SafeArrayGetDim), W32_FN(SafeArrayGetLBound),
     W32_FN(SafeArrayGetUBound), W32_FN(SafeArrayGetVartype), W32_FN(SafeArrayAccessData),
     W32_FN(SafeArrayUnaccessData), W32_FN(SafeArrayGetElement), W32_FN(SafeArrayPutElement),
-    W32_FN(LoadRegTypeLib),
+    W32_FN(LoadRegTypeLib), W32_FN(LoadTypeLib), W32_FN(OleLoadPicturePath),
 };
 
 static const char *const oleaut32_ordinals[] = {
@@ -1133,7 +1140,8 @@ static const char *const oleaut32_ordinals[] = {
     [16] = "SafeArrayDestroy", [17] = "SafeArrayGetDim", [19] = "SafeArrayGetUBound",
     [20] = "SafeArrayGetLBound", [23] = "SafeArrayAccessData", [24] = "SafeArrayUnaccessData",
     [25] = "SafeArrayGetElement", [26] = "SafeArrayPutElement", [77] = "SafeArrayGetVartype",
-    [149] = "SysStringByteLen", [150] = "SysAllocStringByteLen", [162] = "LoadRegTypeLib",
+    [149] = "SysStringByteLen", [150] = "SysAllocStringByteLen", [161] = "LoadTypeLib", [162] = "LoadRegTypeLib",
+    [184] = "SystemTimeToVariantTime", [185] = "VariantTimeToSystemTime",
     [200] = "GetErrorInfo",  [314] = "VarBstrCmp",      [411] = "SafeArrayCreateVector",
 };
 

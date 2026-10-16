@@ -181,16 +181,6 @@ static uint32_t WINAPI no_object4(void *a, void *b, void *c, void **out)
     return no_object3(a, b, out);
 }
 
-static uint32_t WINAPI CoGetClassObject(const void *clsid, DWORD ctx, void *info, const void *iid, void **out)
-{
-    UNUSED(clsid);
-    UNUSED(ctx);
-    UNUSED(info);
-    UNUSED(iid);
-    *out = NULL;
-    return REGDB_E_CLASSNOTREG;
-}
-
 static uint32_t WINAPI DoDragDrop(void *data, void *source, DWORD effects, DWORD *effect)
 {
     UNUSED(data);
@@ -296,7 +286,6 @@ static const struct w32_export ole32x_exports[] = {
     W32_AS("IIDFromString", CLSIDFromString),
     W32_AS("CoAllowSetForegroundWindow", w32_zero2),
     W32_AS("CoCreateFreeThreadedMarshaler", no_object2),
-    W32_FN(CoGetClassObject),
     W32_AS("CoGetInterfaceAndReleaseStream", no_object3),
     W32_AS("CoGetObject", no_object4),
     W32_AS("CoMarshalInterThreadInterfaceInStream", no_object3),

@@ -3,12 +3,13 @@
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/exec.h>
+#include <synth/lnk.h>
+#include <synth/winpath.h>
 #include <synth/fbcon.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/keys.h>
-#include <synth/log.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -261,7 +262,7 @@ static enum icon_id icon_for(const char *name, bool dir)
         return ICON_FILE;
     if (!str_casecmp(ext, ".bmp"))
         return ICON_IMAGE;
-    if (!str_casecmp(ext, ".exe"))
+    if (!str_casecmp(ext, ".exe") || !str_casecmp(ext, ".lnk"))
         return ICON_APP;
     if (!str_casecmp(ext, ".dll"))
         return ICON_DLL;
@@ -312,6 +313,8 @@ static void scan_desktop(void)
                 continue;
             memset(&fresh[n], 0, sizeof(fresh[n]));
             str_copy(fresh[n].label, ent.name, sizeof(fresh[n].label));
+            if (str_ends(fresh[n].label, ".lnk") || str_ends(fresh[n].label, ".LNK"))
+                fresh[n].label[strlen(fresh[n].label) - 4] = 0;
             path_join(dir, ent.name, fresh[n].path, sizeof(fresh[n].path));
             fresh[n].icon = icon_for(ent.name, ent.type == VN_DIR);
             n++;
@@ -509,6 +512,65 @@ static bool extension_listed(const char *list, const char *ext)
     return false;
 }
 
+#if CONFIG_WIN32
+static int split_command_line(char *s, char **argv, int max)
+{
+    int n = 0;
+    while (*s && n < max) {
+        while (*s == ' ' || *s == '\t')
+            s++;
+        if (!*s)
+            break;
+        char *out = s;
+        argv[n++] = out;
+        bool quoted = false;
+        for (; *s && (quoted || (*s != ' ' && *s != '\t')); s++) {
+            if (*s == '\\' && s[1] == '"')
+                *out++ = *++s;
+            else if (*s == '"')
+                quoted = !quoted;
+            else
+                *out++ = *s;
+        }
+        if (*s)
+            s++;
+        *out = 0;
+    }
+    return n;
+}
+
+static bool start_program(const char *path, char *args, const char *dir)
+{
+    char *argv[32] = {(char *)path};
+    int argc = 1 + (args ? split_command_line(args, argv + 1, (int)ARRAY_SIZE(argv) - 1) : 0);
+    char cwd[PATH_MAX_LEN];
+    if (dir && dir[0])
+        str_copy(cwd, dir, sizeof(cwd));
+    else
+        path_dirname(path, cwd, sizeof(cwd));
+    return session && w32_start(session, path, argc, argv, cwd) == 0;
+}
+
+static bool open_shortcut(const char *file)
+{
+    struct lnk *l = kmalloc(sizeof(*l));
+    char path[PATH_MAX_LEN], dir[PATH_MAX_LEN] = "";
+    bool ok = l && lnk_read(file, l) == 0 && winpath_to_vfs("/", l->target, path, sizeof(path)) == 0;
+    if (ok && l->dir[0] && winpath_to_vfs("/", l->dir, dir, sizeof(dir)) != 0)
+        dir[0] = 0;
+    if (ok && !vfs_exists(path)) {
+        gui_message("Cannot open the shortcut", "The program it points to is no longer installed.");
+    } else if (ok) {
+        if (!start_program(path, l->args, dir))
+            gui_open_file(path);
+    } else {
+        gui_message("Cannot open the shortcut", "The file is not a valid Windows shortcut.");
+    }
+    kfree(l);
+    return true;
+}
+#endif
+
 bool gui_open_file(const char *path)
 {
     if (vfs_is_dir(path)) {
@@ -521,6 +583,12 @@ bool gui_open_file(const char *path)
             gui_app_launch(app, path);
             return true;
         }
+#if CONFIG_WIN32
+    if (ext && !str_casecmp(ext, ".lnk"))
+        return open_shortcut(path);
+    if (ext && !str_casecmp(ext, ".exe") && start_program(path, NULL, NULL))
+        return true;
+#endif
     if (exec_is_executable_name(path)) {
         char line[PATH_MAX_LEN + 8];
         ksnprintf(line, sizeof(line), "'%s'", path);
@@ -811,6 +879,10 @@ static void pump(int timeout_ms)
     terminal_flush();
     wm_render();
     pumping = false;
+#if CONFIG_WIN32
+    if (timeout_ms != 0)
+        w32_background();
+#endif
     if (!busy && timeout_ms != 0)
         hal_sleep_ms((uint32_t)(timeout_ms > 0 ? MIN(timeout_ms, 8) : 8));
 }

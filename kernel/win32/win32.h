@@ -285,6 +285,7 @@ struct w32_process {
     unsigned own_streams;
     bool dead;
     bool frozen;
+    bool detached;
 };
 
 extern struct w32_process *w32;
@@ -293,6 +294,8 @@ void w32_process_enter(struct w32_process *p);
 struct w32_process *w32_ring_next(struct w32_process *p);
 void w32_reap(void);
 struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own);
+bool w32_is_host(const struct w32_process *p);
+struct w32_thread *w32_host_thread(void);
 void w32_child_release(struct w32_child *c);
 void w32_terminate_child(struct w32_child *c, uint32_t code);
 void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_top);

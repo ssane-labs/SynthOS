@@ -1,6 +1,11 @@
 #include <synth/command.h>
 #include <synth/error.h>
+#include <synth/heap.h>
+#include <synth/lnk.h>
+#include <synth/path.h>
 #include <synth/string.h>
+#include <synth/users.h>
+#include <synth/vfs.h>
 #include <synth/winpath.h>
 
 static void print_rule(const struct winpath_rule *rule, void *ctx)
@@ -54,4 +59,69 @@ COMMAND(winpath, NULL, "files", "winpath path...", "convert between Windows path
         sh_printf(sh, "%s\n", out);
     }
     return rc;
+}
+
+static int show_shortcut(struct shell *sh, const char *file)
+{
+    char path[PATH_MAX_LEN];
+    struct lnk *l = kmalloc(sizeof(*l));
+    int err = l ? sh_resolve(sh, file, path, sizeof(path)) : E_NOMEM;
+    if (!err)
+        err = lnk_read(path, l);
+    if (!err) {
+        sh_printf(sh, "target: %s\n", l->target);
+        if (l->args[0])
+            sh_printf(sh, "arguments: %s\n", l->args);
+        if (l->dir[0])
+            sh_printf(sh, "start in: %s\n", l->dir);
+        if (l->desc[0])
+            sh_printf(sh, "comment: %s\n", l->desc);
+    }
+    kfree(l);
+    return err ? sh_fs_error(sh, "shortcut", file, err) : 0;
+}
+
+COMMAND(shortcut, NULL, "files", "shortcut program [name] [arguments...] | shortcut -l file.lnk",
+        "put a Windows shortcut (.lnk) to a program on the desktop, or show where one points")
+{
+    if (argc == 3 && !strcmp(argv[1], "-l"))
+        return show_shortcut(sh, argv[2]);
+    if (argc < 2)
+        return command_usage(sh, command_find("shortcut"));
+    char target[PATH_MAX_LEN], dir[PATH_MAX_LEN], file[PATH_MAX_LEN];
+    int err = sh_resolve(sh, argv[1], target, sizeof(target));
+    if (err || !vfs_exists(target))
+        return sh_fs_error(sh, "shortcut", argv[1], err ? err : E_NOENT);
+    struct lnk *l = kzalloc(sizeof(*l));
+    uint8_t *buf = kmalloc(8192);
+    if (!l || !buf) {
+        kfree(l);
+        kfree(buf);
+        return sh_error(sh, "shortcut", "out of memory");
+    }
+    winpath_from_vfs(target, l->target, sizeof(l->target));
+    path_dirname(target, dir, sizeof(dir));
+    winpath_from_vfs(dir, l->dir, sizeof(l->dir));
+    for (int i = 3; i < argc; i++) {
+        if (i > 3)
+            str_append(l->args, " ", sizeof(l->args));
+        str_append(l->args, argv[i], sizeof(l->args));
+    }
+    char name[NAME_MAX_LEN];
+    str_copy(name, argc > 2 ? argv[2] : path_basename(target), sizeof(name));
+    char *dot = strrchr(name, '.');
+    if (argc <= 2 && dot && dot != name)
+        *dot = 0;
+    str_append(name, ".lnk", sizeof(name));
+    path_join(user_home(), "Desktop", dir, sizeof(dir));
+    vfs_mkdirs(dir);
+    path_join(dir, name, file, sizeof(file));
+    size_t n = lnk_encode(l, buf, 8192);
+    err = n ? vfs_write_all(file, buf, n) : E_INVAL;
+    kfree(l);
+    kfree(buf);
+    if (err)
+        return sh_fs_error(sh, "shortcut", file, err);
+    sh_printf(sh, "Created %s\n", file);
+    return 0;
 }

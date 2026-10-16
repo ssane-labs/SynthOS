@@ -408,6 +408,90 @@ static uint8_t *WINAPI GetSidSubAuthorityCount(struct sid *s)
     return &s->count;
 }
 
+static uint8_t *WINAPI GetSidIdentifierAuthority(struct sid *s)
+{
+    return s->authority;
+}
+
+static DWORD WINAPI GetSidLengthRequired(uint8_t count)
+{
+    return 8u + 4u * count;
+}
+
+static BOOL WINAPI InitializeSid(struct sid *s, const uint8_t *authority, uint8_t count)
+{
+    if (!s || !authority || count > 15)
+        return FALSE;
+    s->revision = 1;
+    s->count = count;
+    memcpy(s->authority, authority, 6);
+    memset(s->sub, 0, 4u * MIN(count, (uint8_t)8));
+    return TRUE;
+}
+
+static BOOL WINAPI CreateWellKnownSid(int type, const struct sid *domain, struct sid *out, DWORD *size)
+{
+    UNUSED(domain);
+    static const struct {
+        int type;
+        struct sid sid;
+    } known[] = {
+        {1, {1, 1, {0, 0, 0, 0, 0, 1}, {0}}},         {3, {1, 1, {0, 0, 0, 0, 0, 3}, {0}}},
+        {11, {1, 1, {0, 0, 0, 0, 0, 5}, {4}}},        {17, {1, 1, {0, 0, 0, 0, 0, 5}, {11}}},
+        {22, {1, 1, {0, 0, 0, 0, 0, 5}, {18}}},       {23, {1, 1, {0, 0, 0, 0, 0, 5}, {19}}},
+        {24, {1, 1, {0, 0, 0, 0, 0, 5}, {20}}},       {26, {1, 2, {0, 0, 0, 0, 0, 5}, {32, 544}}},
+        {27, {1, 2, {0, 0, 0, 0, 0, 5}, {32, 545}}},  {84, {1, 2, {0, 0, 0, 0, 0, 15}, {2, 1}}},
+        {66, {1, 1, {0, 0, 0, 0, 0, 16}, {4096}}},    {67, {1, 1, {0, 0, 0, 0, 0, 16}, {8192}}},
+        {68, {1, 1, {0, 0, 0, 0, 0, 16}, {12288}}},   {65, {1, 1, {0, 0, 0, 0, 0, 16}, {0}}},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(known); i++) {
+        if (known[i].type != type)
+            continue;
+        DWORD need = sid_size(&known[i].sid);
+        if (!size || !out || *size < need) {
+            if (size)
+                *size = need;
+            w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+            return FALSE;
+        }
+        memcpy(out, &known[i].sid, need);
+        *size = need;
+        return TRUE;
+    }
+    w32_set_error(ERROR_INVALID_PARAMETER);
+    return FALSE;
+}
+
+static BOOL WINAPI LookupAccountSidW(const WCHAR *system, const struct sid *s, WCHAR *name, DWORD *name_len,
+                                     WCHAR *domain, DWORD *domain_len, int *use)
+{
+    UNUSED(system);
+    char n[64], d[64];
+    DWORD nl = sizeof(n), dl = sizeof(d);
+    if (!LookupAccountSidA(NULL, s, n, &nl, d, &dl, use))
+        return FALSE;
+    if (!name || !domain || *name_len <= nl || *domain_len <= dl) {
+        *name_len = nl + 1;
+        *domain_len = dl + 1;
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    for (DWORD i = 0; i <= nl; i++)
+        name[i] = (uint8_t)n[i];
+    for (DWORD i = 0; i <= dl; i++)
+        domain[i] = (uint8_t)d[i];
+    *name_len = nl;
+    *domain_len = dl;
+    return TRUE;
+}
+
+static LONG WINAPI RegUnLoadKeyW(HANDLE key, const WCHAR *sub)
+{
+    UNUSED(key);
+    UNUSED(sub);
+    return ERROR_ACCESS_DENIED;
+}
+
 static BOOL WINAPI LookupAccountNameW(const WCHAR *system, const WCHAR *name, struct sid *sid, DWORD *sid_len,
                                       WCHAR *domain, DWORD *domain_len, int *use)
 {
@@ -444,6 +528,23 @@ static BOOL WINAPI InitializeAcl(struct acl *acl, DWORD len, DWORD revision)
         return FALSE;
     }
     *acl = (struct acl){(uint8_t)revision, 0, (uint16_t)len, 0, 0};
+    return TRUE;
+}
+
+static BOOL WINAPI GetAclInformation(struct acl *acl, void *info, DWORD len, int cls)
+{
+    DWORD *out = info;
+    if (!acl || !info || (cls == 1 && len < 4) || (cls == 2 && len < 12) || (cls != 1 && cls != 2)) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (cls == 1) {
+        out[0] = acl->revision;
+    } else {
+        out[0] = acl->count;
+        out[1] = sizeof(*acl);
+        out[2] = acl->size > sizeof(*acl) ? acl->size - (DWORD)sizeof(*acl) : 0;
+    }
     return TRUE;
 }
 
@@ -644,6 +745,24 @@ static const struct w32_export security_exports[] = {
     W32_AS("IsValidAcl", w32_one1),
     W32_AS("IsValidSecurityDescriptor", w32_one1),
     W32_FN(GetAce),
+    W32_FN(GetAclInformation),
+    W32_AS("AddAce", w32_one5),
+    W32_FN(GetSidIdentifierAuthority),
+    W32_FN(GetSidLengthRequired),
+    W32_FN(InitializeSid),
+    W32_FN(CreateWellKnownSid),
+    W32_FN(LookupAccountSidW),
+    W32_FN(RegUnLoadKeyW),
+    W32_AS("CreateServiceW", w32_fail13),
+    W32_AS("DeleteService", w32_fail1),
+    W32_AS("ChangeServiceConfig2W", w32_fail3),
+    W32_AS("ImpersonateLoggedOnUser", w32_fail1),
+    W32_AS("MakeAbsoluteSD", w32_fail11),
+    W32_AS("SetSecurityDescriptorOwner", w32_one3),
+    W32_AS("SetSecurityDescriptorGroup", w32_one3),
+    W32_AS("StartServiceCtrlDispatcherW", w32_fail1),
+    W32_AS("RegisterServiceCtrlHandlerW", w32_fail2),
+    W32_AS("SetServiceStatus", w32_fail2),
     W32_AS("AddMandatoryAce", w32_one5),
     W32_AS("AddConditionalAce", w32_one8),
     W32_AS("AddAccessAllowedAce", w32_one4),

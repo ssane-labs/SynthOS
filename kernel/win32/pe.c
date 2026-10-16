@@ -690,6 +690,7 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     }
     kfree(data);
     vfs_close(f);
+    pe.file = mem;
     uint8_t *memory = NULL;
 
     struct w32_image *img = image_new(name);
@@ -721,7 +722,6 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         image_caches = cache;
     }
     img->cache = cache;
-    pe.file = mem;
     char dir[PATH_MAX_LEN];
     path_dirname(path, dir, sizeof(dir));
     int err2 = resolve_imports(img, &pe, dir);

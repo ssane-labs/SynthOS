@@ -76,6 +76,23 @@ static BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session, int
     return *buf != NULL;
 }
 
+static BOOL WINAPI WTSEnumerateSessionsW(HANDLE server, DWORD reserved, DWORD version, uint32_t **out, DWORD *count)
+{
+    UNUSED(server);
+    UNUSED(reserved);
+    UNUSED(version);
+    static const WCHAR console[] = {'C', 'o', 'n', 's', 'o', 'l', 'e', 0};
+    uint32_t *info = w32_zalloc(12 + sizeof(console));
+    if (!info)
+        return FALSE;
+    memcpy(info + 3, console, sizeof(console));
+    info[0] = 1;
+    info[1] = (uint32_t)(uintptr_t)(info + 3);
+    *out = info;
+    *count = 1;
+    return TRUE;
+}
+
 static void WINAPI WTSFreeMemory(void *p)
 {
     w32_free(p);
@@ -84,6 +101,7 @@ static void WINAPI WTSFreeMemory(void *p)
 static const struct w32_export wtsapi32_exports[] = {
     W32_FN(WTSQuerySessionInformationW),
     W32_FN(WTSFreeMemory),
+    W32_FN(WTSEnumerateSessionsW),
     W32_AS("WTSRegisterSessionNotification", w32_one2),
     W32_AS("WTSUnRegisterSessionNotification", w32_one1),
 };

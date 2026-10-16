@@ -3,6 +3,8 @@
 #include <string.h>
 #include <windows.h>
 #include <wincrypt.h>
+#include <shlobj.h>
+#include <winhttp.h>
 
 static LONG WINAPI filter(EXCEPTION_POINTERS *info)
 {
@@ -168,6 +170,58 @@ static void compat(void)
     BOOL un = UnregisterWaitEx(once, INVALID_HANDLE_VALUE) && UnregisterWaitEx(timer, INVALID_HANDLE_VALUE);
     printf("registered wait=%s hits=%ld timeouts=%s unregister=%s\n", reg ? "ok" : "failed", wait_hits,
            wait_timeouts >= 2 ? "ok" : "missing", un ? "ok" : "failed");
+}
+
+/* Installers make shortcuts through IShellLinkW + IPersistFile; SynthOS writes real .lnk files the desktop opens. */
+static void shortcut_test(void)
+{
+    static const GUID clsid_link = {0x00021401, 0, 0, {0xc0, 0, 0, 0, 0, 0, 0, 0x46}};
+    static const GUID iid_link = {0x000214f9, 0, 0, {0xc0, 0, 0, 0, 0, 0, 0, 0x46}};
+    static const GUID iid_file = {0x0000010b, 0, 0, {0xc0, 0, 0, 0, 0, 0, 0, 0x46}};
+    HMODULE ole = LoadLibraryA("ole32.dll"), aut = LoadLibraryA("oleaut32.dll");
+    HRESULT(WINAPI * create)(const GUID *, void *, DWORD, const GUID *, void **) =
+        (HRESULT(WINAPI *)(const GUID *, void *, DWORD, const GUID *, void **))GetProcAddress(ole, "CoCreateInstance");
+    INT(WINAPI * to_variant)(const SYSTEMTIME *, double *) =
+        (INT(WINAPI *)(const SYSTEMTIME *, double *))GetProcAddress(aut, "SystemTimeToVariantTime");
+    INT(WINAPI * from_variant)(double, SYSTEMTIME *) =
+        (INT(WINAPI *)(double, SYSTEMTIME *))GetProcAddress(aut, "VariantTimeToSystemTime");
+    IShellLinkW *link = NULL, *back = NULL;
+    IPersistFile *file = NULL, *file2 = NULL;
+    HRESULT hr = create(&clsid_link, NULL, CLSCTX_INPROC_SERVER, &iid_link, (void **)&link);
+    BOOL saved = FALSE;
+    if (SUCCEEDED(hr)) {
+        link->lpVtbl->SetPath(link, L"C:\\Windows\\notepad.exe");
+        link->lpVtbl->SetArguments(link, L"--flag \"a b\"");
+        link->lpVtbl->SetDescription(link, L"Test link");
+        saved = SUCCEEDED(link->lpVtbl->QueryInterface(link, &iid_file, (void **)&file)) &&
+                SUCCEEDED(file->lpVtbl->Save(file, L"C:\\Temp\\test.lnk", TRUE));
+    }
+    WCHAR path[MAX_PATH] = L"", args[MAX_PATH] = L"";
+    if (SUCCEEDED(create(&clsid_link, NULL, CLSCTX_INPROC_SERVER, &iid_link, (void **)&back)) &&
+        SUCCEEDED(back->lpVtbl->QueryInterface(back, &iid_file, (void **)&file2)) &&
+        SUCCEEDED(file2->lpVtbl->Load(file2, L"C:\\Temp\\test.lnk", STGM_READ))) {
+        back->lpVtbl->GetPath(back, path, MAX_PATH, NULL, 0);
+        back->lpVtbl->GetArguments(back, args, MAX_PATH);
+    }
+    printf("shortcut saved=%s path=%ls args=%ls\n", saved ? "ok" : "failed", path, args);
+    if (file)
+        file->lpVtbl->Release(file);
+    if (file2)
+        file2->lpVtbl->Release(file2);
+    if (link)
+        link->lpVtbl->Release(link);
+    if (back)
+        back->lpVtbl->Release(back);
+
+    SYSTEMTIME st = {2026, 10, 5, 16, 12, 0, 0, 0}, out;
+    double v = 0;
+    BOOL vt = to_variant(&st, &v) && from_variant(v, &out);
+    URL_COMPONENTS uc = {sizeof(uc)};
+    uc.dwHostNameLength = uc.dwUrlPathLength = uc.dwSchemeLength = (DWORD)-1;
+    BOOL cracked = WinHttpCrackUrl(L"https://dl.google.com:8443/chrome/install?x=1", 0, 0, &uc);
+    printf("misc muldiv=%d,%d vartime=%d %d-%d-%d %d:%02d url=%s:%.*ls:%d%.*ls\n", MulDiv(7, 3, 2), MulDiv(-7, 3, 2),
+           (int)v, vt ? out.wYear : 0, out.wMonth, out.wDay, out.wHour, out.wMinute, cracked ? "ok" : "failed",
+           (int)uc.dwHostNameLength, uc.lpszHostName, uc.nPort, (int)uc.dwUrlPathLength, uc.lpszUrlPath);
 }
 
 /* DirectWrite the way Chromium's renderer uses it: a font collection and font files supplied by the program's own
@@ -450,6 +504,8 @@ int main(int argc, char **argv)
         printf("system returned %d\n", rc);
     } else if (!strcmp(mode, "compat")) {
         compat();
+    } else if (!strcmp(mode, "shortcut")) {
+        shortcut_test();
     } else if (!strcmp(mode, "font")) {
         return font_test();
     } else if (!strcmp(mode, "box")) {

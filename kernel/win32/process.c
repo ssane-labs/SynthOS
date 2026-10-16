@@ -326,7 +326,7 @@ long w32_console_read(char *buf, size_t n)
         return stream_read(in, buf, n);
     if (line_pos >= line_len) {
         long got = stream_getline(in, line_buffer, sizeof(line_buffer) - 2);
-        if (input_break_pending()) {
+        if (input_break_pending() && !w32->detached) {
             w32->exiting = true;
             w32_exit(STATUS_CONTROL_C_EXIT);
         }
@@ -456,27 +456,55 @@ static bool needs_quotes(const char *s)
     return false;
 }
 
+/* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: chrome.exe started as
+   a browser gets the switches that run it without them. */
+static const char *const chromium_switches[] = {"--no-sandbox", "--test-type", "--in-process-gpu", "--disable-gpu",
+                                                "--disable-software-rasterizer"};
+
+static bool has_arg(struct exec_ctx *ctx, const char *arg, size_t n)
+{
+    for (int i = 1; i < ctx->argc; i++)
+        if (!strncmp(ctx->argv[i], arg, n))
+            return true;
+    return false;
+}
+
+static int command_args(struct exec_ctx *ctx, const char **list)
+{
+    int n = 0;
+    if (!str_casecmp(path_basename(ctx->path), "chrome.exe") && !has_arg(ctx, "--type=", 7))
+        for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++)
+            if (!has_arg(ctx, chromium_switches[i], strlen(chromium_switches[i]) + 1))
+                list[n++] = chromium_switches[i];
+    for (int i = 1; i < ctx->argc; i++)
+        list[n++] = ctx->argv[i];
+    return n;
+}
+
 static void build_command_line(struct exec_ctx *ctx)
 {
+    const char **list = w32_zalloc(sizeof(char *) * (size_t)(ctx->argc + ARRAY_SIZE(chromium_switches) + 1));
+    int count = list ? command_args(ctx, list) : 0;
     size_t cap = PATH_MAX_LEN + 16;
-    for (int i = 1; i < ctx->argc; i++)
-        cap += strlen(ctx->argv[i]) * 2 + 3;
+    for (int i = 0; i < count; i++)
+        cap += strlen(list[i]) * 2 + 3;
     char *line = w32_alloc(cap);
     char exe[PATH_MAX_LEN];
     w32_path_to_win(ctx->path, exe, sizeof(exe));
-    w32->argc = ctx->argc > 0 ? ctx->argc : 1;
+    w32->argc = count + 1;
     w32->argv = w32_zalloc(sizeof(char *) * (size_t)(w32->argc + 1));
     w32->argv[0] = w32_strdup(exe);
     ksnprintf(line, cap, "\"%s\"", exe);
-    for (int i = 1; i < ctx->argc; i++) {
-        w32->argv[i] = w32_strdup(ctx->argv[i]);
+    for (int i = 0; i < count; i++) {
+        const char *arg = list[i];
+        w32->argv[i + 1] = w32_strdup(arg);
         str_append(line, " ", cap);
-        if (!needs_quotes(ctx->argv[i])) {
-            str_append(line, ctx->argv[i], cap);
+        if (!needs_quotes(arg)) {
+            str_append(line, arg, cap);
             continue;
         }
         str_append(line, "\"", cap);
-        for (const char *p = ctx->argv[i]; *p; p++) {
+        for (const char *p = arg; *p; p++) {
             if (*p == '"')
                 str_append(line, "\\", cap);
             char ch[2] = {*p, 0};
@@ -484,6 +512,7 @@ static void build_command_line(struct exec_ctx *ctx)
         }
         str_append(line, "\"", cap);
     }
+    w32_free(list);
     w32->cmdline = line;
     w32->cmdline_w = w32_widen(line);
     const char *type = strstr(line, "--type=");
@@ -1208,6 +1237,7 @@ struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own)
     p->parent = w32;
     p->spawn_ctx = ctx;
     p->own_streams = own;
+    p->detached = w32 && (w32_is_host(w32) || w32->detached);
     boot->proc = p;
     boot->boot = true;
     boot->id = 0x104;
@@ -1218,6 +1248,100 @@ struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own)
     ring_add(p);
     w32_switch_thread(boot);
     return c;
+}
+
+/* Programs started from the desktop run without a terminal: the shell lends them its idle time through a host
+   process that sits in the ring only while it waits for them. */
+static struct w32_process *host;
+static struct w32_thread host_thread;
+
+bool w32_is_host(const struct w32_process *p)
+{
+    return p && p == host;
+}
+
+struct w32_thread *w32_host_thread(void)
+{
+    return host && host->ring_next && w32 != host ? &host_thread : NULL;
+}
+
+static bool host_enter(void)
+{
+    if (!host && !(host = kzalloc(sizeof(*host))))
+        return false;
+    host->space = vmm_space_current();
+    host->threads = host->current = &host_thread;
+    host->live_threads = 1;
+    host_thread.next = &host_thread;
+    host_thread.proc = host;
+    host_thread.boot = true;
+    host_thread.id = 0x100;
+    host_thread.waiting = false;
+    w32 = host;
+    ring_add(host);
+    return true;
+}
+
+static void host_leave(void)
+{
+    ring_remove(host);
+    w32 = NULL;
+}
+
+void w32_background(void)
+{
+    if (w32 || !ring || hal_in_interrupt() || !host_enter())
+        return;
+    w32_kick_all();
+    w32_yield();
+    host_leave();
+}
+
+int w32_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd)
+{
+    if (w32)
+        return E_BUSY;
+    if (!vmm_available())
+        return E_NOSYS;
+    struct file *f;
+    uint8_t head[512];
+    long n = vfs_open(path, VFS_READ, &f) == 0 ? vfs_read(f, head, sizeof(head)) : -1;
+    if (n >= 0)
+        vfs_close(f);
+    if (n < 64 || !w32_is_pe(head, (size_t)n) || w32_is_pe64(head, (size_t)n))
+        return E_NOEXEC;
+    uint32_t pe = (uint32_t)head[0x3c] | (uint32_t)head[0x3d] << 8;
+    if (pe + 24 + 70 > (uint32_t)n || head[pe + 24 + 68] != 2)
+        return E_NOEXEC;
+    if (!pristine_state && (pristine_state = kmalloc(state_size())))
+        memcpy(pristine_state, __start_w32state, state_size());
+    struct exec_ctx *c = kzalloc(sizeof(*c));
+    char **copy = kzalloc(sizeof(char *) * (size_t)(argc + 1));
+    if (!c || !copy) {
+        kfree(c);
+        kfree(copy);
+        return E_NOMEM;
+    }
+    for (int i = 0; i < argc; i++)
+        copy[i] = kstrdup(argv[i]);
+    *c = (struct exec_ctx){sh, kstrdup(path), argc, copy, stream_null(), stream_null(), stream_null(), NULL,
+                           kstrdup(cwd ? cwd : sh->cwd), NULL};
+    struct w32_child *child = NULL;
+    if (host_enter()) {
+        child = w32_spawn_async(c, 0);
+        host_leave();
+    }
+    if (!child) {
+        for (int i = 0; i < argc; i++)
+            kfree(copy[i]);
+        kfree(copy);
+        kfree((char *)c->path);
+        kfree((char *)c->cwd);
+        kfree(c);
+        return E_NOMEM;
+    }
+    w32_child_release(child);
+    return 0;
 }
 
 static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)

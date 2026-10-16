@@ -170,6 +170,7 @@ static DWORD WINAPI GetModuleFileNameA(HMODULE h, LPSTR buf, DWORD size)
         w32_set_error(ERROR_INSUFFICIENT_BUFFER);
         return size;
     }
+    w32_set_error(0);
     return (DWORD)n;
 }
 
@@ -181,6 +182,7 @@ static DWORD WINAPI GetModuleFileNameW(HMODULE h, LPWSTR buf, DWORD size)
         return 0;
     size_t w = w32_cp_to_wide(tmp, (int)n, buf, size - 1, 1);
     buf[MIN(w, (size_t)size - 1)] = 0;
+    w32_set_error(w >= size ? ERROR_INSUFFICIENT_BUFFER : 0);
     return (DWORD)MIN(w, (size_t)size - 1);
 }
 
@@ -608,6 +610,41 @@ static BOOL WINAPI SystemTimeToFileTime(const SYSTEMTIME *st, FILETIME *ft)
     ft->low = (DWORD)v;
     ft->high = (DWORD)(v >> 32);
     return TRUE;
+}
+
+static BOOL WINAPI DosDateTimeToFileTime(uint16_t date, uint16_t time, FILETIME *ft)
+{
+    SYSTEMTIME st = {0};
+    st.year = (uint16_t)(1980 + (date >> 9));
+    st.month = (date >> 5) & 15;
+    st.day = date & 31;
+    st.hour = time >> 11;
+    st.minute = (time >> 5) & 63;
+    st.second = (uint16_t)((time & 31) * 2);
+    if (!st.month || st.month > 12 || !st.day) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    return SystemTimeToFileTime(&st, ft);
+}
+
+static int WINAPI MulDiv(int a, int b, int c)
+{
+    if (!c)
+        return -1;
+    int64_t p = (int64_t)a * b;
+    int64_t q = ((p < 0) != (c < 0) ? p - c / 2 : p + c / 2) / c;
+    return q > INT32_MAX || q < INT32_MIN ? -1 : (int)q;
+}
+
+static void WINAPI GetCurrentThreadStackLimits(uint32_t *low, uint32_t *high)
+{
+    uint32_t base, limit;
+    const uint8_t *teb = w32->current && w32->current->teb ? w32->current->teb : w32->teb;
+    memcpy(&base, teb + 4, 4);
+    memcpy(&limit, teb + 8, 4);
+    *low = limit;
+    *high = base;
 }
 
 static BOOL WINAPI FileTimeToLocalFileTime(const FILETIME *in, FILETIME *out)
@@ -1513,7 +1550,8 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(OutputDebugStringA), W32_FN(OutputDebugStringW), W32_FN(DebugBreak), W32_FN(GetTickCount), W32_FN(GetTickCount64), W32_FN(QueryPerformanceCounter),
     W32_FN(QueryPerformanceFrequency), W32_FN(GetSystemTimeAsFileTime), W32_FN(GetSystemTimePreciseAsFileTime),
     W32_FN(GetSystemTime), W32_FN(GetLocalTime), W32_FN(FileTimeToSystemTime), W32_FN(SystemTimeToFileTime),
-    W32_FN(FileTimeToLocalFileTime), W32_FN(LocalFileTimeToFileTime), W32_FN(SystemTimeToTzSpecificLocalTime),
+    W32_FN(FileTimeToLocalFileTime), W32_FN(DosDateTimeToFileTime), W32_FN(MulDiv),
+    W32_FN(GetCurrentThreadStackLimits), W32_AS("SetProcessWorkingSetSize", w32_one3), W32_FN(LocalFileTimeToFileTime), W32_FN(SystemTimeToTzSpecificLocalTime),
     W32_FN(GetTimeZoneInformation), W32_FN(GetComputerNameA), W32_FN(GetComputerNameW), W32_FN(Beep),
     W32_FN(GetProcessHeap), W32_FN(HeapCreate), W32_FN(HeapDestroy), W32_FN(HeapAlloc), W32_FN(HeapReAlloc),
     W32_FN(HeapFree), W32_FN(HeapSize), W32_FN(HeapValidate), W32_FN(HeapSetInformation), W32_FN(GlobalAlloc),
