@@ -2,6 +2,7 @@
 #include <synth/heap.h>
 #include <synth/keys.h>
 #include <synth/path.h>
+#include <synth/picture.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -72,7 +73,7 @@ static enum icon_id file_icon(const char *name, bool dir)
     const char *ext = path_ext(name);
     if (ext && !str_casecmp(ext, ".exe"))
         return ICON_APP;
-    if (ext && !str_casecmp(ext, ".bmp"))
+    if (picture_is_image(name))
         return ICON_IMAGE;
     if (ext && (!str_casecmp(ext, ".sh") || !str_casecmp(ext, ".bat")))
         return ICON_SCRIPT;

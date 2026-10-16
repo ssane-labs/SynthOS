@@ -1,6 +1,7 @@
 #include <synth/error.h>
 #include <synth/gui.h>
 #include <synth/heap.h>
+#include <synth/picture.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -21,37 +22,14 @@ static void wr32(uint8_t *p, uint32_t v)
 
 bool image_load(const char *path, struct image *out)
 {
-    char *data;
-    size_t size;
-    if (vfs_read_all(path, &data, &size) != 0)
+    struct picture p;
+    if (picture_load(path, &p) != 0)
         return false;
-    const uint8_t *d = (const uint8_t *)data;
-    bool ok = false;
-    if (size >= 54 && d[0] == 'B' && d[1] == 'M') {
-        uint32_t offset = rd32(d + 10);
-        int32_t w = (int32_t)rd32(d + 18), h = (int32_t)rd32(d + 22);
-        uint16_t bpp = (uint16_t)(d[28] | d[29] << 8);
-        uint32_t compression = rd32(d + 30);
-        bool flip = h > 0;
-        if (h < 0)
-            h = -h;
-        uint32_t row = ((uint32_t)w * bpp / 8 + 3) & ~3u;
-        if (w > 0 && h > 0 && w <= 8192 && h <= 8192 && (bpp == 24 || bpp == 32) && (compression == 0 || compression == 3) &&
-            offset + row * (uint32_t)h <= size && (out->px = kmalloc((size_t)w * (size_t)h * 4))) {
-            out->w = w;
-            out->h = h;
-            for (int y = 0; y < h; y++) {
-                const uint8_t *src = d + offset + row * (uint32_t)(flip ? h - 1 - y : y);
-                for (int x = 0; x < w; x++) {
-                    const uint8_t *p = src + x * (bpp / 8);
-                    out->px[y * w + x] = 0xff000000u | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0];
-                }
-            }
-            ok = true;
-        }
-    }
-    kfree(data);
-    return ok;
+    out->px = p.px;
+    out->w = p.w;
+    out->h = p.h;
+    kfree(p.delays);
+    return true;
 }
 
 int image_save(const char *path, const uint32_t *px, int w, int h, int stride)

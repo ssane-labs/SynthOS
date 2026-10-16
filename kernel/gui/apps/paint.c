@@ -648,5 +648,5 @@ static void launch(const char *arg)
         load(w, p, arg);
 }
 
-static const struct gui_app paint_app = {"Paint", "Draw pictures and edit BMP images", ICON_PAINT, launch, ".bmp", NULL};
+static const struct gui_app paint_app = {"Paint", "Draw pictures and edit BMP images", ICON_PAINT, launch, NULL, NULL};
 GUI_APP(paint_app);

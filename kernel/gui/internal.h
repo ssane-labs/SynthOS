@@ -187,6 +187,10 @@ void media_toggle(void);
 void media_next(void);
 void media_prev(void);
 void media_stop(void);
+void media_resume(void);
+void media_seek(int ms);
+bool media_is_file(void);
+int media_play_pcm(int16_t *frames, uint32_t count, uint32_t rate, const char *title, const char *artist);
 int media_levels(int *out, int n);
 bool media_tick(void);
 

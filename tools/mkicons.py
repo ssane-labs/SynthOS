@@ -331,24 +331,81 @@ def launchpad_icon():
     return app_base((250, 250, 252, 255), (206, 210, 222, 255), glyph)
 
 
+def mirage_mask(size, cx, cy, r):
+    """The SynthOS 1.0 mark: a sun whose lower half breaks into two dune waves that draw an S."""
+    m = Image.new("L", size, 0)
+    d = ImageDraw.Draw(m)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
+    for base, amp, thick, phase in ((0.10, 0.20, 0.15, 0.0), (0.50, 0.15, 0.12, math.pi)):
+        top, bottom = [], []
+        for i in range(0, 101):
+            x = cx - r * 1.2 + 2.4 * r * i / 100
+            t = (x - cx) / r
+            y = cy + r * (base + amp * math.sin(t * math.pi * 0.9 + phase))
+            top.append((x, y - r * thick / 2))
+            bottom.append((x, y + r * thick / 2))
+        d.polygon(top + bottom[::-1], fill=0)
+    return m
+
+
 def logo_glyph(d, cx, cy, r, color=None):
-    for y in range(int(cy - r), int(cy + r) + 1):
-        t = (y - (cy - r)) / (2 * r)
-        rel = y - cy
-        if rel > -r * 0.15:
-            period = max(6, r / 3.2)
-            gap = 2 + (rel + r * 0.15) / (r * 1.15) * (period * 0.55)
-            if (rel + r) % period < gap:
-                continue
-        half = math.sqrt(max(0.0, r * r - rel * rel))
-        c = color or (int(255), int(230 - 170 * t), int(90 + 70 * t), 255)
-        d.line([(cx - half, y), (cx + half, y)], fill=c)
+    img = d._image
+    m = mirage_mask(img.size, cx, cy, r)
+    sun = gradient(img.size, (255, 248, 226, 255), (255, 214, 170, 255))
+    img.paste(sun, (0, 0), m)
 
 
 def logo_icon():
     def glyph(img, d):
-        logo_glyph(d, 128, 128, 72)
-    return app_base((44, 22, 92, 255), (14, 6, 40, 255), glyph)
+        glow = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(glow).ellipse([40, 40, 216, 216], fill=150)
+        warm = Image.new("RGBA", (S, S), (255, 210, 140, 255))
+        warm.putalpha(glow.filter(ImageFilter.GaussianBlur(26)))
+        img.alpha_composite(warm)
+        m = mirage_mask((S, S), 128, 126, 66)
+        img.paste(gradient((S, S), (255, 255, 246, 255), (255, 196, 92, 255)), (0, 0), m)
+    return app_base((255, 128, 96, 255), (64, 28, 132, 255), glyph, glassy=False)
+
+
+def photos_icon():
+    def glyph(img, d):
+        d.ellipse([150, 64, 194, 108], fill=(255, 236, 160, 255))
+        d.polygon([(40, 196), (104, 104), (150, 168), (176, 136), (220, 196)], fill=(255, 255, 255, 255))
+    return app_base((96, 196, 255, 255), (232, 96, 170, 255), glyph)
+
+
+def music_icon():
+    def glyph(img, d):
+        d.polygon([(92, 70), (184, 48), (184, 74), (92, 96)], fill=(255, 255, 255, 255))
+        d.line([(98, 80), (98, 170)], fill=(255, 255, 255, 255), width=14)
+        d.line([(178, 60), (178, 150)], fill=(255, 255, 255, 255), width=14)
+        d.ellipse([56, 150, 106, 192], fill=(255, 255, 255, 255))
+        d.ellipse([136, 130, 186, 172], fill=(255, 255, 255, 255))
+    return app_base((255, 110, 120, 255), (176, 32, 120, 255), glyph)
+
+
+def video_icon():
+    def glyph(img, d):
+        rr(d, (48, 70, 208, 186), 26, outline=(255, 255, 255, 255), width=12)
+        d.polygon([(110, 98), (110, 158), (160, 128)], fill=(255, 255, 255, 255))
+    return app_base((70, 70, 92, 255), (18, 18, 28, 255), glyph)
+
+
+def viewer_icon():
+    def glyph(img, d):
+        d.ellipse([60, 60, 168, 168], outline=(255, 255, 255, 255), width=16)
+        d.line([(152, 152), (200, 200)], fill=(255, 255, 255, 255), width=24)
+        d.ellipse([92, 92, 136, 136], fill=(255, 255, 255, 160))
+    return app_base((40, 200, 190, 255), (20, 110, 150, 255), glyph)
+
+
+def installer_icon():
+    def glyph(img, d):
+        rr(d, (54, 150, 202, 206), 18, fill=(255, 255, 255, 255))
+        d.ellipse([168, 170, 184, 186], fill=(90, 110, 240, 255))
+        d.line([(128, 44), (128, 128)], fill=(255, 255, 255, 255), width=20)
+        d.polygon([(86, 104), (170, 104), (128, 146)], fill=(255, 255, 255, 255))
+    return app_base((110, 150, 255, 255), (70, 40, 200, 255), glyph)
 
 
 def computer_icon():
@@ -583,7 +640,8 @@ ICONS = [
     ("ICON_USER", user_icon), ("ICON_TRASH", trash_icon), ("ICON_TRASH_FULL", trash_full_icon),
     ("ICON_USB", usb_icon), ("ICON_FOLDER_APPS", apps_folder_icon), ("ICON_FOLDER_DOCS", docs_folder_icon),
     ("ICON_FOLDER_DESKTOP", desktop_folder_icon), ("ICON_FOLDER_DOWNLOADS", downloads_folder_icon),
-    ("ICON_BROWSER", browser_icon),
+    ("ICON_BROWSER", browser_icon), ("ICON_PHOTOS", photos_icon), ("ICON_MUSIC", music_icon),
+    ("ICON_VIDEO", video_icon), ("ICON_VIEWER", viewer_icon), ("ICON_INSTALLER", installer_icon),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)
@@ -592,9 +650,16 @@ W = 9
 
 
 def sym_logo(d):
-    d.ellipse([10, 10, 118, 118], fill=255)
-    for y, t in ((62, 9), (80, 11), (98, 13)):
-        d.rectangle([0, y, 128, y + t], fill=0)
+    d.ellipse([12, 12, 116, 116], fill=255)
+    for base, amp, thick, phase in ((0.10, 0.20, 0.17, 0.0), (0.50, 0.15, 0.14, math.pi)):
+        top, bottom = [], []
+        for i in range(0, 41):
+            x = -2 + 132 * i / 40
+            t = (x - 64) / 52
+            y = 64 + 52 * (base + amp * math.sin(t * math.pi * 0.9 + phase))
+            top.append((x, y - 52 * thick / 2))
+            bottom.append((x, y + 52 * thick / 2))
+        d.polygon(top + bottom[::-1], fill=0)
 
 
 def sym_search(d):

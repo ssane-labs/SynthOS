@@ -21,6 +21,7 @@ OBJCOPY   = $(CROSS)objcopy
 NASM     ?= nasm
 HOSTCC   ?= cc
 QEMU     ?= qemu-system-x86_64
+QEMU_SOUND ?= -audiodev none,id=snd -device AC97,audiodev=snd
 
 ARCH_FLAGS := $(if $(CROSS),,-m32) -march=i486 -mtune=i686 -mno-sse -mno-mmx -mno-80387
 CFLAGS := $(ARCH_FLAGS) -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
@@ -261,7 +262,7 @@ tools: $(TOOLS)
 programs: $(SX_BIN) $(DOS_BIN) $(W32_BIN)
 
 run: $(IMAGE)
-	$(QEMU) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_FLAGS)
+	$(QEMU) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_SOUND) $(QEMU_FLAGS)
 
 run-serial:
 	@$(MAKE) --no-print-directory SERIAL=1
@@ -284,7 +285,7 @@ test-hw:
 OVMF ?= $(firstword $(wildcard /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/edk2/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd))
 
 run-uefi: $(IMAGE)
-	qemu-system-x86_64 -bios $(OVMF) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_FLAGS)
+	qemu-system-x86_64 -bios $(OVMF) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_SOUND) $(QEMU_FLAGS)
 
 clean:
 	rm -rf $(BUILD)

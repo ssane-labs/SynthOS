@@ -4,6 +4,7 @@
 #include <synth/exec.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
+#include <synth/picture.h>
 #include <synth/string.h>
 #include <synth/time.h>
 #include <synth/vfs.h>
@@ -641,4 +642,31 @@ COMMAND(hexdump, "hd,xxd", "files", "hexdump [file]", "show bytes in hex and tex
     if (s != sh->in)
         stream_close(s);
     return 0;
+}
+
+COMMAND(imginfo, NULL, "files", "imginfo picture...", "decode PNG, JPEG, GIF or BMP pictures and show their size")
+{
+    if (argc < 2)
+        return command_usage(sh, command_find("imginfo"));
+    int status = 0;
+    for (int i = 1; i < argc; i++) {
+        char path[PATH_MAX_LEN];
+        struct picture p;
+        int err = sh_resolve(sh, argv[i], path, sizeof(path));
+        if (!err)
+            err = picture_load(path, &p);
+        if (err) {
+            status = sh_error(sh, "imginfo", "%s: %s", argv[i], err == E_INVAL ? "not a picture" : err_str(err));
+            continue;
+        }
+        uint64_t sum[3] = {0, 0, 0};
+        size_t n = (size_t)p.w * (size_t)p.h;
+        for (size_t k = 0; k < n; k++)
+            for (int c = 0; c < 3; c++)
+                sum[c] += p.px[k] >> (16 - 8 * c) & 0xff;
+        sh_printf(sh, "%s: %dx%d, %d frame%s, average #%02x%02x%02x\n", argv[i], p.w, p.h, p.frames, p.frames == 1 ? "" : "s",
+                  (unsigned)(sum[0] / n), (unsigned)(sum[1] / n), (unsigned)(sum[2] / n));
+        picture_free(&p);
+    }
+    return status;
 }

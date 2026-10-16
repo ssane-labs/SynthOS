@@ -4,6 +4,7 @@
 #include <synth/heap.h>
 #include <synth/keys.h>
 #include <synth/path.h>
+#include <synth/picture.h>
 #include <synth/string.h>
 #include <synth/users.h>
 #include <synth/vfs.h>
@@ -173,8 +174,12 @@ static enum icon_id icon_for(const char *dir, const struct entry *e)
         return ICON_SX;
     if (!str_casecmp(ext, ".sh") || !str_casecmp(ext, ".bat"))
         return ICON_SCRIPT;
-    if (!str_casecmp(ext, ".bmp"))
+    if (picture_is_image(e->name))
         return ICON_IMAGE;
+    if (str_in_list(ext + 1, "wav,mp3,ogg"))
+        return ICON_MUSIC;
+    if (str_in_list(ext + 1, "avi,mp4,webm"))
+        return ICON_VIDEO;
     if (str_in_list(ext + 1, "txt,md,c,h,cpp,asm,sasm,inc,conf,theme,log,ini,cfg,json,xml,html,css,js,py"))
         return ICON_TEXT;
     return ICON_FILE;

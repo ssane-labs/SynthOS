@@ -204,7 +204,7 @@ void wm_screen_size(int *w, int *h)
 struct rect wm_work_area(int index)
 {
     struct rect a = wm_screen_rect(index);
-    int top = menubar_height() ? menubar_height() : 8;
+    int top = menubar_height() ? menubar_height() : look_current()->status == STATUS_PILL ? 54 : 8;
     a.y += top;
     a.h -= top;
     if (index == 0) {

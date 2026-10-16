@@ -27,6 +27,10 @@ python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DE
 cat > "$work/cases" <<'EOF'
 echo hello world
 hello world
+imginfo /system/samples/Dune.jpg
+1024x640, 1 frame, average #c8967d
+imginfo /system/samples/Mist.jpg
+1024x640, 1 frame, average #a7b0bd
 echo "a  b" 'c $USER' $USER
 a  b c $USER root
 calc (2 + 3) * 7
@@ -315,6 +319,10 @@ wc -c /home/big.txt; rm /home/big.txt
 9288896
 pkg list | grep chrome
 Google Chrome (32-bit)
+music list
+2  Better Days - SynthOS Lofi
+music play 3; music status
+Desert Wind - SynthOS Ambient, playing
 browse /mnt/hdb/page.html | grep next
    1. file:///mnt/hdb/next.html
 browse -n /mnt/hdb/page.html | grep third

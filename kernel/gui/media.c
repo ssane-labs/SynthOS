@@ -1,3 +1,5 @@
+#include <synth/command.h>
+#include <synth/shell.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
@@ -295,8 +297,8 @@ static void synth(int16_t *out, int frames)
             e[1] = (int16_t)CLAMP(r / 2, -32767, 32767);
             m.echo_pos = (m.echo_pos + 1) % MIN(ECHO_FRAMES, step_len * 3);
         }
-        l = l * 3 / 5;
-        r = r * 3 / 5;
+        l = l * 4 / 5;
+        r = r * 4 / 5;
         if (out) {
             out[f * 2] = (int16_t)CLAMP(l, -32767, 32767);
             out[f * 2 + 1] = (int16_t)CLAMP(r, -32767, 32767);
@@ -511,6 +513,50 @@ int media_open(const char *path)
     return 0;
 }
 
+int media_play_pcm(int16_t *frames, uint32_t count, uint32_t rate, const char *title, const char *artist)
+{
+    ensure_device();
+    kfree(m.wav);
+    m.wav = frames;
+    m.wav_frames = count;
+    m.wav_rate = rate;
+    reset_song();
+    str_copy(m.title, title, sizeof(m.title));
+    str_copy(m.artist, artist, sizeof(m.artist));
+    m.playing = true;
+    m.wall = hal_ticks_ms();
+    return 0;
+}
+
+void media_seek(int ms)
+{
+    if (!m.rate)
+        ensure_device();
+    ms = CLAMP(ms, 0, length_ms());
+    if (m.wav) {
+        m.wav_pos = (uint64_t)ms * m.wav_rate / 1000 << 16;
+        m.frame = (uint64_t)ms * (uint64_t)m.rate / 1000;
+        return;
+    }
+    reset_song();
+    uint64_t target = (uint64_t)ms * (uint64_t)m.rate / 1000;
+    static int16_t scratch[BLOCK * 2];
+    while (m.frame < target)
+        synth(scratch, (int)MIN((uint64_t)BLOCK, target - m.frame));
+}
+
+void media_resume(void)
+{
+    ensure_device();
+    m.playing = true;
+    m.wall = hal_ticks_ms();
+}
+
+bool media_is_file(void)
+{
+    return m.wav != NULL;
+}
+
 void media_stop(void)
 {
     m.playing = false;
@@ -563,4 +609,38 @@ bool media_tick(void)
         }
     }
     return true;
+}
+
+COMMAND(music, NULL, "system", "music [play [n]|pause|next|prev|status|<file.wav>]", "play the built-in songs or a WAV file")
+{
+    const char *op = argc > 1 ? argv[1] : "status";
+    if (!strcmp(op, "play")) {
+        long n = m.song;
+        if (argc > 2 && (!str_parse_long(argv[2], &n) || n < 1 || n > media_count()))
+            return sh_error(sh, "music", "songs are numbered 1 to %d", media_count());
+        media_play(argc > 2 ? (int)n - 1 : (int)n);
+    } else if (!strcmp(op, "pause")) {
+        media_stop();
+    } else if (!strcmp(op, "next")) {
+        media_next();
+    } else if (!strcmp(op, "prev")) {
+        media_prev();
+    } else if (!strcmp(op, "list")) {
+        for (int i = 0; i < media_count(); i++)
+            sh_printf(sh, "%d  %s - %s\n", i + 1, songs[i].title, songs[i].artist);
+        return 0;
+    } else if (strcmp(op, "status")) {
+        char path[PATH_MAX_LEN];
+        if (sh_resolve(sh, op, path, sizeof(path)) != 0)
+            return sh_error(sh, "music", "bad path: %s", op);
+        int err = media_open(path);
+        if (err)
+            return sh_error(sh, "music", "%s: %s", op, err == E_INVAL ? "not a PCM WAV file" : err_str(err));
+    }
+    const struct media_track *t = media_track();
+    const char *dev = hal_audio_name();
+    sh_printf(sh, "%s - %s, %s %d:%02d of %d:%02d (%s)\n", t->title, t->artist, t->playing ? "playing" : "paused",
+              t->position_ms / 60000, t->position_ms / 1000 % 60, t->length_ms / 60000, t->length_ms / 1000 % 60,
+              dev ? dev : "no sound card");
+    return 0;
 }

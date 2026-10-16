@@ -10,6 +10,7 @@
 #include <synth/keys.h>
 #include <synth/lnk.h>
 #include <synth/path.h>
+#include <synth/picture.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/theme.h>
@@ -272,7 +273,7 @@ static enum icon_id icon_for(const char *name, bool dir)
     const char *ext = path_ext(name);
     if (!ext)
         return ICON_FILE;
-    if (!str_casecmp(ext, ".bmp"))
+    if (picture_is_image(name))
         return ICON_IMAGE;
     if (!str_casecmp(ext, ".exe") || !str_casecmp(ext, ".lnk"))
         return ICON_APP;
@@ -939,14 +940,40 @@ static void pump(int timeout_ms)
         hal_sleep_ms((uint32_t)(timeout_ms > 0 ? MIN(timeout_ms, 8) : 8));
 }
 
+static void copy_samples(const char *dir, const char *ext)
+{
+    struct vdir d;
+    if (vfs_opendir("/system/samples", &d) != 0)
+        return;
+    struct vfs_dirent ent;
+    while (vfs_readdir(&d, &ent) == 0) {
+        if (str_casecmp(path_ext(ent.name), ext))
+            continue;
+        char from[PATH_MAX_LEN], to[PATH_MAX_LEN], *data;
+        size_t size;
+        path_join("/system/samples", ent.name, from, sizeof(from));
+        path_join(dir, ent.name, to, sizeof(to));
+        if (vfs_read_all(from, &data, &size) == 0) {
+            vfs_write_all(to, data, size);
+            kfree(data);
+        }
+    }
+    vfs_closedir(&d);
+}
+
 static void prepare_home(void)
 {
     static const char *const dirs[] = {"Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"};
     for (size_t i = 0; i < ARRAY_SIZE(dirs); i++) {
         char path[PATH_MAX_LEN];
         path_join(user_home(), dirs[i], path, sizeof(path));
-        if (!vfs_exists(path))
-            vfs_mkdirs(path);
+        if (vfs_exists(path))
+            continue;
+        vfs_mkdirs(path);
+        if (!strcmp(dirs[i], "Pictures"))
+            copy_samples(path, ".jpg");
+        else if (!strcmp(dirs[i], "Videos"))
+            copy_samples(path, ".avi");
     }
 }
 

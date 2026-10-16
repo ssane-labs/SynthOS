@@ -70,6 +70,11 @@ enum icon_id {
     ICON_FOLDER_DESKTOP,
     ICON_FOLDER_DOWNLOADS,
     ICON_BROWSER,
+    ICON_PHOTOS,
+    ICON_MUSIC,
+    ICON_VIDEO,
+    ICON_VIEWER,
+    ICON_INSTALLER,
     ICON_COUNT,
 };
 
@@ -315,7 +320,6 @@ enum window_flags {
 };
 
 #define MENU_HEADER (-2)
-#define KEY_APP(n) (0x100000 + (n))
 
 struct menu_item {
     const char *label;

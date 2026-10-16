@@ -177,12 +177,12 @@ void terminal_retitle(void)
 }
 
 static const struct menu_item shell_items[] = {
-    {"Paste", KEY_APP(1), "Right click"},
+    {"Paste", KEY_COMMAND(1), "Right click"},
     {"Interrupt", KEY_CTRL('c'), "Ctrl+C"},
-    {"Clear", KEY_APP(2), NULL},
+    {"Clear", KEY_COMMAND(2), NULL},
 };
 static const struct menu_item look_items[] = {
-    {"Terminal Settings…", KEY_APP(3), NULL},
+    {"Terminal Settings…", KEY_COMMAND(3), NULL},
 };
 static const struct app_menu term_menus[] = {{"Shell", shell_items, 3}, {"View", look_items, 1}};
 
@@ -194,11 +194,11 @@ static void paste(void)
 
 static void event(struct window *w, struct gui_event *e)
 {
-    if (e->type == EV_KEY && e->key == KEY_APP(1)) {
+    if (e->type == EV_KEY && e->key == KEY_COMMAND(1)) {
         paste();
-    } else if (e->type == EV_KEY && e->key == KEY_APP(2)) {
+    } else if (e->type == EV_KEY && e->key == KEY_COMMAND(2)) {
         gui_terminal_run("clear");
-    } else if (e->type == EV_KEY && e->key == KEY_APP(3)) {
+    } else if (e->type == EV_KEY && e->key == KEY_COMMAND(3)) {
         gui_app_launch(gui_app_find("System Settings"), "terminal");
     } else if (e->type == EV_KEY) {
         input_inject(e->key);
