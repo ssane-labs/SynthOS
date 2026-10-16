@@ -53,7 +53,9 @@ static void close_input(struct shell *sh, struct stream *s)
         stream_close(s);
 }
 
-static int read_lines(struct shell *sh, const char *who, int argc, char **argv, int first, struct lines *out)
+/* With `keep` set only the last `keep` lines stay, in a ring that starts at `out->count % keep`. */
+static int read_lines_keep(struct shell *sh, const char *who, int argc, char **argv, int first, struct lines *out,
+                           size_t keep)
 {
     char line[LINE_CAP];
     int rc = 0;
@@ -63,11 +65,24 @@ static int read_lines(struct shell *sh, const char *who, int argc, char **argv, 
             rc = 1;
             continue;
         }
-        while (stream_getline(s, line, sizeof(line)) >= 0)
-            lines_push(out, line);
+        while (stream_getline(s, line, sizeof(line)) >= 0) {
+            if (keep && out->count >= keep) {
+                size_t slot = out->count % keep;
+                kfree(out->items[slot]);
+                out->items[slot] = kstrdup(line);
+                out->count++;
+            } else {
+                lines_push(out, line);
+            }
+        }
         close_input(sh, s);
     }
     return rc;
+}
+
+static int read_lines(struct shell *sh, const char *who, int argc, char **argv, int first, struct lines *out)
+{
+    return read_lines_keep(sh, who, argc, argv, first, out, 0);
 }
 
 static void put_escaped(struct shell *sh, const char *s)
@@ -216,11 +231,20 @@ static int head_tail(struct shell *sh, int argc, char **argv, bool tail)
             return command_usage(sh, command_find(tail ? "tail" : "head"));
     }
     struct lines l = {0};
-    int rc = read_lines(sh, argv[0], argc, argv, g.index, &l);
-    size_t start = tail && l.count > (size_t)count ? l.count - (size_t)count : 0;
-    size_t end = tail ? l.count : MIN(l.count, (size_t)count);
-    for (size_t i = start; i < end; i++)
-        sh_printf(sh, "%s\n", l.items[i]);
+    if (!tail || !count) {
+        int rc = read_lines(sh, argv[0], argc, argv, g.index, &l);
+        for (size_t i = 0; !tail && i < MIN(l.count, (size_t)count); i++)
+            sh_printf(sh, "%s\n", l.items[i]);
+        lines_free(&l);
+        return rc;
+    }
+    int rc = read_lines_keep(sh, argv[0], argc, argv, g.index, &l, (size_t)count);
+    size_t kept = MIN(l.count, (size_t)count), first = l.count > (size_t)count ? l.count % (size_t)count : 0;
+    for (size_t i = 0; i < kept; i++) {
+        const char *s = l.items[(first + i) % kept];
+        sh_printf(sh, "%s\n", s ? s : "");
+    }
+    l.count = kept;
     lines_free(&l);
     return rc;
 }

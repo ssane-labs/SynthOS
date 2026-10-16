@@ -43,7 +43,7 @@ struct sfs_inode {
     uint32_t direct[SFS_DIRECT];
     uint32_t indirect;
     uint32_t double_indirect;
-    uint32_t spare;
+    uint32_t triple_indirect;
 };
 
 struct sfs_dirent {
@@ -249,16 +249,21 @@ static int bmap(struct sfs *fs, struct sfs_inode *in, uint32_t index, bool alloc
     if (index < SFS_PTRS)
         return table_entry(fs, &in->indirect, index, alloc, out, dirty);
     index -= SFS_PTRS;
-    if (index >= SFS_PTRS * SFS_PTRS)
-        return E_NOSPC;
-    uint32_t second;
-    int err = table_entry(fs, &in->double_indirect, index / SFS_PTRS, alloc, &second, dirty);
-    if (err || !second) {
-        *out = 0;
-        return err;
+    uint32_t *top = &in->double_indirect, span = SFS_PTRS;
+    if (index >= SFS_PTRS * SFS_PTRS) {
+        index -= SFS_PTRS * SFS_PTRS;
+        if (index >= SFS_PTRS * SFS_PTRS * SFS_PTRS)
+            return E_NOSPC;
+        top = &in->triple_indirect;
+        span = SFS_PTRS * SFS_PTRS;
     }
+    uint32_t table;
+    int err = table_entry(fs, top, index / span, alloc, &table, dirty);
     bool unused = false;
-    return table_entry(fs, &second, index % SFS_PTRS, alloc, out, &unused);
+    for (index %= span, span /= SFS_PTRS; !err && table && span; index %= span, span /= SFS_PTRS)
+        err = table_entry(fs, &table, index / span, alloc, &table, &unused);
+    *out = err ? 0 : table;
+    return err;
 }
 
 static void free_table(struct sfs *fs, uint32_t *table_blk, uint32_t start)
@@ -280,6 +285,32 @@ static void free_table(struct sfs *fs, uint32_t *table_blk, uint32_t start)
     }
 }
 
+/* Frees the blocks of a tree of tables at and after `start` (counted in data blocks below it). */
+static void free_tree(struct sfs *fs, uint32_t *table_blk, uint32_t start, uint32_t span)
+{
+    if (!*table_blk)
+        return;
+    if (span == 1) {
+        free_table(fs, table_blk, start);
+        return;
+    }
+    uint32_t table[SFS_PTRS];
+    if (bread(fs, *table_blk, table) != 0)
+        return;
+    for (uint32_t a = 0; a < SFS_PTRS; a++) {
+        uint32_t lo = a * span;
+        if (!table[a] || lo + span <= start)
+            continue;
+        free_tree(fs, &table[a], start > lo ? start - lo : 0, span / SFS_PTRS);
+    }
+    if (start == 0) {
+        bfree(fs, *table_blk);
+        *table_blk = 0;
+    } else {
+        bwrite(fs, *table_blk, table);
+    }
+}
+
 static void free_blocks(struct sfs *fs, struct sfs_inode *in, uint32_t keep)
 {
     for (uint32_t i = keep; i < SFS_DIRECT; i++) {
@@ -289,24 +320,10 @@ static void free_blocks(struct sfs *fs, struct sfs_inode *in, uint32_t keep)
     uint32_t start = keep > SFS_DIRECT ? keep - SFS_DIRECT : 0;
     if (start < SFS_PTRS)
         free_table(fs, &in->indirect, start);
-    if (!in->double_indirect)
-        return;
-    start = keep > SFS_DIRECT + SFS_PTRS ? keep - SFS_DIRECT - SFS_PTRS : 0;
-    uint32_t top[SFS_PTRS];
-    if (bread(fs, in->double_indirect, top) != 0)
-        return;
-    for (uint32_t a = 0; a < SFS_PTRS; a++) {
-        uint32_t lo = a * SFS_PTRS;
-        if (!top[a] || lo + SFS_PTRS <= start)
-            continue;
-        free_table(fs, &top[a], start > lo ? start - lo : 0);
-    }
-    if (start == 0) {
-        bfree(fs, in->double_indirect);
-        in->double_indirect = 0;
-    } else {
-        bwrite(fs, in->double_indirect, top);
-    }
+    uint32_t base = SFS_DIRECT + SFS_PTRS;
+    free_tree(fs, &in->double_indirect, keep > base ? keep - base : 0, SFS_PTRS);
+    base += SFS_PTRS * SFS_PTRS;
+    free_tree(fs, &in->triple_indirect, keep > base ? keep - base : 0, SFS_PTRS * SFS_PTRS);
 }
 
 static long file_io(struct sfs *fs, uint32_t ino, struct sfs_inode *in, uint32_t off, void *buf, size_t n, bool write)

@@ -9,12 +9,12 @@
 static const struct winpath_rule rules[] = {
     {"C:\\Windows\\System32", "/system/win32"},
     {"C:\\Windows\\SysWOW64", "/system/win32"},
-    {"C:\\Windows\\Temp", "/tmp"},
+    {"C:\\Windows\\Temp", "/home/tmp"},
     {"C:\\Windows\\Fonts", "/home/fonts"},
     {"C:\\Windows", "/system"},
-    {"C:\\Program Files", "/apps"},
-    {"C:\\Program Files (x86)", "/apps"},
-    {"C:\\ProgramData", "/system/data"},
+    {"C:\\Program Files", "/home/apps"},
+    {"C:\\Program Files (x86)", "/home/apps"},
+    {"C:\\ProgramData", "/home/programdata"},
     {"C:\\Users\\*", "/home"},
     {"C:\\Users", "/home"},
     {"C:\\Temp", "/tmp"},
@@ -182,7 +182,7 @@ void winpath_from_vfs(const char *path, char *out, size_t cap)
     for (size_t i = 0; i < ARRAY_SIZE(rules); i++) {
         const char *s = rules[i].synth;
         size_t n = strlen(s);
-        if (strchr(rules[i].windows, '*') || strcmp(rules[i].windows, "C:\\Temp") == 0)
+        if (strchr(rules[i].windows, '*'))
             continue;
         bool hit = n == 1 || (strncmp(path, s, n) == 0 && (path[n] == 0 || path[n] == '/'));
         if (hit && n > best_len) {

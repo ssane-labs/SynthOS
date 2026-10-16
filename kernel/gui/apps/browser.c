@@ -84,6 +84,7 @@ struct box {
 };
 
 struct browser {
+    char downloaded[PATH_MAX_LEN];
     struct ui_state st;
     struct ui_text addr;
     char url[HTTP_URL_MAX];
@@ -476,6 +477,7 @@ static void download(struct browser *b, struct http_response *resp)
     vfs_mkdirs(dir);
     path_join(dir, name, path, sizeof(path));
     int err = vfs_write_all(path, resp->body, resp->length);
+    str_copy(b->downloaded, err ? "" : path, sizeof(b->downloaded));
     char size[16], page[1024];
     fmt_size(size, sizeof(size), resp->length);
     if (err)
@@ -483,7 +485,8 @@ static void download(struct browser *b, struct http_response *resp)
                   "saved: %s.</p>", name, err_str(err));
     else
         ksnprintf(page, sizeof(page), "<title>Downloaded %s</title><h1>Download complete</h1><p>Saved %s (%s) to "
-                  "<a href=\"file://%s\">%s</a>.</p>", name, name, size, dir, path);
+                  "<a href=\"file://%s\">%s</a>.</p><p><a href=\"open:%s\">Open %s</a></p>", name, name, size, dir,
+                  path, path, name);
     show_html(b, page, resp->url);
 }
 
@@ -495,7 +498,7 @@ static void load_http(struct browser *b, const char *url)
         .headers = b->post ? "Content-Type: application/x-www-form-urlencoded\r\n" : NULL,
         .body = b->post,
         .body_len = b->post_len,
-        .max_size = 32u << 20,
+        .max_size = 512u << 20,
         .progress = progress,
         .ctx = b,
     };
@@ -600,6 +603,11 @@ static void load(struct window *w, struct browser *b)
 
 static void navigate(struct window *w, struct browser *b, const char *url, bool push)
 {
+    if (str_starts(url, "open:")) {
+        if (b->downloaded[0] && !strcmp(url + 5, b->downloaded))
+            gui_open_file(b->downloaded);
+        return;
+    }
     str_copy(b->pending, url, sizeof(b->pending));
     b->loading = true;
     b->push = push;

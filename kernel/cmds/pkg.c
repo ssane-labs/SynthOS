@@ -9,6 +9,7 @@
 #include <synth/stream.h>
 #include <synth/string.h>
 #include <synth/tls.h>
+#include <synth/users.h>
 #include <synth/vfs.h>
 #include <synth/zip.h>
 
@@ -160,6 +161,7 @@ COMMAND(unzip, NULL, "files", "unzip [-l] [-q] [-d dir] file.zip", "list or extr
 enum post {
     POST_NONE,
     POST_PYTHON,
+    POST_INSTALLER,
 };
 
 struct package {
@@ -178,6 +180,12 @@ static const struct package packages[] = {
      "mingw32/bin", POST_NONE},
     {"python", "3.12.10", "Python for Windows (official embeddable build, 32-bit) with site-packages",
      {"https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-win32.zip", NULL, NULL}, "", POST_PYTHON},
+    {"chrome", "stable", "Google Chrome (32-bit): runs Google's own installer, which adds a desktop shortcut",
+     {"https://dl.google.com/tag/s/appguid%3D%7B8A69D345-D564-463C-AFF1-A69D9E530F96%7D%26iid%3D%7B00000000-0000-0000-"
+      "0000-000000000000%7D%26lang%3Den%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Chrome%26needsadmin%3D"
+      "prefers%26ap%3Dstable-arch_x86-statsdef_1%26installdataindex%3Dempty/update2/installers/ChromeStandaloneSetup.exe",
+      NULL, NULL},
+     "ChromeSetup.exe", POST_INSTALLER},
     {"vscode", "latest", "Visual Studio Code (64-bit Electron; experimental, does not start yet)",
      {"https://update.code.visualstudio.com/latest/win32-x64-archive/stable", NULL, NULL}, "", POST_NONE},
 };
@@ -301,6 +309,21 @@ static int post_python(struct shell *sh, const char *root)
     return 0;
 }
 
+static int run_installer(struct shell *sh, const struct package *p, struct http_response *resp)
+{
+    char dir[PATH_MAX_LEN], file[PATH_MAX_LEN], cmd[PATH_MAX_LEN + 8];
+    path_join(user_home(), "Downloads", dir, sizeof(dir));
+    vfs_mkdirs(dir);
+    path_join(dir, p->bin, file, sizeof(file));
+    int err = vfs_write_all(file, resp->body, resp->length);
+    http_free(resp);
+    if (err)
+        return sh_fs_error(sh, "pkg", file, err);
+    sh_printf(sh, "Saved %s, starting the installer\n", file);
+    ksnprintf(cmd, sizeof(cmd), "'%s'", file);
+    return shell_exec(sh, cmd);
+}
+
 static int install(struct shell *sh, const struct package *p, const char *base)
 {
     char root[PATH_MAX_LEN];
@@ -309,6 +332,8 @@ static int install(struct shell *sh, const struct package *p, const char *base)
     int err = download(sh, p, &resp);
     if (err)
         return sh_error(sh, "pkg", "could not download %s", p->name);
+    if (p->post == POST_INSTALLER)
+        return run_installer(sh, p, &resp);
     char size[16];
     fmt_size(size, sizeof(size), resp.length);
     sh_printf(sh, "Unpacking %s (%s) into %s\n", p->name, size, root);

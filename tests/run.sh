@@ -128,7 +128,7 @@ C:\Users\root\a.txt
 winpath 'C:\HOME\SRC\HELLO.SASM'
 /home/src/hello.sasm
 shortcut /apps/wintest.exe 'Win Test' info; shortcut -l '/home/Desktop/Win Test.lnk' | grep target
-target: C:\Program Files\wintest.exe
+target: C:\apps\wintest.exe
 shortcut -l '/home/Desktop/Win Test.lnk' | grep arguments
 arguments: info
 winhello one 7; echo win=$?
@@ -138,7 +138,7 @@ st=9
 winhello x | grep pi=
 pi=3.14159 e=2.71828 big=1.234568e+04
 winfiles | tail -n 2
-cwd=C:\Windows\Temp\wtest files=3
+cwd=C:\Temp\wtest files=3
 wincpp | grep caught
 caught: boom
 wincpp | grep area | head -n 1
@@ -309,6 +309,12 @@ unzip -q -d /tmp/z /mnt/hdb/t.zip; cat /tmp/z/pkg/sub/a.txt /tmp/z/pkg/readme.tx
 Azipped hello zipped
 pkg list
 Git for Windows
+seq 1 1300000 > /home/big.txt; tail -n 1 /home/big.txt
+1300000
+wc -c /home/big.txt; rm /home/big.txt
+9288896
+pkg list | grep chrome
+Google Chrome (32-bit)
 browse /mnt/hdb/page.html | grep next
    1. file:///mnt/hdb/next.html
 browse -n /mnt/hdb/page.html | grep third
