@@ -75,6 +75,9 @@ static struct window *more_hover_win, *more_target;
 static uint64_t chrome_tick;
 static struct menu_item more_items[48];
 static int more_action[48];
+static struct canvas fade_snap;
+static uint64_t fade_start;
+#define FADE_MS 520
 static uint64_t last_click_time;
 static int last_click_x, last_click_y, click_count;
 static struct window *last_click_win;
@@ -506,7 +509,8 @@ static struct rect ghost_rect(const struct ghost *g, int t, int *alpha)
     int cx = f.x + f.w / 2, cy = popup ? f.y : f.y + f.h / 2;
     int w = full.w * scale / 1024, h = full.h * scale / 1024;
     int x = cx - (cx - full.x) * scale / 1024, y = cy - (cy - full.y) * scale / 1024;
-    (void)w;
+    if (!popup && !overlay)
+        y += g->kind == ANIM_OPEN ? (1024 - ease_out(t)) * 18 / 1024 : ease_out(t) * 14 / 1024;
     return (struct rect){x, y, w, h};
 }
 
@@ -611,6 +615,13 @@ static void wm_animate(void)
     chrome_tick = now;
     if (spring_step(&lights_grow, 500, 22, dt) && traffic_win && wm_window_alive(traffic_win))
         damage_title(traffic_win);
+    if (fade_start) {
+        wm_damage_all();
+        if (now >= fade_start + FADE_MS) {
+            fade_start = 0;
+            canvas_free(&fade_snap);
+        }
+    }
 }
 
 static bool alloc_surface(struct window *w)
@@ -1210,6 +1221,35 @@ static struct rect cursor_rect(void)
                          CURSOR_SIZE};
 }
 
+void wm_crossfade(void)
+{
+    if (!animations || !screen_count)
+        return;
+    struct screen *s = &screens[0];
+    if (!fade_snap.px || fade_snap.w != s->area.w || fade_snap.h != s->area.h) {
+        canvas_free(&fade_snap);
+        if (!canvas_alloc(&fade_snap, s->area.w, s->area.h))
+            return;
+    }
+    for (int y = 0; y < s->area.h; y++)
+        memcpy(fade_snap.px + y * fade_snap.stride, s->back.px + (s->area.y + y) * s->back.stride + s->area.x,
+               (size_t)s->area.w * 4);
+    fade_start = hal_ticks_ms();
+    wm_damage_all();
+}
+
+static void draw_fade(struct canvas *c, int index)
+{
+    if (!fade_start || index != 0)
+        return;
+    int t = anim_progress(fade_start, FADE_MS);
+    int alpha = 255 - ease_in_out(t) * 255 / 1024;
+    if (alpha <= 0)
+        return;
+    struct rect a = screens[0].area;
+    gfx_blit_alpha(c, a.x, a.y, &fade_snap, (struct rect){0, 0, fade_snap.w, fade_snap.h}, alpha);
+}
+
 static void compose(int index, struct rect area)
 {
     struct screen *s = &screens[index];
@@ -1227,6 +1267,7 @@ static void compose(int index, struct rect area)
             draw_window(c, w);
     if (ghosts)
         draw_ghosts(c);
+    draw_fade(c, index);
     draw_cursor(c);
 }
 

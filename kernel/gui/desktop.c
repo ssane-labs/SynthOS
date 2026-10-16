@@ -1078,6 +1078,7 @@ static void refresh_all(void)
 {
     if (!active)
         return;
+    wm_crossfade();
     gui_style_refresh();
     gui_wallpaper_refresh();
     wm_foreach(invalidate_one, NULL);
@@ -1097,6 +1098,7 @@ void gui_look_changed(void)
 {
     if (!active)
         return;
+    wm_crossfade();
     chrome_stop();
     widgets_stop();
     gui_style_refresh();

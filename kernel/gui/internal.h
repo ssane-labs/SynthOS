@@ -147,6 +147,7 @@ int wm_app_window_count(const struct gui_app *app);
 void wm_focus_app(const struct gui_app *app);
 void wm_bring_all(void);
 void wm_reflow(void);
+void wm_crossfade(void);
 void wm_window_menu(struct window *w, int x, int y);
 int shell_left_reserved(void);
 

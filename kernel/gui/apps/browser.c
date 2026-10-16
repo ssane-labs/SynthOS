@@ -14,8 +14,8 @@
 
 #include "../internal.h"
 
-#define BAR_H 44
-#define STATUS_H 22
+#define BAR_H 42
+#define STATUS_H 0
 #define PAD 20
 #define INDENT 24
 #define MAX_TEXT_W 980
@@ -1001,24 +1001,14 @@ static void frame(struct ui *ui, void *data)
     }
 
     if (ui->c) {
-        gfx_clear(ui->c, (struct rect){0, 0, W, BAR_H}, style.window);
+        gfx_clear(ui->c, (struct rect){0, 0, W, BAR_H}, style.content);
         gfx_fill(ui->c, (struct rect){0, BAR_H - 1, W, 1}, style.separator);
     }
-    if (ui_symbol_button(ui, (struct rect){10, 8, 28, 28}, SYM_LEFT, false))
-        go_history(w, b, -1);
-    if (ui_symbol_button(ui, (struct rect){40, 8, 28, 28}, SYM_RIGHT, false))
-        go_history(w, b, 1);
-    if (ui_symbol_button(ui, (struct rect){70, 8, 28, 28}, SYM_RESTART, false) && !b->loading)
-        navigate(w, b, b->url, false);
-    if (ui_symbol_button(ui, (struct rect){100, 8, 28, 28}, SYM_HOME, false) && !b->loading)
-        navigate(w, b, HOME_URL, true);
-    int ax = 138;
+    int aw = MIN(W - 40, 560), ax = (W - aw) / 2;
     if (b->secure && ui->c)
-        gfx_symbol(ui->c, ax, 15, SYM_LOCK, 14, style.secondary);
-    if (b->secure)
-        ax += 20;
+        gfx_symbol(ui->c, ax - 20, 13, SYM_LOCK, 16, style.tertiary);
     b->addr_id = ui->id + 1;
-    if (ui_textbox_hint(ui, (struct rect){ax, 8, W - ax - 12, 28}, &b->addr, "Search or enter an address")) {
+    if (ui_textbox_hint(ui, (struct rect){ax, 7, aw, 28}, &b->addr, "Search or enter an address")) {
         ui->st->focus = -1;
         if (strcmp(b->addr.buf, b->url) || strlen(b->url) < sizeof(b->addr.buf) - 1)
             go_typed(w, b, b->addr.buf);
@@ -1031,14 +1021,16 @@ static void frame(struct ui *ui, void *data)
         return;
     struct canvas *c = ui->c;
     draw_page(c, b, area);
-    gfx_clear(c, (struct rect){0, H - STATUS_H, W, STATUS_H}, style.window);
-    gfx_fill(c, (struct rect){0, H - STATUS_H, W, 1}, style.separator);
-    const char *status = b->status;
     int hover_link = b->hover >= 0 && b->hover < b->box_count ? b->boxes[b->hover].link : -1;
-    if (!b->loading && hover_link >= 0)
-        status = html_link(&b->doc, hover_link);
-    gfx_text_box(c, (struct rect){12, H - STATUS_H, W - 24, STATUS_H}, &font_small, status, style.secondary,
-                 ALIGN_LEFT);
+    const char *status = b->loading ? b->status : hover_link >= 0 ? html_link(&b->doc, hover_link) : NULL;
+    if (status && status[0]) {
+        int tw = MIN(gfx_text_width(&font_small, status) + 24, W - 24);
+        struct rect pill = {12, H - 34, tw, 24};
+        gfx_drop_shadow(c, pill, 12, 10, 60, 3);
+        gfx_round(c, pill, 12, style.menu);
+        gfx_text_box(c, (struct rect){pill.x + 12, pill.y, pill.w - 24, pill.h}, &font_small, status, style.secondary,
+                     ALIGN_LEFT);
+    }
 }
 
 static void paint(struct window *w, struct canvas *c)

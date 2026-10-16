@@ -13,8 +13,6 @@
 #include "../internal.h"
 
 #define SIDEBAR_W 190
-#define BAR_H TOOLBAR_HEIGHT
-#define STATUS_H 26
 #define HEADER_H 26
 #define ROW_H 24
 #define CELL_W 104
@@ -43,6 +41,7 @@ enum {
     CMD_HIDDEN,
     CMD_TERMINAL,
     CMD_EMPTY_TRASH,
+    CMD_SIDEBAR,
 };
 
 struct entry {
@@ -67,6 +66,7 @@ struct files {
     int forward_len;
     bool icons;
     bool hidden;
+    bool sidebar;
     int scroll;
 };
 
@@ -119,6 +119,7 @@ static const struct menu_item view_items[] = {
     {"as Icons", KEY_COMMAND(CMD_ICONS), "⌘1"},
     {"as List", KEY_COMMAND(CMD_LIST), "⌘2"},
     {"", 0, NULL},
+    {"Show Sidebar", KEY_COMMAND(CMD_SIDEBAR), NULL},
     {"Show Hidden Files", KEY_COMMAND(CMD_HIDDEN), NULL},
 };
 
@@ -640,6 +641,7 @@ static void command(struct window *w, struct files *f, int cmd)
     case CMD_EMPTY_TRASH:
         ui_confirm(w, "Empty the Trash?", "You can't undo this action.", empty_trash);
         break;
+    case CMD_SIDEBAR: f->sidebar = !f->sidebar; break;
     }
 }
 
@@ -706,6 +708,42 @@ static void icon_label(struct canvas *c, struct rect r, const char *name, bool s
     gfx_text_box(c, (struct rect){r.x, r.y, r.w, 16}, font, line1, ink, ALIGN_CENTER);
     if (lines == 2)
         gfx_text_box(c, (struct rect){r.x + 4, r.y + 15, r.w - 8, 16}, font, line2, ink, ALIGN_CENTER);
+}
+
+#define THUMBS 24
+
+static struct thumb {
+    char path[PATH_MAX_LEN];
+    uint32_t size;
+    struct canvas c;
+    bool failed;
+} thumbs[THUMBS];
+static int thumb_next;
+
+static const struct canvas *thumbnail(struct files *f, const struct entry *e)
+{
+    char path[PATH_MAX_LEN];
+    child_path(f, e->name, path);
+    for (int i = 0; i < THUMBS; i++)
+        if (thumbs[i].size == e->size && !strcmp(thumbs[i].path, path))
+            return thumbs[i].failed ? NULL : &thumbs[i].c;
+    struct thumb *t = &thumbs[thumb_next++ % THUMBS];
+    canvas_free(&t->c);
+    str_copy(t->path, path, sizeof(t->path));
+    t->size = e->size;
+    t->failed = true;
+    struct picture p;
+    if (e->size > (16u << 20) || picture_load(path, &p) != 0)
+        return NULL;
+    int w = p.w >= p.h ? 64 : MAX(8, 64 * p.w / MAX(p.h, 1)), h = p.h > p.w ? 64 : MAX(8, 64 * p.h / MAX(p.w, 1));
+    if (canvas_alloc(&t->c, w, h)) {
+        struct canvas src = canvas_make(p.px, p.w, p.h);
+        gfx_clear(&t->c, (struct rect){0, 0, w, h}, style.content);
+        gfx_scale(&t->c, (struct rect){0, 0, w, h}, &src, 255);
+        t->failed = false;
+    }
+    picture_free(&p);
+    return t->failed ? NULL : &t->c;
 }
 
 static int grid_columns(struct rect area)
@@ -783,7 +821,15 @@ static int icon_grid(struct ui *ui, struct files *f, struct rect area)
             if (sel)
                 gfx_round(&inner, (struct rect){cell.x + (cell.w - 72) / 2, cell.y - 2, 72, 70}, 8,
                           style.dark ? ALPHA(0xffffffffu, 36) : ALPHA(0, 26));
-            gfx_icon(&inner, cell.x + (cell.w - 64) / 2, cell.y + 1, icon_for(f->path, &f->entries[i]), 64);
+            const struct canvas *thumb = picture_is_image(f->entries[i].name) ? thumbnail(f, &f->entries[i]) : NULL;
+            if (thumb) {
+                struct rect tr = {cell.x + (cell.w - thumb->w) / 2, cell.y + 1 + (64 - thumb->h) / 2, thumb->w, thumb->h};
+                gfx_drop_shadow(&inner, tr, 4, 6, 60, 2);
+                gfx_blit_round(&inner, tr, thumb, 4, false);
+                gfx_round_frame(&inner, tr, 4, ALPHA(0xffffffffu, 120));
+            } else {
+                gfx_icon(&inner, cell.x + (cell.w - 64) / 2, cell.y + 1, icon_for(f->path, &f->entries[i]), 64);
+            }
             icon_label(&inner, (struct rect){cell.x + 2, cell.y + 70, cell.w - 4, 34}, f->entries[i].name, sel, focused);
         }
     }
@@ -791,91 +837,55 @@ static int icon_grid(struct ui *ui, struct files *f, struct rect area)
     return result;
 }
 
-static void status_line(struct files *f, char *text, size_t cap)
-{
-    uint64_t total = 0, free = 0;
-    struct mount *best = NULL;
-    for (struct mount *m = vfs_mounts(); m; m = m->next) {
-        size_t n = strlen(m->path);
-        bool under = str_starts(f->path, m->path) && (n == 1 || f->path[n] == 0 || f->path[n] == '/');
-        if (under && (!best || n > strlen(best->path)))
-            best = m;
-    }
-    if (best && best->fs->statfs)
-        best->fs->statfs(best->root, &total, &free);
-    char free_text[16];
-    fmt_size(free_text, sizeof(free_text), free);
-    if (total)
-        ksnprintf(text, cap, "%d item%s, %s available", f->count, f->count == 1 ? "" : "s", free_text);
-    else
-        ksnprintf(text, cap, "%d item%s", f->count, f->count == 1 ? "" : "s");
-}
-
 static void frame(struct ui *ui, void *data)
 {
     struct files *f = data;
     struct window *w = ui->win;
     int W = w->surface.w, H = w->surface.h;
-    int mx = SIDEBAR_W;
+    int mx = f->sidebar ? SIDEBAR_W : 0;
     if (ui->c) {
         gfx_clear(ui->c, (struct rect){mx, 0, W - mx, H}, style.content);
-        ui_sidebar_panel(ui, mx, H, style.content);
-        gfx_fill(ui->c, (struct rect){mx + 8, BAR_H - 1, W - mx - 8, 1}, style.separator);
+        if (f->sidebar)
+            ui_sidebar_panel(ui, mx, H, style.content);
     }
-    int y = BAR_H + 4;
+    int y = 12;
     update_favorites();
-    sidebar_section(ui, w, f, &y, "Favorites", favorites, ARRAY_SIZE(favorites));
-    sidebar_section(ui, w, f, &y, "Locations", locations, 1);
-    y -= 10;
-    struct volume volumes[6];
-    int volume_count = vfs_volumes(volumes, (int)ARRAY_SIZE(volumes));
-    for (int i = 0; i < volume_count; i++) {
-        struct rect r = {14, y, SIDEBAR_W - 26, 28};
-        bool here = str_starts(f->path, volumes[i].path) &&
-                    (f->path[strlen(volumes[i].path)] == 0 || f->path[strlen(volumes[i].path)] == '/');
-        if (ui_sidebar_item(ui, (struct rect){r.x, r.y, r.w - 26, r.h}, SYM_USB, volumes[i].label,
-                            !strcmp(f->path, volumes[i].path)))
-            navigate(w, f, volumes[i].path, true);
-        if (ui_symbol_button(ui, (struct rect){r.x + r.w - 24, r.y + 4, 20, 20}, SYM_EJECT, false)) {
-            char path[PATH_MAX_LEN];
-            str_copy(path, volumes[i].path, sizeof(path));
-            if (here)
-                navigate(w, f, user_home(), true);
-            gui_eject(path);
+    if (f->sidebar) {
+        sidebar_section(ui, w, f, &y, "Favorites", favorites, ARRAY_SIZE(favorites));
+        sidebar_section(ui, w, f, &y, "Locations", locations, 1);
+        y -= 10;
+        struct volume volumes[6];
+        int volume_count = vfs_volumes(volumes, (int)ARRAY_SIZE(volumes));
+        for (int i = 0; i < volume_count; i++) {
+            struct rect r = {14, y, SIDEBAR_W - 26, 28};
+            bool here = str_starts(f->path, volumes[i].path) &&
+                        (f->path[strlen(volumes[i].path)] == 0 || f->path[strlen(volumes[i].path)] == '/');
+            if (ui_sidebar_item(ui, (struct rect){r.x, r.y, r.w - 26, r.h}, SYM_USB, volumes[i].label,
+                                !strcmp(f->path, volumes[i].path)))
+                navigate(w, f, volumes[i].path, true);
+            if (ui_symbol_button(ui, (struct rect){r.x + r.w - 24, r.y + 4, 20, 20}, SYM_EJECT, false)) {
+                char path[PATH_MAX_LEN];
+                str_copy(path, volumes[i].path, sizeof(path));
+                if (here)
+                    navigate(w, f, user_home(), true);
+                gui_eject(path);
+            }
+            y += 28;
         }
-        y += 28;
+        for (size_t i = 1; i < ARRAY_SIZE(locations); i++) {
+            struct rect r = {14, y, SIDEBAR_W - 26, 28};
+            if (ui_sidebar_item(ui, r, locations[i].sym, locations[i].label, !strcmp(f->path, locations[i].path)))
+                navigate(w, f, locations[i].path, true);
+            y += 28;
+        }
     }
-    for (size_t i = 1; i < ARRAY_SIZE(locations); i++) {
-        struct rect r = {14, y, SIDEBAR_W - 26, 28};
-        if (ui_sidebar_item(ui, r, locations[i].sym, locations[i].label, !strcmp(f->path, locations[i].path)))
-            navigate(w, f, locations[i].path, true);
-        y += 28;
-    }
-    y += 10;
-
-    int bx = mx + 12;
-    if (ui_symbol_button(ui, (struct rect){bx, 12, 28, 28}, SYM_LEFT, false))
-        go_back(w, f);
-    if (ui_symbol_button(ui, (struct rect){bx + 30, 12, 28, 28}, SYM_RIGHT, false))
-        go_forward(w, f);
-    ui_label(ui, (struct rect){bx + 70, 0, W - bx - 70 - 280, BAR_H}, display_name(f->path), &font_bold, style.text,
-             ALIGN_LEFT);
-    int rx = W - 12 - 170;
-    struct rect search = {rx, 12, 170, 28};
-    ui_search(ui, search, &f->search, "Search");
     if (strcmp(f->search.buf, f->last_search)) {
         str_copy(f->last_search, f->search.buf, sizeof(f->last_search));
         f->list.selected = -1;
         filter(f);
     }
-    if (ui_symbol_button(ui, (struct rect){rx - 40, 12, 28, 28}, SYM_NEWFOLDER, false))
-        new_folder(w, f);
-    if (ui_symbol_button(ui, (struct rect){rx - 106, 12, 28, 28}, SYM_GRID, f->icons))
-        f->icons = true;
-    if (ui_symbol_button(ui, (struct rect){rx - 76, 12, 28, 28}, SYM_LIST, !f->icons))
-        f->icons = false;
 
-    struct rect area = {mx + 1, BAR_H, W - mx - 1, H - BAR_H - STATUS_H};
+    struct rect area = {mx + (mx ? 1 : 0), 6, W - mx - (mx ? 1 : 0), H - 6};
     int result;
     if (f->icons) {
         result = icon_grid(ui, f, area);
@@ -906,14 +916,18 @@ static void frame(struct ui *ui, void *data)
         return;
     }
 
-    if (ui->c) {
-        gfx_fill(ui->c, (struct rect){mx + 1, H - STATUS_H, W - mx - 1, 1}, style.separator);
-        char text[128];
-        status_line(f, text, sizeof(text));
-        if (!strcmp(f->path, TRASH) && f->count)
-            str_append(text, "   —   choose Empty Trash in the File menu to delete", sizeof(text));
-        gfx_text_box(ui->c, (struct rect){mx, H - STATUS_H, W - mx, STATUS_H}, &font_small, text, style.secondary,
-                     ALIGN_CENTER);
+    if (ui->c && f->search.len) {
+        char text[300];
+        ksnprintf(text, sizeof(text), "%s  ·  %d", f->search.buf, f->count);
+        int tw = gfx_text_width(&font_sans, text) + 44;
+        struct rect pill = {area.x + area.w - tw - 14, area.y + area.h - 44, tw, 32};
+        gfx_drop_shadow(ui->c, pill, 16, 14, 70, 4);
+        gfx_round(ui->c, pill, 16, style.menu);
+        gfx_symbol(ui->c, pill.x + 12, pill.y + 8, SYM_SEARCH, 16, style.secondary);
+        gfx_text_box(ui->c, (struct rect){pill.x + 34, pill.y, pill.w - 40, pill.h}, &font_sans, text, style.text, ALIGN_LEFT);
+    } else if (ui->c && !f->count) {
+        gfx_text_box(ui->c, (struct rect){area.x, area.y + area.h / 2 - 10, area.w, 20}, &font_sans,
+                     !strcmp(f->path, TRASH) ? "The Trash is empty" : "This folder is empty", style.tertiary, ALIGN_CENTER);
     }
 
     int key = ui_key(ui);
@@ -922,7 +936,23 @@ static void frame(struct ui *ui, void *data)
         return;
     }
     int base = KEY_BASE(key);
-    if (key == KEY_BACKSPACE)
+    if (key == KEY_ESC && f->search.len) {
+        ui_text_set(&f->search, "");
+        ui->changed = true;
+    } else if (key == KEY_BACKSPACE && f->search.len) {
+        f->search.buf[--f->search.len] = 0;
+        f->search.cursor = f->search.len;
+        ui->changed = true;
+    } else if (key > ' ' && key < 127 && f->search.len < (int)sizeof(f->search.buf) - 1) {
+        f->search.buf[f->search.len++] = (char)key;
+        f->search.buf[f->search.len] = 0;
+        f->search.cursor = f->search.len;
+        ui->changed = true;
+    } else if (key == ' ' && f->search.len) {
+        f->search.buf[f->search.len++] = ' ';
+        f->search.buf[f->search.len] = 0;
+        ui->changed = true;
+    } else if (key == KEY_BACKSPACE)
         navigate(w, f, "..", true);
     else if (base == KEY_DELETE)
         trash(w, f);
@@ -984,12 +1014,11 @@ static void launch(const char *arg)
         return;
     f->icons = true;
     f->list.selected = -1;
-    struct window *w = wm_open("Files", ICON_FILES, 860, 520, &ops, f, WIN_RESIZABLE | WIN_FULLSIZE | WIN_GLASS | WIN_NOTITLE);
+    struct window *w = wm_open("Files", ICON_FILES, 760, 480, &ops, f, WIN_RESIZABLE);
     if (!w) {
         kfree(f);
         return;
     }
-    w->toolbar_h = BAR_H;
     w->min_w = 560;
     w->min_h = 320;
     wm_set_menus(w, menus, ARRAY_SIZE(menus));

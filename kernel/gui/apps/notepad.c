@@ -9,10 +9,10 @@
 #include "../internal.h"
 
 #define TOOLBAR_H 0
-#define STATUS_H 24
+#define STATUS_H 0
 #define GUTTER_W 46
 #define LINE_H 18
-#define TEXT_PAD 8
+#define TEXT_PAD 18
 
 enum {
     CMD_NEW,
@@ -506,14 +506,7 @@ static void frame(struct ui *ui, void *data)
             gfx_fill(&tc, (struct rect){cx, y + 1, 2, LINE_H - 2}, style.text);
         }
     }
-    gfx_clear(c, (struct rect){0, H - STATUS_H, W, STATUS_H}, style.window);
-    gfx_fill(c, (struct rect){0, H - STATUS_H, W, 1}, style.separator);
-    char status[96];
-    int col = (int)(n->cursor - n->lines[cursor_line]) + 1;
-    ksnprintf(status, sizeof(status), "Line %d, Column %d   ·   %d line%s   ·   %u bytes", cursor_line + 1, col,
-              n->line_count, n->line_count == 1 ? "" : "s", (unsigned)n->len);
-    gfx_text_box(c, (struct rect){12, H - STATUS_H, W - 24, STATUS_H}, &font_small, status, style.secondary,
-                 ALIGN_LEFT);
+    UNUSED(H);
 }
 
 static void paint(struct window *w, struct canvas *c)
