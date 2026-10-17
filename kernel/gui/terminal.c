@@ -85,10 +85,8 @@ static void render(void)
         }
     term->pending = false;
     term->last_frame = hal_ticks_ms();
-    if (!rect_empty(changed)) {
-        struct rect cr = wm_client_rect(term->win);
-        wm_damage((struct rect){cr.x + changed.x, cr.y + changed.y, changed.w, changed.h});
-    }
+    if (!rect_empty(changed))
+        wm_damage_client(term->win, changed);
 }
 
 void terminal_flush(void)

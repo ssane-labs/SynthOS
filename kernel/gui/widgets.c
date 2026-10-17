@@ -47,6 +47,7 @@ static struct {
 
 enum weather_state {
     WX_IDLE,
+    WX_DNS,
     WX_CONNECT,
     WX_RECV,
     WX_DONE,
@@ -60,8 +61,9 @@ static struct {
     int len;
     bool sent;
     uint64_t started, next;
+    struct dns_query dns;
     char temp[16], cond[48], place[48];
-} wx = {.sock = -1};
+} wx = {.sock = -1, .dns = {.sock = -1}};
 
 static char weather_city[48] = "";
 
@@ -201,7 +203,7 @@ static void layout(void)
         struct rect r = base_rect(i);
         w->shown = on(i) && !rect_empty(r);
         int rise = (1024 - CLAMP(w->intro.pos, -200, 1024)) * 30 / 1024;
-        int lift = CLAMP(w->lift.pos, -300, 1300) * 4 / 1024;
+        int lift = CLAMP(w->lift.pos, -300, 1300) * 8 / 1024;
         w->r = (struct rect){r.x + w->dx, r.y + w->dy + rise - lift, r.w, r.h};
         w->card = i != WIDGET_CLOCK;
         if (w->shown && w->card) {
@@ -227,13 +229,13 @@ static void shadow_text(struct canvas *c, struct rect r, const struct ui_font *f
 static void card(struct canvas *c, struct widget *w, int alpha)
 {
     struct glass_look look;
-    int radius = w->r.h < 60 ? w->r.h / 2 : 24;
+    int radius = w->r.h < 60 ? w->r.h / 2 : MIN(PANEL_RADIUS, w->r.h / 3);
     glass_look_for(&look, GLASS_PANEL, radius);
     int lift = CLAMP(w->lift.pos, 0, 1024);
-    gfx_drop_shadow(c, w->r, radius, 18 + lift * 8 / 1024, (style.dark ? 90 : 40) * alpha / 255 + lift * 30 / 1024,
-                    5 + lift * 4 / 1024);
+    gfx_drop_shadow(c, w->r, radius, 20 + lift * 12 / 1024, (style.dark ? 70 : 24) * alpha / 255 + lift * 34 / 1024,
+                    5 + lift * 6 / 1024);
     glass_draw(c, &w->glass, &look);
-    gfx_round_frame(c, w->r, radius, style.dark ? ALPHA(0xffffffffu, 30) : ALPHA(0xffffffffu, 150));
+    gfx_round_frame(c, w->r, radius, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
 }
 
 static void paint_clock(struct canvas *c, struct rect r)
@@ -604,6 +606,7 @@ void widgets_hover(int x, int y)
 
 static void weather_fail(void)
 {
+    net_resolve_cancel(&wx.dns);
     if (wx.sock >= 0)
         net_close(wx.sock);
     wx.sock = -1;
@@ -655,6 +658,18 @@ static void weather_parse(void)
     damage(WIDGET_WEATHER);
 }
 
+static void weather_connect(uint32_t ip)
+{
+    wx.sock = net_socket(NET_TCP);
+    if (wx.sock < 0 || net_connect_start(wx.sock, ip, 80) < 0) {
+        weather_fail();
+        return;
+    }
+    wx.state = WX_CONNECT;
+    wx.sent = false;
+    wx.len = 0;
+}
+
 static void weather_tick(void)
 {
     if (!on(WIDGET_WEATHER))
@@ -668,19 +683,26 @@ static void weather_tick(void)
             return;
         }
         uint32_t ip;
-        if (net_resolve("wttr.in", &ip, 1200) != 0) {
+        int r = net_resolve_start("wttr.in", &wx.dns, &ip);
+        if (r < 0) {
             weather_fail();
             return;
         }
-        wx.sock = net_socket(NET_TCP);
-        if (wx.sock < 0 || net_connect_start(wx.sock, ip, 80) < 0) {
-            weather_fail();
-            return;
-        }
-        wx.state = WX_CONNECT;
-        wx.sent = false;
-        wx.len = 0;
         wx.started = now;
+        wx.state = WX_DNS;
+        if (r == 1)
+            return;
+        weather_connect(ip);
+        return;
+    }
+    if (wx.state == WX_DNS) {
+        uint32_t ip;
+        net_poll();
+        int r = net_resolve_poll(&wx.dns, &ip, 3000);
+        if (r == 0)
+            weather_connect(ip);
+        else if (r != E_AGAIN)
+            weather_fail();
         return;
     }
     if (now - wx.started > 15000) {

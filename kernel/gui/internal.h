@@ -90,6 +90,7 @@ struct glass_look {
     bool solid;
     gfx_cover_fn shape;
     const void *shape_ctx;
+    bool (*shape_span)(int y, const void *ctx, int *x0, int *x1);
     int shape_key;
 };
 
@@ -108,9 +109,11 @@ struct glass {
     struct glass_look out_look;
     int out_x, out_y, out_mx, out_my;
     bool out_near;
+    bool stale;
     struct glass *next;
 };
 
+extern uint64_t glass_stat_renders, glass_stat_pixels;
 void glass_register(struct glass *g);
 void glass_unregister(struct glass *g);
 void glass_set_frame(struct glass *g, struct rect frame);
@@ -118,6 +121,7 @@ void glass_invalidate(struct glass *g);
 void glass_damage(struct rect r, int z);
 void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look);
 void glass_freeze(bool on);
+void glass_defer(bool on);
 void glass_prepare(struct canvas *c, struct glass *g, const struct glass_look *look);
 void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius);
 int glass_margin(void);
@@ -152,6 +156,7 @@ void wm_window_menu(struct window *w, int x, int y);
 int shell_left_reserved(void);
 
 #define PLACES_W 190
+#define PANEL_RADIUS 34
 
 void panel_paint(struct canvas *c, int screen);
 bool panel_hit(int x, int y);

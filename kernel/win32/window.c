@@ -202,7 +202,7 @@ void w32_damage(struct w32_window *w, struct rect r)
     if (!rect_empty(rect_intersect(r, top->caption)))
         cover_caption(top);
     if (!rect_empty(r))
-        wm_damage((struct rect){cr.x + r.x, cr.y + r.y, r.w, r.h});
+        wm_damage_client(top->wm, r);
 }
 
 static uint32_t message_time(void)

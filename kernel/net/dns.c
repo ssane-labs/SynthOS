@@ -72,8 +72,17 @@ static bool parse(const uint8_t *p, size_t length, uint16_t id, uint32_t *ip, ui
     return false;
 }
 
-int net_resolve(const char *name, uint32_t *ip, int timeout_ms)
+static void remember(const char *name, uint32_t ip, uint32_t ttl)
 {
+    struct cached *c = &cache[cache_next++ % CACHE];
+    str_copy(c->name, name, sizeof(c->name));
+    c->ip = ip;
+    c->expires = net_now() + (uint64_t)MIN(MAX(ttl, 30u), 3600u) * 1000;
+}
+
+int net_resolve_start(const char *name, struct dns_query *q, uint32_t *ip)
+{
+    q->sock = -1;
     if (net_parse_ip(name, ip))
         return 0;
     if (!str_casecmp(name, "localhost")) {
@@ -92,47 +101,73 @@ int net_resolve(const char *name, uint32_t *ip, int timeout_ms)
             server = net_interface(i)->dns;
     if (!server)
         return E_UNREACH;
-    uint8_t query[300];
-    uint16_t id = (uint16_t)hal_entropy();
-    memset(query, 0, 12);
-    wr16(query, id);
-    query[2] = 0x01;
-    wr16(query + 4, 1);
-    size_t n = encode(name, query + 12, sizeof(query) - 16);
+    memset(q->query, 0, 12);
+    q->id = (uint16_t)hal_entropy();
+    wr16(q->query, q->id);
+    q->query[2] = 0x01;
+    wr16(q->query + 4, 1);
+    size_t n = encode(name, q->query + 12, sizeof(q->query) - 16);
     if (!n)
         return E_INVAL;
-    wr16(query + 12 + n, 1);
-    wr16(query + 14 + n, 1);
-    size_t total = 16 + n;
-    int s = net_socket(NET_UDP);
-    if (s < 0)
-        return s;
-    int err = E_TIMEDOUT;
-    for (int attempt = 0; attempt < 3 && err == E_TIMEDOUT; attempt++) {
-        net_sendto(s, query, total, server, 53);
-        uint64_t start = net_now();
-        while (net_now() - start < (uint64_t)(timeout_ms / 3 + 1)) {
-            uint8_t reply[512];
-            uint32_t from;
-            uint16_t port;
-            long got = net_recvfrom(s, reply, sizeof(reply), &from, &port);
-            if (got > 0) {
-                uint32_t ttl = 0;
-                if (parse(reply, (size_t)got, id, ip, &ttl)) {
-                    struct cached *c = &cache[cache_next++ % CACHE];
-                    str_copy(c->name, name, sizeof(c->name));
-                    c->ip = *ip;
-                    c->expires = net_now() + (uint64_t)MIN(MAX(ttl, 30u), 3600u) * 1000;
-                    err = 0;
-                } else if (got >= 4 && rd16(reply) == id) {
-                    err = E_NOENT;
-                }
-                if (err != E_TIMEDOUT)
-                    break;
-            }
-            net_wait(2);
+    wr16(q->query + 12 + n, 1);
+    wr16(q->query + 14 + n, 1);
+    q->length = (uint16_t)(16 + n);
+    q->server = server;
+    q->attempt = 0;
+    str_copy(q->name, name, sizeof(q->name));
+    q->sock = net_socket(NET_UDP);
+    if (q->sock < 0)
+        return q->sock;
+    net_sendto(q->sock, q->query, q->length, server, 53);
+    q->sent = net_now();
+    return 1;
+}
+
+int net_resolve_poll(struct dns_query *q, uint32_t *ip, int timeout_ms)
+{
+    if (q->sock < 0)
+        return E_INVAL;
+    int err = E_AGAIN;
+    uint8_t reply[512];
+    uint32_t from;
+    uint16_t port;
+    long got;
+    while (err == E_AGAIN && (got = net_recvfrom(q->sock, reply, sizeof(reply), &from, &port)) > 0) {
+        uint32_t ttl = 0;
+        if (parse(reply, (size_t)got, q->id, ip, &ttl)) {
+            remember(q->name, *ip, ttl);
+            err = 0;
+        } else if (got >= 4 && rd16(reply) == q->id) {
+            err = E_NOENT;
         }
     }
-    net_close(s);
+    if (err == E_AGAIN && net_now() - q->sent >= (uint64_t)(timeout_ms / 3 + 1)) {
+        if (++q->attempt >= 3) {
+            err = E_TIMEDOUT;
+        } else {
+            net_sendto(q->sock, q->query, q->length, q->server, 53);
+            q->sent = net_now();
+        }
+    }
+    if (err != E_AGAIN)
+        net_resolve_cancel(q);
+    return err;
+}
+
+void net_resolve_cancel(struct dns_query *q)
+{
+    if (q->sock >= 0)
+        net_close(q->sock);
+    q->sock = -1;
+}
+
+int net_resolve(const char *name, uint32_t *ip, int timeout_ms)
+{
+    struct dns_query q;
+    int err = net_resolve_start(name, &q, ip);
+    while (err == 1 || err == E_AGAIN) {
+        net_wait(2);
+        err = net_resolve_poll(&q, ip, timeout_ms);
+    }
     return err;
 }

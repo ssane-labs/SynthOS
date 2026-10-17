@@ -286,7 +286,7 @@ static void layout_rail(void)
             continue;
         }
         int ry = it->kind == DI_TRASH ? trash_y : y;
-        int size = 34 + lift[i].pos * 6 / 1024;
+        int size = 34 + lift[i].pos * 10 / 1024;
         int bx = dock_rect.x + 15 + bounce_offset(it) / 2;
         it->size = size;
         it->r = (struct rect){bx + (34 - size) / 2, ry + (RAIL_ROW - size) / 2, size, size};
@@ -335,6 +335,16 @@ static int corner_cover(int x, int y, const void *ctx)
     return 0;
 }
 
+static bool corner_span(int y, const void *ctx, int *x0, int *x1)
+{
+    const struct corner_shape *k = ctx;
+    if (y < k->y || y >= k->bottom - 1)
+        return false;
+    *x0 = k->x;
+    *x1 = y >= k->y + k->radius ? k->x + k->w - 1 : k->x + k->w - k->radius;
+    return true;
+}
+
 static void layout_corner(void)
 {
     struct rect s = wm_screen_rect(0);
@@ -345,7 +355,7 @@ static void layout_corner(void)
     int g = CLAMP(grow.pos, 0, 1100);
     int ph = CORNER_ICON + 2 * CORNER_PAD + grid_h * g / 1024;
     int pw = MAX(row_w, lerp_i(row_w, GRID_COLS * GRID_CELL + 2 * CORNER_PAD, MIN(g, 1024)));
-    corner = (struct corner_shape){s.x, s.y + s.h - ph, pw, ph, 30, FILLET, s.y + s.h};
+    corner = (struct corner_shape){s.x, s.y + s.h - ph, pw, ph, PANEL_RADIUS, FILLET, s.y + s.h};
     dock_rect = (struct rect){s.x, s.y + s.h - ph - FILLET, pw + FILLET, ph + FILLET};
     int x = s.x + CORNER_PAD, y = s.y + s.h - CORNER_PAD - CORNER_ICON, shown = 0;
     for (int i = 0; i < count; i++) {
@@ -354,7 +364,7 @@ static void layout_corner(void)
             it->r = (struct rect){0, 0, 0, 0};
             continue;
         }
-        int grow_px = lift[i].pos * 8 / 1024;
+        int grow_px = lift[i].pos * 16 / 1024;
         it->size = CORNER_ICON + grow_px;
         it->r = (struct rect){x - grow_px / 2, y - grow_px - bounce_offset(it), it->size, it->size};
         x += CORNER_ICON + CORNER_GAP;
@@ -392,7 +402,7 @@ static void layout_arc(void)
     for (int i = 0; i < n; i++) {
         struct item *it = &items[i];
         int deg = n > 1 ? 10 + 70 * i / (n - 1) : 45;
-        int size = 38 + g * 6 / 1024 + lift[i].pos * 10 / 1024;
+        int size = 38 + g * 6 / 1024 + lift[i].pos * 18 / 1024;
         int rr = R + bounce_offset(it) / 2;
         int cx = arc.cx + rr * cos_d(deg) / 1024, cy = arc.cy - rr * sin_d(deg) / 1024;
         it->size = size;
@@ -400,6 +410,73 @@ static void layout_arc(void)
     }
     int reach = ARC_R1 + 60 + TOOLTIP_H + 40;
     zone = (struct rect){s.x, s.y + s.h - reach, reach + 60, reach};
+}
+
+static const char *item_label(const struct item *it);
+
+static struct rect tip_rect(int i)
+{
+    const char *label = i >= 0 && i < count ? item_label(&items[i]) : NULL;
+    if (!label)
+        return (struct rect){0, 0, 0, 0};
+    struct rect r = items[i].r;
+    int w = gfx_text_width(&font_sans, label) + 22;
+    bool beside = kind == DOCK_RAIL || kind == DOCK_ARC;
+    struct rect tip = beside ? (struct rect){r.x + r.w + 12, r.y + r.h / 2 - 12, w, 24}
+                             : (struct rect){r.x + r.w / 2 - w / 2, r.y - TOOLTIP_H, w, 24};
+    return rect_inset(tip, -14);
+}
+
+static struct rect item_extent(int i)
+{
+    return rect_empty(items[i].r) ? items[i].r : rect_inset(items[i].r, -26);
+}
+
+/* Redraw only what moved: the panel when its shape changes, otherwise the icons and tooltip that did. */
+static void damage_changes(struct rect old_zone)
+{
+    static struct rect body_was, items_was[MAX_ITEMS], tip_was;
+    static int count_was = -1, grid_hover_was = -1, hl_was, hl_alpha_was;
+    struct rect body = rect_inset(dock_rect, -36);
+    struct rect tip = tip_rect(hover_item);
+    bool full = count != count_was || memcmp(&body, &body_was, sizeof(body)) || kind == DOCK_CENTER;
+    if (!full && kind == DOCK_RAIL && (hl.pos != hl_was || hl_alpha.pos != hl_alpha_was))
+        full = true;
+    if (full) {
+        struct rect r = rect_union(body, body_was);
+        for (int i = 0; i < count; i++)
+            r = rect_union(r, item_extent(i));
+        for (int i = 0; i < count_was; i++)
+            r = rect_union(r, items_was[i]);
+        r = rect_union(r, rect_union(tip, tip_was));
+        if (kind == DOCK_CENTER || count_was < 0)
+            r = rect_union(r, rect_union(old_zone, zone));
+        wm_damage_z(r, Z_DOCK);
+    } else {
+        for (int i = 0; i < count; i++) {
+            struct rect now = item_extent(i);
+            if (memcmp(&now, &items_was[i], sizeof(now)))
+                wm_damage_z(rect_union(now, items_was[i]), Z_DOCK);
+        }
+        if (memcmp(&tip, &tip_was, sizeof(tip))) {
+            wm_damage_z(tip_was, Z_DOCK);
+            wm_damage_z(tip, Z_DOCK);
+        }
+        if (grid_hover != grid_hover_was) {
+            if (grid_hover_was >= 0 && grid_hover_was < grid_count)
+                wm_damage_z(grid_r[grid_hover_was], Z_DOCK);
+            if (grid_hover >= 0 && grid_hover < grid_count)
+                wm_damage_z(grid_r[grid_hover], Z_DOCK);
+        }
+    }
+    body_was = body;
+    for (int i = 0; i < count; i++)
+        items_was[i] = item_extent(i);
+    count_was = count;
+    tip_was = tip;
+    grid_hover_was = grid_hover;
+    hl_was = hl.pos;
+    hl_alpha_was = hl_alpha.pos;
 }
 
 static void layout(void)
@@ -412,7 +489,7 @@ static void layout(void)
     default: layout_center(); break;
     }
     glass_set_frame(&glass, dock_rect);
-    wm_damage_z(rect_union(old, zone), Z_DOCK);
+    damage_changes(old);
 }
 
 static bool trash_full(void)
@@ -606,10 +683,10 @@ static void paint_center(struct canvas *c)
 static void paint_rail(struct canvas *c)
 {
     struct glass_look look;
-    glass_look_for(&look, GLASS_PANEL, 24);
-    gfx_drop_shadow(c, dock_rect, 24, 18, style.dark ? 110 : 50, 6);
+    glass_look_for(&look, GLASS_PANEL, PANEL_RADIUS);
+    gfx_drop_shadow(c, dock_rect, PANEL_RADIUS, 22, style.dark ? 80 : 30, 6);
     glass_draw(c, &glass, &look);
-    gfx_round_frame(c, dock_rect, 24, style.dark ? ALPHA(0xffffffffu, 26) : ALPHA(0xffffffffu, 120));
+    gfx_round_frame(c, dock_rect, PANEL_RADIUS, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
     if (hl_alpha.pos > 8) {
         struct rect pill = {dock_rect.x + 8, hl.pos, dock_rect.w - 16, RAIL_ROW - 6};
         gfx_round(c, pill, 14, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, CLAMP(hl_alpha.pos, 0, 1024) * 24 / 1024));
@@ -627,6 +704,7 @@ static void paint_corner(struct canvas *c)
     struct glass_look look;
     glass_look_for(&look, GLASS_PANEL, 0);
     look.shape = corner_cover;
+    look.shape_span = corner_span;
     look.shape_ctx = &corner;
     look.shape_key = corner.w * 4096 + corner.h;
     glass_draw(c, &glass, &look);

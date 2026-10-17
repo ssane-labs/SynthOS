@@ -400,6 +400,7 @@ struct rect wm_screen_rect(int index);
 struct rect wm_work_area(int index);
 int wm_screen_at(int x, int y);
 void wm_damage(struct rect r);
+void wm_damage_client(struct window *w, struct rect r);
 bool wm_window_alive(const struct window *w);
 void wm_foreach(void (*fn)(struct window *w, void *ctx), void *ctx);
 

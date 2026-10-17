@@ -4,6 +4,7 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/input.h>
 #include <synth/keys.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -76,6 +77,7 @@ static uint64_t chrome_tick;
 static struct menu_item more_items[48];
 static int more_action[48];
 static struct canvas fade_snap;
+static uint64_t stat_frames, stat_pixels, stat_ms;
 static uint64_t fade_start;
 #define FADE_MS 520
 static uint64_t last_click_time;
@@ -162,6 +164,15 @@ void wm_damage_z(struct rect r, int z)
 void wm_damage(struct rect r)
 {
     wm_damage_z(r, 0);
+}
+
+void wm_damage_client(struct window *w, struct rect r)
+{
+    struct rect cr = wm_client_rect(w);
+    r = rect_intersect((struct rect){cr.x + r.x, cr.y + r.y, r.w, r.h}, cr);
+    if (w->flags & (WIN_HIDDEN | WIN_MINIMIZED) || rect_empty(r))
+        return;
+    wm_damage_z(r, w->z);
 }
 
 void wm_damage_all(void)
@@ -408,11 +419,11 @@ static int ghost_ms(enum anim_kind kind, unsigned flags)
 {
     bool small = flags & WIN_POPUP && !(flags & WIN_OVERLAY);
     switch (kind) {
-    case ANIM_OPEN: return small ? 150 : 260;
-    case ANIM_CLOSE: return small ? 120 : 200;
-    case ANIM_MINIMIZE: return 430;
-    case ANIM_RESTORE: return 380;
-    case ANIM_MORPH: return 240;
+    case ANIM_OPEN: return small ? 200 : 420;
+    case ANIM_CLOSE: return small ? 150 : 280;
+    case ANIM_MINIMIZE: return 540;
+    case ANIM_RESTORE: return 480;
+    case ANIM_MORPH: return 320;
     }
     return 200;
 }
@@ -502,15 +513,15 @@ static struct rect ghost_rect(const struct ghost *g, int t, int *alpha)
         *alpha = g->kind == ANIM_OPEN ? MIN(255, e * 255 / 1024 * 2) : 255 - e * 255 / 1024;
         return (struct rect){full.x + shift, full.y, full.w, full.h};
     }
-    int from = overlay ? 1090 : popup ? 965 : 900;
+    int from = overlay ? 1120 : popup ? 900 : 780;
     int e = g->kind == ANIM_OPEN ? (popup ? ease_out(t) : ease_spring(t)) : ease_out(t);
-    int scale = g->kind == ANIM_OPEN ? lerp_i(from, 1024, e) : lerp_i(1024, overlay ? 1090 : popup ? 975 : 930, e);
+    int scale = g->kind == ANIM_OPEN ? lerp_i(from, 1024, e) : lerp_i(1024, overlay ? 1120 : popup ? 950 : 860, e);
     *alpha = g->kind == ANIM_OPEN ? MIN(255, ease_out(t) * 255 / 1024 * 3 / 2) : 255 - e * 255 / 1024;
     int cx = f.x + f.w / 2, cy = popup ? f.y : f.y + f.h / 2;
     int w = full.w * scale / 1024, h = full.h * scale / 1024;
     int x = cx - (cx - full.x) * scale / 1024, y = cy - (cy - full.y) * scale / 1024;
     if (!popup && !overlay)
-        y += g->kind == ANIM_OPEN ? (1024 - ease_out(t)) * 18 / 1024 : ease_out(t) * 14 / 1024;
+        y += g->kind == ANIM_OPEN ? (1024 - ease_out(t)) * 46 / 1024 : ease_out(t) * 34 / 1024;
     return (struct rect){x, y, w, h};
 }
 
@@ -658,6 +669,8 @@ static int64_t overlap_cost(struct rect r, const struct window *self)
     return cost;
 }
 
+static void best_spot(struct window *w, struct rect work, int cx, int cy);
+
 static void place(struct window *w)
 {
     int screen = focus ? wm_screen_at(focus->frame.x + focus->frame.w / 2, focus->frame.y + 10) : 0;
@@ -668,9 +681,15 @@ static void place(struct window *w)
         w->frame.y = MAX(work.y + 8, ref.y + MIN(60, (ref.h - w->frame.h) / 3));
         return;
     }
+    best_spot(w, work, work.x + (work.w - w->frame.w) / 2, work.y + (work.h - w->frame.h) / 3);
+}
+
+static void best_spot(struct window *w, struct rect work, int cx, int cy)
+{
     int min_x = work.x, max_x = MAX(min_x, work.x + work.w - w->frame.w);
     int min_y = work.y + 4, max_y = MAX(min_y, work.y + work.h - w->frame.h);
-    int cx = CLAMP(work.x + (work.w - w->frame.w) / 2, min_x, max_x), cy = CLAMP(work.y + (work.h - w->frame.h) / 3, min_y, max_y);
+    cx = CLAMP(cx, min_x, max_x);
+    cy = CLAMP(cy, min_y, max_y);
     int64_t best = -1, best_dist = 0;
     int bx = cx, by = cy;
     for (int y = min_y; y <= max_y; y += 16)
@@ -1276,6 +1295,7 @@ void wm_render(void)
     if (rendering || !screen_count)
         return;
     rendering = true;
+    glass_defer(drag == DRAG_MOVE || drag == DRAG_RESIZE || ghosts);
     for (struct window *w = bottom; w; w = w->above)
         if (w->dirty && visible(w) && w->ops && w->ops->paint) {
             w->dirty = false;
@@ -1290,8 +1310,14 @@ void wm_render(void)
         int count = s->dirty_count;
         memcpy(list, s->dirty, sizeof(struct rect) * (size_t)count);
         s->dirty_count = 0;
-        for (int k = 0; k < count; k++)
+        uint64_t t0 = hal_ticks_ms();
+        for (int k = 0; k < count; k++) {
             compose(i, list[k]);
+            stat_pixels += (uint64_t)MAX(list[k].w, 0) * (uint64_t)MAX(list[k].h, 0);
+        }
+        if (count)
+            stat_frames++;
+        stat_ms += hal_ticks_ms() - t0;
         for (int k = 0; k < count; k++)
             flush(s, list[k]);
     }
@@ -1957,9 +1983,29 @@ static void keep_visible(struct window *w, void *ctx)
         set_frame(w, f);
 }
 
+static void avoid_widgets(struct window *w, void *ctx)
+{
+    UNUSED(ctx);
+    if (!framed(w) || w->flags & (WIN_MAXIMIZED | WIN_DIALOG | WIN_OVERLAY | WIN_HIDDEN | WIN_MINIMIZED))
+        return;
+    struct rect obstacles[8];
+    int n = widgets_obstacles(obstacles, 8);
+    bool hit = false;
+    for (int i = 0; i < n && !hit; i++)
+        hit = !rect_empty(rect_intersect(w->frame, obstacles[i]));
+    if (!hit)
+        return;
+    struct rect f = w->frame;
+    best_spot(w, wm_work_area(wm_screen_at(f.x + f.w / 2, f.y + 10)), f.x, f.y);
+    struct rect to = w->frame;
+    w->frame = f;
+    set_frame(w, to);
+}
+
 void wm_reflow(void)
 {
     wm_foreach(keep_visible, NULL);
+    wm_foreach(avoid_widgets, NULL);
     wm_damage_all();
 }
 
@@ -2049,6 +2095,28 @@ SETTING(s_animations);
 bool wm_animations(void)
 {
     return animations;
+}
+
+COMMAND(wmstat, NULL, "dev", "wmstat [seconds]", "count desktop frames while idle (frames, pixels, glass, time)")
+{
+    if (!screen_count)
+        return sh_error(sh, "wmstat", "the desktop is not running");
+    long secs = 3;
+    if (argc > 1 && (!str_parse_long(argv[1], &secs) || secs < 1))
+        return command_usage(sh, command_find("wmstat"));
+    uint64_t f0 = stat_frames, p0 = stat_pixels, m0 = stat_ms, g0 = glass_stat_renders, gp0 = glass_stat_pixels;
+    uint64_t start = hal_ticks_ms();
+    while (hal_ticks_ms() - start < (uint64_t)secs * 1000) {
+        int k = input_getkey(50);
+        if (k > 0)
+            break;
+    }
+    uint64_t el = MAX(hal_ticks_ms() - start, 1u);
+    sh_printf(sh, "%u frames/s, %u Kpx/s composed, %u ms/s composing, %u glass renders/s (%u Kpx/s)\n",
+              (unsigned)((stat_frames - f0) * 1000 / el), (unsigned)((stat_pixels - p0) / el),
+              (unsigned)((stat_ms - m0) * 1000 / el), (unsigned)((glass_stat_renders - g0) * 1000 / el),
+              (unsigned)((glass_stat_pixels - gp0) / el));
+    return 0;
 }
 
 COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redraws (and an open/close animation)")

@@ -67,6 +67,20 @@ uint32_t net_ip(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
 bool net_parse_ip(const char *s, uint32_t *out);
 void net_format_ip(uint32_t ip, char *out, size_t cap);
 int net_resolve(const char *name, uint32_t *ip, int timeout_ms);
+
+struct dns_query {
+    int sock;
+    uint16_t id, length;
+    uint32_t server;
+    uint64_t sent;
+    int attempt;
+    char name[64];
+    uint8_t query[96];
+};
+
+int net_resolve_start(const char *name, struct dns_query *q, uint32_t *ip);
+int net_resolve_poll(struct dns_query *q, uint32_t *ip, int timeout_ms);
+void net_resolve_cancel(struct dns_query *q);
 int net_ping(uint32_t ip, uint16_t seq, size_t size, int timeout_ms, uint32_t *rtt_ms, uint8_t *ttl);
 
 int net_socket(enum net_type type);

@@ -3,8 +3,8 @@
 
 #include "internal.h"
 
-
 static struct glass *glass_list;
+uint64_t glass_stat_renders, glass_stat_pixels;
 
 int glass_margin(void)
 {
@@ -63,6 +63,8 @@ void glass_set_frame(struct glass *g, struct rect frame)
     wm_damage_z((struct rect){frame.x - m, frame.y - m, frame.w + 2 * m, frame.h + 2 * m}, g->z);
 }
 
+static bool deferring;
+
 void glass_damage(struct rect r, int z)
 {
     int m = glass_margin();
@@ -70,9 +72,28 @@ void glass_damage(struct rect r, int z)
         if (!g->valid || g->z <= z)
             continue;
         struct rect zone = {g->frame.x - m, g->frame.y - m, g->frame.w + 2 * m, g->frame.h + 2 * m};
-        if (!rect_empty(rect_intersect(zone, r)))
+        if (rect_empty(rect_intersect(zone, r)))
+            continue;
+        if (deferring)
+            g->stale = true;
+        else
             glass_invalidate(g);
     }
+}
+
+/* While a window is dragged the glass above it keeps its last blur; it catches up when the drag ends. */
+void glass_defer(bool on)
+{
+    if (deferring == on)
+        return;
+    deferring = on;
+    if (on)
+        return;
+    for (struct glass *g = glass_list; g; g = g->next)
+        if (g->stale) {
+            g->stale = false;
+            glass_invalidate(g);
+        }
 }
 
 static const uint8_t refract_lut[64] = {233, 255, 249, 236, 222, 207, 193, 179, 166, 155, 143, 133, 123, 114, 106, 98,
@@ -195,6 +216,33 @@ static uint32_t sample(const struct glass *g, int fx, int fy)
     return 0xff000000u | (rb & 0xff00ffu) | (gch & 0xff00u);
 }
 
+struct tap {
+    uint16_t i0, i1;
+    uint16_t t;
+};
+
+static void taps(struct tap *out, int from, int n, int origin, int scale, int size)
+{
+    for (int i = 0; i < n; i++) {
+        int f = ((from + i) * 256 + 128 - origin * 256) / scale - 128;
+        f = CLAMP(f, 0, (size - 1) * 256);
+        out[i] = (struct tap){(uint16_t)(f >> 8), (uint16_t)MIN((f >> 8) + 1, size - 1), (uint16_t)(f & 255)};
+    }
+}
+
+static inline uint32_t bilerp(const uint32_t *r0, const uint32_t *r1, const struct tap *tx, int ty)
+{
+    uint32_t a = r0[tx->i0], b = r0[tx->i1], c = r1[tx->i0], d = r1[tx->i1];
+    int t = tx->t;
+    uint32_t wa = (uint32_t)((256 - t) * (256 - ty)), wb = (uint32_t)(t * (256 - ty)), wc = (uint32_t)((256 - t) * ty),
+             wd = (uint32_t)(t * ty);
+    uint32_t rb = ((a & 0xff00ffu) * (wa >> 8) + (b & 0xff00ffu) * (wb >> 8) + (c & 0xff00ffu) * (wc >> 8) +
+                   (d & 0xff00ffu) * (wd >> 8)) >> 8;
+    uint32_t gch = ((a & 0xff00u) * (wa >> 8) + (b & 0xff00u) * (wb >> 8) + (c & 0xff00u) * (wc >> 8) +
+                    (d & 0xff00u) * (wd >> 8)) >> 8;
+    return 0xff000000u | (rb & 0xff00ffu) | (gch & 0xff00u);
+}
+
 static uint32_t isqrt32(uint32_t v)
 {
     uint32_t r = 0, bit = 1u << 30;
@@ -280,22 +328,52 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
     int inner = band + radius;
     int lift = look->brightness;
     const struct geo *geo = band ? geometry(g, f, radius) : NULL;
+    struct tap *cols = kmalloc(sizeof(struct tap) * (size_t)(f.w + f.h));
+    if (!cols)
+        return;
+    struct tap *rows = cols + f.w;
+    taps(cols, f.x, f.w, g->src.x, g->scale, g->small.w);
+    taps(rows, f.y, f.h, g->src.y, g->scale, g->small.h);
+    int cw = f.w + 4;
+    uint16_t *cover = look->shape ? kmalloc(sizeof(uint16_t) * (size_t)cw * (size_t)(f.h + 4)) : NULL;
+    if (cover)
+        for (int y = 0; y < f.h + 4; y++) {
+            int x0 = 0, x1 = 0;
+            if (look->shape_span && look->shape_span(f.y + y - 2, look->shape_ctx, &x0, &x1)) {
+                x0 = CLAMP(x0 - f.x + 2, 0, cw);
+                x1 = CLAMP(x1 - f.x + 2, x0, cw);
+            }
+            for (int x = 0; x < cw; x++) {
+                if (x == x0 && x1 > x0) {
+                    for (; x < x1; x++)
+                        cover[y * cw + x] = 256;
+                    if (x == cw)
+                        break;
+                }
+                cover[y * cw + x] = (uint16_t)CLAMP(look->shape(f.x + x - 2, f.y + y - 2, look->shape_ctx), 0, 256);
+            }
+        }
     for (int y = f.y; y < f.y + f.h; y++) {
         uint32_t *row = dst + (y - f.y) * stride - f.x;
+        int plain_x = INT32_MIN;
+        const struct tap *ry = &rows[y - f.y];
+        const uint32_t *r0 = g->small.px + ry->i0 * g->small.w, *r1 = g->small.px + ry->i1 * g->small.w;
         bool edge_row = y < f.y + inner || y >= f.y + f.h - inner;
         for (int x = f.x; x < f.x + f.w; x++) {
             int cov = 256, d = band16, nx = 0, ny = 0;
             int shape_rim = 0;
-            if (look->shape) {
-                cov = look->shape(x, y, look->shape_ctx);
+            if (cover) {
+                const uint16_t *cp = cover + (y - f.y + 2) * cw + (x - f.x + 2);
+                cov = *cp;
                 if (cov <= 0) {
                     row[x] = 0;
                     continue;
                 }
-                const void *k = look->shape_ctx;
-                int inner = MIN(MIN(look->shape(x - 2, y, k), look->shape(x + 2, y, k)),
-                                MIN(look->shape(x, y - 2, k), look->shape(x, y + 2, k)));
+                int inner = MIN(MIN(cp[-2], cp[2]), MIN(cp[-2 * cw], cp[2 * cw]));
                 shape_rim = (256 - inner) * (y < f.y + f.h / 2 ? 150 : 90) >> 8;
+            } else if (look->shape) {
+                row[x] = 0;
+                continue;
             } else if (edge_row || x < f.x + inner || x >= f.x + f.w - inner) {
                 if (geo) {
                     const struct geo *e = &geo[(y - f.y) * f.w + (x - f.x)];
@@ -312,6 +390,13 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
                 if (d < 8)
                     cov = (d + 8) * 16;
             }
+            bool plain = cov >= 256 && !shape_rim && !(band && d < band16);
+            if (plain && plain_x == x - 1 && (x & 1)) {
+                row[x] = row[x - 1];
+                continue;
+            }
+            if (plain)
+                plain_x = x;
             uint32_t p;
             int spec = 0;
             if (band && d < band16) {
@@ -337,7 +422,7 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
                         spec += rim_lut[i] * (reach - dist) / reach * 3 / 4;
                 }
             } else {
-                p = sample(g, x * 256 + 128, y * 256 + 128);
+                p = bilerp(r0, r1, &cols[x - f.x], ry->t);
             }
             int r = (int)(p >> 16 & 0xff), gg = (int)(p >> 8 & 0xff), b = (int)(p & 0xff);
             int luma = (r * 77 + gg * 151 + b * 28) >> 8;
@@ -361,6 +446,8 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
             row[x] = out | (uint32_t)(cov >= 256 ? 255 : cov * 255 / 256) << 24;
         }
     }
+    kfree(cover);
+    kfree(cols);
 }
 
 static bool pointer_near(const struct glass_look *look, struct rect f)
@@ -399,6 +486,8 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
                 return;
         }
         render(g, look, f, g->out.px, g->out.stride);
+        glass_stat_renders++;
+        glass_stat_pixels += (uint64_t)f.w * (uint64_t)f.h;
         g->out_stamp = g->stamp;
         g->out_x = f.x;
         g->out_y = f.y;
@@ -410,13 +499,20 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
     for (int y = area.y; y < area.y + area.h; y++) {
         const uint32_t *src = g->out.px + (y - f.y) * g->out.stride - f.x;
         uint32_t *row = c->px + y * c->stride;
-        for (int x = area.x; x < area.x + area.w; x++) {
+        for (int x = area.x, end = area.x + area.w; x < end;) {
+            int run = x;
+            while (run < end && src[run] >> 24 == 255)
+                run++;
+            if (run > x) {
+                memcpy(row + x, src + x, sizeof(uint32_t) * (size_t)(run - x));
+                x = run;
+                continue;
+            }
             uint32_t p = src[x];
             unsigned a = p >> 24;
-            if (a == 255)
-                row[x] = p;
-            else if (a)
+            if (a)
                 row[x] = color_mix(row[x], p | 0xff000000u, (int)a);
+            x++;
         }
     }
     int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
@@ -435,8 +531,8 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
     bool dark = style.dark;
     look->solid = style.glass == GLASS_SOLID;
     look->liquid = style.glass == GLASS_LIQUID;
-    look->scale = 4;
-    look->blur = look->liquid ? 2 : 6;
+    look->scale = 8;
+    look->blur = 3;
     look->saturation = look->liquid ? 330 : 420;
     look->band = 16;
     look->refract = 14;
@@ -456,7 +552,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
                            look->liquid ? (dark ? 90 : 70) : (dark ? 150 : 130));
         look->solid_color = dark ? RGB(52, 52, 56) : RGB(232, 232, 236);
         if (look->liquid) {
-            look->scale = 2;
+            look->scale = 4;
             look->blur = 3;
             look->band = 22;
             look->refract = 20;
@@ -468,20 +564,21 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         break;
     case GLASS_MENU:
         look->tint = ALPHA(color_mix(dark ? RGB(34, 34, 38) : RGB(250, 250, 252), style.tint | 0xff000000u, dark ? 50 : 26),
-                           look->liquid ? 185 : 200);
+                           look->liquid ? 160 : 180);
         look->solid_color = dark ? RGB(44, 44, 48) : RGB(246, 246, 248);
         look->band = 12;
         look->refract = 10;
-        look->blur = look->liquid ? 4 : 6;
+        look->scale = 6;
+        look->blur = 4;
         if (look->liquid)
             look->outline = dark ? ALPHA(0, 90) : ALPHA(0, 14);
         break;
     case GLASS_PANEL:
         look->tint = ALPHA(color_mix(dark ? RGB(58, 54, 68) : RGB(250, 250, 252), style.tint | 0xff000000u, dark ? 40 : 34),
-                           look->liquid ? (dark ? 120 : 120) : 170);
-        look->brightness = dark ? 10 : 10;
+                           look->liquid ? (dark ? 96 : 78) : (dark ? 130 : 120));
+        look->brightness = dark ? 8 : 16;
         look->solid_color = dark ? RGB(44, 44, 48) : RGB(244, 244, 246);
-        look->blur = look->liquid ? 4 : 6;
+        look->blur = 3;
         look->band = 18;
         look->refract = 16;
         look->dispersion = look->liquid;
@@ -494,7 +591,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         look->liquid = false;
         look->rim = 0;
         look->outline = 0;
-        look->blur = 6;
+        look->blur = 3;
         look->saturation = 400;
         look->brightness = 0;
         break;

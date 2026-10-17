@@ -171,7 +171,7 @@ static void layout(void)
     }
     if (places_on) {
         int bottom = s.y + s.h - (44 + 2 * 15) - 22 - 16;
-        places_r = (struct rect){s.x + 10 - dy, s.y + 12, PLACES_W, MIN(bottom - s.y - 12, 54 + place_count * PLACE_ROW + 16)};
+        places_r = (struct rect){s.x + 10 - dy, s.y + 12, PLACES_W, MIN(bottom - s.y - 12, 50 + place_count * PLACE_ROW + 6)};
         zone_places = rect_inset(places_r, -40);
         glass_set_frame(&places_glass, places_r);
     }
@@ -218,9 +218,9 @@ static void paint_pill(struct canvas *c)
 {
     struct glass_look look;
     glass_look_for(&look, GLASS_PANEL, pill.h / 2);
-    gfx_drop_shadow(c, pill, pill.h / 2, 14, style.dark ? 90 : 40, 4);
+    gfx_drop_shadow(c, pill, pill.h / 2, 16, style.dark ? 70 : 26, 4);
     glass_draw(c, &pill_glass, &look);
-    gfx_round_frame(c, pill, pill.h / 2, style.dark ? ALPHA(0xffffffffu, 30) : ALPHA(0xffffffffu, 140));
+    gfx_round_frame(c, pill, pill.h / 2, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
     for (int i = 0; i < PART_CLOCK; i++)
         paint_part_icon(c, i, part_r[i]);
     char clock[16];
@@ -259,15 +259,15 @@ static void paint_bubble(struct canvas *c)
 static void paint_places(struct canvas *c)
 {
     struct glass_look look;
-    glass_look_for(&look, GLASS_PANEL, 22);
-    gfx_drop_shadow(c, places_r, 22, 18, style.dark ? 100 : 46, 6);
+    glass_look_for(&look, GLASS_PANEL, PANEL_RADIUS);
+    gfx_drop_shadow(c, places_r, PANEL_RADIUS, 22, style.dark ? 70 : 26, 6);
     glass_draw(c, &places_glass, &look);
-    gfx_round_frame(c, places_r, 22, style.dark ? ALPHA(0xffffffffu, 30) : ALPHA(0xffffffffu, 140));
+    gfx_round_frame(c, places_r, PANEL_RADIUS, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
     gfx_text_box(c, (struct rect){places_r.x + 18, places_r.y + 14, places_r.w - 30, 20}, &font_bold, "Places", ink_soft(),
                  ALIGN_LEFT);
     if (place_alpha.pos > 8) {
         struct rect hr = {places_r.x + 8, place_hl.pos, places_r.w - 16, PLACE_ROW - 4};
-        gfx_round(c, hr, 12, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, CLAMP(place_alpha.pos, 0, 1024) * 22 / 1024));
+        gfx_round(c, hr, 14, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, CLAMP(place_alpha.pos, 0, 1024) * 22 / 1024));
     }
     struct canvas clip = *c;
     clip.clip = rect_intersect(c->clip, places_r);
@@ -275,7 +275,7 @@ static void paint_places(struct canvas *c)
         struct rect r = place_row(i);
         if (r.y + r.h > places_r.y + places_r.h - 6)
             break;
-        int push = i == place_hover ? 3 : 0;
+        int push = i == place_hover ? 6 : 0;
         uint32_t col = i == place_pressed ? style.accent : ink();
         gfx_symbol(&clip, r.x + 10 + push, r.y + (r.h - 16) / 2, places[i].sym, 16, i == place_hover ? style.accent : ink_soft());
         gfx_text_box(&clip, (struct rect){r.x + 38 + push, r.y, r.w - 44, r.h}, i == place_hover ? &font_bold : &font_sans,
