@@ -509,6 +509,7 @@ struct gui_app {
 #define GUI_APP(object) SYNTH_REGISTER(synth_gui_apps, struct gui_app, object)
 
 const struct gui_app *gui_app_find(const char *name);
+const struct gui_app *gui_app_for_program(const char *path);
 void gui_app_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx);
 void gui_app_launch(const struct gui_app *app, const char *arg);
 bool gui_open_file(const char *path);

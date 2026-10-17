@@ -340,7 +340,7 @@ static void pane_login(struct ui *ui, struct settings *s, int x, int y, int w)
         ui_text_set(&s->login_item, "");
     }
     y += ROW + 8 + 14;
-    static const char *const quick[] = {"Music", "Notepad", "Files", "Browser", "Photos"};
+    static const char *const quick[] = {"Music", "Notepad", "Files", "Chrome", "Photos"};
     for (size_t i = 0; i < ARRAY_SIZE(quick); i++) {
         struct rect b = {x + (int)i * 104, y, 96, 28};
         if (ui_button(ui, b, quick[i]))

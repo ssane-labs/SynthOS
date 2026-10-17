@@ -55,10 +55,10 @@ struct item {
     const char *path;
 };
 
-static const char *const pinned[] = {"Files",       "Launchpad",  "Browser", "Terminal",       "Notepad", "Photos",
+static const char *const pinned[] = {"Files",       "Launchpad",  "Chrome", "Terminal",       "Notepad", "Photos",
                                      "Music",       "Calculator", "Paint",   "System Monitor", "Minesweeper",
                                      "System Settings"};
-static const char *const short_pinned[] = {"Launchpad", "Files", "Browser", "Terminal", "Notepad", "Music",
+static const char *const short_pinned[] = {"Launchpad", "Files", "Chrome", "Terminal", "Notepad", "Music",
                                            "System Settings"};
 
 /* What sits in the Dock is the user's: each look keeps its own list in ~/.dock ("dune Files|Browser|/home/a.txt"),
@@ -914,7 +914,7 @@ static void draw_icon(struct canvas *c, const struct item *it, struct rect r, in
         gui_draw_file_icon(c, it->path, r, alpha);
     } else if (it->kind == DI_GAP) {
         return;
-    } else if (it->kind == DI_APP && it->app->picture) {
+    } else if (it->kind == DI_APP && it->app->picture && it->app->picture->px) {
         gfx_scale(c, (struct rect){r.x + r.w / 16, r.y + r.w / 16, r.w - r.w / 8, r.h - r.w / 8}, it->app->picture, alpha);
     } else {
         gfx_icon_alpha(c, r.x, r.y, item_icon(it), r.w, alpha);
@@ -1045,7 +1045,7 @@ static void paint_corner(struct canvas *c)
             if (i == grid_hover)
                 gfx_round(c, rect_inset(cell, 4), 16, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, 22 * stagger / 255));
             struct rect ir = {cell.x + (cell.w - size) / 2, cell.y + 10 + dy, size, size};
-            if (grid[i]->picture)
+            if (grid[i]->picture && grid[i]->picture->px)
                 gfx_scale(c, ir, grid[i]->picture, stagger);
             else
                 gfx_icon_alpha(c, ir.x, ir.y, grid[i]->icon, size, grid_pressed == i ? stagger * 2 / 3 : stagger);

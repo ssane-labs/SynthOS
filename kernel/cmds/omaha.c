@@ -1,17 +1,22 @@
 /* Installs an application the way Google Update does: ask the update server (Omaha protocol 3.1) for the current
-   package, download it, check its SHA-256, take the installer out of the CRX3 package and run it. */
+   package, download it and check its SHA-256. The package is a CRX3 (a zip) holding the offline installer, and that
+   installer carries the program as a 7z archive, which is unpacked straight from the downloaded file. */
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/http.h>
 #include <synth/input.h>
+#include <synth/lnk.h>
 #include <synth/omaha.h>
 #include <synth/path.h>
+#include <synth/sevenzip.h>
 #include <synth/sha256.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/tls.h>
+#include <synth/users.h>
 #include <synth/vfs.h>
+#include <synth/winpath.h>
 
 #define OMAHA_URL "https://update.googleapis.com/service/update2/json"
 #define CHUNK (1u << 20)
@@ -45,8 +50,19 @@ static bool json_string(const char *from, const char *key, char *out, size_t cap
 struct sink {
     struct file *f;
     struct sha256 hash;
-    struct shell *sh;
+    struct omaha_ui *ui;
 };
+
+static void fail(struct omaha_ui *ui, const char *fmt, const char *a, const char *b)
+{
+    ksnprintf(ui->error, sizeof(ui->error), fmt, a, b);
+}
+
+static void say(struct omaha_ui *ui, const char *text)
+{
+    if (ui->say)
+        ui->say(ui->ctx, text);
+}
 
 static int to_file(void *ctx, const void *data, size_t n)
 {
@@ -55,34 +71,19 @@ static int to_file(void *ctx, const void *data, size_t n)
     return vfs_write(s->f, data, n) == (long)n ? 0 : E_NOSPC;
 }
 
-static void progress(void *ctx, const char *stage, size_t done, size_t total)
-{
-    struct shell *sh = ctx;
-    static size_t last;
-    if (!done) {
-        last = 0;
-        return;
-    }
-    if (done - last < (4u << 20) && done != total)
-        return;
-    last = done;
-    char a[16], b[16];
-    fmt_size(a, sizeof(a), done);
-    fmt_size(b, sizeof(b), total);
-    if (total)
-        sh_printf(sh, "\r  %s %s of %s (%u%%)  ", stage, a, b, (unsigned)((uint64_t)done * 100 / total));
-    else
-        sh_printf(sh, "\r  %s %s  ", stage, a);
-}
-
 static void sink_progress(void *ctx, const char *stage, size_t done, size_t total)
 {
-    progress(((struct sink *)ctx)->sh, stage, done, total);
+    UNUSED(stage);
+    struct omaha_ui *ui = ((struct sink *)ctx)->ui;
+    if (ui->progress)
+        ui->progress(ui->ctx, "Downloading", done, total);
 }
+
+static struct omaha_ui *current_ui;
 
 static bool cancelled(void)
 {
-    return input_break_pending();
+    return current_ui && current_ui->cancelled ? current_ui->cancelled(current_ui->ctx) : input_break_pending();
 }
 
 static uint32_t rd32(const uint8_t *p)
@@ -143,48 +144,40 @@ static int find_stored(struct file *f, uint32_t zip, uint32_t size, const char *
     return err;
 }
 
-/* A CRX3 file is "Cr24", version 3, a header of the given length and then a zip archive. */
-static int extract_from_crx(struct shell *sh, const char *crx, const char *name, const char *out)
+/* Where the installer that the CRX3 package holds starts: "Cr24", version 3, a header, then a zip archive. */
+static int installer_offset(const char *crx, const char *name, uint32_t *at)
 {
-    struct file *f, *o = NULL;
+    struct file *f;
     int err = vfs_open(crx, VFS_READ, &f);
     if (err)
         return err;
     uint8_t head[12];
     struct vstat st;
-    uint32_t size = vfs_stat(crx, &st) == 0 ? st.size : 0, at = 0, len = 0;
+    uint32_t size = vfs_stat(crx, &st) == 0 ? st.size : 0, len = 0;
     if (!read_at(f, 0, head, sizeof(head)) || memcmp(head, "Cr24", 4) || rd32(head + 4) != 3 ||
         12 + rd32(head + 8) >= size)
         err = E_INVAL;
     else
-        err = find_stored(f, 12 + rd32(head + 8), size, name, &at, &len);
-    uint8_t *buf = err ? NULL : kmalloc(CHUNK);
-    if (!err && !buf)
-        err = E_NOMEM;
-    if (!err)
-        err = vfs_open(out, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &o);
-    for (uint32_t done = 0; !err && done < len;) {
-        uint32_t n = MIN(CHUNK, len - done);
-        if (!read_at(f, at + done, buf, n))
-            err = E_IO;
-        else if (vfs_write(o, buf, n) != (long)n)
-            err = E_NOSPC;
-        done += n;
-        progress(sh, "unpacked", done, len);
-    }
-    sh_puts(sh, "\n");
-    if (o)
-        vfs_close(o);
+        err = find_stored(f, 12 + rd32(head + 8), size, name, at, &len);
     vfs_close(f);
-    kfree(buf);
-    if (err)
-        vfs_unlink(out);
     return err;
 }
 
 struct update {
-    char codebase[256], name[192], run[128], args[256], hash[72], version[32];
+    char codebase[256], name[192], run[128], hash[72], version[32];
+    uint64_t size;
 };
+
+static uint64_t json_number(const char *from, const char *key)
+{
+    char pattern[48];
+    ksnprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    const char *p = from ? strstr(from, pattern) : NULL;
+    uint64_t v = 0;
+    for (p = p ? p + strlen(pattern) : NULL; p && *p >= '0' && *p <= '9'; p++)
+        v = v * 10 + (uint64_t)(*p - '0');
+    return v;
+}
 
 /* The first https:// download location, preferring dl.google.com, and what the manifest says to run. */
 static bool parse_update(const char *json, struct update *u)
@@ -201,15 +194,15 @@ static bool parse_update(const char *json, struct update *u)
             str_copy(u->codebase, url, sizeof(u->codebase));
     }
     const char *packages = strstr(check, "\"package\"");
+    u->size = json_number(packages, "size");
     return u->codebase[0] && packages && json_string(packages, "name", u->name, sizeof(u->name)) &&
            json_string(packages, "hash_sha256", u->hash, sizeof(u->hash)) &&
            json_string(check, "run", u->run, sizeof(u->run)) && strchr(u->run, '/') == NULL &&
-           strchr(u->name, '/') == NULL && strstr(u->run, "..") == NULL &&
-           (json_string(check, "arguments", u->args, sizeof(u->args)) || (u->args[0] = 0, true)) &&
+           strchr(u->name, '/') == NULL && strstr(u->run, "..") == NULL && strstr(u->name, "..") == NULL &&
            json_string(check, "version", u->version, sizeof(u->version));
 }
 
-static int ask_server(struct shell *sh, const char *appid, const char *ap, struct update *u)
+static int ask_server(struct omaha_ui *ui, const char *appid, const char *ap, struct update *u)
 {
     char body[640];
     int n = ksnprintf(body, sizeof(body),
@@ -223,33 +216,36 @@ static int ask_server(struct shell *sh, const char *appid, const char *ap, struc
                                .body = body, .body_len = (size_t)n, .max_size = 1u << 20, .cancelled = cancelled,
                                .flags = HTTP_NO_COOKIES};
     struct http_response resp;
-    sh_printf(sh, "Asking %s for the current version\n", OMAHA_URL);
+    say(ui, "Asking Google's update server for the current version");
     int err = http_fetch(&req, &resp);
-    if (err)
-        return sh_error(sh, "pkg", "the update server cannot be reached: %s", tls_strerror(err));
+    if (err) {
+        fail(ui, "The update server cannot be reached: %s%s", tls_strerror(err), "");
+        return err;
+    }
     bool ok = resp.status == 200 && resp.body && parse_update(resp.body, u);
     http_free(&resp);
-    return ok ? 0 : sh_error(sh, "pkg", "the update server did not offer a package");
+    if (!ok)
+        fail(ui, "The update server did not offer a package%s%s", "", "");
+    return ok ? 0 : E_NOENT;
 }
 
-static int download(struct shell *sh, const struct update *u, const char *path)
+static int download(struct omaha_ui *ui, const struct update *u, const char *path)
 {
     char url[HTTP_URL_MAX];
     ksnprintf(url, sizeof(url), "%s%s", u->codebase, u->name);
-    struct sink s = {.sh = sh};
+    struct sink s = {.ui = ui};
     int err = vfs_open(path, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &s.f);
-    if (err)
-        return sh_fs_error(sh, "pkg", path, err);
+    if (err) {
+        fail(ui, "Cannot write %s: %s", path, err_str(err));
+        return err;
+    }
     sha256_init(&s.hash);
-    sh_printf(sh, "Downloading %s\n", url);
+    say(ui, url);
     struct http_request req = {.url = url, .cancelled = cancelled, .progress = sink_progress, .ctx = &s,
                                .flags = HTTP_NO_COOKIES, .sink = to_file};
     struct http_response resp;
-    progress(sh, "downloaded", 0, 0);
     err = http_fetch(&req, &resp);
-    sh_puts(sh, "\n");
     int status = err ? 0 : resp.status;
-    size_t got = err ? 0 : resp.length;
     if (!err)
         http_free(&resp);
     vfs_close(s.f);
@@ -264,36 +260,110 @@ static int download(struct shell *sh, const struct update *u, const char *path)
         err = E_INVAL;
     if (err) {
         vfs_unlink(path);
-        return sh_error(sh, "pkg", err == E_INVAL ? "the download is damaged (SHA-256 does not match)"
-                                                  : "could not download %s: %s", u->name, tls_strerror(err));
+        if (err == E_INVAL)
+            fail(ui, "The download is damaged (SHA-256 does not match)%s%s", "", "");
+        else
+            fail(ui, "Could not download %s: %s", u->name, tls_strerror(err));
     }
-    char size[16];
-    fmt_size(size, sizeof(size), got);
-    sh_printf(sh, "Downloaded %s, SHA-256 matches\n", size);
-    return 0;
+    return err;
 }
 
-int omaha_install(struct shell *sh, const char *appid, const char *ap, const char *dir)
+static void unpack_progress(void *ctx, const char *name, uint64_t done, uint64_t total)
 {
+    UNUSED(name);
+    struct omaha_ui *ui = ctx;
+    if (ui->progress)
+        ui->progress(ui->ctx, "Unpacking", done, total);
+}
+
+int omaha_install(const char *appid, const char *ap, const char *dest, const char *strip, struct omaha_ui *ui)
+{
+    current_ui = ui;
+    ui->error[0] = 0;
     struct update u = {0};
-    int err = ask_server(sh, appid, ap, &u);
-    if (err)
-        return err;
-    sh_printf(sh, "Version %s: %s\n", u.version, u.run);
-    vfs_mkdirs(dir);
-    char crx[PATH_MAX_LEN], exe[PATH_MAX_LEN];
-    path_join(dir, u.name, crx, sizeof(crx));
-    path_join(dir, u.run, exe, sizeof(exe));
-    if ((err = download(sh, &u, crx)) != 0)
-        return err;
-    err = extract_from_crx(sh, crx, u.run, exe);
-    vfs_unlink(crx);
-    if (err)
-        return sh_fs_error(sh, "pkg", u.run, err);
-    char cmd[PATH_MAX_LEN + 300];
-    ksnprintf(cmd, sizeof(cmd), "'%s' %s", exe, u.args);
-    sh_printf(sh, "Running the installer: %s\n", cmd);
-    err = shell_exec(sh, cmd);
-    vfs_unlink(exe);
+    int err = ask_server(ui, appid, ap, &u);
+    char work[PATH_MAX_LEN], crx[PATH_MAX_LEN];
+    path_join(user_home(), "Downloads", work, sizeof(work));
+    vfs_mkdirs(work);
+    uint64_t free = 0;
+    if (!err && u.size && vfs_free_space(work, &free) == 0 && free < u.size * 2 + (64u << 20)) {
+        char need[16], have[16];
+        fmt_size(need, sizeof(need), u.size * 2 + (64u << 20));
+        fmt_size(have, sizeof(have), free);
+        fail(ui, "This needs %s of free disk space; %s is free", need, have);
+        err = E_NOSPC;
+    }
+    if (!err) {
+        char line[96];
+        ksnprintf(line, sizeof(line), "Version %s", u.version);
+        say(ui, line);
+        path_join(work, u.name, crx, sizeof(crx));
+        err = download(ui, &u, crx);
+    }
+    uint32_t at = 0;
+    if (!err && (err = installer_offset(crx, u.run, &at)) != 0)
+        fail(ui, "The package has no %s inside%s", u.run, "");
+    int64_t base = err ? -1 : sevenzip_find(crx, at);
+    if (!err && base < 0) {
+        err = E_INVAL;
+        fail(ui, "%s carries no 7z archive%s", u.run, "");
+    }
+    if (!err) {
+        say(ui, "Unpacking");
+        vfs_mkdirs(dest);
+        struct sevenzip_result r;
+        err = sevenzip_extract(crx, base, dest, strip, unpack_progress, ui, &r);
+        if (!err && !r.files)
+            err = E_NOENT;
+        if (err)
+            fail(ui, "Unpacking failed: %s%s", err_str(err), "");
+    }
+    if (u.name[0])
+        vfs_unlink(crx);
+    current_ui = NULL;
+    return err;
+}
+
+/* Google Chrome: the 32-bit stable channel, unpacked into /home/apps/chrome. */
+
+#define CHROME_APPID "{8A69D345-D564-463C-AFF1-A69D9E530F96}"
+#define CHROME_AP "stable-arch_x86"
+#define CHROME_DIR "/home/apps/chrome"
+
+bool chrome_path(char *out, size_t cap)
+{
+    path_join(CHROME_DIR, "chrome.exe", out, cap);
+    return vfs_exists(out);
+}
+
+static void chrome_shortcut(const char *exe)
+{
+    struct lnk *l = kzalloc(sizeof(*l));
+    uint8_t *buf = kmalloc(8192);
+    char dir[PATH_MAX_LEN], file[PATH_MAX_LEN];
+    if (l && buf) {
+        winpath_from_vfs(exe, l->target, sizeof(l->target));
+        winpath_from_vfs(CHROME_DIR, l->dir, sizeof(l->dir));
+        path_join(user_home(), "Desktop", dir, sizeof(dir));
+        vfs_mkdirs(dir);
+        path_join(dir, "Google Chrome.lnk", file, sizeof(file));
+        size_t n = lnk_encode(l, buf, 8192);
+        if (n)
+            vfs_write_all(file, buf, n);
+    }
+    kfree(l);
+    kfree(buf);
+}
+
+int chrome_install(struct omaha_ui *ui)
+{
+    int err = omaha_install(CHROME_APPID, CHROME_AP, CHROME_DIR, "Chrome-bin/", ui);
+    char exe[PATH_MAX_LEN];
+    if (!err && !chrome_path(exe, sizeof(exe))) {
+        fail(ui, "chrome.exe did not come out of the package%s%s", "", "");
+        err = E_NOENT;
+    }
+    if (!err)
+        chrome_shortcut(exe);
     return err;
 }

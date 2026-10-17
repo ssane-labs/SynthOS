@@ -98,6 +98,7 @@ void vfs_foreach_fs(void (*fn)(const struct fs_type *fs, void *ctx), void *ctx);
 int vfs_mount(const char *fsname, const char *source, const char *path);
 int vfs_umount(const char *path);
 struct mount *vfs_mounts(void);
+int vfs_free_space(const char *path, uint64_t *free);
 
 struct vnode *vnode_get(struct vnode *vn);
 void vnode_put(struct vnode *vn);

@@ -310,7 +310,7 @@ void gui_draw_file_icon(struct canvas *c, const char *path, struct rect r, int a
 {
     const struct gui_app *app = app_shortcut(path);
     const struct image *img = app ? NULL : program_icon(path);
-    if (app && app->picture)
+    if (app && app->picture && app->picture->px)
         gfx_scale(c, rect_inset(r, r.w / 16), app->picture, alpha);
     else if (img)
         gfx_scale(c, rect_inset(r, r.w / 16), &(struct canvas){img->px, img->w, img->h, img->w, {0, 0, img->w, img->h}},
@@ -704,6 +704,13 @@ static bool start_program(const char *path, char *args, const char *dir)
     return session && w32_start(session, path, argc, argv, cwd) == 0;
 }
 
+bool gui_start_program(const char *path, const char *args)
+{
+    char copy[512];
+    str_copy(copy, args ? args : "", sizeof(copy));
+    return start_program(path, args ? copy : NULL, NULL);
+}
+
 static bool open_shortcut(const char *file)
 {
     struct lnk *l = kmalloc(sizeof(*l));
@@ -721,6 +728,13 @@ static bool open_shortcut(const char *file)
     }
     kfree(l);
     return true;
+}
+#else
+bool gui_start_program(const char *path, const char *args)
+{
+    UNUSED(path);
+    UNUSED(args);
+    return false;
 }
 #endif
 
@@ -1046,6 +1060,7 @@ static void pump(int timeout_ms)
         autostart_run();
     }
     wallpaper_fetch_run();
+    chrome_install_run();
 #if CONFIG_WIN32
     if (timeout_ms != 0)
         w32_background();

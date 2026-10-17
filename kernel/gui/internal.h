@@ -222,6 +222,8 @@ void gui_wallpaper_use(const char *path);
 void gui_draw_file_icon(struct canvas *c, const char *path, struct rect r, int alpha);
 void gui_file_label(const char *path, char *out, size_t cap);
 void gui_make_app_shortcut(const char *name);
+bool gui_start_program(const char *path, const char *args);
+void chrome_install_run(void);
 void dock_drag_move(const char *entry, int x, int y);
 bool dock_drag_drop(int x, int y);
 bool dock_dragging(void);

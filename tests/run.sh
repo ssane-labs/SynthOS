@@ -23,6 +23,15 @@ mcopy -i "$work/fat.img" "$work/page.html" ::/page.html
 python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.writestr('pkg/readme.txt','zipped hello '*20); z.writestr('pkg/sub/a.txt','A'); z.close()" "$work/t.zip" &&
     mcopy -i "$work/fat.img" "$work/t.zip" ::/t.zip
 
+if command -v 7z >/dev/null; then
+    mkdir -p "$work/7z/pkg/sub"
+    printf 'seven zip hello\n' > "$work/7z/pkg/hello.txt"
+    seq 1 20000 > "$work/7z/pkg/sub/numbers.txt"
+    (cd "$work/7z" && 7z a -m0=LZMA -ms=on ../lz.7z pkg >/dev/null && 7z a -m0=Copy ../copy.7z pkg >/dev/null &&
+        7z a -mf=BCJ2 -m0=LZMA ../bcj2.7z pkg >/dev/null)
+    for a in lz copy bcj2; do mcopy -i "$work/fat.img" "$work/$a.7z" ::/$a.7z; done
+fi
+
 # each case: a command line, then the text expected somewhere in the output
 cat > "$work/cases" <<'EOF'
 echo hello world
@@ -114,11 +123,11 @@ no widget called moon
 config widgets clock,weather,music; config widgets
 clock,weather,music
 config dockapps
-Launchpad|Files|Browser|Terminal|Notepad|Music|System Settings
+Launchpad|Files|Chrome|Terminal|Notepad|Music|System Settings
 config dockapps 'Files|/home/notes.txt|Terminal'; grep dune ~/.dock
 dune Files|/home/notes.txt|Terminal
 config dockapps default; config dockapps
-Launchpad|Files|Browser|Terminal|Notepad|Music|System Settings
+Launchpad|Files|Chrome|Terminal|Notepad|Music|System Settings
 config dockstyle side; config statusbar menubar; config places off; head -n 1 ~/.looks
 dune dock=side status=menubar places=off
 config dockstyle corner; config statusbar pill; config places on; config dockstyle
@@ -374,6 +383,19 @@ cp /apps/winbench.exe /mnt/hdb/wb.exe; cp /mnt/hdb/wb.exe /mnt/hdb/wb2.exe; sha2
 $(sha256sum "$apps/winbench.exe" | cut -c1-64)  /mnt/hdb/wb2.exe
 winbench /tmp /tmp/wb.txt; grep total /tmp/wb.txt
 (check 0 0 0)
+EOF
+fi
+
+if command -v 7z >/dev/null; then
+    cat >> "$work/cases" <<EOF
+un7z /mnt/hdb/lz.7z /tmp/7a; cat /tmp/7a/pkg/hello.txt
+seven zip hello
+un7z /mnt/hdb/copy.7z /tmp/7b; tail -n 1 /tmp/7b/pkg/sub/numbers.txt
+20000
+un7z /mnt/hdb/bcj2.7z /tmp/7c; sha256sum /tmp/7c/pkg/sub/numbers.txt
+$(sha256sum "$work/7z/pkg/sub/numbers.txt" | cut -c1-64)
+un7z /mnt/hdb/page.html
+not a 7z archive
 EOF
 fi
 

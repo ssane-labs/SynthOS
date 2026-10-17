@@ -105,6 +105,9 @@ static const struct gui_app *app_of_process(void)
 {
     if (process_app)
         return process_app;
+    const struct gui_app *known = gui_app_for_program(w32->ctx->path);
+    if (known)
+        return known;
     struct process_app *p = kzalloc(sizeof(*p));
     if (!p)
         return NULL;

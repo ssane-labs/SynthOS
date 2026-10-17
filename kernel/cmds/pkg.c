@@ -5,6 +5,7 @@
 #include <synth/http.h>
 #include <synth/input.h>
 #include <synth/omaha.h>
+#include <synth/sevenzip.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/stream.h>
@@ -159,6 +160,29 @@ COMMAND(unzip, NULL, "files", "unzip [-l] [-q] [-d dir] file.zip", "list or extr
     return rc;
 }
 
+COMMAND(un7z, "7z", "files", "un7z archive.7z [dir]", "unpack a 7z archive (also one inside a self-extracting .exe)")
+{
+    if (argc < 2 || argc > 3)
+        return command_usage(sh, command_find("un7z"));
+    char path[PATH_MAX_LEN], dir[PATH_MAX_LEN];
+    int err = sh_resolve(sh, argv[1], path, sizeof(path));
+    if (!err)
+        err = sh_resolve(sh, argc > 2 ? argv[2] : ".", dir, sizeof(dir));
+    if (err)
+        return sh_fs_error(sh, "un7z", argv[argc > 2 ? 2 : 1], err);
+    struct sevenzip_result r;
+    err = sevenzip_extract(path, -1, dir, NULL, NULL, NULL, &r);
+    if (err)
+        return sh_error(sh, "un7z", "%s: %s", argv[1], err == E_INVAL ? "not a 7z archive" : err_str(err));
+    char size[16];
+    fmt_size(size, sizeof(size), r.bytes);
+    sh_printf(sh, "%d files, %s", r.files, size);
+    if (r.skipped)
+        sh_printf(sh, " (%d skipped: packed with a method SynthOS does not unpack)", r.skipped);
+    sh_puts(sh, "\n");
+    return r.skipped ? 1 : 0;
+}
+
 enum post {
     POST_NONE,
     POST_PYTHON,
@@ -181,7 +205,7 @@ static const struct package packages[] = {
      "mingw32/bin", POST_NONE},
     {"python", "3.12.10", "Python for Windows (official embeddable build, 32-bit) with site-packages",
      {"https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-win32.zip", NULL, NULL}, "", POST_PYTHON},
-    {"chrome", "stable", "Google Chrome (32-bit): Google's own installer, adds a desktop shortcut",
+    {"chrome", "stable", "Google Chrome (32-bit) from Google's update server, with a desktop shortcut",
      {"{8A69D345-D564-463C-AFF1-A69D9E530F96}", "stable-arch_x86", NULL}, "", POST_OMAHA},
     {"vscode", "latest", "Visual Studio Code (64-bit Electron; experimental, does not start yet)",
      {"https://update.code.visualstudio.com/latest/win32-x64-archive/stable", NULL, NULL}, "", POST_NONE},
@@ -306,12 +330,39 @@ static int post_python(struct shell *sh, const char *root)
     return 0;
 }
 
+static void omaha_say(void *ctx, const char *text)
+{
+    sh_printf(ctx, "%s\n", text);
+}
+
+static void omaha_progress(void *ctx, const char *stage, uint64_t done, uint64_t total)
+{
+    static uint64_t last;
+    static const char *last_stage;
+    if (stage != last_stage) {
+        last = 0;
+        last_stage = stage;
+    }
+    if (done - last < (8u << 20) && done != total)
+        return;
+    last = done;
+    char a[16], b[16];
+    fmt_size(a, sizeof(a), done);
+    fmt_size(b, sizeof(b), total);
+    sh_printf(ctx, "\r  %s %s of %s (%u%%)  %s", stage, a, b, total ? (unsigned)(done * 100 / total) : 0,
+              done == total ? "\n" : "");
+}
+
 static int install(struct shell *sh, const struct package *p, const char *base)
 {
     if (p->post == POST_OMAHA) {
-        char dir[PATH_MAX_LEN];
-        path_join(user_home(), "Downloads", dir, sizeof(dir));
-        return omaha_install(sh, p->urls[0], p->urls[1], dir);
+        struct omaha_ui ui = {.say = omaha_say, .progress = omaha_progress, .ctx = sh};
+        if (chrome_install(&ui))
+            return sh_error(sh, "pkg", "%s", ui.error);
+        sh_role(sh, ROLE_OK);
+        sh_puts(sh, "Installed Google Chrome in /home/apps/chrome; the shortcut is on the desktop\n");
+        sh_role(sh, ROLE_TEXT);
+        return 0;
     }
     char root[PATH_MAX_LEN];
     path_join(base, p->name, root, sizeof(root));

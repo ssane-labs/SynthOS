@@ -7,6 +7,7 @@
 SYNTH_TABLE_DECLARE(synth_fs, struct fs_type);
 
 static struct mount *mounts;
+static struct mount *mount_for(const char *path, const char **rest);
 
 void vfs_init(void)
 {
@@ -25,6 +26,16 @@ void vfs_foreach_fs(void (*fn)(const struct fs_type *fs, void *ctx), void *ctx)
 {
     SYNTH_TABLE_FOREACH(synth_fs, struct fs_type, fs)
         fn(fs, ctx);
+}
+
+int vfs_free_space(const char *path, uint64_t *free)
+{
+    const char *rest;
+    struct mount *m = mount_for(path, &rest);
+    uint64_t total;
+    if (!m || !m->fs->statfs)
+        return E_NOSYS;
+    return m->fs->statfs(m->root, &total, free);
 }
 
 struct mount *vfs_mounts(void)
