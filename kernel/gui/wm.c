@@ -666,6 +666,7 @@ static void wm_animate(void)
     dock_animate();
     panel_animate();
     widgets_animate();
+    desktop_animate();
     uint64_t now = hal_ticks_ms();
     int dt = chrome_tick ? (int)MIN(now - chrome_tick, 64u) : 16;
     chrome_tick = now;

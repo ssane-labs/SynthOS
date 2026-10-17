@@ -228,6 +228,8 @@ void dock_drag_move(const char *entry, int x, int y);
 bool dock_drag_drop(int x, int y);
 bool dock_dragging(void);
 bool desktop_icon_drag(int x, int y);
+void desktop_icon_hover(int x, int y);
+bool desktop_animate(void);
 void dock_paint_drag(struct canvas *c);
 bool widgets_editing(void);
 int widgets_obstacles(struct rect *out, int max);

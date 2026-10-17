@@ -59,7 +59,9 @@ static int known_count = -1;
 static struct desktop_icon icons[MAX_ICONS];
 static int icon_count;
 static int selected_icon = -1;
-static int drag_icon = -1, drag_x, drag_y;
+static int drag_icon = -1, drag_x, drag_y, hover_icon = -1;
+static struct spring icon_lift[MAX_ICONS];
+static uint64_t icon_tick;
 static bool icon_dragging;
 static int lock_minutes;
 static uint64_t last_input;
@@ -439,11 +441,13 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
         if (i == selected_icon)
             gfx_round(c, (struct rect){cell.x + 14, cell.y - 2, cell.w - 28, 70}, 8, ALPHA(0, 70));
         const struct image *img = program_icon(icons[i].path);
+        int lift = i < MAX_ICONS ? CLAMP(icon_lift[i].pos, -200, 1200) : 0;
+        int grow = lift * 8 / 1024, rise = lift * 5 / 1024;
         if (img)
-            gfx_scale(c, (struct rect){cell.x + (cell.w - 56) / 2, cell.y + 6, 56, 56},
+            gfx_scale(c, (struct rect){cell.x + (cell.w - 56 - grow) / 2, cell.y + 6 - rise - grow / 2, 56 + grow, 56 + grow},
                       &(struct canvas){img->px, img->w, img->h, img->w, {0, 0, img->w, img->h}}, 255);
         else
-            gfx_icon(c, cell.x + (cell.w - 64) / 2, cell.y + 2, icons[i].icon, 64);
+            gfx_icon(c, cell.x + (cell.w - 64 - grow) / 2, cell.y + 2 - rise - grow / 2, icons[i].icon, 64 + grow);
         icon_label(c, cell, icons[i].label, i == selected_icon);
     }
 }
@@ -487,6 +491,36 @@ static void icon_entry(int i, char *out, size_t cap)
 {
     const struct gui_app *app = app_shortcut(icons[i].path);
     str_copy(out, app ? app->name : icons[i].path, cap);
+}
+
+/* Desktop icons rise and grow a little under the pointer. */
+void desktop_icon_hover(int x, int y)
+{
+    int hit = -1;
+    for (int i = 0; y >= 0 && i < icon_count; i++)
+        if (rect_contains(icon_cell(i), x, y))
+            hit = i;
+    if (hit == hover_icon)
+        return;
+    if (hover_icon >= 0 && hover_icon < MAX_ICONS)
+        icon_lift[hover_icon].target = 0;
+    if (hit >= 0)
+        icon_lift[hit].target = 1024;
+    hover_icon = hit;
+}
+
+bool desktop_animate(void)
+{
+    uint64_t now = hal_ticks_ms();
+    int dt = icon_tick ? (int)MIN(now - icon_tick, 64u) : 16;
+    icon_tick = now;
+    bool busy = false;
+    for (int i = 0; i < icon_count && i < MAX_ICONS; i++)
+        if (spring_step(&icon_lift[i], 520, 20, dt)) {
+            busy = true;
+            wm_damage_z(rect_inset(icon_cell(i), -6), Z_DESKTOP);
+        }
+    return busy;
 }
 
 bool desktop_icon_drag(int x, int y)

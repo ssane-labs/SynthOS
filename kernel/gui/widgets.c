@@ -726,6 +726,7 @@ void desktop_hover(int x, int y, bool over)
 {
     if (desktop_icon_drag(x, y))
         return;
+    desktop_icon_hover(x, over ? y : -1);
     widgets_hover(over || drag >= 0 ? x : -1, y);
 }
 
