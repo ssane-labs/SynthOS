@@ -192,6 +192,34 @@ static bool cancelled(void)
     return input_break_pending();
 }
 
+struct wget_sink {
+    struct shell *sh;
+    struct file *f;
+    uint64_t bytes, shown;
+};
+
+static int wget_write(void *ctx, const void *data, size_t n)
+{
+    struct wget_sink *w = ctx;
+    w->bytes += n;
+    return vfs_write(w->f, data, n) == (long)n ? 0 : E_NOSPC;
+}
+
+static void wget_progress(void *ctx, const char *stage, size_t done, size_t total)
+{
+    struct wget_sink *w = ctx;
+    if (strcmp(stage, "downloading") || done < w->shown + (4u << 20))
+        return;
+    w->shown = done;
+    char a[16], b[16];
+    fmt_size(a, sizeof(a), done);
+    fmt_size(b, sizeof(b), total);
+    if (total)
+        sh_printf(w->sh, "\r  %s of %s (%u%%)  ", a, b, (unsigned)((uint64_t)done * 100 / total));
+    else
+        sh_printf(w->sh, "\r  %s  ", a);
+}
+
 COMMAND(wget, "fetch", "system", "wget [-k] [-O file] http[s]://host[:port]/path",
         "download a file over HTTP or HTTPS (-k: do not check the certificate)")
 {
@@ -219,9 +247,40 @@ COMMAND(wget, "fetch", "system", "wget [-k] [-O file] http[s]://host[:port]/path
     sh_role(sh, ROLE_MUTED);
     sh_printf(sh, "Fetching %s://%s:%u%s\n", u.https ? "https" : "http", u.host, u.port, u.path);
     sh_role(sh, ROLE_TEXT);
-    struct http_request req = {.url = url, .flags = flags, .cancelled = cancelled};
+    char name[PATH_MAX_LEN];
+    if (output) {
+        str_copy(name, output, sizeof(name));
+    } else {
+        char *q = strchr(u.path, '?');
+        if (q)
+            *q = 0;
+        const char *base = path_basename(u.path);
+        str_copy(name, base && *base && strcmp(base, "/") ? base : "index.html", sizeof(name));
+    }
+    bool to_stdout = !strcmp(name, "-");
+    struct wget_sink ws = {.sh = sh};
+    char path[PATH_MAX_LEN];
+    if (!to_stdout) {
+        int err = sh_resolve(sh, name, path, sizeof(path));
+        if (!err)
+            err = vfs_open(path, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &ws.f);
+        if (err)
+            return sh_fs_error(sh, "wget", name, err);
+    }
+    struct http_request req = {.url = url, .flags = flags | (to_stdout ? 0 : HTTP_GZIP), .cancelled = cancelled,
+                               .sink = to_stdout ? NULL : wget_write, .progress = to_stdout ? NULL : wget_progress,
+                               .ctx = &ws};
     struct http_response resp;
     int err = http_fetch(&req, &resp);
+    if (ws.shown)
+        sh_puts(sh, "\r                                        \r");
+    if (!err && !to_stdout && !ws.bytes && resp.status < 400 && resp.length)
+        err = wget_write(&ws, resp.body, resp.length);
+    if (ws.f)
+        vfs_close(ws.f);
+    if (err || (!to_stdout && resp.status >= 400))
+        if (!to_stdout)
+            vfs_unlink(path);
     if (err == E_NOENT)
         return sh_error(sh, "wget", "%s: host not found", u.host);
     if (err)
@@ -238,33 +297,14 @@ COMMAND(wget, "fetch", "system", "wget [-k] [-O file] http[s]://host[:port]/path
         http_free(&resp);
         return 1;
     }
-    char name[PATH_MAX_LEN];
-    if (output) {
-        str_copy(name, output, sizeof(name));
-    } else {
-        struct http_url final;
-        http_parse_url(resp.url, &final);
-        char *q = strchr(final.path, '?');
-        if (q)
-            *q = 0;
-        const char *base = path_basename(final.path);
-        str_copy(name, base && *base && strcmp(base, "/") ? base : "index.html", sizeof(name));
-    }
-    if (!strcmp(name, "-")) {
+    if (to_stdout) {
         stream_write(sh->out, resp.body, resp.length);
         http_free(&resp);
         return 0;
     }
-    char path[PATH_MAX_LEN];
-    err = sh_resolve(sh, name, path, sizeof(path));
-    if (!err)
-        err = vfs_write_all(path, resp.body, resp.length);
-    size_t length = resp.length;
     http_free(&resp);
-    if (err)
-        return sh_fs_error(sh, "wget", name, err);
     char size[16];
-    fmt_size(size, sizeof(size), length);
+    fmt_size(size, sizeof(size), ws.bytes);
     sh_printf(sh, "Saved %s (%s)\n", name, size);
     return 0;
 }

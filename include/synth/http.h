@@ -5,7 +5,8 @@
 
 #define HTTP_URL_MAX 1024
 
-enum { HTTP_INSECURE = 1, HTTP_NO_REDIRECT = 2, HTTP_HEAD = 4, HTTP_NO_COOKIES = 8 };
+/* HTTP_GZIP asks for a gzip-compressed transfer and unpacks it (in pieces when a sink takes the body). */
+enum { HTTP_INSECURE = 1, HTTP_NO_REDIRECT = 2, HTTP_HEAD = 4, HTTP_NO_COOKIES = 8, HTTP_GZIP = 16 };
 
 struct http_url {
     bool https;

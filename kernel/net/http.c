@@ -3,6 +3,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/http.h>
+#include <synth/inflate.h>
 #include <synth/net.h>
 #include <synth/string.h>
 #include <synth/tls.h>
@@ -422,6 +423,11 @@ int http_cookie_count(void)
     return n;
 }
 
+static int emit(const struct http_request *req, struct gunzip_stream *z, const void *data, size_t n)
+{
+    return z ? gunzip_stream_push(z, data, n) : req->sink(req->ctx, data, n);
+}
+
 static int fetch_once(const struct http_request *req, const char *url, struct http_response *resp)
 {
     struct http_url u;
@@ -466,8 +472,8 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
     }
     int n = ksnprintf(head, HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX,
                       "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (SynthOS) SynthOS-HTTP/1.0\r\n"
-                      "Accept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
-                      method, u.path, host);
+                      "Accept: */*\r\nAccept-Encoding: %s\r\nConnection: close\r\n",
+                      method, u.path, host, req->flags & HTTP_GZIP ? "gzip" : "identity");
     if (req->body)
         n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX - n), "Content-Length: %u\r\n",
                        (unsigned)req->body_len);
@@ -491,7 +497,8 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         return E_NOMEM;
     }
     size_t header_len = 0, expected = (size_t)-1, streamed = 0;
-    bool chunked = false, have_headers = false, stream = false;
+    bool chunked = false, have_headers = false, stream = false, gz = false;
+    struct gunzip_stream *z = NULL;
     uint64_t last = hal_ticks_ms();
     for (;;) {
         if (req->cancelled && req->cancelled()) {
@@ -519,10 +526,20 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
             if (!have_headers) {
                 have_headers = body_state(buf, got, &header_len, &expected, &chunked);
                 stream = have_headers && req->sink && !chunked && strchr(buf, ' ') && strchr(buf, ' ')[1] == '2';
+                if (have_headers && (req->flags & HTTP_GZIP)) {
+                    char saved = buf[header_len], value[32];
+                    buf[header_len] = 0;
+                    gz = http_header(buf, "Content-Encoding", value, sizeof(value)) && strstr(value, "gzip");
+                    buf[header_len] = saved;
+                }
+                if (stream && gz && !(z = gunzip_stream_new(req->sink, req->ctx))) {
+                    err = E_NOMEM;
+                    break;
+                }
             }
             if (stream && (got - header_len >= (256u << 10) || got - header_len + streamed >= expected)) {
                 size_t n = MIN(got - header_len, expected - streamed);
-                if ((err = req->sink(req->ctx, buf + header_len, n)) != 0)
+                if ((err = emit(req, z, buf + header_len, n)) != 0)
                     break;
                 streamed += n;
                 got = header_len;
@@ -552,9 +569,14 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
     }
     conn_close(&c);
     if (!err && stream && got > header_len) {
-        err = req->sink(req->ctx, buf + header_len, got - header_len);
+        err = emit(req, z, buf + header_len, got - header_len);
         streamed += got - header_len;
         got = header_len;
+    }
+    if (z) {
+        if (!err)
+            err = gunzip_stream_end(z);
+        gunzip_stream_free(z);
     }
     if (!err && !have_headers)
         err = got ? E_INVAL : E_CONNRESET;
@@ -576,8 +598,16 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
     } else if (expected != (size_t)-1) {
         body_len = MIN(body_len, expected);
     }
+    const char *body = buf + header_len;
+    uint8_t *plain = NULL;
+    size_t plain_len;
+    if (gz && !stream && body_len && gunzip_alloc(body, body_len, limit, &plain, &plain_len) == 0) {
+        body = (const char *)plain;
+        body_len = plain_len;
+    }
     resp->body = kmalloc(body_len + 1);
     if (!resp->headers || !resp->body) {
+        kfree(plain);
         kfree(buf);
         http_free(resp);
         return E_NOMEM;
@@ -586,8 +616,9 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
     resp->headers[header_len] = 0;
     if (!(req->flags & HTTP_NO_COOKIES))
         cookies_from(&u, resp->headers);
-    memcpy(resp->body, buf + header_len, body_len);
+    memcpy(resp->body, body, body_len);
     resp->body[body_len] = 0;
+    kfree(plain);
     resp->length = stream ? streamed : body_len;
     kfree(buf);
     return 0;

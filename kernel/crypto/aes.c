@@ -96,12 +96,17 @@ void aes_encrypt(const struct aes *a, const uint8_t in[16], uint8_t out[16])
     put_be32(out + 12, sub_word((s3 & 0xff000000) | (s0 & 0xff0000) | (s1 & 0xff00) | (s2 & 0xff)) ^ rk[3]);
 }
 
-static const uint64_t last4[16] = {0x0000, 0x1c20, 0x3840, 0x2460, 0x7080, 0x6ca0, 0x48c0, 0x54e0,
-                                   0xe100, 0xfd20, 0xd940, 0xc560, 0x9180, 0x8da0, 0xa9c0, 0xb5e0};
+/* GHASH with 8-bit tables in 32-bit words (Shoup): m[b] is H times the byte b, last8[r] folds back the 8 bits
+   that a byte shift drops. One table lookup per byte instead of a bit loop or 64-bit shifts on a 32-bit CPU. */
+static uint32_t last8[256];
 
-static uint64_t be64(const uint8_t *p)
+static void shr1(uint32_t z[4])
 {
-    return (uint64_t)be32(p) << 32 | be32(p + 4);
+    uint32_t carry = z[3] & 1;
+    z[3] = z[3] >> 1 | z[2] << 31;
+    z[2] = z[2] >> 1 | z[1] << 31;
+    z[1] = z[1] >> 1 | z[0] << 31;
+    z[0] = z[0] >> 1 ^ (carry ? 0xe1000000u : 0);
 }
 
 void gcm_init(struct gcm *g, const uint8_t *key, size_t key_len)
@@ -109,51 +114,45 @@ void gcm_init(struct gcm *g, const uint8_t *key, size_t key_len)
     uint8_t h[16] = {0};
     aes_init(&g->aes, key, key_len);
     aes_encrypt(&g->aes, h, h);
-    uint64_t vh = be64(h), vl = be64(h + 8);
-    g->hl[8] = vl;
-    g->hh[8] = vh;
-    g->hl[0] = g->hh[0] = 0;
-    for (int i = 4; i > 0; i >>= 1) {
-        uint32_t t = (uint32_t)(vl & 1) * 0xe1000000u;
-        vl = vh << 63 | vl >> 1;
-        vh = vh >> 1 ^ (uint64_t)t << 32;
-        g->hl[i] = vl;
-        g->hh[i] = vh;
-    }
-    for (int i = 2; i <= 8; i *= 2) {
-        vh = g->hh[i];
-        vl = g->hl[i];
-        for (int j = 1; j < i; j++) {
-            g->hh[i + j] = vh ^ g->hh[j];
-            g->hl[i + j] = vl ^ g->hl[j];
+    if (!last8[1])
+        for (int r = 0; r < 256; r++) {
+            uint32_t z[4] = {0, 0, 0, (uint32_t)r};
+            for (int k = 0; k < 8; k++)
+                shr1(z);
+            last8[r] = z[0];
         }
+    memset(g->m[0], 0, sizeof(g->m[0]));
+    uint32_t v[4] = {be32(h), be32(h + 4), be32(h + 8), be32(h + 12)};
+    for (int b = 128; b; b >>= 1) {
+        memcpy(g->m[b], v, sizeof(v));
+        shr1(v);
     }
+    for (int b = 2; b < 256; b <<= 1)
+        for (int j = 1; j < b; j++)
+            for (int k = 0; k < 4; k++)
+                g->m[b + j][k] = g->m[b][k] ^ g->m[j][k];
 }
 
 static void gmult(const struct gcm *g, uint8_t x[16])
 {
-    int lo = x[15] & 0xf;
-    uint64_t zh = g->hh[lo], zl = g->hl[lo];
-    for (int i = 15; i >= 0; i--) {
-        lo = x[i] & 0xf;
-        int hi = x[i] >> 4;
-        if (i != 15) {
-            int rem = (int)(zl & 0xf);
-            zl = zh << 60 | zl >> 4;
-            zh = zh >> 4 ^ last4[rem] << 48;
-            zh ^= g->hh[lo];
-            zl ^= g->hl[lo];
-        }
-        int rem = (int)(zl & 0xf);
-        zl = zh << 60 | zl >> 4;
-        zh = zh >> 4 ^ last4[rem] << 48;
-        zh ^= g->hh[hi];
-        zl ^= g->hl[hi];
+    const uint32_t *m = g->m[x[15]];
+    uint32_t z0 = m[0], z1 = m[1], z2 = m[2], z3 = m[3];
+    for (int i = 14; i >= 0; i--) {
+        uint32_t rem = z3 & 0xff;
+        z3 = z3 >> 8 | z2 << 24;
+        z2 = z2 >> 8 | z1 << 24;
+        z1 = z1 >> 8 | z0 << 24;
+        z0 = z0 >> 8 ^ last8[rem];
+        m = g->m[x[i]];
+        z0 ^= m[0];
+        z1 ^= m[1];
+        z2 ^= m[2];
+        z3 ^= m[3];
     }
-    put_be32(x, (uint32_t)(zh >> 32));
-    put_be32(x + 4, (uint32_t)zh);
-    put_be32(x + 8, (uint32_t)(zl >> 32));
-    put_be32(x + 12, (uint32_t)zl);
+    put_be32(x, z0);
+    put_be32(x + 4, z1);
+    put_be32(x + 8, z2);
+    put_be32(x + 12, z3);
 }
 
 static void ghash(const struct gcm *g, uint8_t acc[16], const uint8_t *data, size_t n)

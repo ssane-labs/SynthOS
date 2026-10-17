@@ -242,7 +242,7 @@ static int download(struct omaha_ui *ui, const struct update *u, const char *pat
     sha256_init(&s.hash);
     say(ui, url);
     struct http_request req = {.url = url, .cancelled = cancelled, .progress = sink_progress, .ctx = &s,
-                               .flags = HTTP_NO_COOKIES, .sink = to_file};
+                               .flags = HTTP_NO_COOKIES | HTTP_GZIP, .sink = to_file};
     struct http_response resp;
     err = http_fetch(&req, &resp);
     int status = err ? 0 : resp.status;

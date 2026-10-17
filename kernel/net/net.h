@@ -16,6 +16,8 @@ struct dgram {
     uint8_t data[];
 };
 
+struct tcp_segment;
+
 struct sock {
     bool used;
     enum net_type type;
@@ -34,6 +36,10 @@ struct sock {
     size_t tx_cap, tx_len;
     uint8_t *rx;
     size_t rx_cap, rx_head, rx_len;
+    uint64_t rx_total;
+    uint8_t snd_shift, rcv_shift;
+    struct tcp_segment *ahead;
+    int ahead_count;
     bool fin_received, fin_queued, fin_sent;
     uint64_t rto_at, linger_until;
     uint32_t rto;

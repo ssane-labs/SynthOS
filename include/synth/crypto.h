@@ -60,7 +60,7 @@ void aes_encrypt(const struct aes *a, const uint8_t in[16], uint8_t out[16]);
 
 struct gcm {
     struct aes aes;
-    uint64_t hl[16], hh[16];
+    uint32_t m[256][4];
 };
 
 void gcm_init(struct gcm *g, const uint8_t *key, size_t key_len);

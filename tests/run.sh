@@ -422,7 +422,7 @@ if command -v openssl >/dev/null; then
     cp "$work/page.html" "$work/www/page.html"
     if command -v python3 >/dev/null; then
         cat > "$work/cookie.py" <<'PYEOF'
-import http.server, sys
+import gzip, http.server, sys
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -434,6 +434,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/drop":
             self.send_header("Set-Cookie", "theme=; Max-Age=0")
             body = "<p>dropped</p>"
+        elif self.path == "/gz":
+            text = ("packed " * 4000 + "end of gzip\n").encode()
+            data = gzip.compress(text) if "gzip" in self.headers.get("Accept-Encoding", "") else text
+            if data is not text:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         else:
             body = "<p>cookie=[%s]</p>" % self.headers.get("Cookie", "none")
         data = body.encode()
@@ -458,6 +467,8 @@ cookies
 1 cookie stored
 cookies clear; browse -n http://10.0.2.2:$((port + 2))/echo
 cookie=[none]
+wget -O /tmp/gz.txt http://10.0.2.2:$((port + 2))/gz >/dev/null; wc -c /tmp/gz.txt; grep -c "end of gzip" /tmp/gz.txt
+28012
 EOF
     fi
     cat >> "$work/cases" <<EOF

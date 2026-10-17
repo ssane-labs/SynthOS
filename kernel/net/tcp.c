@@ -12,6 +12,9 @@
 #define ACK 0x10
 #define TX_BUFFER (32u * 1024)
 #define RX_BUFFER (64u * 1024)
+#define RX_MAX (1024u * 1024)
+#define WSCALE 5
+#define AHEAD_MAX 64
 #define DEFAULT_MSS 1460
 #define RTO_MIN 400
 #define RTO_MAX 8000
@@ -36,10 +39,19 @@ static struct sock *get(int s)
     return s >= 0 && s < NET_MAX_SOCKETS && net_socks[s].used && net_socks[s].type == NET_TCP ? &net_socks[s] : NULL;
 }
 
-static uint16_t window(struct sock *s)
+/* A segment that arrived before the ones in front of it; it waits here instead of being sent again. */
+struct tcp_segment {
+    struct tcp_segment *next;
+    uint32_t seq;
+    size_t length;
+    bool fin;
+    uint8_t data[];
+};
+
+static uint16_t window(struct sock *s, bool syn)
 {
     size_t free = s->rx_cap - s->rx_len;
-    return (uint16_t)MIN(free, (size_t)65535);
+    return (uint16_t)MIN(syn ? free : free >> s->rcv_shift, (size_t)65535);
 }
 
 static int segment(struct sock *s, uint32_t seq, uint8_t flags, const uint8_t *data, size_t length)
@@ -47,20 +59,26 @@ static int segment(struct sock *s, uint32_t seq, uint8_t flags, const uint8_t *d
     uint8_t *p = kmalloc(24 + length);
     if (!p)
         return E_NOMEM;
-    size_t header = (flags & SYN) ? 24 : 20;
+    size_t header = (flags & SYN) ? (s->rcv_shift ? 28 : 24) : 20;
     wr16(p, s->lport);
     wr16(p + 2, s->rport);
     wr32(p + 4, seq);
     wr32(p + 8, (flags & ACK) ? s->rcv_nxt : 0);
     p[12] = (uint8_t)(header / 4) << 4;
     p[13] = flags;
-    wr16(p + 14, s->rx ? window(s) : 0);
+    wr16(p + 14, s->rx ? window(s, flags & SYN) : 0);
     wr16(p + 16, 0);
     wr16(p + 18, 0);
     if (flags & SYN) {
         p[20] = 2;
         p[21] = 4;
         wr16(p + 22, DEFAULT_MSS);
+        if (s->rcv_shift) {
+            p[24] = 1;
+            p[25] = 3;
+            p[26] = 3;
+            p[27] = s->rcv_shift;
+        }
     }
     if (length)
         memcpy(p + header, data, length);
@@ -107,6 +125,12 @@ static bool buffers(struct sock *s)
 
 static void free_sock(struct sock *s)
 {
+    while (s->ahead) {
+        struct tcp_segment *next = s->ahead->next;
+        kfree(s->ahead);
+        s->ahead = next;
+    }
+    s->ahead_count = 0;
     kfree(s->tx);
     kfree(s->rx);
     s->tx = s->rx = NULL;
@@ -176,6 +200,9 @@ int net_connect_start(int id, uint32_t ip, uint16_t port)
     s->snd_nxt = s->iss + 1;
     s->snd_wnd = DEFAULT_MSS;
     s->mss = DEFAULT_MSS;
+    s->rcv_shift = WSCALE;
+    s->snd_shift = 0;
+    s->rx_total = 0;
     s->rto = 1000;
     s->retries = 0;
     s->error = 0;
@@ -246,12 +273,14 @@ long net_recv(int id, void *buf, size_t n)
         return u ? net_recvfrom(id, buf, n, NULL, NULL) : E_BADF;
     }
     if (s->rx_len) {
-        size_t k = MIN(n, s->rx_len);
-        bool was_full = s->rx_len == s->rx_cap || s->rx_cap - s->rx_len < s->mss;
-        for (size_t i = 0; i < k; i++)
-            ((uint8_t *)buf)[i] = s->rx[(s->rx_head + i) % s->rx_cap];
+        size_t k = MIN(n, s->rx_len), before = s->rx_cap - s->rx_len;
+        size_t first = MIN(k, s->rx_cap - s->rx_head);
+        memcpy(buf, s->rx + s->rx_head, first);
+        memcpy((uint8_t *)buf + first, s->rx, k - first);
         s->rx_head = (s->rx_head + k) % s->rx_cap;
         s->rx_len -= k;
+        size_t after = s->rx_cap - s->rx_len;
+        bool was_full = before < 2u * s->mss || (before < s->rx_cap / 4 && after >= s->rx_cap / 4);
         if (was_full && (s->state == TCP_ESTABLISHED || s->state == TCP_FIN_WAIT_1 || s->state == TCP_FIN_WAIT_2))
             segment(s, s->snd_nxt, ACK, NULL, 0);
         return (long)k;
@@ -319,6 +348,58 @@ static void closed(struct sock *s, int error)
         free_sock(s);
 }
 
+/* Bulk transfers get a bigger receive buffer (up to RX_MAX), so a far server can keep a full window in flight. */
+static void grow_rx(struct sock *s)
+{
+    if (s->rx_cap >= RX_MAX || s->rx_total < 2 * s->rx_cap || !s->rcv_shift)
+        return;
+    size_t cap = s->rx_cap * 2;
+    uint8_t *rx = kmalloc(cap);
+    if (!rx)
+        return;
+    size_t first = MIN(s->rx_len, s->rx_cap - s->rx_head);
+    memcpy(rx, s->rx + s->rx_head, first);
+    memcpy(rx + first, s->rx, s->rx_len - first);
+    kfree(s->rx);
+    s->rx = rx;
+    s->rx_cap = cap;
+    s->rx_head = 0;
+}
+
+static size_t append(struct sock *s, const uint8_t *data, size_t length)
+{
+    grow_rx(s);
+    size_t k = MIN(length, s->rx_cap - s->rx_len);
+    size_t at = (s->rx_head + s->rx_len) % s->rx_cap, first = MIN(k, s->rx_cap - at);
+    memcpy(s->rx + at, data, first);
+    memcpy(s->rx, data + first, k - first);
+    s->rx_len += k;
+    s->rx_total += k;
+    s->rcv_nxt += (uint32_t)k;
+    return k;
+}
+
+static void keep_ahead(struct sock *s, uint32_t seq, const uint8_t *data, size_t length, bool fin)
+{
+    if (!length || s->ahead_count >= AHEAD_MAX || seq - s->rcv_nxt + length > s->rx_cap - s->rx_len)
+        return;
+    struct tcp_segment **pp = &s->ahead;
+    while (*pp && seq_lt((*pp)->seq, seq))
+        pp = &(*pp)->next;
+    if (*pp && (*pp)->seq == seq)
+        return;
+    struct tcp_segment *seg = kmalloc(sizeof(*seg) + length);
+    if (!seg)
+        return;
+    seg->seq = seq;
+    seg->length = length;
+    seg->fin = fin;
+    memcpy(seg->data, data, length);
+    seg->next = *pp;
+    *pp = seg;
+    s->ahead_count++;
+}
+
 static void receive_data(struct sock *s, uint32_t seq, const uint8_t *data, size_t length, bool fin)
 {
     if (seq_lt(seq, s->rcv_nxt)) {
@@ -334,14 +415,23 @@ static void receive_data(struct sock *s, uint32_t seq, const uint8_t *data, size
         seq = s->rcv_nxt;
     }
     if (seq != s->rcv_nxt) {
+        keep_ahead(s, seq, data, length, fin);
         segment(s, s->snd_nxt, ACK, NULL, 0);
         return;
     }
-    size_t room = s->rx_cap - s->rx_len, k = MIN(length, room);
-    for (size_t i = 0; i < k; i++)
-        s->rx[(s->rx_head + s->rx_len + i) % s->rx_cap] = data[i];
-    s->rx_len += k;
-    s->rcv_nxt += (uint32_t)k;
+    size_t k = append(s, data, length);
+    while (k == length && !fin && s->ahead && !seq_lt(s->rcv_nxt, s->ahead->seq)) {
+        struct tcp_segment *seg = s->ahead;
+        s->ahead = seg->next;
+        s->ahead_count--;
+        uint32_t skip = s->rcv_nxt - seg->seq;
+        if (skip < seg->length) {
+            length = seg->length - skip;
+            k = append(s, seg->data + skip, length);
+            fin = seg->fin;
+        }
+        kfree(seg);
+    }
     if (fin && k == length && !s->fin_received) {
         s->fin_received = true;
         s->rcv_nxt++;
@@ -358,7 +448,7 @@ static void receive_data(struct sock *s, uint32_t seq, const uint8_t *data, size
         segment(s, s->snd_nxt, ACK, NULL, 0);
 }
 
-static void process_ack(struct sock *s, uint32_t ack, uint16_t wnd)
+static void process_ack(struct sock *s, uint32_t ack, uint32_t wnd)
 {
     s->snd_wnd = wnd;
     if (!seq_lt(s->snd_una, ack) || seq_lt(s->snd_nxt, ack))
@@ -401,7 +491,7 @@ static struct sock *demux(uint32_t src, uint32_t dst, uint16_t sport, uint16_t d
     return listener;
 }
 
-static void accept_syn(struct sock *l, uint32_t src, uint32_t dst, uint16_t sport, uint32_t seq, uint16_t mss)
+static void accept_syn(struct sock *l, uint32_t src, uint32_t dst, uint16_t sport, uint32_t seq, uint16_t mss, int ws)
 {
     int pending = 0;
     for (int i = 0; i < NET_MAX_SOCKETS; i++)
@@ -428,6 +518,9 @@ static void accept_syn(struct sock *l, uint32_t src, uint32_t dst, uint16_t spor
     c->snd_nxt = c->iss + 1;
     c->snd_wnd = DEFAULT_MSS;
     c->mss = mss;
+    c->snd_shift = ws > 0 ? (uint8_t)ws : 0;
+    c->rcv_shift = ws >= 0 ? WSCALE : 0;
+    c->rx_total = 0;
     c->rto = 1000;
     c->parent = (int)(l - net_socks);
     c->state = TCP_SYN_RECEIVED;
@@ -447,6 +540,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
     if (header < 20 || header > length)
         return;
     uint16_t mss = DEFAULT_MSS;
+    int ws = -1;
     for (size_t i = 20; i + 1 < header;) {
         uint8_t kind = p[i];
         if (kind == 0)
@@ -460,6 +554,8 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
             break;
         if (kind == 2 && len == 4 && i + 4 <= header)
             mss = (uint16_t)MIN(rd16(p + i + 2), DEFAULT_MSS);
+        else if (kind == 3 && len == 3 && i + 3 <= header)
+            ws = MIN(p[i + 2], 14);
         i += len;
     }
     const uint8_t *data = p + header;
@@ -471,7 +567,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
     }
     if (s->state == TCP_LISTEN) {
         if ((flags & SYN) && !(flags & (ACK | RST)))
-            accept_syn(s, src, dst, sport, seq, mss);
+            accept_syn(s, src, dst, sport, seq, mss, ws);
         else if (!(flags & RST))
             reset_reply(src, dst, p, length);
         return;
@@ -487,6 +583,9 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
             s->snd_una = ack;
             s->snd_wnd = wnd;
             s->mss = mss;
+            s->snd_shift = ws > 0 ? (uint8_t)ws : 0;
+            if (ws < 0)
+                s->rcv_shift = 0;
             s->rto_at = 0;
             s->state = TCP_ESTABLISHED;
             segment(s, s->snd_nxt, ACK, NULL, 0);
@@ -509,7 +608,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
             return;
         }
         s->snd_una = ack;
-        s->snd_wnd = wnd;
+        s->snd_wnd = (uint32_t)wnd << s->snd_shift;
         s->rto_at = 0;
         s->state = TCP_ESTABLISHED;
         if (s->parent >= 0) {
@@ -518,7 +617,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
                 l->accept_queue[l->accept_count++] = (int)(s - net_socks);
         }
     }
-    process_ack(s, ack, wnd);
+    process_ack(s, ack, (uint32_t)wnd << s->snd_shift);
     if (!s->used || s->state == TCP_CLOSED)
         return;
     if (n || (flags & FIN))
