@@ -282,7 +282,7 @@ int omaha_install(const char *appid, const char *ap, const char *dest, const cha
     ui->error[0] = 0;
     struct update u = {0};
     int err = ask_server(ui, appid, ap, &u);
-    char work[PATH_MAX_LEN], crx[PATH_MAX_LEN];
+    char work[PATH_MAX_LEN], crx[PATH_MAX_LEN] = "";
     path_join(user_home(), "Downloads", work, sizeof(work));
     vfs_mkdirs(work);
     uint64_t free = 0;
@@ -297,7 +297,9 @@ int omaha_install(const char *appid, const char *ap, const char *dest, const cha
         char line[96];
         ksnprintf(line, sizeof(line), "Version %s", u.version);
         say(ui, line);
-        path_join(work, u.name, crx, sizeof(crx));
+        char file[NAME_MAX_LEN];
+        ksnprintf(file, sizeof(file), "package-%s.crx3", u.version);
+        path_join(work, file, crx, sizeof(crx));
         err = download(ui, &u, crx);
     }
     uint32_t at = 0;
@@ -318,7 +320,7 @@ int omaha_install(const char *appid, const char *ap, const char *dest, const cha
         if (err)
             fail(ui, "Unpacking failed: %s%s", err_str(err), "");
     }
-    if (u.name[0])
+    if (u.name[0] && crx[0])
         vfs_unlink(crx);
     current_ui = NULL;
     return err;

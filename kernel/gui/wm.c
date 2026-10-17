@@ -1200,7 +1200,7 @@ static bool light_enabled(const struct window *w, int i)
 
 static bool has_more(const struct window *w)
 {
-    return framed(w) && (w->menus || w->app) && !(w->flags & WIN_NOTITLE);
+    return framed(w) && (w->menus || w->app);
 }
 
 static struct rect more_rect(const struct window *w)

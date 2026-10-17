@@ -1,5 +1,6 @@
 #include <synth/fmt.h>
 #include <synth/heap.h>
+#include <synth/keys.h>
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -176,18 +177,33 @@ static void log_tab(struct ui *ui, struct monitor *m, struct rect area)
 
 static const char *const tab_names[TAB_COUNT] = {"Performance", "Windows", "Kernel Log"};
 
+static const struct menu_item view_items[] = {
+    {"Performance", KEY_COMMAND(0), NULL},
+    {"Windows", KEY_COMMAND(1), NULL},
+    {"Kernel Log", KEY_COMMAND(2), NULL},
+};
+
+static const struct app_menu menus[] = {{"View", view_items, ARRAY_SIZE(view_items)}};
+
 static void frame(struct ui *ui, void *data)
 {
     struct monitor *m = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
+    if (ui->e && ui->e->type == EV_KEY) {
+        int k = ui->e->key, tab = -1;
+        for (int i = 0; i < TAB_COUNT; i++)
+            if (k == KEY_COMMAND(i))
+                tab = i;
+        if (tab >= 0 && tab != m->tab) {
+            m->tab = tab;
+            char title[48];
+            ksnprintf(title, sizeof(title), tab ? "System Monitor \xc2\xb7 %s" : "System Monitor", tab_names[tab]);
+            wm_set_title(ui->win, title);
+            ui->consumed = true;
+        }
+    }
     ui_panel(ui, (struct rect){0, 0, W, H}, style.content);
-    ui_panel(ui, (struct rect){0, 0, W, TOOLBAR_HEIGHT}, style.window);
-    ui_separator(ui, 0, TOOLBAR_HEIGHT - 1, W);
-    ui_label(ui, (struct rect){84, 8, 200, 20}, "System Monitor", &font_bold, style.text, ALIGN_LEFT);
-    ui_label(ui, (struct rect){84, 26, 200, 16}, tab_names[m->tab], &font_small, style.secondary, ALIGN_LEFT);
-    int sw = MIN(330, W - 300);
-    ui_segmented(ui, (struct rect){W - sw - 14, 12, sw, 28}, tab_names, TAB_COUNT, &m->tab);
-    struct rect area = {0, TOOLBAR_HEIGHT, W, H - TOOLBAR_HEIGHT};
+    struct rect area = {0, 0, W, H};
     if (m->tab == 0)
         performance(ui, m, area);
     else if (m->tab == 1)
@@ -226,13 +242,13 @@ static void launch(const char *arg)
     sample(m);
     if (arg && !strcmp(arg, "windows"))
         m->tab = 1;
-    struct window *w = wm_open("System Monitor", ICON_MONITOR, 600, 540, &ops, m,
-                               WIN_RESIZABLE | WIN_FULLSIZE | WIN_NOTITLE);
+    struct window *w = wm_open(m->tab ? "System Monitor \xc2\xb7 Windows" : "System Monitor", ICON_MONITOR, 600, 500,
+                               &ops, m, WIN_RESIZABLE);
     if (!w) {
         kfree(m);
         return;
     }
-    w->toolbar_h = TOOLBAR_HEIGHT;
+    wm_set_menus(w, menus, ARRAY_SIZE(menus));
     wm_set_timer(w, 1000);
 }
 

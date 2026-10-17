@@ -11,20 +11,17 @@ The network card gets an address by DHCP when SynthOS starts
   netstat                  open connections
 
 Web
-  launch browser [url]     the desktop Browser
+  launch chrome [url]      Google Chrome (downloads itself the first time)
   browse URL|file.html     show a page as text, links numbered at the end
   wget -O file URL         download a file;  wget -O - URL  prints it
   httpd [port] [dir]       serve a folder over HTTP until Ctrl+C
 
-Browser
-  Type an address, or a few words to search with DuckDuckGo, and press Enter.
-  Click links, or press Tab to move between links and fields and Enter to
-  open one. Clicking a text field asks for its value; the form is sent when
-  all its fields are filled. Backspace or Alt+Left goes back, Ctrl+L focuses
-  the address bar, Ctrl+R reloads, Ctrl+S saves the page. Files that are not
-  pages are saved to ~/Downloads. file:///path shows local files and folders.
-  Pages are shown as text and links: scripts, style sheets and pictures are
-  not loaded.
+Chrome
+  The Chrome icon in the Dock starts Google Chrome. The first time it asks
+  Google's update server for the current version, downloads the offline
+  package (about 420 MB; it needs some 900 MB free in /home) and unpacks
+  Chrome into /home/apps/chrome, with a shortcut on the desktop. The same
+  from the shell: pkg install chrome. browse shows pages as text.
 
 Security
   HTTPS uses TLS 1.3 or TLS 1.2 and checks the server certificate against

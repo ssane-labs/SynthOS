@@ -7,7 +7,7 @@
 #include "../internal.h"
 
 #define CELL 26
-#define HEADER 96
+#define HEADER 62
 #define MIN_W 360
 #define PAD 10
 #define MAX_W 30
@@ -306,13 +306,15 @@ static void frame(struct ui *ui, void *data)
     ui_panel(ui, (struct rect){0, 0, W, H}, style.content);
     ui_panel(ui, (struct rect){0, 0, W, HEADER - 8}, style.window);
     ui_separator(ui, 0, HEADER - 9, W);
-    static const char *const names[] = {"Beginner", "Intermediate", "Expert"};
-    int level = m->level;
-    if (ui_segmented(ui, (struct rect){PAD, 54, W - 2 * PAD, 26}, names, 3, &level)) {
-        m->level = level;
+    if (ui->e && ui->e->type == EV_KEY && ui->e->key >= KEY_COMMAND(0) && ui->e->key <= KEY_COMMAND(3)) {
+        int cmd = ui->e->key - KEY_COMMAND(0);
+        ui->consumed = true;
+        if (cmd)
+            m->level = cmd - 1;
         reset(m);
         wm_set_timer(w, 0);
-        fit(w, m);
+        if (cmd)
+            fit(w, m);
         return;
     }
     struct rect smiley = {(W - 40) / 2, 8, 40, 38};
@@ -323,8 +325,8 @@ static void frame(struct ui *ui, void *data)
     uint64_t now = m->state == G_PLAYING ? hal_ticks_ms() : m->finished;
     int secs = m->state == G_READY ? 0 : (int)((now - m->started) / 1000);
     if (ui->c) {
-        counter(ui->c, (struct rect){84, 10, 60, 34}, m->count - m->flags);
-        counter(ui->c, (struct rect){W - PAD - 60, 10, 60, 34}, secs);
+        counter(ui->c, (struct rect){72, 10, 60, 34}, m->count - m->flags);
+        counter(ui->c, (struct rect){W - PAD - 96, 10, 60, 34}, secs);
         face(ui->c, smiley, m->state, m->press_x >= 0);
     }
     struct rect board = board_rect(w, m);
@@ -395,6 +397,13 @@ static void destroy(struct window *w)
 
 static const struct window_ops ops = {paint, event, NULL, destroy};
 
+static const struct menu_item game_items[] = {
+    {"New Game", KEY_COMMAND(0), NULL}, {"", 0, NULL},
+    {"Beginner", KEY_COMMAND(1), NULL}, {"Intermediate", KEY_COMMAND(2), NULL}, {"Expert", KEY_COMMAND(3), NULL},
+};
+
+static const struct app_menu menus[] = {{"Game", game_items, ARRAY_SIZE(game_items)}};
+
 static void launch(const char *arg)
 {
     UNUSED(arg);
@@ -405,10 +414,12 @@ static void launch(const char *arg)
     reset(m);
     struct window *w = wm_open("Minesweeper", ICON_MINES, MAX(m->w * CELL + 2 * PAD, MIN_W), HEADER + m->h * CELL + PAD * 2,
                                &ops, m, WIN_FULLSIZE | WIN_NOTITLE);
-    if (w)
+    if (w) {
         w->toolbar_h = 54;
-    else
+        wm_set_menus(w, menus, ARRAY_SIZE(menus));
+    } else {
         kfree(m);
+    }
 }
 
 static const struct gui_app mines_app = {"Minesweeper", "Clear the field without hitting a mine", ICON_MINES, launch,

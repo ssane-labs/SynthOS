@@ -9,9 +9,7 @@
 #include "../image.h"
 #include "../internal.h"
 
-#define TOOLBAR_H TOOLBAR_HEIGHT
 #define TOOLBOX_W 0
-#define PALETTE_H 48
 #define STATUS_H 0
 #define BAR 12
 #define MARGIN 8
@@ -31,8 +29,6 @@ enum tool {
     T_COUNT,
 };
 
-static const char *const tool_names[T_COUNT] = {"Pencil", "Brush", "Eraser", "Line",
-                                                "Rectangle", "Ellipse", "Fill", "Color picker"};
 
 static const uint32_t colors[] = {
     RGB(0, 0, 0),       RGB(64, 64, 64),    RGB(128, 128, 128), RGB(136, 0, 21),   RGB(237, 28, 36),
@@ -59,6 +55,9 @@ struct paint {
     int cx, cy;
     char path[PATH_MAX_LEN];
     bool modified;
+    struct spring open;
+    bool pill_hot;
+    uint64_t tick;
 };
 
 static int isqrt(int v)
@@ -227,7 +226,10 @@ static void update_title(struct window *w, struct paint *p)
     char title[64];
     const char *name = p->path[0] ? path_basename(p->path) : "Untitled";
     str_copy(title, name, sizeof(title));
-    wm_set_title(w, title);
+    if (p->modified)
+        str_append(title, " \xe2\x80\x94 Edited", sizeof(title));
+    if (strcmp(w->title, title))
+        wm_set_title(w, title);
 }
 
 static void new_image(struct paint *p, int w, int h)
@@ -445,61 +447,71 @@ static void select_tool(struct paint *p, int tool)
     p->tool = tool;
 }
 
-static void toolbar(struct ui *ui, struct paint *p, int W)
+/* All the tools live in one small pill at the bottom: the current tool and color, and under the pointer it springs
+   open into tools, size, fill and colors. */
+#define PILL_W0 108
+#define PILL_H0 44
+#define PILL_W1 600
+#define PILL_H1 136
+
+static struct rect pill_rect(struct paint *p, int W, int H)
 {
-    ui_panel(ui, (struct rect){0, 0, W, TOOLBAR_H}, style.window);
-    ui_separator(ui, 0, TOOLBAR_H - 1, W);
-    char title[64];
-    str_copy(title, p->path[0] ? path_basename(p->path) : "Untitled", sizeof(title));
-    if (p->modified)
-        str_append(title, " — Edited", sizeof(title));
-    ui_label(ui, (struct rect){84, 8, 200, 20}, title, &font_bold, style.text, ALIGN_LEFT);
-    char sub[32];
-    ksnprintf(sub, sizeof(sub), "%d × %d", p->img.w, p->img.h);
-    ui_label(ui, (struct rect){84, 26, 200, 16}, sub, &font_small, style.secondary, ALIGN_LEFT);
-    int group_w = T_COUNT * 32 + 8, x = MAX(250, (W - group_w) / 2 - 40);
-    if (ui->c)
-        gfx_round(ui->c, (struct rect){x, 10, group_w, 32}, 16, style.dark ? ALPHA(0xffffffffu, 20) : ALPHA(0, 12));
-    for (int i = 0; i < T_COUNT; i++)
-        if (ui_symbol_button(ui, (struct rect){x + 4 + i * 32, 12, 30, 28}, tool_symbols[i], p->tool == i))
-            select_tool(p, i);
-    x += group_w + 16;
-    ui_slider(ui, (struct rect){x, 16, 90, 20}, &p->size, 1, 32);
-    x += 104;
-    ui_label(ui, (struct rect){x, 0, 40, TOOLBAR_H}, "Fill", &font_sans, style.text, ALIGN_LEFT);
-    ui_switch(ui, (struct rect){x + 30, 16, 32, 20}, &p->filled);
-    if (ui_symbol_button(ui, (struct rect){W - 44, 12, 30, 28}, SYM_UNDO, false))
-        undo(p);
+    int o = CLAMP(p->open.pos, -100, 1100);
+    int w = MIN(lerp_i(PILL_W0, PILL_W1, o), W - 24), h = lerp_i(PILL_H0, PILL_H1, o);
+    return (struct rect){(W - w) / 2, H - h - 14, w, h};
 }
 
-static void wells(struct ui *ui, struct paint *p, int y)
+static void pill(struct ui *ui, struct paint *p, int W, int H)
 {
-    int x = 14;
+    struct rect r = pill_rect(p, W, H);
+    int o = CLAMP(p->open.pos, 0, 1024);
     if (ui->c) {
-        struct rect back = {x + 14, y + 14, 24, 24}, front = {x, y + 6, 24, 24};
-        gfx_round(ui->c, back, 6, p->bg);
-        gfx_round_frame(ui->c, back, 6, style.separator);
-        gfx_drop_shadow(ui->c, front, 6, 4, 60, 1);
-        gfx_round(ui->c, front, 6, p->fg);
-        gfx_round_frame(ui->c, front, 6, ALPHA(0, 60));
+        gfx_drop_shadow(ui->c, r, 22, 8, style.dark ? 90 : 40, 2);
+        gfx_round(ui->c, r, 22, ALPHA(style.window, 240));
+        gfx_round_frame(ui->c, r, 22, style.dark ? ALPHA(0xffffffffu, 30) : ALPHA(0, 22));
     }
-    if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, (struct rect){x, y, 40, 40})) {
+    int fade = CLAMP((o - 640) * 255 / 384, 0, 255);
+    if (fade < 255 && ui->c) {
+        int a = 255 - fade;
+        gfx_symbol(ui->c, r.x + 18, r.y + (r.h - 18) / 2, tool_symbols[p->tool], 18, ALPHA(style.text, a));
+        gfx_circle(ui->c, r.x + 62, r.y + r.h / 2, 11, ALPHA(p->fg, a));
+        gfx_ring(ui->c, r.x + 62, r.y + r.h / 2, 11, ALPHA(0, a / 4));
+        gfx_circle(ui->c, r.x + 88, r.y + r.h / 2, MAX(2, MIN(p->size, 22) / 2), ALPHA(style.secondary, a));
+    }
+    if (fade < 160)
+        return;
+    struct canvas clip = ui->c ? *ui->c : (struct canvas){0};
+    if (ui->c)
+        clip.clip = rect_intersect(ui->c->clip, rect_inset(r, 2));
+    int x = r.x + 14, y = r.y + 10;
+    for (int i = 0; i < T_COUNT; i++)
+        if (ui_symbol_button(ui, (struct rect){x + i * 34, y, 30, 28}, tool_symbols[i], p->tool == i))
+            select_tool(p, i);
+    if (ui_symbol_button(ui, (struct rect){r.x + r.w - 44, y, 30, 28}, SYM_UNDO, false))
+        undo(p);
+    y += 40;
+    ui_label(ui, (struct rect){x, y, 40, 20}, "Size", &font_sans, style.secondary, ALIGN_LEFT);
+    ui_slider(ui, (struct rect){x + 40, y, 140, 20}, &p->size, 1, 32);
+    ui_label(ui, (struct rect){x + 200, y, 40, 20}, "Fill", &font_sans, style.secondary, ALIGN_LEFT);
+    ui_switch(ui, (struct rect){x + 236, y, 32, 20}, &p->filled);
+    struct rect front = {r.x + r.w - 70, y - 2, 22, 22}, back = {r.x + r.w - 56, y + 6, 22, 22};
+    if (ui->c) {
+        gfx_round(&clip, back, 6, p->bg);
+        gfx_round_frame(&clip, back, 6, style.separator);
+        gfx_round(&clip, front, 6, p->fg);
+        gfx_round_frame(&clip, front, 6, ALPHA(0, 60));
+    }
+    if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, (struct rect){front.x, front.y, 40, 32})) {
         uint32_t t = p->fg;
         p->fg = p->bg;
         p->bg = t;
         ui->consumed = true;
     }
-}
-
-static void palette(struct ui *ui, struct paint *p, int y, int W)
-{
-    ui_panel(ui, (struct rect){0, y, W, PALETTE_H}, style.window);
-    ui_separator(ui, 0, y, W);
-    wells(ui, p, y);
-    int per_row = (int)ARRAY_SIZE(colors) / 2;
-    for (int i = 0; i < (int)ARRAY_SIZE(colors); i++) {
-        struct rect r = {64 + (i % per_row) * 22, y + 4 + (i / per_row) * 20, 18, 18};
-        if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, r)) {
+    y += 36;
+    int n = (int)ARRAY_SIZE(colors), per = MAX(1, (r.w - 28) / 21);
+    for (int i = 0; i < n && i < per; i++) {
+        struct rect c = {x + i * 21, y, 18, 18};
+        if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, c)) {
             if (ui->e->button == BUTTON_RIGHT)
                 p->bg = colors[i];
             else
@@ -507,16 +519,10 @@ static void palette(struct ui *ui, struct paint *p, int y, int W)
             ui->consumed = true;
         }
         if (ui->c) {
-            gfx_circle(ui->c, r.x + 9, r.y + 9, 8, colors[i]);
-            gfx_ring(ui->c, r.x + 9, r.y + 9, 8, ALPHA(0, 50));
+            gfx_circle(&clip, c.x + 9, c.y + 9, 8, colors[i]);
+            gfx_ring(&clip, c.x + 9, c.y + 9, 8, colors[i] == p->fg ? style.accent : ALPHA(0, 50));
         }
     }
-    char pos[32];
-    if (p->cx >= 0)
-        ksnprintf(pos, sizeof(pos), "%s   ·   %d, %d", tool_names[p->tool], p->cx, p->cy);
-    else
-        str_copy(pos, tool_names[p->tool], sizeof(pos));
-    ui_label(ui, (struct rect){W - 220, y, 206, PALETTE_H}, pos, &font_small, style.secondary, ALIGN_RIGHT);
 }
 
 static void keys(struct ui *ui, struct paint *p)
@@ -553,27 +559,47 @@ static void frame(struct ui *ui, void *data)
 {
     struct paint *p = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
-    int bottom = H - PALETTE_H;
-    struct rect view = {0, TOOLBAR_H, W - BAR, bottom - TOOLBAR_H - BAR};
+    struct rect view = {0, 0, W - BAR, H - BAR};
     int content_w = p->img.w + 2 * MARGIN, content_h = p->img.h + 2 * MARGIN;
     p->view_x = CLAMP(p->view_x, 0, MAX(0, content_w - view.w));
-    p->view_y = CLAMP(p->view_y, 0, MAX(0, content_h - view.h));
+    p->view_y = CLAMP(p->view_y, 0, MAX(0, content_h - view.h - PILL_H0 - 20));
     int ox = view.x + MAX(MARGIN, (view.w - p->img.w) / 2) - p->view_x;
-    int oy = view.y + MAX(MARGIN, (view.h - p->img.h) / 2) - p->view_y;
-    canvas_input(ui, p, view, ox, oy);
+    int oy = view.y + MAX(MARGIN, (view.h - PILL_H0 - 20 - p->img.h) / 2) - p->view_y;
+    struct gui_event *e = ui->e;
+    if (e && (e->type == EV_MOUSE_MOVE || e->type == EV_LEAVE)) {
+        bool hot = e->type == EV_MOUSE_MOVE && !p->drawing && rect_contains(rect_inset(pill_rect(p, W, H), -16), e->x, e->y);
+        if (hot != p->pill_hot) {
+            p->pill_hot = hot;
+            p->open.target = hot ? 1024 : 0;
+            p->tick = hal_ticks_ms();
+            wm_set_timer(ui->win, 16);
+        }
+    }
+    if (e && e->type == EV_TIMER) {
+        uint64_t now = hal_ticks_ms();
+        if (spring_step(&p->open, 380, 26, (int)MIN(now - p->tick, 64u)))
+            ui->changed = true;
+        else
+            wm_set_timer(ui->win, 0);
+        p->tick = now;
+    }
+    bool in_pill = e && rect_contains(pill_rect(p, W, H), e->x, e->y);
+    if (!in_pill || p->drawing)
+        canvas_input(ui, p, view, ox, oy);
     if (ui->c) {
         struct canvas vc = *ui->c;
-        vc.clip = rect_intersect(ui->c->clip, (struct rect){0, view.y, W, view.h + BAR});
+        vc.clip = rect_intersect(ui->c->clip, (struct rect){0, 0, W, H});
         gfx_clear(&vc, vc.clip, style.dark ? RGB(30, 30, 32) : RGB(222, 222, 226));
         vc.clip = rect_intersect(ui->c->clip, view);
-        gfx_drop_shadow(&vc, (struct rect){ox, oy, p->img.w, p->img.h}, 0, 10, 70, 3);
+        gfx_drop_shadow(&vc, (struct rect){ox, oy, p->img.w, p->img.h}, 0, 6, 50, 2);
         gfx_blit(&vc, ox, oy, &p->img, (struct rect){0, 0, p->img.w, p->img.h});
     }
-    ui_scrollbar(ui, (struct rect){view.x + view.w, view.y, BAR, view.h}, &p->view_y, content_h, view.h);
+    ui_scrollbar(ui, (struct rect){view.x + view.w, view.y, BAR, view.h}, &p->view_y, content_h + PILL_H0 + 20, view.h);
     hscroll(ui, (struct rect){view.x, view.y + view.h, view.w, BAR}, &p->view_x, content_w, view.w);
-    toolbar(ui, p, W);
-    palette(ui, p, bottom, W);
+    pill(ui, p, W, H);
     keys(ui, p);
+    if (ui->e)
+        update_title(ui->win, p);
 }
 
 static void paint(struct window *w, struct canvas *c)
@@ -632,15 +658,14 @@ static void launch(const char *arg)
     p->cx = p->cy = -1;
     int sw, sh;
     wm_screen_size(&sw, &sh);
-    int cw = MIN(MAX(820, IMG_W + 2 * MARGIN + BAR), sw - 40);
-    int ch = MIN(TOOLBAR_H + IMG_H + 2 * MARGIN + BAR + PALETTE_H, wm_work_area(0).h - 16);
-    struct window *w = wm_open("Paint", ICON_PAINT, cw, ch, &ops, p, WIN_RESIZABLE | WIN_FULLSIZE | WIN_NOTITLE);
+    int cw = MIN(MAX(700, IMG_W + 2 * MARGIN + BAR), sw - 40);
+    int ch = MIN(TITLE_HEIGHT + IMG_H + 2 * MARGIN + BAR + PILL_H0 + 20, wm_work_area(0).h - 16);
+    struct window *w = wm_open("Untitled", ICON_PAINT, cw, ch, &ops, p, WIN_RESIZABLE);
     if (!w) {
         canvas_free(&p->img);
         kfree(p);
         return;
     }
-    w->toolbar_h = TOOLBAR_H;
     wm_set_menus(w, menus, ARRAY_SIZE(menus));
     w->min_w = 640;
     w->min_h = 360;

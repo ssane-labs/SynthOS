@@ -207,7 +207,7 @@ static void paint(struct window *w, struct canvas *c)
         const char *msg = ph->error[0] ? ph->error : "No pictures here";
         gfx_symbol(c, W / 2 - 16, H / 2 - 40, SYM_PHOTO, 32, ALPHA(0xffffffffu, 120));
         gfx_text_box(c, (struct rect){0, H / 2, W, 22}, &font_bold, msg, ALPHA(0xffffffffu, 200), ALIGN_CENTER);
-        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Open a PNG, JPEG, GIF or BMP file from the ⋯ menu",
+        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Open a PNG, JPEG, GIF or BMP file from the menu at the top right",
                      ALPHA(0xffffffffu, 120), ALIGN_CENTER);
         return;
     }

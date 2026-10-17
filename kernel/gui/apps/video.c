@@ -258,7 +258,7 @@ static void paint(struct window *w, struct canvas *c)
         gfx_symbol(c, W / 2 - 16, H / 2 - 40, SYM_VIDEO, 32, ALPHA(0xffffffffu, 120));
         gfx_text_box(c, (struct rect){0, H / 2, W, 22}, &font_bold, v->error[0] ? v->error : "No video open",
                      ALPHA(0xffffffffu, 200), ALIGN_CENTER);
-        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Open an AVI file (Motion JPEG) from the ⋯ menu",
+        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Open an AVI file (Motion JPEG) from the menu at the top right",
                      ALPHA(0xffffffffu, 120), ALIGN_CENTER);
         return;
     }

@@ -339,6 +339,8 @@ static void omaha_progress(void *ctx, const char *stage, uint64_t done, uint64_t
 {
     static uint64_t last;
     static const char *last_stage;
+    if (!total)
+        return;
     if (stage != last_stage) {
         last = 0;
         last_stage = stage;
