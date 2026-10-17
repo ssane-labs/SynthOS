@@ -41,7 +41,6 @@ struct gui_look {
     uint32_t tint, accent;
     enum dock_kind dock;
     enum status_kind status;
-    bool places;
     unsigned widgets;
 };
 
@@ -54,7 +53,8 @@ int menubar_height(void);
 void gui_look_changed(void);
 
 struct spring {
-    int pos, vel, target, rem;
+    int pos, vel, target;
+    int64_t x, v;
 };
 
 void spring_set(struct spring *s, int value);
@@ -157,9 +157,9 @@ void wm_reflow(void);
 void wm_crossfade(void);
 void wm_window_menu(struct window *w, int x, int y);
 int shell_left_reserved(void);
+struct rect dock_obstacle(void);
 int dock_rail_reserved(void);
 
-#define PLACES_W 190
 #define PANEL_RADIUS 44
 
 void panel_paint(struct canvas *c, int screen);

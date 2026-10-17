@@ -20,7 +20,7 @@ enum page {
 struct installer {
     struct ui_state st;
     enum page page;
-    struct spring slide, bar, glow;
+    struct spring slide, bar;
     uint64_t tick;
     struct blockdev *disks[8];
     int disk_count, chosen;
@@ -76,9 +76,7 @@ static void welcome(struct ui *ui, struct installer *in)
 {
     struct rect r = content(ui, in);
     if (ui->c) {
-        int g = 60 + CLAMP(in->glow.pos, 0, 1024) * 90 / 1024;
         struct rect logo = {r.x + (r.w - 96) / 2, r.y + 20, 96, 96};
-        gfx_glow(ui->c, logo, 30, 34, g, style.accent);
         gfx_icon(ui->c, logo.x, logo.y, ICON_LOGO, 96);
     }
     ui_label(ui, (struct rect){r.x, r.y + 134, r.w, 34}, "SynthOS " SYNTH_VERSION, &font_large, style.text, ALIGN_CENTER);
@@ -162,9 +160,7 @@ static void install_page(struct ui *ui, struct installer *in)
 {
     struct rect r = content(ui, in);
     if (ui->c) {
-        int g = 40 + CLAMP(in->glow.pos, 0, 1024) * 80 / 1024;
         struct rect logo = {r.x + (r.w - 72) / 2, r.y + 30, 72, 72};
-        gfx_glow(ui->c, logo, 24, 26, g, style.accent);
         gfx_icon(ui->c, logo.x, logo.y, ICON_LOGO, 72);
     }
     ui_label(ui, (struct rect){r.x, r.y + 120, r.w, 26}, "Installing SynthOS", &font_title, style.text, ALIGN_CENTER);
@@ -174,11 +170,6 @@ static void install_page(struct ui *ui, struct installer *in)
         gfx_round(ui->c, bar, 4, ALPHA(style.text, 30));
         int fill = bar.w * CLAMP(in->bar.pos, 0, 1024) / 1024;
         gfx_round(ui->c, (struct rect){bar.x, bar.y, fill, bar.h}, 4, style.accent);
-        int shine = (int)(hal_ticks_ms() / 4 % (uint64_t)MAX(fill + 60, 1)) - 30;
-        struct canvas clip = *ui->c;
-        clip.clip = rect_intersect(ui->c->clip, (struct rect){bar.x, bar.y, fill, bar.h});
-        gfx_glow(&clip, (struct rect){bar.x + shine, bar.y, 20, bar.h}, 4, 18, 160, RGB(255, 255, 255));
-        gfx_glow(ui->c, (struct rect){bar.x + fill - 4, bar.y, 8, bar.h}, 4, 10, 120, style.accent);
     }
     char pct[8];
     ksnprintf(pct, sizeof(pct), "%d%%", in->job.percent);
@@ -190,7 +181,6 @@ static void done_page(struct ui *ui, struct installer *in, bool ok)
     struct rect r = content(ui, in);
     if (ui->c) {
         int cx = r.x + r.w / 2, cy = r.y + 70;
-        gfx_glow(ui->c, (struct rect){cx - 34, cy - 34, 68, 68}, 34, 24, 90, ok ? style.ok : style.error);
         gfx_circle(ui->c, cx, cy, 34, ok ? style.ok : style.error);
         gfx_symbol(ui->c, cx - 16, cy - 16, ok ? SYM_CHECK : SYM_CLOSE, 32, RGB(255, 255, 255));
     }
@@ -247,8 +237,6 @@ static void event(struct window *w, struct gui_event *e)
         int dt = (int)MIN(now - in->tick, 64u);
         in->tick = now;
         bool busy = spring_step(&in->slide, 300, 30, dt);
-        in->glow.target = now / 1400 % 2 ? 1024 : 0;
-        busy |= spring_step(&in->glow, 30, 8, dt);
         if (in->page == PAGE_INSTALL) {
             uint64_t until = now + 40;
             int r = 1;

@@ -564,9 +564,7 @@ static void paint_visualizer(struct canvas *c, struct rect r)
         int v = CLAMP(bars[i].pos, 0, 1100);
         int h = 4 + height * v / 1100;
         struct rect b = {r.x + 18 + i * (bw + gap), base - h, bw, h};
-        uint32_t top = color_mix(style.accent, RGB(255, 255, 255), 60), bottom = style.accent;
-        gfx_round_gradient(c, b, MIN(bw / 2, 5), top, bottom);
-        gfx_glow(c, b, 4, 8, 40 * v / 1100, style.accent);
+        gfx_round(c, b, MIN(bw / 2, 5), ALPHA(ink(), 150 + 80 * v / 1100));
     }
 }
 
@@ -596,7 +594,7 @@ void widgets_paint(struct canvas *c, struct rect area)
         int k = CLAMP(edit_pop.pos, 0, 1200);
         if (k > 16 && !w->leaving) {
             int rad = w->card ? MIN(PANEL_RADIUS, w->r.h / 3) : 18;
-            gfx_round_frame(&clip, rect_inset(w->r, -2), rad + 2, ALPHA(style.accent, MIN(k, 1024) * 170 / 1024));
+            gfx_round_frame(&clip, rect_inset(w->r, -2), rad + 2, ALPHA(ink(), MIN(k, 1024) * 70 / 1024));
             int br = 12 * k / 1024, cx = w->r.x + 12, cy = w->r.y + 12;
             gfx_circle(&clip, cx, cy, br, style.dark ? RGB(70, 68, 80) : RGB(60, 58, 64));
             gfx_fill(&clip, (struct rect){cx - br / 2, cy - 1, br, 2}, RGB(255, 255, 255));

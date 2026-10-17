@@ -694,6 +694,83 @@ void gfx_scale_fast(struct canvas *c, struct rect dst, const struct canvas *src,
     }
 }
 
+static inline uint32_t mix_px(uint32_t a, uint32_t b, unsigned f)
+{
+    uint32_t rb = ((a & 0xff00ffu) * (256 - f) + (b & 0xff00ffu) * f) >> 8 & 0xff00ffu;
+    uint32_t ag = ((a >> 8 & 0xff00ffu) * (256 - f) + (b >> 8 & 0xff00ffu) * f) & 0xff00ff00u;
+    return rb | ag;
+}
+
+#define SMOOTH_MAX 4096
+
+/* Bilinear scaling for animations: the picture moves without the shimmer of dropped rows and columns. */
+void gfx_scale_smooth(struct canvas *c, struct rect dst, const struct canvas *src, int alpha)
+{
+    static uint16_t col_i[SMOOTH_MAX];
+    static uint8_t col_f[SMOOTH_MAX];
+    if (dst.w <= 0 || dst.h <= 0 || alpha <= 0)
+        return;
+    if (dst.w > SMOOTH_MAX || src->w > SMOOTH_MAX || src->w < 2 || src->h < 2 ||
+        (dst.w == src->w && dst.h == src->h)) {
+        gfx_scale_fast(c, dst, src, alpha);
+        return;
+    }
+    struct rect area = rect_intersect(dst, c->clip);
+    if (rect_empty(area))
+        return;
+    int32_t sx = (int32_t)(((int64_t)src->w << 16) / dst.w), sy = (int32_t)(((int64_t)src->h << 16) / dst.h);
+    int32_t xmax = (src->w - 1) << 16, ymax = (src->h - 1) << 16;
+    for (int x = area.x; x < area.x + area.w; x++) {
+        int32_t fx = CLAMP((x - dst.x) * sx + sx / 2 - 32768, 0, xmax);
+        col_i[x - area.x] = (uint16_t)(fx >> 16);
+        col_f[x - area.x] = (uint8_t)(fx >> 8);
+    }
+    for (int y = area.y; y < area.y + area.h; y++) {
+        int32_t fy = CLAMP((y - dst.y) * sy + sy / 2 - 32768, 0, ymax);
+        int r = fy >> 16;
+        unsigned wy = (unsigned)(fy >> 8 & 0xff);
+        const uint32_t *r0 = src->px + r * src->stride, *r1 = r0 + (r + 1 < src->h ? src->stride : 0);
+        uint32_t *d = c->px + y * c->stride;
+        for (int i = 0; i < area.w; i++) {
+            int k = col_i[i], k1 = MIN(k + 1, src->w - 1);
+            unsigned wx = col_f[i];
+            uint32_t p = mix_px(mix_px(r0[k], r0[k1], wx), mix_px(r1[k], r1[k1], wx), wy);
+            unsigned a = (p >> 24) * (unsigned)alpha / 255;
+            if (a >= 254)
+                d[area.x + i] = p | 0xff000000u;
+            else if (a)
+                d[area.x + i] = over(d[area.x + i], p, a);
+        }
+    }
+}
+
+/* Gives fully clear pixels the color of a neighbour, so smooth scaling does not pull dark seams in at the edges. */
+void gfx_bleed(struct canvas *c)
+{
+    for (int y = 0; y < c->h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        for (int x = 0; x < c->w; x++) {
+            if (row[x] >> 24)
+                continue;
+            if (x > 0 && row[x - 1] >> 24)
+                row[x] = row[x - 1] & 0xffffffu;
+            else if (x + 1 < c->w && row[x + 1] >> 24)
+                row[x] = row[x + 1] & 0xffffffu;
+        }
+    }
+    for (int y = 0; y < c->h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        for (int x = 0; x < c->w; x++) {
+            if (row[x])
+                continue;
+            if (y > 0 && row[x - c->stride] >> 24)
+                row[x] = row[x - c->stride] & 0xffffffu;
+            else if (y + 1 < c->h && row[x + c->stride] >> 24)
+                row[x] = row[x + c->stride] & 0xffffffu;
+        }
+    }
+}
+
 void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int h)
 {
     struct rect dst = rect_intersect((struct rect){x, y, w, h}, c->clip);

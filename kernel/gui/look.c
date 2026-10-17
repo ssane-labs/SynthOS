@@ -11,19 +11,19 @@
 #include "internal.h"
 
 static const struct gui_look defaults[] = {
-    {"dune", "Dune", "Warm desert glass, places on the left, launcher in the corner", false, RGB(214, 150, 96),
-     RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, true, 1u << WIDGET_CLOCK | 1u << WIDGET_WEATHER | 1u << WIDGET_MUSIC},
+    {"dune", "Dune", "Warm desert glass, launcher in the corner", false, RGB(214, 150, 96),
+     RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, 1u << WIDGET_CLOCK | 1u << WIDGET_WEATHER | 1u << WIDGET_MUSIC},
     {"mist", "Mist", "Quiet morning fog, menu bar and a floating dock", false, RGB(120, 140, 170), RGB(78, 112, 214),
-     DOCK_CENTER, STATUS_MENUBAR, false, 1u << WIDGET_CALENDAR | 1u << WIDGET_TASKS},
+     DOCK_CENTER, STATUS_MENUBAR, 1u << WIDGET_CALENDAR | 1u << WIDGET_TASKS},
     {"night", "Night", "Deep dark sky, an app rail and music on the desktop", true, RGB(110, 92, 200),
-     RGB(150, 128, 255), DOCK_RAIL, STATUS_PILL, false,
+     RGB(150, 128, 255), DOCK_RAIL, STATUS_PILL,
      1u << WIDGET_CLOCK | 1u << WIDGET_MUSIC | 1u << WIDGET_VISUALIZER},
 };
 
 #define LOOKS ARRAY_SIZE(defaults)
 
-/* The user's copy of every look: the dock style, the status bar and the places panel can be changed per look and
-   are kept in ~/.looks ("dune dock=corner status=pill places=on"). */
+/* The user's copy of every look: the dock style and the status bar can be changed per look and are kept in
+   ~/.looks ("dune dock=corner status=pill"). */
 static struct gui_look looks[LOOKS];
 static bool loaded;
 static int current = 0;
@@ -51,8 +51,6 @@ static void apply_pair(struct gui_look *l, const char *key, size_t klen, const c
         l->dock = (enum dock_kind)i;
     else if (klen == 6 && !strncmp(key, "status", 6) && (i = name_index(status_names, 2, value, vlen)) >= 0)
         l->status = (enum status_kind)i;
-    else if (klen == 6 && !strncmp(key, "places", 6))
-        l->places = vlen == 2 && !strncmp(value, "on", 2);
 }
 
 static void looks_load(void)
@@ -92,8 +90,8 @@ static void looks_save(void)
     char path[PATH_MAX_LEN], buf[LOOKS * 80];
     size_t n = 0;
     for (size_t i = 0; i < LOOKS; i++)
-        n += (size_t)ksnprintf(buf + n, sizeof(buf) - n, "%s dock=%s status=%s places=%s\n", looks[i].name,
-                               dock_names[looks[i].dock], status_names[looks[i].status], looks[i].places ? "on" : "off");
+        n += (size_t)ksnprintf(buf + n, sizeof(buf) - n, "%s dock=%s status=%s\n", looks[i].name,
+                               dock_names[looks[i].dock], status_names[looks[i].status]);
     looks_path(path, sizeof(path));
     vfs_write_all(path, buf, n);
 }
@@ -160,25 +158,20 @@ SETTING(s_look);
 static void get_part(char *buf, size_t cap, int which)
 {
     const struct gui_look *l = look_current();
-    str_copy(buf, which == 0 ? dock_names[l->dock] : which == 1 ? status_names[l->status] : l->places ? "on" : "off",
-             cap);
+    str_copy(buf, which == 0 ? dock_names[l->dock] : status_names[l->status], cap);
 }
 
 static int set_part(const char *value, int which)
 {
     look_current();
     struct gui_look *l = &looks[current];
-    int i = which == 0 ? name_index(dock_names, 3, value, strlen(value))
-            : which == 1 ? name_index(status_names, 2, value, strlen(value))
-                         : name_index((const char *const[]){"off", "on"}, 2, value, strlen(value));
+    int i = which == 0 ? name_index(dock_names, 3, value, strlen(value)) : name_index(status_names, 2, value, strlen(value));
     if (i < 0)
         return E_INVAL;
     if (which == 0)
         l->dock = (enum dock_kind)i;
-    else if (which == 1)
-        l->status = (enum status_kind)i;
     else
-        l->places = i;
+        l->status = (enum status_kind)i;
     looks_save();
     gui_look_changed();
     return 0;
@@ -206,23 +199,9 @@ static int set_status(struct shell *sh, const char *value)
     return set_part(value, 1);
 }
 
-static void get_places(char *buf, size_t cap)
-{
-    get_part(buf, cap, 2);
-}
-
-static int set_places(struct shell *sh, const char *value)
-{
-    UNUSED(sh);
-    return set_part(value, 2);
-}
-
 static const struct setting s_dock = {"dockstyle", "bottom|corner|side", "the dock of the current look", get_dock,
                                       set_dock};
 static const struct setting s_status = {"statusbar", "menubar|pill", "menu bar or floating status pill (current look)",
                                         get_status, set_status};
-static const struct setting s_places = {"places", "on|off", "the places panel on the left (current look)", get_places,
-                                        set_places};
 SETTING(s_dock);
 SETTING(s_status);
-SETTING(s_places);

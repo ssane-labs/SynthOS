@@ -2,18 +2,13 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/net.h>
-#include <synth/path.h>
 #include <synth/string.h>
 #include <synth/time.h>
-#include <synth/users.h>
-#include <synth/vfs.h>
 
 #include "internal.h"
 
 #define PILL_H 34
 #define PILL_ICON 34
-#define PLACE_ROW 36
-#define MAX_PLACES 12
 
 enum pill_part {
     PART_SEARCH,
@@ -24,20 +19,12 @@ enum pill_part {
     PART_COUNT,
 };
 
-struct place {
-    char label[40];
-    char path[PATH_MAX_LEN];
-    enum symbol_id sym;
-};
-
 static bool started;
 static enum status_kind status;
-static bool places_on;
-static struct glass pill_glass, places_glass;
-static struct rect pill, part_r[PART_COUNT], places_r, zone_pill, zone_places;
-static struct place places[MAX_PLACES];
-static int place_count, place_hover = -1, part_hover = -1, place_pressed = -1;
-static struct spring pill_grow, place_hl, place_alpha, intro;
+static struct glass pill_glass;
+static struct rect pill, part_r[PART_COUNT], zone_pill;
+static int part_hover = -1;
+static struct spring pill_grow, intro;
 static uint64_t last_tick;
 
 static const char *const day_names[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
@@ -72,40 +59,6 @@ const char *panel_month_name(int i)
     return month_names[CLAMP(i, 0, 11)];
 }
 
-static void add_place(const char *label, const char *path, enum symbol_id sym)
-{
-    if (place_count >= MAX_PLACES)
-        return;
-    struct place *p = &places[place_count++];
-    str_copy(p->label, label, sizeof(p->label));
-    str_copy(p->path, path, sizeof(p->path));
-    p->sym = sym;
-}
-
-static void home_place(const char *label, const char *dir, enum symbol_id sym)
-{
-    char path[PATH_MAX_LEN];
-    path_join(user_home(), dir, path, sizeof(path));
-    add_place(label, path, sym);
-}
-
-static void build_places(void)
-{
-    place_count = 0;
-    add_place("Home", user_home(), SYM_HOME);
-    home_place("Desktop", "Desktop", SYM_DESKTOP);
-    home_place("Documents", "Documents", SYM_DOC);
-    home_place("Downloads", "Downloads", SYM_DOWNLOAD);
-    home_place("Pictures", "Pictures", SYM_PHOTO);
-    home_place("Music", "Music", SYM_MUSIC);
-    home_place("Videos", "Videos", SYM_VIDEO);
-    add_place("Trash", "/home/.Trash", SYM_TRASH);
-    struct volume vols[4];
-    int n = vfs_volumes(vols, 4);
-    for (int i = 0; i < n; i++)
-        add_place(vols[i].label, vols[i].path, SYM_USB);
-}
-
 int status_bottom(void)
 {
     struct rect s = wm_screen_rect(0);
@@ -125,7 +78,7 @@ static void clock_text(char *buf, size_t cap)
 static void layout(void)
 {
     struct rect s = wm_screen_rect(0);
-    struct rect old_pill = zone_pill, old_places = zone_places;
+    struct rect old_pill = zone_pill;
     int dy = (1024 - CLAMP(intro.pos, 0, 1024)) * 60 / 1024;
     if (status == STATUS_PILL) {
         char clock[16];
@@ -142,22 +95,7 @@ static void layout(void)
         zone_pill = rect_inset(pill, -30);
         glass_set_frame(&pill_glass, pill);
     }
-    if (places_on) {
-        int bottom = s.y + s.h - (44 + 2 * 15) - 22 - 16;
-        int top = s.y + menubar_height() + 12;
-        places_r = (struct rect){s.x + dock_rail_reserved() + 10 - dy, top, PLACES_W,
-                                 MIN(bottom - top, 50 + place_count * PLACE_ROW + 6)};
-        zone_places = rect_inset(places_r, -40);
-        glass_set_frame(&places_glass, places_r);
-    }
     wm_damage_z(rect_union(old_pill, zone_pill), Z_MENUBAR);
-    if (places_on)
-        wm_damage_z(rect_union(old_places, zone_places), Z_MENUBAR);
-}
-
-static struct rect place_row(int i)
-{
-    return (struct rect){places_r.x + 8, places_r.y + 46 + i * PLACE_ROW, places_r.w - 16, PLACE_ROW - 4};
 }
 
 bool panel_animate(void)
@@ -169,13 +107,9 @@ bool panel_animate(void)
     last_tick = now;
     bool busy = spring_step(&pill_grow, 420, 26, dt);
     busy |= spring_step(&intro, 160, 20, dt);
-    bool hl = spring_step(&place_hl, 520, 38, dt);
-    hl |= spring_step(&place_alpha, 400, 40, dt);
     if (busy)
         layout();
-    if (hl && places_on)
-        wm_damage_z(zone_places, Z_MENUBAR);
-    return busy || hl;
+    return busy;
 }
 
 static void paint_part_icon(struct canvas *c, int i, struct rect r)
@@ -203,38 +137,10 @@ static void paint_pill(struct canvas *c)
     gfx_text_box(c, part_r[PART_CLOCK], &font_bold, clock, ink(), ALIGN_CENTER);
 }
 
-static void paint_places(struct canvas *c)
-{
-    struct glass_look look;
-    glass_look_for(&look, GLASS_PANEL, PANEL_RADIUS);
-    glass_draw(c, &places_glass, &look);
-    gfx_round_frame(c, places_r, PANEL_RADIUS, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
-    gfx_text_box(c, (struct rect){places_r.x + 18, places_r.y + 14, places_r.w - 30, 20}, &font_bold, "Places", ink_soft(),
-                 ALIGN_LEFT);
-    if (place_alpha.pos > 8) {
-        struct rect hr = {places_r.x + 8, place_hl.pos, places_r.w - 16, PLACE_ROW - 4};
-        gfx_round(c, hr, 14, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, CLAMP(place_alpha.pos, 0, 1024) * 22 / 1024));
-    }
-    struct canvas clip = *c;
-    clip.clip = rect_intersect(c->clip, places_r);
-    for (int i = 0; i < place_count; i++) {
-        struct rect r = place_row(i);
-        if (r.y + r.h > places_r.y + places_r.h - 6)
-            break;
-        int push = i == place_hover ? 6 : 0;
-        uint32_t col = i == place_pressed ? style.accent : ink();
-        gfx_symbol(&clip, r.x + 10 + push, r.y + (r.h - 16) / 2, places[i].sym, 16, i == place_hover ? style.accent : ink_soft());
-        gfx_text_box(&clip, (struct rect){r.x + 38 + push, r.y, r.w - 44, r.h}, i == place_hover ? &font_bold : &font_sans,
-                     places[i].label, col, ALIGN_LEFT);
-    }
-}
-
 void panel_paint(struct canvas *c, int screen)
 {
     if (!started || screen != 0)
         return;
-    if (places_on && !rect_empty(rect_intersect(zone_places, c->clip)))
-        paint_places(c);
     if (rect_empty(rect_intersect(zone_pill, c->clip)))
         return;
     if (status == STATUS_PILL)
@@ -252,7 +158,7 @@ bool panel_hit(int x, int y)
 {
     if (!started)
         return false;
-    return in_status(x, y) || (places_on && rect_contains(places_r, x, y));
+    return in_status(x, y);
 }
 
 static int part_at(int x, int y)
@@ -261,16 +167,6 @@ static int part_at(int x, int y)
         return -1;
     for (int i = 0; i < PART_COUNT; i++)
         if (rect_contains(part_r[i], x, y))
-            return i;
-    return -1;
-}
-
-static int place_at(int x, int y)
-{
-    if (!places_on || !rect_contains(places_r, x, y))
-        return -1;
-    for (int i = 0; i < place_count; i++)
-        if (rect_contains(place_row(i), x, y))
             return i;
     return -1;
 }
@@ -290,21 +186,6 @@ void panel_mouse(int x, int y, unsigned button, bool down)
 {
     if (down) {
         wm_close_popups();
-        place_pressed = button == BUTTON_LEFT ? place_at(x, y) : -1;
-        if (place_pressed >= 0)
-            wm_damage_z(zone_places, Z_MENUBAR);
-        return;
-    }
-    int pressed = place_pressed;
-    place_pressed = -1;
-    int p = place_at(x, y);
-    if (pressed >= 0) {
-        wm_damage_z(zone_places, Z_MENUBAR);
-        if (pressed == p) {
-            if (!vfs_exists(places[p].path))
-                vfs_mkdirs(places[p].path);
-            gui_open_file(places[p].path);
-        }
         return;
     }
     int part = part_at(x, y);
@@ -323,26 +204,12 @@ void panel_hover(int x, int y)
         part_hover = part;
         wm_damage_z(zone_pill, Z_MENUBAR);
     }
-    int p = y >= 0 ? place_at(x, y) : -1;
-    if (p != place_hover) {
-        if (p >= 0) {
-            int ty = place_row(p).y;
-            if (place_alpha.target == 0)
-                spring_set(&place_hl, ty);
-            place_hl.target = ty;
-        }
-        place_alpha.target = p >= 0 ? 1024 : 0;
-        place_hover = p;
-        wm_damage_z(zone_places, Z_MENUBAR);
-    }
 }
 
 void panel_changed(void)
 {
     if (!started)
         return;
-    if (places_on)
-        build_places();
     layout();
 }
 
@@ -350,28 +217,19 @@ void panel_start(void)
 {
     const struct gui_look *l = look_current();
     status = l->status;
-    places_on = l->places;
     pill_glass = (struct glass){0};
-    places_glass = (struct glass){0};
-    pill_glass.z = places_glass.z = Z_MENUBAR;
-    part_hover = place_hover = place_pressed = -1;
+    pill_glass.z = Z_MENUBAR;
+    part_hover = -1;
     spring_set(&pill_grow, 0);
-    spring_set(&place_hl, 0);
-    spring_set(&place_alpha, 0);
     spring_set(&intro, 0);
     intro.target = 1024;
     last_tick = 0;
-    zone_pill = zone_places = (struct rect){0, 0, 0, 0};
+    zone_pill = (struct rect){0, 0, 0, 0};
     started = true;
-    build_places();
     layout();
     if (status != STATUS_MENUBAR) {
         pill_glass.frame = pill;
         glass_register(&pill_glass);
-    }
-    if (places_on) {
-        places_glass.frame = places_r;
-        glass_register(&places_glass);
     }
 }
 
@@ -381,7 +239,5 @@ void panel_stop(void)
         return;
     started = false;
     glass_unregister(&pill_glass);
-    glass_unregister(&places_glass);
     wm_damage_z(zone_pill, Z_MENUBAR);
-    wm_damage_z(zone_places, Z_MENUBAR);
 }

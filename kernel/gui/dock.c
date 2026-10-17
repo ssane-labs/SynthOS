@@ -55,11 +55,7 @@ struct item {
     const char *path;
 };
 
-static const char *const pinned[] = {"Files",       "Launchpad",  "Chrome", "Terminal",       "Notepad", "Photos",
-                                     "Music",       "Calculator", "Paint",   "System Monitor", "Minesweeper",
-                                     "System Settings"};
-static const char *const short_pinned[] = {"Launchpad", "Files", "Chrome", "Terminal", "Notepad", "Music",
-                                           "System Settings"};
+static const char *const pinned[] = {"Launchpad", "Files", "Chrome", "Terminal"};
 
 /* What sits in the Dock is the user's: each look keeps its own list in ~/.dock ("dune Files|Browser|/home/a.txt"),
    app names or file paths, rearranged by dragging icons around, onto the Dock from the desktop or off it. */
@@ -118,10 +114,9 @@ static void dock_path(char *out, size_t cap)
 static void pins_default(enum dock_kind k)
 {
     pin_count = 0;
-    const char *const *list = k == DOCK_CORNER ? short_pinned : pinned;
-    size_t n = k == DOCK_CORNER ? ARRAY_SIZE(short_pinned) : ARRAY_SIZE(pinned);
-    for (size_t i = 0; i < n && pin_count < MAX_PINS; i++)
-        str_copy(pins[pin_count++], list[i], PATH_MAX_LEN);
+    UNUSED(k);
+    for (size_t i = 0; i < ARRAY_SIZE(pinned) && pin_count < MAX_PINS; i++)
+        str_copy(pins[pin_count++], pinned[i], PATH_MAX_LEN);
 }
 
 static void pins_parse(const char *p, size_t len)
@@ -315,6 +310,12 @@ int dock_reserved(void)
     return autohide ? 0 : base_size + 2 * PAD + BOTTOM + 4;
 }
 
+/* The corner Dock keeps no strip of the screen for itself, but new windows still try not to open under it. */
+struct rect dock_obstacle(void)
+{
+    return started && kind == DOCK_CORNER ? dock_rect : (struct rect){0, 0, 0, 0};
+}
+
 int dock_rail_reserved(void)
 {
     return look_current()->dock == DOCK_RAIL ? RAIL_X + RAIL_W0 + 8 : 0;
@@ -322,8 +323,7 @@ int dock_rail_reserved(void)
 
 int shell_left_reserved(void)
 {
-    const struct gui_look *l = look_current();
-    return dock_rail_reserved() + (l->places ? PLACES_W + 14 : 0);
+    return dock_rail_reserved();
 }
 
 bool dock_hidden(void)
@@ -343,7 +343,7 @@ static int bounce_offset(const struct item *it)
     uint64_t t = hal_ticks_ms() - bounce_start;
     if (t >= 1000)
         return 0;
-    int phase = (int)(t % 500) * 1024 / 500, height = t < 500 ? 26 : 13;
+    int phase = (int)(t % 500) * 1024 / 500, height = t < 500 ? 18 : 7;
     return height * 4 * phase / 1024 * (1024 - phase) / 1024;
 }
 
@@ -931,10 +931,8 @@ static void tooltip(struct canvas *c, struct rect r, const char *label, bool bes
     int w = gfx_text_width(&font_sans, label) + 22;
     struct rect tip = beside ? (struct rect){r.x + r.w + 12, r.y + r.h / 2 - 12, w, 24}
                              : (struct rect){r.x + r.w / 2 - w / 2, r.y - TOOLTIP_H, w, 24};
-    gfx_drop_shadow(c, tip, 12, 5, 30, 1);
     gfx_round(c, tip, 12, style.dark ? RGBA(46, 44, 54, 235) : RGBA(252, 252, 254, 235));
-    gfx_round_frame_gradient(c, tip, 12, style.dark ? ALPHA(0xffffffffu, 60) : ALPHA(0xffffffffu, 255),
-                             style.dark ? ALPHA(0xffffffffu, 16) : ALPHA(0, 26));
+    gfx_round_frame(c, tip, 12, style.dark ? ALPHA(0xffffffffu, 30) : ALPHA(0, 22));
     gfx_text_box(c, tip, &font_sans, label, style.text, ALIGN_CENTER);
 }
 
@@ -967,11 +965,6 @@ static void paint_items(struct canvas *c)
         if (rect_empty(r) || rect_empty(rect_intersect(rect_inset(r, -12), c->clip)))
             continue;
         int alpha = pressed_item == i ? 160 : 255;
-        if (kind == DOCK_CORNER) {
-            int glow = lift[i].pos * 90 / 1024;
-            if (glow > 0)
-                gfx_glow(c, r, r.w / 3, 14, glow, style.accent);
-        }
         draw_icon(c, it, r, alpha);
         if (it->running)
             running_dot(c, r);

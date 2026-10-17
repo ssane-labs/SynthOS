@@ -36,7 +36,6 @@ Commands
                             right-click the desktop > Edit Widgets)
   config dockstyle side     bottom, corner or side Dock for this look
   config statusbar pill     menubar or a floating status pill
-  config places off         the places panel on the left
   config dockapps default   what the Dock holds (or drag icons on and off)
   windows pin 1             keep a window on top (or ... > Keep on Top)
   wallpaper bing            photo of the day as the wallpaper (random, url)
@@ -53,15 +52,19 @@ Commands
   wmstat [seconds]          frames, pixels and glass redraws while you use it
 
 Looks
-  Dune      warm glass, places on the left, the launcher grows out of the
-            bottom-left corner, clock, weather and music on the desktop
+  Dune      warm glass, the launcher grows out of the bottom-left
+            corner, clock, weather and music on the desktop
   Mist      menu bar on top, a floating Dock, calendar with tasks
   Night     an app rail on the left that opens with names, a big clock,
             the music player and a visualizer
 
 Every window has only its title and one small button: ... opens a list
 with all the commands of the app and Keep on Top, Minimize, Fill Screen
-and Close. Drag icons from the desktop onto the Dock, along it or off it.
+and Close. Viewers keep their few real controls: back, forward and up in
+Files, a pill with previous, zoom, rotate and next in Photos, play, pause
+and the timeline in Video. The Dock starts with only Apps, Files, Chrome,
+Terminal and the Trash; drag icons from the desktop onto it, along it or
+off it.
 Widgets lift under the pointer and can be dragged; double-click the music
 widget for the Music app, click the weather to refresh it, + adds a task.
 

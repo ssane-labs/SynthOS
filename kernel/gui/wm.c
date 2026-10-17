@@ -452,6 +452,7 @@ static bool snapshot(struct window *w, struct canvas *snap, int margin)
     draw_window(&c, w);
     glass_freeze(false);
     w->flags = saved;
+    gfx_bleed(snap);
     return true;
 }
 
@@ -464,11 +465,11 @@ static int ghost_ms(enum anim_kind kind, unsigned flags)
 {
     bool small = flags & WIN_POPUP && !(flags & WIN_OVERLAY);
     switch (kind) {
-    case ANIM_OPEN: return small ? 200 : 420;
-    case ANIM_CLOSE: return small ? 150 : 280;
-    case ANIM_MINIMIZE: return 540;
-    case ANIM_RESTORE: return 480;
-    case ANIM_MORPH: return 320;
+    case ANIM_OPEN: return small ? 260 : 460;
+    case ANIM_CLOSE: return small ? 160 : 240;
+    case ANIM_MINIMIZE: return 500;
+    case ANIM_RESTORE: return 460;
+    case ANIM_MORPH: return 380;
     }
     return 200;
 }
@@ -545,28 +546,30 @@ static struct rect ghost_rect(const struct ghost *g, int t, int *alpha)
     int m = g->margin;
     struct rect full = {f.x - m, f.y - m, f.w + 2 * m, f.h + 2 * m};
     if (g->kind == ANIM_MORPH) {
-        int e = ease_out(t);
+        int e = ease_spring(t);
         struct rect a = g->target;
         struct rect now = {lerp_i(a.x, f.x, e), lerp_i(a.y, f.y, e), lerp_i(a.w, f.w, e), lerp_i(a.h, f.h, e)};
         *alpha = 255;
         return (struct rect){now.x - m, now.y - m, now.w + 2 * m, now.h + 2 * m};
     }
     bool overlay = g->flags & WIN_OVERLAY, popup = g->flags & WIN_POPUP && !overlay;
+    bool open = g->kind == ANIM_OPEN;
+    /* Opening moves on a spring and fades in during its first part; closing speeds up as it goes, like a card let
+       go of. Neither changes color, and the last opening frame is the window itself. */
+    int fade = open ? ease_out(MIN(1024, t * 2)) : ease_in_out(t);
+    *alpha = open ? fade * 255 / 1024 : 255 - fade * 255 / 1024;
     if (popup && (g->flags & WIN_PASSIVE)) {
-        int e = ease_out(t);
-        int shift = g->kind == ANIM_OPEN ? (f.w + 24) * (1024 - e) / 1024 : (f.w + 24) * e / 1024;
-        *alpha = g->kind == ANIM_OPEN ? MIN(255, e * 255 / 1024 * 2) : 255 - e * 255 / 1024;
+        int e = open ? ease_spring(t) : ease_in_out(t);
+        int shift = open ? 40 * (1024 - e) / 1024 : 40 * e / 1024;
         return (struct rect){full.x + shift, full.y, full.w, full.h};
     }
-    int from = overlay ? 1120 : popup ? 900 : 780;
-    int e = g->kind == ANIM_OPEN ? (popup ? ease_out(t) : ease_spring(t)) : ease_out(t);
-    int scale = g->kind == ANIM_OPEN ? lerp_i(from, 1024, e) : lerp_i(1024, overlay ? 1120 : popup ? 950 : 860, e);
-    *alpha = g->kind == ANIM_OPEN ? MIN(255, ease_out(t) * 255 / 1024 * 3 / 2) : 255 - e * 255 / 1024;
+    int e = open ? ease_spring(t) : ease_in_out(t);
+    int scale = open ? lerp_i(overlay ? 1060 : popup ? 940 : 920, 1024, e) : lerp_i(1024, overlay ? 1040 : 960, e);
     int cx = f.x + f.w / 2, cy = popup ? f.y : f.y + f.h / 2;
     int w = full.w * scale / 1024, h = full.h * scale / 1024;
     int x = cx - (cx - full.x) * scale / 1024, y = cy - (cy - full.y) * scale / 1024;
     if (!popup && !overlay)
-        y += g->kind == ANIM_OPEN ? (1024 - ease_out(t)) * 46 / 1024 : ease_out(t) * 34 / 1024;
+        y += open ? (1024 - e) * 18 / 1024 : e * 10 / 1024;
     return (struct rect){x, y, w, h};
 }
 
@@ -613,9 +616,18 @@ static void draw_genie(struct canvas *c, struct ghost *g, int t)
     }
 }
 
-static void draw_ghosts(struct canvas *c)
+/* Opening and closing windows are drawn in their own layer, under the Dock and the menu bar like the window itself;
+   menus, overlays and windows flying into the Dock go on top. */
+static bool ghost_above(const struct ghost *g)
+{
+    return g->kind == ANIM_MINIMIZE || g->kind == ANIM_RESTORE || (g->flags & (WIN_POPUP | WIN_OVERLAY));
+}
+
+static void draw_ghosts(struct canvas *c, bool above)
 {
     for (struct ghost *g = ghosts; g; g = g->next) {
+        if (ghost_above(g) != above)
+            continue;
         if (!g->snap.px) {
             struct window *w = g->win;
             if (!w || !wm_window_alive(w))
@@ -638,7 +650,7 @@ static void draw_ghosts(struct canvas *c)
         } else {
             int alpha;
             struct rect r = ghost_rect(g, t, &alpha);
-            gfx_scale_fast(c, r, &g->snap, alpha);
+            gfx_scale_smooth(c, r, &g->snap, alpha);
         }
     }
 }
@@ -705,6 +717,9 @@ static int64_t overlap_cost(struct rect r, const struct window *self)
         if (!rect_empty(o))
             cost += (int64_t)o.w * o.h * 2;
     }
+    struct rect dock = rect_intersect(r, dock_obstacle());
+    if (!rect_empty(dock))
+        cost += (int64_t)dock.w * dock.h * 4;
     for (struct window *it = bottom; it; it = it->above) {
         if (it == self || !visible(it) || floating(it))
             continue;
@@ -1360,6 +1375,8 @@ static void compose(int index, struct rect area)
     for (struct window *w = bottom; w; w = w->above)
         if (visible(w) && !w->anim_hold && !floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);
+    if (ghosts)
+        draw_ghosts(c, false);
     menubar_paint(c, index);
     dock_paint(c, index);
     if (index == 0)
@@ -1368,7 +1385,7 @@ static void compose(int index, struct rect area)
         if (visible(w) && !w->anim_hold && floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);
     if (ghosts)
-        draw_ghosts(c);
+        draw_ghosts(c, true);
     draw_fade(c, index);
     draw_cursor(c);
 }
@@ -2275,9 +2292,27 @@ COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redr
         }
     }
     uint64_t part = hal_ticks_ms() - t0;
+    struct canvas snap;
+    uint64_t zoom = 0;
+    if (w && snapshot(w, &snap, 0)) {
+        struct canvas c = screens[0].back;
+        c.clip = screens[0].area;
+        struct rect f = w->frame;
+        t0 = hal_ticks_ms();
+        for (long i = 0; i < frames; i++) {
+            int k = 940 + (int)(i % 8) * 10;
+            gfx_scale_smooth(&c, (struct rect){f.x + f.w * (1024 - k) / 2048, f.y + f.h * (1024 - k) / 2048,
+                                               f.w * k / 1024, f.h * k / 1024}, &snap, 230);
+        }
+        zoom = hal_ticks_ms() - t0;
+        canvas_free(&snap);
+        wm_damage_all();
+        wm_render();
+    }
     sh_printf(sh, "full screen %dx%d: %u ms per frame\n", wm_screen_rect(0).w, wm_screen_rect(0).h,
               (unsigned)(full / (uint64_t)frames));
     if (anim)
-        sh_printf(sh, "front window area: %u ms per frame\n", (unsigned)(part / (uint64_t)anim));
+        sh_printf(sh, "front window area: %u ms per frame\nfront window zoom: %u ms per frame\n",
+                  (unsigned)(part / (uint64_t)anim), (unsigned)(zoom / (uint64_t)anim));
     return 0;
 }

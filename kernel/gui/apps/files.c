@@ -13,6 +13,7 @@
 #include "../internal.h"
 
 #define SIDEBAR_W 190
+#define NAV_H 38
 #define HEADER_H 26
 #define ROW_H 24
 #define CELL_W 104
@@ -885,7 +886,22 @@ static void frame(struct ui *ui, void *data)
         filter(f);
     }
 
-    struct rect area = {mx + (mx ? 1 : 0), 6, W - mx - (mx ? 1 : 0), H - 6};
+    int nx = mx + (mx ? 1 : 0);
+    if (ui_symbol_button(ui, (struct rect){nx + 8, 6, 28, 26}, SYM_LEFT, false))
+        go_back(w, f);
+    if (ui_symbol_button(ui, (struct rect){nx + 38, 6, 28, 26}, SYM_RIGHT, false))
+        go_forward(w, f);
+    if (ui_symbol_button(ui, (struct rect){nx + 68, 6, 28, 26}, SYM_UP, false))
+        navigate(w, f, "..", true);
+    if (ui->c) {
+        if (!f->back_len)
+            gfx_round(ui->c, (struct rect){nx + 8, 6, 28, 26}, 6, ALPHA(style.content, 150));
+        if (!f->forward_len)
+            gfx_round(ui->c, (struct rect){nx + 38, 6, 28, 26}, 6, ALPHA(style.content, 150));
+        gfx_text_box(ui->c, (struct rect){nx + 106, 6, W - nx - 118, 26}, &font_sans, f->path, style.secondary,
+                     ALIGN_LEFT);
+    }
+    struct rect area = {nx, NAV_H, W - nx, H - NAV_H};
     int result;
     if (f->icons) {
         result = icon_grid(ui, f, area);

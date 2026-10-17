@@ -225,9 +225,6 @@ static void pane_appearance(struct ui *ui, struct settings *s, int x, int y, int
         bool sel = l == look_current();
         bool hot = ui_hover(ui, (struct rect){t.x, t.y, t.w, t.h + 40});
         if (ui->c && s->look_thumbs[i].px) {
-            if (hot || sel)
-                gfx_glow(ui->c, t, 12, 16, sel ? 120 : 60, l->accent);
-            gfx_drop_shadow(ui->c, t, 12, 8, 60, 3);
             gfx_blit_round(ui->c, t, &s->look_thumbs[i], 12, false);
             draw_layout(ui->c, t, l);
             if (sel)
@@ -362,7 +359,7 @@ static void pane_dock(struct ui *ui, struct settings *s, int x, int y, int w)
     const struct gui_look *l = look_current();
     ksnprintf(title, sizeof(title), "Layout of %s", l->title);
     y = heading(ui, x, y, w, title);
-    struct rect g = ui_group(ui, x, y, w, 4, ROW);
+    struct rect g = ui_group(ui, x, y, w, 3, ROW);
     struct rect r = row_at(g, 0);
     ui_group_label(ui, r, "Dock", NULL, false);
     static const char *const docks[] = {"Bottom", "Corner", "Side"};
@@ -377,12 +374,11 @@ static void pane_dock(struct ui *ui, struct settings *s, int x, int y, int w)
     sel = (int)l->status;
     if (ui_segmented(ui, control(r, 240, 24), bars, 2, &sel))
         apply("statusbar", bar_values[sel]);
-    switch_row(ui, row_at(g, 2), "Places panel", "places", false);
-    r = row_at(g, 3);
+    r = row_at(g, 2);
     ui_group_label(ui, r, "Start over with this look's own layout", NULL, true);
     if (ui_button(ui, control(r, 90, 26), "Reset"))
         look_reset();
-    y += 4 * ROW + 20;
+    y += 3 * ROW + 20;
     y = heading(ui, x, y, w, "Widgets");
     static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
     static const char *const labels[] = {"Clock", "Weather", "Music", "Calendar", "Visualizer", "Tasks"};

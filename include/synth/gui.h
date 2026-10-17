@@ -202,6 +202,8 @@ void gfx_blit_alpha(struct canvas *c, int x, int y, const struct canvas *src, st
 void gfx_blit_round(struct canvas *c, struct rect dst, const struct canvas *src, int radius, bool blend_alpha);
 void gfx_scale(struct canvas *c, struct rect dst, const struct canvas *src, int alpha);
 void gfx_scale_fast(struct canvas *c, struct rect dst, const struct canvas *src, int alpha);
+void gfx_scale_smooth(struct canvas *c, struct rect dst, const struct canvas *src, int alpha);
+void gfx_bleed(struct canvas *c);
 void gfx_row_scaled(struct canvas *c, int y, int x0, int x1, const struct canvas *src, int sy, int alpha);
 void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int h);
 void gfx_icon(struct canvas *c, int x, int y, enum icon_id id, int size);

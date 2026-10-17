@@ -59,7 +59,8 @@ struct photos {
     uint64_t frame_due;
     struct canvas fitted;
     int fitted_w, fitted_h;
-    struct spring zoom, slide, fade;
+    struct spring zoom, slide, fade, bar;
+    uint64_t last_move;
     int zoom_target;
     bool fit;
     int pan_x, pan_y;
@@ -198,7 +199,49 @@ static struct rect image_rect(struct photos *ph, int W, int H, int *scale)
     return (struct rect){(W - w) / 2 + ph->pan_x + ph->slide.pos * W / 1024 / 4, (H - h) / 2 + ph->pan_y, w, h};
 }
 
+/* The few controls a viewer needs, in a pill that shows while the pointer moves. */
+static const int bar_cmds[] = {CMD_PREV, CMD_ZOOM_OUT, CMD_ZOOM_IN, CMD_ROTATE, CMD_NEXT};
+static const enum symbol_id bar_syms[] = {SYM_LEFT, SYM_MINUS, SYM_PLUS, SYM_RESTART, SYM_RIGHT};
+#define BAR_BUTTONS 5
+#define BAR_BUTTON 40
+
+static struct rect bar_rect(int W, int H, int show)
+{
+    int w = BAR_BUTTONS * BAR_BUTTON + 12;
+    return (struct rect){(W - w) / 2, H - 16 - 44 + (1024 - show) * 64 / 1024, w, 44};
+}
+
+static struct rect bar_button(struct rect b, int i)
+{
+    return (struct rect){b.x + 6 + i * BAR_BUTTON, b.y + 2, BAR_BUTTON, b.h - 4};
+}
+
+static void paint_bar(struct photos *ph, struct canvas *c)
+{
+    int show = CLAMP(ph->bar.pos, 0, 1024);
+    if (show < 16 || !ph->pic.px)
+        return;
+    struct rect b = bar_rect(c->w, c->h, show);
+    int a = show * 255 / 1024;
+    gfx_round(c, b, b.h / 2, RGBA(24, 24, 30, 200 * a / 255));
+    gfx_round_frame(c, b, b.h / 2, ALPHA(0xffffffffu, 36 * a / 255));
+    for (int i = 0; i < BAR_BUTTONS; i++) {
+        struct rect r = bar_button(b, i);
+        bool off = (bar_cmds[i] == CMD_PREV || bar_cmds[i] == CMD_NEXT) && ph->count < 2;
+        gfx_symbol(c, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, bar_syms[i], 16,
+                   ALPHA(0xffffffffu, (off ? 90 : 235) * a / 255));
+    }
+}
+
+static void paint_picture(struct window *w, struct canvas *c);
+
 static void paint(struct window *w, struct canvas *c)
+{
+    paint_picture(w, c);
+    paint_bar(w->data, c);
+}
+
+static void paint_picture(struct window *w, struct canvas *c)
 {
     struct photos *ph = w->data;
     int W = c->w, H = c->h;
@@ -207,7 +250,7 @@ static void paint(struct window *w, struct canvas *c)
         const char *msg = ph->error[0] ? ph->error : "No pictures here";
         gfx_symbol(c, W / 2 - 16, H / 2 - 40, SYM_PHOTO, 32, ALPHA(0xffffffffu, 120));
         gfx_text_box(c, (struct rect){0, H / 2, W, 22}, &font_bold, msg, ALPHA(0xffffffffu, 200), ALIGN_CENTER);
-        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Open a PNG, JPEG, GIF or BMP file from the menu at the top right",
+        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Click to open a PNG, JPEG, GIF or BMP file",
                      ALPHA(0xffffffffu, 120), ALIGN_CENTER);
         return;
     }
@@ -322,7 +365,16 @@ static void event(struct window *w, struct gui_event *e)
     }
     case EV_WHEEL: command(w, ph, e->wheel < 0 ? CMD_ZOOM_IN : CMD_ZOOM_OUT); break;
     case EV_MOUSE_DOWN:
-        if (e->button == BUTTON_LEFT && e->clicks >= 2) {
+        ph->last_move = hal_ticks_ms();
+        if (e->button == BUTTON_LEFT && !ph->pic.px) {
+            command(w, ph, CMD_OPEN);
+        } else if (e->button == BUTTON_LEFT && ph->bar.pos > 512 &&
+                   rect_contains(bar_rect(w->surface.w, w->surface.h, 1024), e->x, e->y)) {
+            struct rect b = bar_rect(w->surface.w, w->surface.h, 1024);
+            for (int i = 0; i < BAR_BUTTONS; i++)
+                if (rect_contains(bar_button(b, i), e->x, e->y))
+                    command(w, ph, bar_cmds[i]);
+        } else if (e->button == BUTTON_LEFT && e->clicks >= 2) {
             command(w, ph, ph->zoom.target == 1024 ? CMD_ACTUAL : CMD_FIT);
         } else if (e->button == BUTTON_LEFT) {
             ph->panning = true;
@@ -335,6 +387,7 @@ static void event(struct window *w, struct gui_event *e)
         e->handled = true;
         break;
     case EV_MOUSE_MOVE:
+        ph->last_move = hal_ticks_ms();
         if (ph->panning && ph->zoom.target > 1024) {
             ph->pan_x += e->x - ph->drag_x;
             ph->pan_y += e->y - ph->drag_y;
@@ -351,6 +404,9 @@ static void event(struct window *w, struct gui_event *e)
         bool busy = spring_step(&ph->zoom, 360, 34, dt);
         busy |= spring_step(&ph->slide, 260, 30, dt);
         busy |= spring_step(&ph->fade, 300, 40, dt);
+        bool over = rect_contains(bar_rect(w->surface.w, w->surface.h, 1024), ph->drag_x, ph->drag_y);
+        ph->bar.target = now - ph->last_move < 2500 || over ? 1024 : 0;
+        busy |= spring_step(&ph->bar, 320, 32, dt);
         if (ph->pic.frames > 1 && now >= ph->frame_due) {
             ph->frame = (ph->frame + 1) % ph->pic.frames;
             ph->frame_due = now + (uint64_t)ph->pic.delays[ph->frame];
@@ -384,7 +440,7 @@ static void launch(const char *arg)
     struct photos *ph = kzalloc(sizeof(*ph));
     if (!ph)
         return;
-    ph->tick = hal_ticks_ms();
+    ph->tick = ph->last_move = hal_ticks_ms();
     spring_set(&ph->zoom, 1024);
     spring_set(&ph->fade, 1024);
     struct window *w = wm_open("Photos", ICON_PHOTOS, 760, 520, &ops, ph, WIN_RESIZABLE);

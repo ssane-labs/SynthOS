@@ -258,7 +258,7 @@ static void paint(struct window *w, struct canvas *c)
         gfx_symbol(c, W / 2 - 16, H / 2 - 40, SYM_VIDEO, 32, ALPHA(0xffffffffu, 120));
         gfx_text_box(c, (struct rect){0, H / 2, W, 22}, &font_bold, v->error[0] ? v->error : "No video open",
                      ALPHA(0xffffffffu, 200), ALIGN_CENTER);
-        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Open an AVI file (Motion JPEG) from the menu at the top right",
+        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Click to open an AVI file (Motion JPEG)",
                      ALPHA(0xffffffffu, 120), ALIGN_CENTER);
         return;
     }
@@ -273,7 +273,6 @@ static void paint(struct window *w, struct canvas *c)
     if (show < 16)
         return;
     struct rect b = bar_rect(W, H, show);
-    gfx_drop_shadow(c, b, b.h / 2, 6, 60, 1);
     gfx_round(c, b, b.h / 2, RGBA(24, 24, 30, 210));
     gfx_round_frame(c, b, b.h / 2, ALPHA(0xffffffffu, 40));
     int cx = b.x + 28, cy = b.y + b.h / 2;
@@ -360,8 +359,11 @@ static void event(struct window *w, struct gui_event *e)
     case EV_MOUSE_DOWN: {
         e->handled = true;
         v->last_move = hal_ticks_ms();
-        if (!v->file)
+        if (!v->file) {
+            if (e->button == BUTTON_LEFT)
+                command(w, v, CMD_OPEN);
             break;
+        }
         struct rect b = bar_rect(w->surface.w, w->surface.h, 1024);
         int ms;
         if (rect_contains((struct rect){b.x, b.y, 56, b.h}, e->x, e->y))

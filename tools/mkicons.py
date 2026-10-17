@@ -32,19 +32,9 @@ def blank(size=S):
     return Image.new("RGBA", (size, size), (0, 0, 0, 0))
 
 
-def gradient(size, top, bottom, horizontal=False):
-    w, h = size
-    img = Image.new("RGBA", size)
-    d = ImageDraw.Draw(img)
-    span = w if horizontal else h
-    for i in range(span):
-        t = i / max(1, span - 1)
-        c = tuple(int(top[k] + (bottom[k] - top[k]) * t) for k in range(4))
-        if horizontal:
-            d.line([(i, 0), (i, h)], fill=c)
-        else:
-            d.line([(0, i), (w, i)], fill=c)
-    return img
+def flat(size, top, bottom):
+    """One even color between the two: icons have no light from above and no shade below."""
+    return Image.new("RGBA", size, tuple((top[k] + bottom[k]) // 2 for k in range(4)))
 
 
 def squircle_mask(box, n=5.0):
@@ -75,96 +65,29 @@ def rounded_mask(box, radius):
     return mask.resize((S, S), Image.LANCZOS)
 
 
-def drop_shadow(img, mask, offset=6, blur=8, alpha=90):
-    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    m = mask.point(lambda v: v * alpha // 255)
-    shadow.putalpha(m)
-    shadow = shadow.transform((S, S), Image.AFFINE, (1, 0, 0, 0, 1, -offset))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
-    out = blank()
-    out.alpha_composite(shadow)
-    out.alpha_composite(img)
-    return out
-
-
 BODY = (24, 24, 232, 232)
 
 
-def diagonal_light(strong=255, weak=60, back=170):
-    """Rim light for a liquid-glass edge: bright top-left, softer bottom-right, dim sides."""
-    img = Image.new("L", (S, S), 0)
-    px = img.load()
-    for y in range(S):
-        for x in range(S):
-            t = ((x + y) / (2 * S - 2)) * 2 - 1
-            v = strong if t < -0.35 else back if t > 0.45 else weak
-            if -0.35 <= t < 0:
-                v = int(strong + (weak - strong) * (t + 0.35) / 0.35)
-            elif 0 <= t <= 0.45:
-                v = int(weak + (back - weak) * t / 0.45)
-            px[x, y] = v
-    return img
-
-
-LIGHT = None
-
-
-def glass_layer(g, depth=6, highlight=90):
-    """Turns a flat glyph layer into a raised glass piece: soft shadow, top sheen and a lit rim."""
-    alpha = g.getchannel("A")
-    out = blank()
-    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    shadow.putalpha(alpha.point(lambda v: v * 70 // 255))
-    shadow = shadow.transform((S, S), Image.AFFINE, (1, 0, 0, 0, 1, -depth)).filter(ImageFilter.GaussianBlur(5))
-    out.alpha_composite(shadow)
-    out.alpha_composite(g)
-    sheen = gradient((S, S), (255, 255, 255, highlight), (255, 255, 255, 0))
-    out.alpha_composite(Image.composite(sheen, blank(), alpha))
-    inner = alpha.filter(ImageFilter.MinFilter(5))
-    edge = ImageChops.subtract(alpha, inner)
-    edge = ImageChops.multiply(edge, LIGHT)
-    rim = Image.new("RGBA", (S, S), (255, 255, 255, 255))
-    rim.putalpha(edge.point(lambda v: v * 150 // 255))
-    out.alpha_composite(rim)
-    return out
-
-
-def app_base(top, bottom, glyph=None, glassy=True):
-    """Squircle app icon: deep gradient body, soft inner glow, raised glass glyph and a liquid-glass rim."""
-    global LIGHT
-    if LIGHT is None:
-        LIGHT = diagonal_light()
+def app_base(top, bottom, glyph=None):
+    """Squircle app icon: one flat color and a flat glyph, with a hairline edge so light icons stay visible."""
     mask = squircle_mask(BODY)
     layer = blank()
-    layer.paste(gradient((S, S), top, bottom), (0, 0), mask)
-    glow = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(glow).ellipse([-40, -120, S + 40, 140], fill=70)
-    glow = glow.filter(ImageFilter.GaussianBlur(30))
-    white = Image.new("RGBA", (S, S), (255, 255, 255, 255))
-    white.putalpha(ImageChops.multiply(glow, mask))
-    layer.alpha_composite(white)
+    layer.paste(flat((S, S), top, bottom), (0, 0), mask)
     if glyph:
         g = blank()
         glyph(g, ImageDraw.Draw(g))
-        if glassy:
-            g = glass_layer(g)
         layer.alpha_composite(Image.composite(g, blank(), mask))
-    inner = mask.filter(ImageFilter.MinFilter(7))
-    edge = ImageChops.multiply(ImageChops.subtract(mask, inner), LIGHT)
-    rim = Image.new("RGBA", (S, S), (255, 255, 255, 255))
-    rim.putalpha(edge.point(lambda v: v * 200 // 255))
-    layer.alpha_composite(rim)
     dark = Image.new("RGBA", (S, S), (0, 0, 0, 255))
     outer = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(3)))
-    dark.putalpha(outer.point(lambda v: v * 40 // 255))
+    dark.putalpha(outer.point(lambda v: v * 30 // 255))
     layer.alpha_composite(dark)
-    return drop_shadow(layer, mask, 5, 6, 70)
+    return layer
 
 
 def page_base(emblem=None):
     mask = rounded_mask((52, 20, 204, 236), 10)
     img = blank()
-    body = gradient((S, S), (255, 255, 255, 255), (238, 238, 242, 255))
+    body = flat((S, S), (255, 255, 255, 255), (238, 238, 242, 255))
     img.paste(body, (0, 0), mask)
     d = ImageDraw.Draw(img)
     d.polygon([(160, 20), (204, 64), (160, 64)], fill=(214, 216, 222, 255))
@@ -180,7 +103,7 @@ def page_base(emblem=None):
     img.putalpha(Image.composite(img.getchannel("A"), Image.new("L", (S, S), 0), clear))
     if emblem:
         emblem(img, ImageDraw.Draw(img))
-    return drop_shadow(img, img.getchannel("A"), 4, 5, 70)
+    return img
 
 
 FOLDER_TOP = (126, 196, 252, 255)
@@ -195,7 +118,7 @@ def folder_base(emblem=None):
     img.paste(back_layer, (0, 0), Image.composite(Image.new("L", (S, S), 255), back, tab))
     img.paste(back_layer, (0, 0), back)
     front_mask = rounded_mask((24, 74, 232, 220), 14)
-    front = gradient((S, S), FOLDER_TOP, FOLDER_BOTTOM)
+    front = flat((S, S), FOLDER_TOP, FOLDER_BOTTOM)
     img.paste(front, (0, 0), front_mask)
     d = ImageDraw.Draw(img)
     d.line([(36, 78), (220, 78)], fill=(190, 228, 255, 255), width=3)
@@ -205,7 +128,7 @@ def folder_base(emblem=None):
         tint = Image.new("RGBA", (S, S), (54, 128, 205, 255))
         tint.putalpha(e.getchannel("A").point(lambda v: v * 190 // 255))
         img.alpha_composite(tint)
-    return drop_shadow(img, img.getchannel("A"), 4, 5, 60)
+    return img
 
 
 def rr(d, box, r, fill=None, outline=None, width=1):
@@ -351,20 +274,15 @@ def mirage_mask(size, cx, cy, r):
 def logo_glyph(d, cx, cy, r, color=None):
     img = d._image
     m = mirage_mask(img.size, cx, cy, r)
-    sun = gradient(img.size, (255, 248, 226, 255), (255, 214, 170, 255))
+    sun = flat(img.size, (255, 248, 226, 255), (255, 214, 170, 255))
     img.paste(sun, (0, 0), m)
 
 
 def logo_icon():
     def glyph(img, d):
-        glow = Image.new("L", (S, S), 0)
-        ImageDraw.Draw(glow).ellipse([40, 40, 216, 216], fill=150)
-        warm = Image.new("RGBA", (S, S), (255, 210, 140, 255))
-        warm.putalpha(glow.filter(ImageFilter.GaussianBlur(26)))
-        img.alpha_composite(warm)
         m = mirage_mask((S, S), 128, 126, 66)
-        img.paste(gradient((S, S), (255, 255, 246, 255), (255, 196, 92, 255)), (0, 0), m)
-    return app_base((255, 128, 96, 255), (64, 28, 132, 255), glyph, glassy=False)
+        img.paste(flat((S, S), (255, 255, 246, 255), (255, 196, 92, 255)), (0, 0), m)
+    return app_base((255, 128, 96, 255), (64, 28, 132, 255), glyph)
 
 
 def photos_icon():
@@ -411,20 +329,20 @@ def installer_icon():
 def computer_icon():
     img = blank()
     mask = rounded_mask((30, 72, 226, 190), 18)
-    img.paste(gradient((S, S), (238, 238, 242, 255), (176, 176, 184, 255)), (0, 0), mask)
+    img.paste(flat((S, S), (238, 238, 242, 255), (176, 176, 184, 255)), (0, 0), mask)
     d = ImageDraw.Draw(img)
     rr(d, (30, 72, 226, 190), 18, outline=(0, 0, 0, 50), width=3)
     d.line([(44, 150), (212, 150)], fill=(150, 150, 158, 255), width=3)
     d.ellipse([186, 160, 200, 174], fill=(52, 199, 89, 255))
     for i in range(6):
         d.line([(56 + i * 14, 162), (56 + i * 14, 176)], fill=(140, 140, 148, 255), width=4)
-    return drop_shadow(img, img.getchannel("A"), 5, 6, 80)
+    return img
 
 
 def usb_icon():
     img = blank()
     mask = rounded_mask((40, 64, 216, 196), 20)
-    img.paste(gradient((S, S), (255, 160, 60, 255), (230, 110, 20, 255)), (0, 0), mask)
+    img.paste(flat((S, S), (255, 160, 60, 255), (230, 110, 20, 255)), (0, 0), mask)
     d = ImageDraw.Draw(img)
     rr(d, (40, 64, 216, 196), 20, outline=(0, 0, 0, 50), width=3)
     cx, cy = 128, 130
@@ -433,7 +351,7 @@ def usb_icon():
     d.line([(cx, cy + 6), (cx - 30, cy - 14), (cx - 30, cy - 26)], fill=(255, 255, 255, 255), width=7)
     d.line([(cx, cy + 20), (cx + 30, cy), (cx + 30, cy - 12)], fill=(255, 255, 255, 255), width=7)
     d.ellipse([cx - 12, cy + 34, cx + 12, cy + 58], fill=(255, 255, 255, 255))
-    return drop_shadow(img, img.getchannel("A"), 5, 6, 80)
+    return img
 
 
 def folder_icon():
@@ -544,9 +462,9 @@ def circle_badge(c_top, c_bottom, draw):
     mask = Image.new("L", (S * 4, S * 4), 0)
     ImageDraw.Draw(mask).ellipse([30 * 4, 30 * 4, 226 * 4, 226 * 4], fill=255)
     mask = mask.resize((S, S), Image.LANCZOS)
-    img.paste(gradient((S, S), c_top, c_bottom), (0, 0), mask)
+    img.paste(flat((S, S), c_top, c_bottom), (0, 0), mask)
     draw(img, ImageDraw.Draw(img))
-    return drop_shadow(img, mask, 4, 6, 70)
+    return img
 
 
 def info_icon():
@@ -569,11 +487,11 @@ def warning_icon():
     md = ImageDraw.Draw(mask)
     md.polygon([(128 * 4, 30 * 4), (232 * 4, 214 * 4), (24 * 4, 214 * 4)], fill=255)
     mask = mask.resize((S, S), Image.LANCZOS)
-    img.paste(gradient((S, S), (255, 214, 10, 255), (255, 170, 0, 255)), (0, 0), mask)
+    img.paste(flat((S, S), (255, 214, 10, 255), (255, 170, 0, 255)), (0, 0), mask)
     d = ImageDraw.Draw(img)
     rr(d, (118, 92, 138, 168), 8, fill=(30, 30, 30, 255))
     d.ellipse([116, 178, 140, 202], fill=(30, 30, 30, 255))
-    return drop_shadow(img, mask, 4, 6, 70)
+    return img
 
 
 def user_icon():
@@ -584,7 +502,7 @@ def user_icon():
     mask = Image.new("L", (S * 4, S * 4), 0)
     ImageDraw.Draw(mask).ellipse([16 * 4, 16 * 4, 240 * 4, 240 * 4], fill=255)
     mask = mask.resize((S, S), Image.LANCZOS)
-    body = gradient((S, S), (176, 180, 190, 255), (128, 132, 142, 255))
+    body = flat((S, S), (176, 180, 190, 255), (128, 132, 142, 255))
     img.paste(body, (0, 0), mask)
     g = blank()
     draw(g, ImageDraw.Draw(g))
@@ -595,14 +513,11 @@ def user_icon():
 
 
 def trash_icon(full=False):
-    global LIGHT
-    if LIGHT is None:
-        LIGHT = diagonal_light()
     img = blank()
     body = Image.new("L", (S * 4, S * 4), 0)
     ImageDraw.Draw(body).rounded_rectangle([64 * 4, 62 * 4, 192 * 4, 234 * 4], radius=22 * 4, fill=255)
     body = body.resize((S, S), Image.LANCZOS)
-    glass = gradient((S, S), (236, 244, 252, 150), (188, 204, 222, 190), horizontal=True)
+    glass = flat((S, S), (236, 244, 252, 170), (188, 204, 222, 170))
     img.paste(glass, (0, 0), body)
     d = ImageDraw.Draw(img)
     if full:
@@ -612,17 +527,13 @@ def trash_icon(full=False):
     for i in range(5):
         x = 88 + i * 20
         d.line([(x, 84), (x, 214)], fill=(255, 255, 255, 120), width=6)
-    edge = ImageChops.multiply(ImageChops.subtract(body, body.filter(ImageFilter.MinFilter(7))), LIGHT)
-    rim = Image.new("RGBA", (S, S), (255, 255, 255, 255))
-    rim.putalpha(edge.point(lambda v: v * 230 // 255))
-    img.alpha_composite(rim)
     outline = Image.new("RGBA", (S, S), (90, 100, 120, 255))
     outline.putalpha(ImageChops.subtract(body, body.filter(ImageFilter.MinFilter(3))).point(lambda v: v * 90 // 255))
     img.alpha_composite(outline)
     rr(d, (52, 46, 204, 68), 11, fill=(226, 232, 242, 245))
     rr(d, (52, 46, 204, 56), 9, fill=(250, 252, 255, 255))
     rr(d, (106, 34, 150, 48), 6, fill=(214, 222, 234, 255))
-    return drop_shadow(img, img.getchannel("A"), 4, 6, 55)
+    return img
 
 
 def trash_full_icon():
