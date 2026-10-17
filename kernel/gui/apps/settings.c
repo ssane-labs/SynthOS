@@ -70,7 +70,7 @@ struct settings {
     char themes[48][24];
     int theme_count;
     struct ui_list theme_list;
-    struct ui_text wallpaper_file;
+    struct ui_text wallpaper_file, wallpaper_url;
     struct canvas thumbs[WALLS];
     bool thumbs_dark;
     const struct gui_look *thumbs_look;
@@ -447,6 +447,24 @@ static void pane_wallpaper(struct ui *ui, struct settings *s, int x, int y, int 
         }
     }
     y += ((WALLS + cols - 1) / cols) * (THUMB_H + 34) + 10;
+    y = heading(ui, x, y, w, "From the Internet");
+    g = ui_group(ui, x, y, w, 2, ROW + 8);
+    struct rect net = {g.x, g.y, g.w, ROW + 8};
+    if (ui->c)
+        gfx_symbol(ui->c, net.x + 16, net.y + (net.h - 18) / 2, SYM_GLOBE, 18, style.accent);
+    ui_label(ui, (struct rect){net.x + 44, net.y, net.w - 330, net.h}, "A new photo for the desktop", &font_sans,
+             style.text, ALIGN_LEFT);
+    if (ui_button(ui, (struct rect){net.x + net.w - 290, net.y + 10, 150, 28}, "Photo of the Day"))
+        wallpaper_fetch("bing");
+    if (ui_button(ui, (struct rect){net.x + net.w - 132, net.y + 10, 118, 28}, "Random Photo"))
+        wallpaper_fetch("random");
+    struct rect link = {g.x, g.y + ROW + 8, g.w, ROW + 8};
+    struct rect url_field = {link.x + 14, link.y + 10, link.w - 140, 28};
+    bool fetch_go = ui_textbox_hint(ui, url_field, &s->wallpaper_url, "https://example.com/picture.jpg");
+    if ((ui_button(ui, (struct rect){link.x + link.w - 116, link.y + 10, 102, 28}, "Download") || fetch_go) &&
+        s->wallpaper_url.buf[0])
+        wallpaper_fetch(s->wallpaper_url.buf);
+    y += 2 * (ROW + 8) + 20;
     y = heading(ui, x, y, w, "Picture");
     g = ui_group(ui, x, y, w, 1, ROW + 8);
     struct rect r = {g.x, g.y, g.w, ROW + 8};

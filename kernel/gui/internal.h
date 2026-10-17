@@ -105,6 +105,7 @@ struct glass {
     void *geo;
     int geo_w, geo_h, geo_r;
     unsigned stamp, out_stamp;
+    int luma;
     struct canvas out;
     struct glass_look out_look;
     int out_x, out_y, out_mx, out_my;
@@ -208,6 +209,12 @@ void widgets_stop(void);
 void widgets_user_changed(void);
 int widgets_right_reserved(void);
 void widgets_edit(bool on);
+void wm_animate_ghosts(void);
+int wallpaper_download(const char *source, char *saved, size_t cap, char *title, size_t title_cap,
+                       void (*progress)(void *ctx, const char *stage, size_t done, size_t total), void *ctx);
+void wallpaper_fetch(const char *source);
+void wallpaper_fetch_run(void);
+void gui_wallpaper_use(const char *path);
 bool widgets_editing(void);
 int widgets_obstacles(struct rect *out, int max);
 void gui_desktop_changed(void);

@@ -212,6 +212,12 @@ static bool capture(struct canvas *c, struct glass *g, int blur, int scale, bool
     g->src = src;
     g->scale = scale;
     g->valid = true;
+    unsigned sum = 0, count = 0;
+    for (int i = 0; i < g->small.w * g->small.h; i += 3, count++) {
+        uint32_t p = g->small.px[i];
+        sum += ((p >> 16 & 0xff) * 77 + (p >> 8 & 0xff) * 151 + (p & 0xff) * 28) >> 8;
+    }
+    g->luma = count ? (int)(sum / count) : 128;
     g->stamp++;
     return true;
 }
@@ -364,6 +370,10 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
     int refract = look->refract * 256;
     int inner = band + radius;
     int lift = look->brightness;
+    if (look->tint && !style.dark && g->luma < 150)
+        lift += (150 - g->luma) * 3 / 4;
+    else if (look->tint && style.dark && g->luma > 120)
+        lift -= (g->luma - 120) * 2 / 3;
     const struct geo *geo = band && !look->shape ? geometry(g, f, radius) : NULL;
     struct tap *cols = kmalloc(sizeof(struct tap) * (size_t)(f.w + f.h));
     if (!cols)

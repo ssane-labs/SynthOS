@@ -1874,6 +1874,12 @@ void wm_cycle(void)
         }
 }
 
+void wm_animate_ghosts(void)
+{
+    if (ghosts)
+        wm_animate();
+}
+
 void wm_timers(void)
 {
     if (ghosts || screen_count)

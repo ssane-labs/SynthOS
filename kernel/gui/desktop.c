@@ -940,6 +940,7 @@ static void pump(int timeout_ms)
         autostart_pending = false;
         autostart_run();
     }
+    wallpaper_fetch_run();
 #if CONFIG_WIN32
     if (timeout_ms != 0)
         w32_background();
@@ -1066,7 +1067,12 @@ static int set_wallpaper(struct shell *sh, const char *value)
     return 0;
 }
 
-static const struct setting s_wallpaper = {"wallpaper", "auto|dune|mist|night|sunset|waves|hills|aurora|synthwave|solid|<file.bmp>",
+void gui_wallpaper_use(const char *path)
+{
+    set_wallpaper(NULL, path);
+}
+
+static const struct setting s_wallpaper = {"wallpaper", "auto|dune|mist|night|sunset|waves|hills|aurora|synthwave|solid|<picture file>",
                                            "desktop background", get_wallpaper, set_wallpaper};
 SETTING(s_wallpaper);
 

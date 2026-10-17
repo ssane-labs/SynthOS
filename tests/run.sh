@@ -372,6 +372,7 @@ if command -v openssl >/dev/null; then
     port=$((20000 + $$ % 20000))
     mkdir -p "$work/www"
     echo "secret over tls" > "$work/www/hello.txt"
+    cp rootfs/system/samples/Night.jpg "$work/www/starry-night.jpg"
     printf 'subjectAltName=IP:10.0.2.2\nbasicConstraints=CA:FALSE\n' > "$work/ext.cnf"
     openssl req -x509 -newkey rsa:2048 -sha256 -days 30 -nodes -keyout "$work/ca.key" -out "$work/ca.pem" \
         -subj "/CN=SynthOS Test CA" 2>/dev/null
@@ -432,6 +433,12 @@ wget -O - https://10.0.2.2:$port/hello.txt
 certificate is not trusted
 mkdir /home/certs; cp /mnt/hdb/test-ca.pem /home/certs/; certs reload | grep -c trusted; wget -O - https://10.0.2.2:$port/hello.txt
 secret over tls
+wallpaper https://10.0.2.2:$port/starry-night.jpg
+Wallpapers/starry-night.jpg and set it as the wallpaper
+config wallpaper
+/Pictures/Wallpapers/starry-night.jpg
+wallpaper https://10.0.2.2:$port/hello.txt
+not a picture
 wget -O /tmp/t.txt https://10.0.2.2:$port/hello.txt | grep TLS
 TLS 1.3, AES-128-GCM, certificate for 10.0.2.2 (verified)
 sha256sum /tmp/t.txt
