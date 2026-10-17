@@ -370,7 +370,7 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
                     continue;
                 }
                 int inner = MIN(MIN(cp[-2], cp[2]), MIN(cp[-2 * cw], cp[2 * cw]));
-                shape_rim = (256 - inner) * (y < f.y + f.h / 2 ? 150 : 90) >> 8;
+                shape_rim = (256 - inner) * (y < f.y + f.h / 2 ? 80 : 44) >> 8;
             } else if (look->shape) {
                 row[x] = 0;
                 continue;

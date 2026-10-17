@@ -28,10 +28,10 @@
 #define GRID_CELL 86
 #define GRID_MAX 24
 #define FILLET 22
-#define ARC_R0 150
-#define ARC_R1 178
+#define ARC_R0 236
+#define ARC_R1 258
 #define ARC_MAX 8
-#define ORB_R 54
+#define ORB_R 58
 
 enum item_kind {
     DI_APP,
@@ -180,6 +180,10 @@ static void build(void)
         if ((list[i]->flags & WIN_MINIMIZED) && list[i]->thumb.px)
             items[count++] = (struct item){.kind = DI_WINDOW, .win = list[i]};
     items[count++] = (struct item){.kind = DI_TRASH};
+    if (kind == DOCK_ARC)
+        for (int i = 0; i < count; i++)
+            if (items[i].kind == DI_SEPARATOR)
+                memmove(&items[i], &items[i + 1], sizeof(items[0]) * (size_t)(--count - i));
     if (kind == DOCK_ARC && count > ARC_MAX) {
         items[ARC_MAX - 1] = items[count - 1];
         count = ARC_MAX;
@@ -401,8 +405,8 @@ static void layout_arc(void)
     int n = count;
     for (int i = 0; i < n; i++) {
         struct item *it = &items[i];
-        int deg = n > 1 ? 10 + 70 * i / (n - 1) : 45;
-        int size = 38 + g * 6 / 1024 + lift[i].pos * 18 / 1024;
+        int deg = n > 1 ? 8 + 74 * i / (n - 1) : 45;
+        int size = 42 + g * 6 / 1024 + lift[i].pos * 18 / 1024;
         int rr = R + bounce_offset(it) / 2;
         int cx = arc.cx + rr * cos_d(deg) / 1024, cy = arc.cy - rr * sin_d(deg) / 1024;
         it->size = size;

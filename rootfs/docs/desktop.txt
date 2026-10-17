@@ -40,6 +40,7 @@ Commands
   displays                  monitors and their resolutions
   config animations off     no animations (for very slow PCs)
   wmbench                   how many milliseconds a desktop frame takes
+  wmstat [seconds]          frames, pixels and glass redraws while you use it
 
 Looks
   Dune      warm glass, places on the left, the launcher grows out of the
