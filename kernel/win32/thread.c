@@ -328,6 +328,20 @@ void w32_block(void)
         w32_exit(STATUS_CONTROL_C_EXIT);
 }
 
+/* The desktop is the most interactive thing on the machine: it runs at least every 30 ms, and at once when a key or
+   a pointer movement waits, so busy programs never make the screen feel stuck. */
+static uint64_t host_ran;
+
+void w32_input_boost(void)
+{
+    struct w32_thread *h = w32_host_thread();
+    uint64_t now = hal_ticks_ms();
+    if (!h || !w32 || !w32->current || w32->current == h || now - host_ran < 15)
+        return;
+    host_ran = now;
+    switch_to(h);
+}
+
 void w32_preempt(void)
 {
     static unsigned turn;
@@ -344,8 +358,11 @@ void w32_preempt(void)
     }
     if (!next)
         next = pick_other(true);
-    if (turn % 4 == 0 && w32_host_thread())
+    uint64_t now = hal_ticks_ms();
+    if (w32_host_thread() && (now - host_ran >= 30 || hal_input_pending())) {
         next = w32_host_thread();
+        host_ran = now;
+    }
     if (next)
         switch_to(next);
 }

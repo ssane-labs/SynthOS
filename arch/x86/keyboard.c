@@ -179,6 +179,11 @@ void keyboard_init(void)
     irq_install(1, keyboard_irq);
 }
 
+bool keyboard_pending(void)
+{
+    return head != tail;
+}
+
 int keyboard_read(void)
 {
     if (head == tail)

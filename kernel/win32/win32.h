@@ -454,6 +454,7 @@ void w32_threads_end(void);
 void w32_block(void);
 void w32_yield(void);
 void w32_preempt(void);
+void w32_input_boost(void);
 uint32_t w32_thread_id(void);
 void w32_idle(int ms);
 void w32_gui_cleanup(void);

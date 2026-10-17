@@ -311,6 +311,16 @@ void x86_interrupt(struct regs *r)
     }
 }
 
+uint32_t hal_irq_save(void)
+{
+    return cpu_irq_save();
+}
+
+void hal_irq_restore(uint32_t flags)
+{
+    cpu_irq_restore(flags);
+}
+
 bool hal_in_interrupt(void)
 {
     return interrupt_depth > 0;

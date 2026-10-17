@@ -92,40 +92,102 @@ static uint32_t pack(const struct framebuffer *fb, uint32_t c)
     return r << fb->red_shift | g << fb->green_shift | b << fb->blue_shift;
 }
 
+static void fb_row(struct screen *s, int x, int y, const uint32_t *src, int w)
+{
+    const struct framebuffer *fb = &s->fb;
+    bool native = fb->bpp == 32 && fb->red_shift == 16 && fb->green_shift == 8 && fb->blue_shift == 0;
+    uint32_t bytes = fb->bpp / 8;
+    int lx = x - s->area.x, ly = y - s->area.y, scale = s->scale;
+    for (int sy = 0; sy < scale; sy++) {
+        uint8_t *line = fb->base + (size_t)(ly * scale + sy) * fb->pitch + (size_t)lx * scale * bytes;
+        if (native && scale == 1) {
+            memcpy(line, src, (size_t)w * 4);
+            continue;
+        }
+        for (int i = 0; i < w; i++) {
+            uint32_t p = native ? src[i] : pack(fb, src[i]);
+            for (int sx = 0; sx < scale; sx++) {
+                uint8_t *d = line + (size_t)(i * scale + sx) * bytes;
+                if (bytes == 4)
+                    *(uint32_t *)d = p;
+                else if (bytes == 3) {
+                    d[0] = (uint8_t)p;
+                    d[1] = (uint8_t)(p >> 8);
+                    d[2] = (uint8_t)(p >> 16);
+                } else {
+                    *(uint16_t *)d = (uint16_t)p;
+                }
+            }
+        }
+    }
+}
+
+/* The pointer is not part of the composed picture: it is drawn on the screen itself, and the interrupt that brings
+   a movement moves it at once, so it glides even while a program or a long job keeps the desktop loop away. What
+   it covers is put back from the back buffer. fb_busy keeps the interrupt off the screen while a frame is copied;
+   the move it wanted is done right after. */
+static volatile int hw_x, hw_y;
+static volatile bool fb_busy, hw_dirty, hw_live;
+static struct rect hw_drawn;
+
+static void fb_compose(struct screen *s, struct rect r)
+{
+    r = rect_intersect(r, s->area);
+    if (rect_empty(r) || r.w > 64)
+        return;
+    uint32_t row[64];
+    const uint32_t *sprite = cursor_px[cursor_kind];
+    for (int y = r.y; y < r.y + r.h; y++) {
+        const uint32_t *src = s->back.px + y * s->back.stride + r.x;
+        for (int i = 0; i < r.w; i++) {
+            int cx = r.x + i - hw_drawn.x, cy = y - hw_drawn.y;
+            uint32_t c = sprite && cx >= 0 && cy >= 0 && cx < hw_drawn.w && cy < hw_drawn.h ? sprite[cy * CURSOR_SIZE + cx] : 0;
+            row[i] = c >> 24 ? color_mix(src[i], c, (int)(c >> 24)) : src[i];
+        }
+        fb_row(s, r.x, y, row, r.w);
+    }
+}
+
+/* Puts the pointer where hw_x, hw_y say: one pass over the old and new places (they overlap while it moves). */
+static void hw_cursor_move(void)
+{
+    struct rect old = hw_drawn;
+    hw_drawn = hw_live && cursor_visible && cursor_px[cursor_kind]
+                   ? (struct rect){hw_x - cursor_hot[cursor_kind][0], hw_y - cursor_hot[cursor_kind][1], CURSOR_SIZE,
+                                   CURSOR_SIZE}
+                   : (struct rect){0, 0, 0, 0};
+    struct rect both = rect_union(old, hw_drawn);
+    bool joined = !rect_empty(old) && !rect_empty(hw_drawn) && both.w <= 64 && both.h <= 64;
+    for (int i = 0; i < screen_count; i++) {
+        if (joined) {
+            fb_compose(&screens[i], both);
+            continue;
+        }
+        if (!rect_empty(old))
+            fb_compose(&screens[i], old);
+        if (!rect_empty(hw_drawn))
+            fb_compose(&screens[i], hw_drawn);
+    }
+}
+
+static void hw_cursor_sync(void)
+{
+    uint32_t flags = hal_irq_save();
+    hw_dirty = false;
+    hw_cursor_move();
+    hal_irq_restore(flags);
+}
+
 static void flush(struct screen *s, struct rect r)
 {
     r = rect_intersect(r, s->area);
     if (rect_empty(r))
         return;
-    const struct framebuffer *fb = &s->fb;
-    bool native = fb->bpp == 32 && fb->red_shift == 16 && fb->green_shift == 8 && fb->blue_shift == 0;
-    uint32_t bytes = fb->bpp / 8;
-    int lx = r.x - s->area.x, ly = r.y - s->area.y, scale = s->scale;
-    for (int y = 0; y < r.h; y++) {
-        const uint32_t *src = s->back.px + (r.y + y) * s->back.stride + r.x;
-        for (int sy = 0; sy < scale; sy++) {
-            uint8_t *line = fb->base + (size_t)((ly + y) * scale + sy) * fb->pitch + (size_t)lx * scale * bytes;
-            if (native && scale == 1) {
-                memcpy(line, src, (size_t)r.w * 4);
-                continue;
-            }
-            for (int x = 0; x < r.w; x++) {
-                uint32_t p = native ? src[x] : pack(fb, src[x]);
-                for (int sx = 0; sx < scale; sx++) {
-                    uint8_t *d = line + (size_t)(x * scale + sx) * bytes;
-                    if (bytes == 4)
-                        *(uint32_t *)d = p;
-                    else if (bytes == 3) {
-                        d[0] = (uint8_t)p;
-                        d[1] = (uint8_t)(p >> 8);
-                        d[2] = (uint8_t)(p >> 16);
-                    } else {
-                        *(uint16_t *)d = (uint16_t)p;
-                    }
-                }
-            }
-        }
-    }
+    for (int y = 0; y < r.h; y++)
+        fb_row(s, r.x, r.y + y, s->back.px + (r.y + y) * s->back.stride + r.x, r.w);
+    struct rect c = rect_intersect(r, hw_drawn);
+    if (!rect_empty(c))
+        fb_compose(s, c);
 }
 
 static void add_dirty(struct screen *s, struct rect r)
@@ -1322,20 +1384,6 @@ static void draw_window(struct canvas *c, struct window *w)
     }
 }
 
-static void draw_cursor(struct canvas *c)
-{
-    if (!cursor_visible || !cursor_px[cursor_kind])
-        return;
-    gfx_image(c, mouse_x - cursor_hot[cursor_kind][0], mouse_y - cursor_hot[cursor_kind][1], cursor_px[cursor_kind],
-              CURSOR_SIZE, CURSOR_SIZE);
-}
-
-static struct rect cursor_rect(void)
-{
-    return (struct rect){mouse_x - cursor_hot[cursor_kind][0], mouse_y - cursor_hot[cursor_kind][1], CURSOR_SIZE,
-                         CURSOR_SIZE};
-}
-
 void wm_crossfade(void)
 {
     if (!animations || !screen_count)
@@ -1387,7 +1435,6 @@ static void compose(int index, struct rect area)
     if (ghosts)
         draw_ghosts(c, true);
     draw_fade(c, index);
-    draw_cursor(c);
 }
 
 void wm_render(void)
@@ -1418,9 +1465,13 @@ void wm_render(void)
         if (count)
             stat_frames++;
         stat_ms += hal_ticks_ms() - t0;
+        fb_busy = true;
         for (int k = 0; k < count; k++)
             flush(s, list[k]);
+        fb_busy = false;
     }
+    if (hw_dirty)
+        hw_cursor_sync();
     rendering = false;
 }
 
@@ -1500,13 +1551,20 @@ static bool client_event(struct window *w, enum gui_event_type type, unsigned bu
     return e.handled;
 }
 
+static void hw_cursor_refresh(void)
+{
+    if (rendering || fb_busy)
+        hw_dirty = true;
+    else
+        hw_cursor_sync();
+}
+
 static void set_cursor(int kind)
 {
     if (kind == cursor_kind)
         return;
-    wm_damage_z(cursor_rect(), Z_CURSOR);
     cursor_kind = kind;
-    wm_damage_z(cursor_rect(), Z_CURSOR);
+    hw_cursor_refresh();
 }
 
 static void set_traffic(struct window *w)
@@ -1793,15 +1851,13 @@ static void mouse_moved(void)
         client_event(w, EV_MOUSE_MOVE, 0, 0, 0);
 }
 
-static void clamp_mouse(int x, int y)
+static void nearest_point(int *px, int *py)
 {
+    int x = *px, y = *py;
     for (int i = 0; i < screen_count; i++)
-        if (rect_contains(screens[i].area, x, y)) {
-            mouse_x = x;
-            mouse_y = y;
+        if (rect_contains(screens[i].area, x, y))
             return;
-        }
-    int best = -1, best_d = 0, bx = mouse_x, by = mouse_y;
+    int best = -1, best_d = 0, bx = x, by = y;
     for (int i = 0; i < screen_count; i++) {
         struct rect a = screens[i].area;
         int cx = CLAMP(x, a.x, a.x + a.w - 1), cy = CLAMP(y, a.y, a.y + a.h - 1);
@@ -1813,20 +1869,68 @@ static void clamp_mouse(int x, int y)
             by = cy;
         }
     }
-    mouse_x = bx;
-    mouse_y = by;
+    *px = bx;
+    *py = by;
+}
+
+static void clamp_mouse(int x, int y)
+{
+    nearest_point(&x, &y);
+    mouse_x = x;
+    mouse_y = y;
+}
+
+static void absolute_point(const struct pointer_event *ev, int *x, int *y)
+{
+    struct rect all = screens[0].area;
+    for (int i = 1; i < screen_count; i++)
+        all = rect_union(all, screens[i].area);
+    *x = all.x + (int)((int64_t)ev->x * (all.w - 1) / 65535);
+    *y = all.y + (int)((int64_t)ev->y * (all.h - 1) / 65535);
+}
+
+/* Runs in the mouse interrupt: places the pointer and moves it on the screen right away. */
+static int irq_accel_x, irq_accel_y;
+
+static void pointer_irq(struct pointer_event *ev)
+{
+    if (!hw_live || !screen_count)
+        return;
+    int x, y;
+    if (ev->absolute) {
+        absolute_point(ev, &x, &y);
+    } else {
+        irq_accel_x += ev->dx * mouse_speed;
+        irq_accel_y += ev->dy * mouse_speed;
+        int dx = irq_accel_x / 5, dy = irq_accel_y / 5;
+        irq_accel_x -= dx * 5;
+        irq_accel_y -= dy * 5;
+        x = hw_x + dx;
+        y = hw_y + dy;
+    }
+    nearest_point(&x, &y);
+    ev->x = x;
+    ev->y = y;
+    ev->placed = true;
+    if (x == hw_x && y == hw_y)
+        return;
+    hw_x = x;
+    hw_y = y;
+    if (fb_busy)
+        hw_dirty = true;
+    else
+        hw_cursor_move();
 }
 
 void wm_pointer(const struct pointer_event *ev)
 {
     int old_x = mouse_x, old_y = mouse_y;
-    struct rect old = cursor_rect();
-    if (ev->absolute) {
-        struct rect all = screens[0].area;
-        for (int i = 1; i < screen_count; i++)
-            all = rect_union(all, screens[i].area);
-        clamp_mouse(all.x + (int)((int64_t)ev->x * (all.w - 1) / 65535),
-                    all.y + (int)((int64_t)ev->y * (all.h - 1) / 65535));
+    if (ev->placed) {
+        clamp_mouse(ev->x, ev->y);
+    } else if (ev->absolute) {
+        int x, y;
+        absolute_point(ev, &x, &y);
+        clamp_mouse(x, y);
     } else {
         accel_x += ev->dx * mouse_speed;
         accel_y += ev->dy * mouse_speed;
@@ -1836,8 +1940,11 @@ void wm_pointer(const struct pointer_event *ev)
         clamp_mouse(mouse_x + dx, mouse_y + dy);
     }
     if (old_x != mouse_x || old_y != mouse_y) {
-        wm_damage_z(old, Z_CURSOR);
-        wm_damage_z(cursor_rect(), Z_CURSOR);
+        if (!ev->placed) {
+            hw_x = mouse_x;
+            hw_y = mouse_y;
+            hw_cursor_refresh();
+        }
         mouse_moved();
     }
     unsigned changed = ev->buttons ^ mouse_buttons;
@@ -1939,7 +2046,7 @@ struct window *wm_top_popup(void)
 void wm_set_cursor_visible(bool on)
 {
     cursor_visible = on;
-    wm_damage_z(cursor_rect(), Z_CURSOR);
+    hw_cursor_refresh();
 }
 
 static bool inside_poly(const int *pts, int n, int x, int y)
@@ -2071,8 +2178,22 @@ bool wm_start(const struct framebuffer *fbs, const struct rect *origins, int cou
     mouse_y = screens[0].area.y + screens[0].area.h / 2;
     mouse_buttons = 0;
     cursor_kind = CUR_ARROW;
+    hw_x = mouse_x;
+    hw_y = mouse_y;
+    hw_drawn = (struct rect){0, 0, 0, 0};
+    hw_live = true;
+    hw_dirty = true;
+    hal_pointer_hook(pointer_irq);
     wm_damage_all();
     return true;
+}
+
+static void hw_cursor_off(void)
+{
+    uint32_t flags = hal_irq_save();
+    hw_live = false;
+    hw_drawn = (struct rect){0, 0, 0, 0};
+    hal_irq_restore(flags);
 }
 
 static void keep_visible(struct window *w, void *ctx)
@@ -2130,10 +2251,15 @@ void wm_reflow(void)
 
 bool wm_reconfigure(const struct framebuffer *fbs, const struct rect *origins, int count)
 {
+    hw_cursor_off();
     free_screens();
     if (!setup_screens(fbs, origins, count))
         return false;
     clamp_mouse(mouse_x, mouse_y);
+    hw_x = mouse_x;
+    hw_y = mouse_y;
+    hw_live = true;
+    hw_dirty = true;
     wm_foreach(keep_visible, NULL);
     wm_damage_all();
     return true;
@@ -2141,6 +2267,8 @@ bool wm_reconfigure(const struct framebuffer *fbs, const struct rect *origins, i
 
 void wm_stop(void)
 {
+    hal_pointer_hook(NULL);
+    hw_cursor_off();
     while (bottom)
         wm_destroy(bottom);
     focus = NULL;

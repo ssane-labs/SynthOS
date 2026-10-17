@@ -12,6 +12,14 @@ static int packet_len;
 static int packet_size = 3;
 static bool present;
 static volatile bool usb_mouse;
+static void (*hook)(struct pointer_event *ev);
+
+void hal_pointer_hook(void (*fn)(struct pointer_event *ev))
+{
+    uint32_t flags = cpu_irq_save();
+    hook = fn;
+    cpu_irq_restore(flags);
+}
 
 static bool wait_write(void)
 {
@@ -57,8 +65,10 @@ static void mouse_irq(struct regs *r)
     i8042_drain();
 }
 
-static void queue_event(const struct pointer_event *ev)
+static void queue_event(struct pointer_event *ev)
 {
+    if (hook)
+        hook(ev);
     unsigned last = tail - 1;
     volatile struct pointer_event *prev = &queue[last % QUEUE_SIZE];
     if (tail != head && prev->buttons == ev->buttons && !ev->wheel && !prev->wheel &&
@@ -67,6 +77,7 @@ static void queue_event(const struct pointer_event *ev)
         prev->dy += ev->dy;
         prev->x = ev->x;
         prev->y = ev->y;
+        prev->placed = ev->placed;
         return;
     }
     if (tail - head < QUEUE_SIZE)
@@ -145,6 +156,13 @@ bool hal_pointer_read(struct pointer_event *ev)
     *ev = queue[head++ % QUEUE_SIZE];
     cpu_irq_restore(flags);
     return true;
+}
+
+bool keyboard_pending(void);
+
+bool hal_input_pending(void)
+{
+    return head != tail || keyboard_pending();
 }
 
 bool hal_pointer_present(void)

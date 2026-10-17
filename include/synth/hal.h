@@ -58,6 +58,7 @@ struct pointer_event {
     int wheel;
     unsigned buttons;
     bool absolute;
+    bool placed;
     int x, y;
 };
 
@@ -67,6 +68,12 @@ struct display *hal_display(void);
 bool hal_pointer_read(struct pointer_event *ev);
 bool hal_in_interrupt(void);
 bool hal_pointer_present(void);
+/* The hook sees every pointer event in interrupt context before it is queued; it may set x, y and placed (the
+   pointer position in screen pixels), which then travel with the event. */
+void hal_pointer_hook(void (*hook)(struct pointer_event *ev));
+bool hal_input_pending(void);
+uint32_t hal_irq_save(void);
+void hal_irq_restore(uint32_t flags);
 bool hal_graphics_enter(struct framebuffer *fb);
 void hal_graphics_leave(void);
 
