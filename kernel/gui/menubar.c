@@ -419,7 +419,7 @@ void chrome_mouse(int x, int y, unsigned button, bool down, int clicks)
         panel_mouse(x, y, button, down);
         return;
     }
-    if (!in_bar(x, y)) {
+    if (!in_bar(x, y) || (!down && dock_dragging())) {
         if (down)
             wm_close_popups();
         dock_mouse(x, y, button, down, clicks);

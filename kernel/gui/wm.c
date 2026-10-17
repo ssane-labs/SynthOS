@@ -1361,6 +1361,8 @@ static void compose(int index, struct rect area)
             draw_window(c, w);
     menubar_paint(c, index);
     dock_paint(c, index);
+    if (index == 0)
+        dock_paint_drag(c);
     for (struct window *w = bottom; w; w = w->above)
         if (visible(w) && !w->anim_hold && floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);
@@ -1872,6 +1874,14 @@ void wm_cycle(void)
                 wm_focus(w);
             return;
         }
+}
+
+struct window *wm_window_at(int x, int y)
+{
+    for (struct window *w = top; w; w = w->below)
+        if (visible(w) && !w->anim_hold && rect_contains(w->frame, x, y))
+            return w;
+    return NULL;
 }
 
 void wm_animate_ghosts(void)

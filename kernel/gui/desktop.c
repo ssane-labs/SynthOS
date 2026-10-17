@@ -59,6 +59,8 @@ static int known_count = -1;
 static struct desktop_icon icons[MAX_ICONS];
 static int icon_count;
 static int selected_icon = -1;
+static int drag_icon = -1, drag_x, drag_y;
+static bool icon_dragging;
 static int lock_minutes;
 static uint64_t last_input;
 static int want_w[MAX_SCREENS], want_h[MAX_SCREENS];
@@ -289,6 +291,54 @@ static enum icon_id icon_for(const char *name, bool dir)
     return ICON_TEXT;
 }
 
+/* A desktop shortcut to a built-in app is a small "Name.app" file holding the app's name. */
+static const struct gui_app *app_shortcut(const char *path)
+{
+    const char *ext = path_ext(path);
+    char *data;
+    size_t size;
+    if (!ext || str_casecmp(ext, ".app") || vfs_read_all(path, &data, &size) != 0)
+        return NULL;
+    char name[64];
+    str_copy(name, data, MIN(size + 1, sizeof(name)));
+    kfree(data);
+    const struct gui_app *app = gui_app_find(str_trim(name));
+    return app && !strcmp(app->name, str_trim(name)) ? app : NULL;
+}
+
+void gui_draw_file_icon(struct canvas *c, const char *path, struct rect r, int alpha)
+{
+    const struct gui_app *app = app_shortcut(path);
+    const struct image *img = app ? NULL : program_icon(path);
+    if (app && app->picture)
+        gfx_scale(c, rect_inset(r, r.w / 16), app->picture, alpha);
+    else if (img)
+        gfx_scale(c, rect_inset(r, r.w / 16), &(struct canvas){img->px, img->w, img->h, img->w, {0, 0, img->w, img->h}},
+                  alpha);
+    else
+        gfx_icon_alpha(c, r.x, r.y, app ? app->icon : icon_for(path_basename(path), vfs_is_dir(path)), r.w, alpha);
+}
+
+void gui_file_label(const char *path, char *out, size_t cap)
+{
+    str_copy(out, path_basename(path), cap);
+    const char *ext = path_ext(out);
+    if (ext && (!str_casecmp(ext, ".lnk") || !str_casecmp(ext, ".app")))
+        out[strlen(out) - 4] = 0;
+}
+
+void gui_make_app_shortcut(const char *name)
+{
+    char dir[PATH_MAX_LEN], file[96], path[PATH_MAX_LEN];
+    desktop_dir(dir, sizeof(dir));
+    vfs_mkdirs(dir);
+    ksnprintf(file, sizeof(file), "%s.app", name);
+    path_join(dir, file, path, sizeof(path));
+    if (!vfs_exists(path))
+        vfs_write_all(path, name, strlen(name));
+    scan_desktop();
+}
+
 static void scan_desktop(void)
 {
     struct desktop_icon fresh[MAX_ICONS];
@@ -327,10 +377,11 @@ static void scan_desktop(void)
                 continue;
             memset(&fresh[n], 0, sizeof(fresh[n]));
             str_copy(fresh[n].label, ent.name, sizeof(fresh[n].label));
-            if (str_ends(fresh[n].label, ".lnk") || str_ends(fresh[n].label, ".LNK"))
+            if (str_ends(fresh[n].label, ".lnk") || str_ends(fresh[n].label, ".LNK") || str_ends(fresh[n].label, ".app"))
                 fresh[n].label[strlen(fresh[n].label) - 4] = 0;
             path_join(dir, ent.name, fresh[n].path, sizeof(fresh[n].path));
-            fresh[n].icon = icon_for(ent.name, ent.type == VN_DIR);
+            const struct gui_app *app = app_shortcut(fresh[n].path);
+            fresh[n].icon = app ? app->icon : icon_for(ent.name, ent.type == VN_DIR);
             n++;
         }
         vfs_closedir(&d);
@@ -381,6 +432,10 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
         struct rect cell = icon_cell(i);
         if (rect_empty(rect_intersect(cell, c->clip)))
             continue;
+        if (i == drag_icon && icon_dragging) {
+            icon_label(c, cell, icons[i].label, false);
+            continue;
+        }
         if (i == selected_icon)
             gfx_round(c, (struct rect){cell.x + 14, cell.y - 2, cell.w - 28, 70}, 8, ALPHA(0, 70));
         const struct image *img = program_icon(icons[i].path);
@@ -427,8 +482,46 @@ static const struct image *program_icon(const char *path)
 static void desktop_pick(struct window *owner, int index);
 static void volume_pick(struct window *owner, int index);
 
+/* A desktop icon dragged onto the Dock is pinned there (an app shortcut moves into the Dock). */
+static void icon_entry(int i, char *out, size_t cap)
+{
+    const struct gui_app *app = app_shortcut(icons[i].path);
+    str_copy(out, app ? app->name : icons[i].path, cap);
+}
+
+bool desktop_icon_drag(int x, int y)
+{
+    if (drag_icon < 0 || drag_icon >= icon_count)
+        return false;
+    int dx = x - drag_x, dy = y - drag_y;
+    if (!icon_dragging && dx * dx + dy * dy <= 64)
+        return true;
+    if (!icon_dragging) {
+        icon_dragging = true;
+        wm_damage_z(icon_cell(drag_icon), Z_DESKTOP);
+    }
+    char entry[PATH_MAX_LEN];
+    icon_entry(drag_icon, entry, sizeof(entry));
+    dock_drag_move(entry, x, y);
+    return true;
+}
+
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
 {
+    if (!down && drag_icon >= 0) {
+        int i = drag_icon;
+        bool was = icon_dragging;
+        drag_icon = -1;
+        icon_dragging = false;
+        if (was) {
+            wm_damage_z(icon_cell(i), Z_DESKTOP);
+            if (dock_drag_drop(x, y) && i < icon_count && app_shortcut(icons[i].path)) {
+                vfs_unlink(icons[i].path);
+                scan_desktop();
+            }
+            return;
+        }
+    }
     if (widgets_mouse(x, y, button, down, clicks) || !down)
         return;
     int hit = -1;
@@ -444,6 +537,11 @@ void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
     }
     if (hit >= 0 && button == BUTTON_LEFT && clicks >= 2)
         gui_open_file(icons[hit].path);
+    else if (hit >= 0 && button == BUTTON_LEFT && !icons[hit].volume && strcmp(icons[hit].path, "/")) {
+        drag_icon = hit;
+        drag_x = x;
+        drag_y = y;
+    }
     if (button == BUTTON_RIGHT && hit >= 0 && icons[hit].volume) {
         static const char *const items[] = {"Open", "", "Eject"};
         ui_menu(NULL, x, y, items, ARRAY_SIZE(items), volume_pick);
@@ -632,6 +730,11 @@ bool gui_open_file(const char *path)
         gui_app_launch(gui_app_find("Files"), path);
         return true;
     }
+    const struct gui_app *shortcut = app_shortcut(path);
+    if (shortcut) {
+        gui_app_launch(shortcut, NULL);
+        return true;
+    }
     const char *ext = path_ext(path);
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         if (extension_listed(app->extensions, ext)) {
@@ -681,6 +784,8 @@ static void close_app_window(struct window *w, void *ctx)
 void gui_session_login(const char *name)
 {
     user_switch(session, name);
+    look_user_changed();
+    gui_look_changed();
     widgets_user_changed();
     icon_count = -1;
     scan_desktop();

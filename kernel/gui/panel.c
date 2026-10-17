@@ -144,7 +144,9 @@ static void layout(void)
     }
     if (places_on) {
         int bottom = s.y + s.h - (44 + 2 * 15) - 22 - 16;
-        places_r = (struct rect){s.x + 10 - dy, s.y + 12, PLACES_W, MIN(bottom - s.y - 12, 50 + place_count * PLACE_ROW + 6)};
+        int top = s.y + menubar_height() + 12;
+        places_r = (struct rect){s.x + dock_rail_reserved() + 10 - dy, top, PLACES_W,
+                                 MIN(bottom - top, 50 + place_count * PLACE_ROW + 6)};
         zone_places = rect_inset(places_r, -40);
         glass_set_frame(&places_glass, places_r);
     }

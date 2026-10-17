@@ -2,9 +2,11 @@
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
+#include <synth/heap.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
+#include <synth/users.h>
 #include <synth/vfs.h>
 
 #include "internal.h"
@@ -36,7 +38,11 @@ enum item_kind {
     DI_WINDOW,
     DI_TRASH,
     DI_SYSTEM,
+    DI_FILE,
+    DI_GAP,
 };
+
+#define MAX_PINS 20
 
 struct item {
     enum item_kind kind;
@@ -45,12 +51,32 @@ struct item {
     int size, x;
     struct rect r;
     bool running;
+    int pin;
+    const char *path;
 };
 
 static const char *const pinned[] = {"Files",       "Launchpad",  "Browser", "Terminal",       "Notepad", "Photos",
                                      "Music",       "Calculator", "Paint",   "System Monitor", "Minesweeper",
                                      "System Settings"};
-static const char *const short_pinned[] = {"Files", "Browser", "Terminal", "Notepad", "Music", "System Settings"};
+static const char *const short_pinned[] = {"Launchpad", "Files", "Browser", "Terminal", "Notepad", "Music",
+                                           "System Settings"};
+
+/* What sits in the Dock is the user's: each look keeps its own list in ~/.dock ("dune Files|Browser|/home/a.txt"),
+   app names or file paths, rearranged by dragging icons around, onto the Dock from the desktop or off it. */
+static char pins[MAX_PINS][PATH_MAX_LEN];
+static int pin_count, pins_look = -1;
+
+static struct {
+    bool armed, active, from_dock;
+    int from_pin, gap;
+    char entry[PATH_MAX_LEN];
+    int x, y, sx, sy;
+    struct spring pop, poof;
+    int poof_x, poof_y;
+    char poof_entry[PATH_MAX_LEN];
+} dnd = {.from_pin = -1, .gap = -1};
+
+static struct spring ox[MAX_ITEMS], oy[MAX_ITEMS];
 
 static struct item items[MAX_ITEMS];
 static int count;
@@ -84,19 +110,130 @@ static int max_size(void)
     return magnify ? base_size * 3 / 2 : base_size;
 }
 
+static void dock_path(char *out, size_t cap)
+{
+    path_join(user_home(), ".dock", out, cap);
+}
+
+static void pins_default(enum dock_kind k)
+{
+    pin_count = 0;
+    const char *const *list = k == DOCK_CORNER ? short_pinned : pinned;
+    size_t n = k == DOCK_CORNER ? ARRAY_SIZE(short_pinned) : ARRAY_SIZE(pinned);
+    for (size_t i = 0; i < n && pin_count < MAX_PINS; i++)
+        str_copy(pins[pin_count++], list[i], PATH_MAX_LEN);
+}
+
+static void pins_parse(const char *p, size_t len)
+{
+    pin_count = 0;
+    const char *end = p + len;
+    while (p < end && pin_count < MAX_PINS) {
+        const char *bar = memchr(p, '|', (size_t)(end - p));
+        size_t n = bar ? (size_t)(bar - p) : (size_t)(end - p);
+        if (n && n < PATH_MAX_LEN) {
+            memcpy(pins[pin_count], p, n);
+            pins[pin_count++][n] = 0;
+        }
+        p += n + 1;
+    }
+}
+
+static void pins_load(void)
+{
+    const struct gui_look *l = look_current();
+    pins_look = (int)(l - look_get(0));
+    pins_default(l->dock);
+    char path[PATH_MAX_LEN], *data;
+    size_t size;
+    dock_path(path, sizeof(path));
+    if (vfs_read_all(path, &data, &size) != 0)
+        return;
+    size_t name = strlen(l->name);
+    for (char *p = data, *end = data + size; p < end;) {
+        char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t n = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (n > name && !strncmp(p, l->name, name) && p[name] == ' ')
+            pins_parse(p + name + 1, n - name - 1);
+        p += n + 1;
+    }
+    kfree(data);
+}
+
+static void pins_ready(void)
+{
+    if (pins_look != (int)(look_current() - look_get(0)))
+        pins_load();
+}
+
+static void pins_save(void)
+{
+    char path[PATH_MAX_LEN], *old = NULL;
+    size_t old_size = 0, cap = MAX_PINS * PATH_MAX_LEN + 64;
+    dock_path(path, sizeof(path));
+    vfs_read_all(path, &old, &old_size);
+    char *buf = kmalloc(cap + old_size);
+    if (!buf) {
+        kfree(old);
+        return;
+    }
+    const char *name = look_current()->name;
+    size_t n = 0, len = strlen(name);
+    for (char *p = old, *end = old + old_size; old && p < end;) {
+        char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t k = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (k && !(k > len && !strncmp(p, name, len) && p[len] == ' ')) {
+            memcpy(buf + n, p, k);
+            n += k;
+            buf[n++] = '\n';
+        }
+        p += k + 1;
+    }
+    n += (size_t)ksnprintf(buf + n, cap + old_size - n, "%s ", name);
+    for (int i = 0; i < pin_count; i++)
+        n += (size_t)ksnprintf(buf + n, cap + old_size - n, "%s%s", i ? "|" : "", pins[i]);
+    buf[n++] = '\n';
+    vfs_write_all(path, buf, n);
+    kfree(buf);
+    kfree(old);
+}
+
+static int pin_find(const char *entry)
+{
+    for (int i = 0; i < pin_count; i++)
+        if (!strcmp(pins[i], entry))
+            return i;
+    return -1;
+}
+
+static void pin_remove(int i)
+{
+    if (i < 0 || i >= pin_count)
+        return;
+    memmove(pins[i], pins[i + 1], PATH_MAX_LEN * (size_t)(pin_count - i - 1));
+    pin_count--;
+}
+
+static void pin_insert(int at, const char *entry)
+{
+    if (pin_count >= MAX_PINS)
+        return;
+    at = CLAMP(at, 0, pin_count);
+    memmove(pins[at + 1], pins[at], PATH_MAX_LEN * (size_t)(pin_count - at));
+    str_copy(pins[at], entry, PATH_MAX_LEN);
+    pin_count++;
+}
+
 static bool is_pinned(const struct gui_app *app)
 {
-    for (size_t i = 0; i < ARRAY_SIZE(pinned); i++)
-        if (!strcmp(pinned[i], app->name))
-            return true;
-    return false;
+    return pin_find(app->name) >= 0;
 }
 
 static void add_running(const struct gui_app *app, void *ctx)
 {
     UNUSED(ctx);
     if (count < MAX_ITEMS - 4 && !is_pinned(app) && wm_app_window_count(app) > 0)
-        items[count++] = (struct item){.kind = DI_APP, .app = app, .running = true};
+        items[count++] = (struct item){.kind = DI_APP, .app = app, .running = true, .pin = -1};
 }
 
 static void add_grid(const struct gui_app *app, void *ctx)
@@ -106,32 +243,39 @@ static void add_grid(const struct gui_app *app, void *ctx)
         grid[grid_count++] = app;
 }
 
-static void add_app(const char *name)
+static void add_pin(int p)
 {
+    const char *name = pins[p];
     if (!strcmp(name, "Launchpad")) {
-        if (kind == DOCK_CENTER || kind == DOCK_RAIL)
-            items[count++] = (struct item){.kind = DI_LAUNCHPAD};
+        items[count++] = (struct item){.kind = DI_LAUNCHPAD, .pin = p};
+        return;
+    }
+    if (name[0] == '/') {
+        items[count++] = (struct item){.kind = DI_FILE, .pin = p, .path = name};
         return;
     }
     const struct gui_app *app = gui_app_find(name);
     if (app && !strcmp(app->name, name))
-        items[count++] = (struct item){.kind = DI_APP, .app = app, .running = wm_app_window_count(app) > 0};
+        items[count++] = (struct item){.kind = DI_APP, .app = app, .running = wm_app_window_count(app) > 0, .pin = p};
 }
 
 static void build(void)
 {
     count = 0;
+    pins_ready();
     if (kind != DOCK_CENTER)
-        items[count++] = (struct item){.kind = DI_SYSTEM};
-    if (kind == DOCK_CORNER)
-        items[count++] = (struct item){.kind = DI_LAUNCHPAD};
-    if (kind == DOCK_CENTER || kind == DOCK_RAIL) {
-        for (size_t i = 0; i < ARRAY_SIZE(pinned) && count < MAX_ITEMS; i++)
-            add_app(pinned[i]);
-    } else {
-        for (size_t i = 0; i < ARRAY_SIZE(short_pinned) && count < MAX_ITEMS; i++)
-            add_app(short_pinned[i]);
+        items[count++] = (struct item){.kind = DI_SYSTEM, .pin = -1};
+    int slot = 0;
+    for (int p = 0; p < pin_count && count < MAX_ITEMS - 6; p++) {
+        if (dnd.active && dnd.from_dock && dnd.from_pin == p)
+            continue;
+        if (dnd.active && dnd.gap == slot)
+            items[count++] = (struct item){.kind = DI_GAP, .pin = -1};
+        add_pin(p);
+        slot++;
     }
+    if (dnd.active && dnd.gap >= slot)
+        items[count++] = (struct item){.kind = DI_GAP, .pin = -1};
     int pinned_end = count;
     gui_app_foreach(add_running, NULL);
     struct window *list[32];
@@ -141,18 +285,18 @@ static void build(void)
         for (int k = 0; k < count && !seen; k++)
             seen = items[k].kind == DI_APP && items[k].app == list[i]->app;
         if (!seen)
-            items[count++] = (struct item){.kind = DI_APP, .app = list[i]->app, .running = true};
+            items[count++] = (struct item){.kind = DI_APP, .app = list[i]->app, .running = true, .pin = -1};
     }
     for (int k = pinned_end; k < count; k++)
         items[k].running = true;
     for (int k = 0; k < count; k++)
         if (items[k].kind == DI_APP && !items[k].running)
             items[k].running = wm_app_window_count(items[k].app) > 0;
-    items[count++] = (struct item){.kind = DI_SEPARATOR};
+    items[count++] = (struct item){.kind = DI_SEPARATOR, .pin = -1};
     for (int i = 0; i < n && count < MAX_ITEMS - 1; i++)
         if ((list[i]->flags & WIN_MINIMIZED) && list[i]->thumb.px)
-            items[count++] = (struct item){.kind = DI_WINDOW, .win = list[i]};
-    items[count++] = (struct item){.kind = DI_TRASH};
+            items[count++] = (struct item){.kind = DI_WINDOW, .win = list[i], .pin = -1};
+    items[count++] = (struct item){.kind = DI_TRASH, .pin = -1};
     grid_count = 0;
     gui_app_foreach(add_grid, NULL);
 }
@@ -171,14 +315,15 @@ int dock_reserved(void)
     return autohide ? 0 : base_size + 2 * PAD + BOTTOM + 4;
 }
 
+int dock_rail_reserved(void)
+{
+    return look_current()->dock == DOCK_RAIL ? RAIL_X + RAIL_W0 + 8 : 0;
+}
+
 int shell_left_reserved(void)
 {
     const struct gui_look *l = look_current();
-    if (l->dock == DOCK_RAIL)
-        return RAIL_X + RAIL_W0 + 8;
-    if (l->places)
-        return PLACES_W + 14;
-    return 0;
+    return dock_rail_reserved() + (l->places ? PLACES_W + 14 : 0);
 }
 
 bool dock_hidden(void)
@@ -244,7 +389,8 @@ static void layout_rail(void)
 {
     struct rect s = wm_screen_rect(0);
     int width = lerp_i(RAIL_W0, RAIL_W1, CLAMP(grow.pos, -100, 1124));
-    dock_rect = (struct rect){s.x + RAIL_X, s.y + 10, width, s.h - 20};
+    int top = menubar_height();
+    dock_rect = (struct rect){s.x + RAIL_X, s.y + top + 10, width, s.h - top - 20};
     int y = dock_rect.y + 10;
     int trash_y = dock_rect.y + dock_rect.h - RAIL_ROW - 6;
     for (int i = 0; i < count; i++) {
@@ -443,6 +589,11 @@ static void layout(void)
     case DOCK_CORNER: layout_corner(); break;
     default: layout_center(); break;
     }
+    for (int i = 0; i < count; i++)
+        if (!rect_empty(items[i].r)) {
+            items[i].r.x += ox[i].pos;
+            items[i].r.y += oy[i].pos;
+        }
     glass_set_frame(&glass, dock_rect);
     damage_changes(old);
 }
@@ -479,6 +630,11 @@ static const char *item_label(const struct item *it)
     case DI_TRASH: return "Trash";
     case DI_WINDOW: return it->win->title;
     case DI_SYSTEM: return "SynthOS";
+    case DI_FILE: {
+        static char label[64];
+        gui_file_label(it->path, label, sizeof(label));
+        return label;
+    }
     default: return NULL;
     }
 }
@@ -499,6 +655,218 @@ void dock_bounce(const struct gui_app *app)
     bounce_start = hal_ticks_ms();
 }
 
+/* Dragging icons: a Dock icon picked up leaves a gap that follows the pointer, the others glide aside; dropped off
+   the Dock it goes up in a puff (and an app lands on the desktop as a shortcut). Desktop icons come in the same way. */
+
+static bool inside(int x, int y);
+static void draw_icon(struct canvas *c, const struct item *it, struct rect r, int alpha);
+
+static int drag_size(void)
+{
+    return kind == DOCK_CORNER ? CORNER_ICON + 8 : kind == DOCK_RAIL ? 44 : base_size + 8;
+}
+
+static struct rect drag_rect(void)
+{
+    int sz = drag_size() * (900 + CLAMP(dnd.pop.pos, 0, 1300) / 4) / 1024;
+    return (struct rect){dnd.x - sz / 2, dnd.y - sz / 2, sz, sz};
+}
+
+static void damage_drag(void)
+{
+    static struct rect was, poof_was;
+    struct rect now = dnd.active ? rect_inset(drag_rect(), -16) : (struct rect){0, 0, 0, 0};
+    int pr = 20 + CLAMP(dnd.poof.pos, 0, 1024) * 50 / 1024;
+    struct rect poof = dnd.poof.pos > 0 && dnd.poof.pos < 1024 ? (struct rect){dnd.poof_x - pr - 4, dnd.poof_y - pr - 4,
+                                                                                2 * pr + 8, 2 * pr + 8}
+                                                                : (struct rect){0, 0, 0, 0};
+    wm_damage_z(was, Z_CURSOR);
+    wm_damage_z(now, Z_CURSOR);
+    wm_damage_z(poof_was, Z_CURSOR);
+    wm_damage_z(poof, Z_CURSOR);
+    was = now;
+    poof_was = poof;
+}
+
+static bool same_item(const struct item *a, const struct item *b)
+{
+    if (a->kind != b->kind)
+        return false;
+    switch (a->kind) {
+    case DI_APP: return a->app == b->app;
+    case DI_FILE: return !strcmp(a->path, b->path);
+    case DI_WINDOW: return a->win == b->win;
+    case DI_GAP: return true;
+    default: return true;
+    }
+}
+
+/* Rebuilds the Dock; icons that moved start from where they were and glide to their new places. */
+static void rebuild_glide(void)
+{
+    struct item old[MAX_ITEMS];
+    int old_count = count;
+    char old_paths[MAX_ITEMS][PATH_MAX_LEN];
+    memcpy(old, items, sizeof(items[0]) * (size_t)count);
+    for (int i = 0; i < count; i++)
+        if (items[i].kind == DI_FILE) {
+            str_copy(old_paths[i], items[i].path, PATH_MAX_LEN);
+            old[i].path = old_paths[i];
+        }
+    build();
+    for (int i = 0; i < MAX_ITEMS; i++) {
+        spring_set(&ox[i], 0);
+        spring_set(&oy[i], 0);
+    }
+    layout();
+    for (int i = 0; i < count; i++) {
+        if (rect_empty(items[i].r))
+            continue;
+        for (int k = 0; k < old_count; k++)
+            if (same_item(&old[k], &items[i]) && !rect_empty(old[k].r)) {
+                spring_set(&ox[i], old[k].r.x - items[i].r.x);
+                spring_set(&oy[i], old[k].r.y - items[i].r.y);
+                ox[i].target = oy[i].target = 0;
+                break;
+            }
+    }
+    layout();
+    if (hover_item >= count)
+        hover_item = -1;
+}
+
+/* Where among the pinned icons (the dragged one left out) a drop at (x, y) would go, or -1 off the Dock. */
+static int drop_slot(int x, int y)
+{
+    if (!inside(x, y) && !rect_contains(rect_inset(dock_rect, -24), x, y))
+        return -1;
+    int slot = 0;
+    for (int i = 0; i < count; i++) {
+        const struct item *it = &items[i];
+        if ((it->pin < 0 && it->kind != DI_GAP) || rect_empty(it->r))
+            continue;
+        int c = kind == DOCK_RAIL ? it->r.y + it->r.h / 2 : it->r.x + it->r.w / 2;
+        if ((kind == DOCK_RAIL ? y : x) > c)
+            slot++;
+        if (it->kind == DI_GAP && (kind == DOCK_RAIL ? y : x) > c)
+            slot--;
+    }
+    return slot;
+}
+
+static void drag_update(int x, int y)
+{
+    dnd.x = x;
+    dnd.y = y;
+    int slot = drop_slot(x, y);
+    if (slot != dnd.gap) {
+        dnd.gap = slot;
+        rebuild_glide();
+    }
+    damage_drag();
+}
+
+static void drag_begin(const char *entry, int from_pin, bool from_dock, int x, int y)
+{
+    str_copy(dnd.entry, entry, sizeof(dnd.entry));
+    dnd.active = true;
+    dnd.armed = false;
+    dnd.from_dock = from_dock;
+    dnd.from_pin = from_pin;
+    dnd.gap = -2;
+    spring_set(&dnd.pop, 0);
+    dnd.pop.target = 1024;
+    grow.target = 0;
+    pressed_item = -1;
+    hover_item = -1;
+    drag_update(x, y);
+}
+
+static bool drag_finish(int x, int y)
+{
+    int slot = drop_slot(x, y);
+    bool landed = slot >= 0;
+    if (dnd.from_dock && dnd.from_pin >= 0)
+        pin_remove(dnd.from_pin);
+    if (landed) {
+        int already = pin_find(dnd.entry);
+        if (already >= 0) {
+            pin_remove(already);
+            if (already < slot)
+                slot--;
+        }
+        pin_insert(slot, dnd.entry);
+    } else if (dnd.from_dock && dnd.from_pin >= 0) {
+        dnd.poof_x = x;
+        dnd.poof_y = y;
+        str_copy(dnd.poof_entry, dnd.entry, sizeof(dnd.poof_entry));
+        spring_set(&dnd.poof, 1);
+        dnd.poof.target = 1024;
+        if (dnd.entry[0] != '/' && strcmp(dnd.entry, "Launchpad") && chrome_hit(x, y) == false &&
+            !wm_window_at(x, y))
+            gui_make_app_shortcut(dnd.entry);
+    }
+    if (landed || (dnd.from_dock && dnd.from_pin >= 0))
+        pins_save();
+    dnd.active = false;
+    dnd.gap = -1;
+    damage_drag();
+    rebuild_glide();
+    return landed;
+}
+
+void dock_drag_move(const char *entry, int x, int y)
+{
+    if (!started)
+        return;
+    if (!dnd.active)
+        drag_begin(entry, -1, false, x, y);
+    else
+        drag_update(x, y);
+}
+
+bool dock_drag_drop(int x, int y)
+{
+    if (!started || !dnd.active)
+        return false;
+    return drag_finish(x, y);
+}
+
+bool dock_dragging(void)
+{
+    return started && dnd.active;
+}
+
+void dock_paint_drag(struct canvas *c)
+{
+    if (!started)
+        return;
+    if (dnd.poof.pos > 0 && dnd.poof.pos < 1000) {
+        int t = CLAMP(dnd.poof.pos, 0, 1024), r = 20 + t * 50 / 1024, a = 200 - t * 200 / 1024;
+        for (int k = 0; k < 6; k++) {
+            int dx = (k % 3 - 1) * r * 2 / 3, dy = (k / 3 * 2 - 1) * r / 2;
+            gfx_circle(c, dnd.poof_x + dx, dnd.poof_y + dy, MAX(2, r / 3 - t * r / 4096), ALPHA(0xffffffffu, a));
+        }
+    }
+    if (!dnd.active)
+        return;
+    struct rect r = drag_rect();
+    struct item it = {.kind = DI_FILE, .path = dnd.entry};
+    const struct gui_app *app = dnd.entry[0] == '/' ? NULL : gui_app_find(dnd.entry);
+    if (!strcmp(dnd.entry, "Launchpad"))
+        it = (struct item){.kind = DI_LAUNCHPAD};
+    else if (app && !strcmp(app->name, dnd.entry))
+        it = (struct item){.kind = DI_APP, .app = app};
+    gfx_drop_shadow(c, r, r.w / 4, 6, 50, 2);
+    draw_icon(c, &it, r, 235);
+    bool adding = dnd.gap >= 0 && !dnd.from_dock, removing = dnd.gap < 0 && dnd.from_dock;
+    if (adding || removing) {
+        int bx = r.x + r.w - 4, by = r.y + 4;
+        gfx_circle(c, bx, by, 10, adding ? style.ok : style.error);
+        gfx_symbol(c, bx - 7, by - 7, adding ? SYM_PLUS : SYM_MINUS, 14, RGB(255, 255, 255));
+    }
+}
+
 bool dock_animate(void)
 {
     if (!started)
@@ -514,7 +882,11 @@ bool dock_animate(void)
     for (int i = 0; i < count; i++) {
         lift[i].target = i == hover_item && kind != DOCK_CENTER ? 1024 : 0;
         busy |= spring_step(&lift[i], 600, 26, dt);
+        busy |= spring_step(&ox[i], 300, 26, dt);
+        busy |= spring_step(&oy[i], 300, 26, dt);
     }
+    if (spring_step(&dnd.pop, 500, 22, dt) | spring_step(&dnd.poof, 200, 30, dt))
+        damage_drag();
     if (bounce_app) {
         if (now - bounce_start >= 1000)
             bounce_app = NULL;
@@ -538,6 +910,10 @@ static void draw_icon(struct canvas *c, const struct item *it, struct rect r, in
         gfx_drop_shadow(c, dst, 4, 6, 70, 2);
         gfx_scale(c, dst, t, alpha);
         gfx_icon(c, r.x + r.w - 18, r.y + r.h - 18, it->win->icon, 18);
+    } else if (it->kind == DI_FILE) {
+        gui_draw_file_icon(c, it->path, r, alpha);
+    } else if (it->kind == DI_GAP) {
+        return;
     } else if (it->kind == DI_APP && it->app->picture) {
         gfx_scale(c, (struct rect){r.x + r.w / 16, r.y + r.w / 16, r.w - r.w / 8, r.h - r.w / 8}, it->app->picture, alpha);
     } else {
@@ -702,7 +1078,7 @@ void dock_paint(struct canvas *c, int screen)
 static int item_at(int x, int y)
 {
     for (int i = 0; i < count; i++) {
-        if (items[i].kind == DI_SEPARATOR || rect_empty(items[i].r))
+        if (items[i].kind == DI_SEPARATOR || items[i].kind == DI_GAP || rect_empty(items[i].r))
             continue;
         struct rect r = items[i].r;
         if (kind == DOCK_CENTER)
@@ -774,11 +1150,14 @@ static void empty_trash(void)
 }
 
 static int menu_item;
+static struct menu_item menu_buf[8];
+
+static void activate(int i);
 
 static void pick(struct window *owner, int index)
 {
     UNUSED(owner);
-    if (menu_item < 0 || menu_item >= count)
+    if (menu_item < 0 || menu_item >= count || index < 0 || index >= 8)
         return;
     struct item *it = &items[menu_item];
     if (it->kind == DI_TRASH) {
@@ -788,18 +1167,29 @@ static void pick(struct window *owner, int index)
             empty_trash();
         return;
     }
-    if (it->kind != DI_APP)
-        return;
-    if (index == 0)
-        gui_app_launch(it->app, NULL);
-    else if (index == 1)
+    const char *label = menu_buf[index].label;
+    if (!strcmp(label, "Open") || !strcmp(label, "New Window")) {
+        if (it->kind == DI_APP)
+            gui_app_launch(it->app, NULL);
+        else
+            activate(menu_item);
+    } else if (!strcmp(label, "Show All Windows")) {
         wm_focus_app(it->app);
-    else if (index == 3)
+    } else if (!strcmp(label, "Quit")) {
         for (struct window *w = wm_app_window(it->app); w; w = wm_app_window(it->app)) {
             wm_close(w);
             if (wm_window_alive(w))
                 break;
         }
+    } else if (!strcmp(label, "Remove from Dock")) {
+        pin_remove(it->pin);
+        pins_save();
+        rebuild_glide();
+    } else if (!strcmp(label, "Keep in Dock") && it->kind == DI_APP) {
+        pin_insert(pin_count, it->app->name);
+        pins_save();
+        rebuild_glide();
+    }
 }
 
 static void activate(int i)
@@ -824,6 +1214,7 @@ static void activate(int i)
         vfs_mkdirs(TRASH_DIR);
         gui_open_file(TRASH_DIR);
         break;
+    case DI_FILE: gui_open_file(it->path); break;
     default: break;
     }
 }
@@ -833,19 +1224,26 @@ static void context_menu(int i, int x, int y)
     menu_item = i;
     int above = kind == DOCK_RAIL ? 0 : 1;
     int mx = kind == DOCK_RAIL ? items[i].r.x + items[i].r.w + 12 : x;
-    if (items[i].kind == DI_TRASH) {
-        static const struct menu_item trash_items[] = {{"Open", 0, NULL}, {"Empty Trash", 0, NULL}};
-        ui_menu_items(NULL, mx, above ? y - 80 : y, trash_items, 2, pick);
-    } else if (items[i].kind == DI_APP) {
-        bool running = wm_app_window_count(items[i].app) > 0;
-        static const struct menu_item app_items[] = {
-            {"New Window", 0, NULL}, {"Show All Windows", 0, NULL}, {"", 0, NULL}, {"Quit", 0, NULL}};
-        static const struct menu_item open_items[] = {{"Open", 0, NULL}};
-        if (running)
-            ui_menu_items(NULL, mx, above ? y - 120 : y, app_items, 4, pick);
-        else
-            ui_menu_items(NULL, mx, above ? y - 44 : y, open_items, 1, pick);
+    const struct item *it = &items[i];
+    int n = 0;
+    if (it->kind == DI_TRASH) {
+        menu_buf[n++] = (struct menu_item){"Open", 0, NULL};
+        menu_buf[n++] = (struct menu_item){"Empty Trash", 0, NULL};
+    } else if (it->kind == DI_APP || it->kind == DI_FILE || it->kind == DI_LAUNCHPAD) {
+        bool running = it->kind == DI_APP && wm_app_window_count(it->app) > 0;
+        if (running) {
+            menu_buf[n++] = (struct menu_item){"New Window", 0, NULL};
+            menu_buf[n++] = (struct menu_item){"Show All Windows", 0, NULL};
+            menu_buf[n++] = (struct menu_item){"Quit", 0, NULL};
+        } else {
+            menu_buf[n++] = (struct menu_item){"Open", 0, NULL};
+        }
+        menu_buf[n++] = (struct menu_item){"", 0, NULL};
+        menu_buf[n++] = (struct menu_item){it->pin >= 0 ? "Remove from Dock" : "Keep in Dock", 0, NULL};
+    } else {
+        return;
     }
+    ui_menu_items(NULL, mx, above ? y - 14 - 30 * n : y, menu_buf, n, pick);
 }
 
 void dock_mouse(int x, int y, unsigned button, bool down, int clicks)
@@ -855,9 +1253,17 @@ void dock_mouse(int x, int y, unsigned button, bool down, int clicks)
     if (down) {
         pressed_item = button == BUTTON_LEFT ? i : -1;
         grid_pressed = button == BUTTON_LEFT ? g : -1;
+        dnd.armed = pressed_item >= 0 && (items[i].pin >= 0 || items[i].kind == DI_APP);
+        dnd.sx = x;
+        dnd.sy = y;
         wm_damage_z(zone, Z_DOCK);
         if (button == BUTTON_RIGHT && i >= 0)
             context_menu(i, x, y);
+        return;
+    }
+    dnd.armed = false;
+    if (dnd.active) {
+        drag_finish(x, y);
         return;
     }
     int pressed = pressed_item, gp = grid_pressed;
@@ -879,6 +1285,22 @@ void dock_hover(int x, int y)
 {
     if (!started)
         return;
+    if (dnd.active) {
+        if (dnd.from_dock && y >= 0)
+            drag_update(x, y);
+        return;
+    }
+    if (dnd.armed && y >= 0 && pressed_item >= 0 && pressed_item < count) {
+        int dx = x - dnd.sx, dy = y - dnd.sy;
+        if (dx * dx + dy * dy > 64) {
+            const struct item *it = &items[pressed_item];
+            const char *entry = it->kind == DI_APP ? it->app->name : it->kind == DI_FILE ? it->path : "Launchpad";
+            char copy[PATH_MAX_LEN];
+            str_copy(copy, entry, sizeof(copy));
+            drag_begin(copy, it->pin, true, x, y);
+            return;
+        }
+    }
     struct rect s = wm_screen_rect(0);
     bool now_over = y >= 0 && wm_screen_at(x, y) == 0 && (inside(x, y) || item_at(x, y) >= 0);
     if (kind == DOCK_CENTER)
@@ -932,6 +1354,8 @@ void dock_start(void)
     glass = (struct glass){0};
     glass.z = Z_DOCK;
     kind = look_current()->dock;
+    pins_look = -1;
+    dnd.active = dnd.armed = false;
     hover_x = hover_item = pressed_item = grid_hover = grid_pressed = -1;
     spring_set(&grow, kind == DOCK_CORNER ? -900 : 0);
     grow.target = 0;
@@ -958,6 +1382,29 @@ void dock_stop(void)
     started = false;
     glass_unregister(&glass);
     wm_damage_z(zone, Z_DOCK);
+}
+
+static void get_apps(char *buf, size_t cap)
+{
+    pins_ready();
+    size_t n = 0;
+    buf[0] = 0;
+    for (int i = 0; i < pin_count && n + 2 < cap; i++)
+        n += (size_t)ksnprintf(buf + n, cap - n, "%s%s", i ? "|" : "", pins[i]);
+}
+
+static int set_apps(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    pins_ready();
+    if (!strcmp(value, "default"))
+        pins_default(look_current()->dock);
+    else
+        pins_parse(value, strlen(value));
+    pins_save();
+    if (started)
+        rebuild_glide();
+    return 0;
 }
 
 static void get_size(char *buf, size_t cap)
@@ -1026,3 +1473,7 @@ static int set_hide(struct shell *sh, const char *value)
 static const struct setting s_dockhide = {"dockhide", "on|off", "hide the dock until the pointer reaches the bottom",
                                           get_hide, set_hide};
 SETTING(s_dockhide);
+
+static const struct setting s_dockapps = {"dockapps", "default|<app or /path>|...",
+                                          "what the Dock of the current look holds, in order", get_apps, set_apps};
+SETTING(s_dockapps);

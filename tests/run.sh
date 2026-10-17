@@ -113,6 +113,16 @@ widgets add moon
 no widget called moon
 config widgets clock,weather,music; config widgets
 clock,weather,music
+config dockapps
+Launchpad|Files|Browser|Terminal|Notepad|Music|System Settings
+config dockapps 'Files|/home/notes.txt|Terminal'; grep dune ~/.dock
+dune Files|/home/notes.txt|Terminal
+config dockapps default; config dockapps
+Launchpad|Files|Browser|Terminal|Notepad|Music|System Settings
+config dockstyle side; config statusbar menubar; config places off; head -n 1 ~/.looks
+dune dock=side status=menubar places=off
+config dockstyle corner; config statusbar pill; config places on; config dockstyle
+corner
 which ls hello
 hello: /bin/hello.sx
 formats | grep -c DOS

@@ -724,6 +724,8 @@ bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks)
 
 void desktop_hover(int x, int y, bool over)
 {
+    if (desktop_icon_drag(x, y))
+        return;
     widgets_hover(over || drag >= 0 ? x : -1, y);
 }
 

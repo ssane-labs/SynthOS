@@ -48,6 +48,8 @@ struct gui_look {
 const struct gui_look *look_current(void);
 const struct gui_look *look_get(int index);
 int look_count(void);
+void look_user_changed(void);
+void look_reset(void);
 int menubar_height(void);
 void gui_look_changed(void);
 
@@ -155,6 +157,7 @@ void wm_reflow(void);
 void wm_crossfade(void);
 void wm_window_menu(struct window *w, int x, int y);
 int shell_left_reserved(void);
+int dock_rail_reserved(void);
 
 #define PLACES_W 190
 #define PANEL_RADIUS 44
@@ -210,11 +213,20 @@ void widgets_user_changed(void);
 int widgets_right_reserved(void);
 void widgets_edit(bool on);
 void wm_animate_ghosts(void);
+struct window *wm_window_at(int x, int y);
 int wallpaper_download(const char *source, char *saved, size_t cap, char *title, size_t title_cap,
                        void (*progress)(void *ctx, const char *stage, size_t done, size_t total), void *ctx);
 void wallpaper_fetch(const char *source);
 void wallpaper_fetch_run(void);
 void gui_wallpaper_use(const char *path);
+void gui_draw_file_icon(struct canvas *c, const char *path, struct rect r, int alpha);
+void gui_file_label(const char *path, char *out, size_t cap);
+void gui_make_app_shortcut(const char *name);
+void dock_drag_move(const char *entry, int x, int y);
+bool dock_drag_drop(int x, int y);
+bool dock_dragging(void);
+bool desktop_icon_drag(int x, int y);
+void dock_paint_drag(struct canvas *c);
 bool widgets_editing(void);
 int widgets_obstacles(struct rect *out, int max);
 void gui_desktop_changed(void);

@@ -358,19 +358,47 @@ static void switch_row(struct ui *ui, struct rect r, const char *label, const ch
 
 static void pane_dock(struct ui *ui, struct settings *s, int x, int y, int w)
 {
+    char value[32], title[64];
+    const struct gui_look *l = look_current();
+    ksnprintf(title, sizeof(title), "Layout of %s", l->title);
+    y = heading(ui, x, y, w, title);
+    struct rect g = ui_group(ui, x, y, w, 4, ROW);
+    struct rect r = row_at(g, 0);
+    ui_group_label(ui, r, "Dock", NULL, false);
+    static const char *const docks[] = {"Bottom", "Corner", "Side"};
+    static const char *const dock_values[] = {"bottom", "corner", "side"};
+    int sel = (int)l->dock;
+    if (ui_segmented(ui, control(r, 240, 24), docks, 3, &sel))
+        apply("dockstyle", dock_values[sel]);
+    r = row_at(g, 1);
+    ui_group_label(ui, r, "Status", NULL, false);
+    static const char *const bars[] = {"Menu Bar", "Floating Pill"};
+    static const char *const bar_values[] = {"menubar", "pill"};
+    sel = (int)l->status;
+    if (ui_segmented(ui, control(r, 240, 24), bars, 2, &sel))
+        apply("statusbar", bar_values[sel]);
+    switch_row(ui, row_at(g, 2), "Places panel", "places", false);
+    r = row_at(g, 3);
+    ui_group_label(ui, r, "Start over with this look's own layout", NULL, true);
+    if (ui_button(ui, control(r, 90, 26), "Reset"))
+        look_reset();
+    y += 4 * ROW + 20;
     y = heading(ui, x, y, w, "Widgets");
-    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer"};
-    static const char *const labels[] = {"Clock", "Weather", "Music", "Calendar and tasks", "Visualizer"};
-    struct rect g = ui_group(ui, x, y, w, 6, ROW);
-    for (int i = 0; i < 5; i++) {
-        struct rect r = row_at(g, i);
-        bool here = look_current()->widgets >> i & 1;
-        ui_group_label(ui, r, labels[i], here ? NULL : "not in this look", false);
+    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
+    static const char *const labels[] = {"Clock", "Weather", "Music", "Calendar", "Visualizer", "Tasks"};
+    g = ui_group(ui, x, y, w, 8, ROW);
+    for (int i = 0; i < 6; i++) {
+        r = row_at(g, i);
+        ui_group_label(ui, r, labels[i], NULL, false);
         bool on = widget_on(names[i]);
         if (ui_switch(ui, control(r, 36, 22), &on))
             widget_toggle(names[i], on);
     }
-    struct rect r = row_at(g, 5);
+    r = row_at(g, 6);
+    ui_group_label(ui, r, "Arrange them on the desktop", NULL, false);
+    if (ui_button(ui, control(r, 120, 26), "Edit Widgets"))
+        widgets_edit(true);
+    r = row_at(g, 7);
     ui_group_label(ui, r, "Weather city", NULL, true);
     struct rect field = control(r, 200, 26);
     if (!s->city.len && !ui->st->focus) {
@@ -381,21 +409,24 @@ static void pane_dock(struct ui *ui, struct settings *s, int x, int y, int w)
     }
     if (ui_textbox_hint(ui, field, &s->city, "By address"))
         apply("weathercity", s->city.len ? s->city.buf : "auto");
-    y += 6 * ROW + 20;
-    y = heading(ui, x, y, w, look_current()->dock == DOCK_CENTER ? "Dock" : "Dock (in the Mist look)");
-    g = ui_group(ui, x, y, w, 3, ROW);
+    y += 8 * ROW + 20;
+    y = heading(ui, x, y, w, "Dock");
+    g = ui_group(ui, x, y, w, 4, ROW);
     r = row_at(g, 0);
     ui_group_label(ui, r, "Size", NULL, false);
-    char value[16];
     current("docksize", value, sizeof(value));
     static const char *const sizes[] = {"Small", "Medium", "Large"};
     static const char *const size_values[] = {"small", "medium", "large"};
-    int sel = !strcmp(value, "small") ? 0 : !strcmp(value, "large") ? 2 : 1;
+    sel = !strcmp(value, "small") ? 0 : !strcmp(value, "large") ? 2 : 1;
     if (ui_segmented(ui, control(r, 240, 24), sizes, 3, &sel))
         apply("docksize", size_values[sel]);
-    switch_row(ui, row_at(g, 1), "Magnification", "magnify", false);
-    switch_row(ui, row_at(g, 2), "Automatically hide and show the Dock", "dockhide", true);
-    y += 3 * ROW + 20;
+    switch_row(ui, row_at(g, 1), "Magnification (bottom Dock)", "magnify", false);
+    switch_row(ui, row_at(g, 2), "Automatically hide and show the Dock", "dockhide", false);
+    r = row_at(g, 3);
+    ui_group_label(ui, r, "Drag icons onto the Dock or off it", NULL, true);
+    if (ui_button(ui, control(r, 120, 26), "Reset Icons"))
+        apply("dockapps", "default");
+    y += 4 * ROW + 20;
     y = heading(ui, x, y, w, "Desktop");
     g = ui_group(ui, x, y, w, 2, ROW);
     switch_row(ui, row_at(g, 0), "Start the desktop when SynthOS starts", "desktop", false);
