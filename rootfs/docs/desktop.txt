@@ -39,7 +39,9 @@ Commands
   config dockapps default   what the Dock holds (or drag icons on and off)
   windows pin 1             keep a window on top (or ... > Keep on Top)
   wallpaper bing            photo of the day as the wallpaper (random, url)
-  pkg install chrome        get Google Chrome (the Chrome icon does it too)
+  pkg install chrome        get Google Chrome (the Chrome icon does it too;
+                            after login it also comes by itself in the
+                            background - config chromeauto off stops that)
   un7z file.7z dir          unpack a 7z archive
   config weathercity Oslo   where the weather widget looks (auto: by address)
   autostart add Music       open an app, a file or a !command at login

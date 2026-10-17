@@ -843,6 +843,7 @@ void gui_session_login(const char *name)
     if (session && session->idle)
         gui_terminal_run("clear");
     autostart_pending = true;
+    chrome_auto_arm();
 }
 
 void gui_terminal_show(void)
@@ -1180,10 +1181,12 @@ int gui_run(struct shell *sh)
     }
     input_set_pump(pump);
     last_input = hal_ticks_ms();
-    if (!user_logged_in())
+    if (!user_logged_in()) {
         gui_login();
-    else
+    } else {
         autostart_pending = true;
+        chrome_auto_arm();
+    }
     con_reset();
 
     shell_repl(sh);

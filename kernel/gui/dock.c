@@ -919,6 +919,19 @@ static void draw_icon(struct canvas *c, const struct item *it, struct rect r, in
     } else {
         gfx_icon_alpha(c, r.x, r.y, item_icon(it), r.w, alpha);
     }
+    int progress = it->kind == DI_APP ? gui_app_progress(it->app) : -1;
+    if (progress >= 0) {
+        struct rect bar = {r.x + r.w / 8, r.y + r.h - 8, r.w * 3 / 4, 5};
+        gfx_round(c, bar, 2, ALPHA(0xff000000u, 110));
+        gfx_round(c, (struct rect){bar.x, bar.y, MAX(bar.w * MIN(progress, 1024) / 1024, 5), bar.h}, 2,
+                  RGB(255, 255, 255));
+    }
+}
+
+void dock_redraw(void)
+{
+    if (started)
+        wm_damage_z(zone, Z_DOCK);
 }
 
 static uint32_t ink(void)

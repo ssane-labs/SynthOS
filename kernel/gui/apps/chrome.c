@@ -1,4 +1,8 @@
 #include <synth/config.h>
+#include <synth/exec.h>
+#include <synth/shell.h>
+#include <synth/net.h>
+#include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/input.h>
@@ -49,7 +53,7 @@ enum stage {
 static struct {
     struct window *win;
     enum stage stage;
-    bool pending, cancel;
+    bool pending, cancel, quiet;
     char status[160], arg[PATH_MAX_LEN];
     const char *step;
     uint64_t done, total;
@@ -146,13 +150,17 @@ static void progress(void *ctx, const char *stage, uint64_t done, uint64_t total
     job.total = total;
     job.bar.target = total ? (int)(done * 1024 / total) : 0;
     uint64_t now = hal_ticks_ms();
-    if (now - job.drawn < 60)
+    if (now - job.drawn < 40)
         return;
     spring_step(&job.bar, 300, 30, (int)MIN(now - job.drawn, 64u));
     job.drawn = now;
     if (job.win)
         wm_invalidate(job.win);
+    dock_redraw();
     input_poll();
+#if CONFIG_WIN32
+    w32_background();
+#endif
 }
 
 static bool stopped(void *ctx)
@@ -161,13 +169,52 @@ static bool stopped(void *ctx)
     return job.cancel;
 }
 
+/* Chrome comes by itself: a little while after the first login, with a network and room on the disk, SynthOS
+   fetches it in the background (the Dock icon shows how far it got). config chromeauto off turns this off. */
+static bool auto_get = true;
+static uint64_t auto_after;
+
+void chrome_auto_arm(void)
+{
+    auto_after = hal_ticks_ms() + 15000;
+}
+
+static void auto_start(void)
+{
+    char exe[PATH_MAX_LEN];
+    if (!auto_get || !auto_after || hal_ticks_ms() < auto_after || job.stage == ST_WORKING || job.pending)
+        return;
+    auto_after = 0;
+    if (chrome_path(exe, sizeof(exe)) || job.stage == ST_FAILED || net_interface_count() == 0 ||
+        !net_interface(0)->configured)
+        return;
+    job.stage = ST_WORKING;
+    job.cancel = false;
+    job.quiet = true;
+    job.total = job.done = 0;
+    spring_set(&job.bar, 0);
+    str_copy(job.status, "Asking Google's update server", sizeof(job.status));
+    job.pending = true;
+}
+
+int gui_app_progress(const struct gui_app *app)
+{
+    if (app != &chrome_app || job.stage != ST_WORKING)
+        return -1;
+    return job.total ? (int)(job.done * 1024 / job.total) : 0;
+}
+
 void chrome_install_run(void)
 {
+    auto_start();
     if (!job.pending)
         return;
     job.pending = false;
     struct omaha_ui ui = {.say = say, .progress = progress, .cancelled = stopped};
     int err = chrome_install(&ui);
+    bool quiet = job.quiet && !job.win;
+    job.quiet = false;
+    dock_redraw();
     if (err) {
         job.stage = ST_FAILED;
         str_copy(job.status, job.cancel ? "Stopped." : ui.error, sizeof(job.status));
@@ -181,8 +228,28 @@ void chrome_install_run(void)
     if (job.win)
         wm_close(job.win);
     gui_notify("Chrome is ready", "Google Chrome is installed; it is in the Dock and on the desktop.");
-    launch(job.arg[0] ? job.arg : NULL);
+    job.stage = ST_OFFER;
+    if (!quiet)
+        launch(job.arg[0] ? job.arg : NULL);
 }
+
+static void get_auto(char *buf, size_t cap)
+{
+    str_copy(buf, auto_get ? "on" : "off", cap);
+}
+
+static int set_auto(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    auto_get = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_auto = {"chromeauto", "on|off", "fetch Google Chrome in the background after login",
+                                      get_auto, set_auto};
+SETTING(s_auto);
 
 static void launch(const char *arg)
 {

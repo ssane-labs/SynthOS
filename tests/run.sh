@@ -128,6 +128,8 @@ config dockapps 'Files|/home/notes.txt|Terminal'; grep dune ~/.dock
 dune Files|/home/notes.txt|Terminal
 config dockapps default; config dockapps
 Launchpad|Files|Chrome|Terminal
+config chromeauto off; config chromeauto; config chromeauto on
+off
 config dockstyle side; config statusbar menubar; head -n 1 ~/.looks
 dune dock=side status=menubar
 config dockstyle corner; config statusbar pill; config dockstyle
