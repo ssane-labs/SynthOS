@@ -13,8 +13,6 @@ static const struct gui_look looks[] = {
     {"night", "Night", "Deep dark sky, an app rail and music on the desktop", true, RGB(110, 92, 200),
      RGB(150, 128, 255), DOCK_RAIL, STATUS_PILL, false,
      1u << WIDGET_CLOCK | 1u << WIDGET_MUSIC | 1u << WIDGET_VISUALIZER},
-    {"sunset", "Sunset", "Glowing evening, curved corner panels", true, RGB(170, 64, 120), RGB(255, 112, 120),
-     DOCK_ARC, STATUS_CORNER, false, 1u << WIDGET_WEATHER},
 };
 
 static int current = 0;
@@ -58,6 +56,6 @@ static int set_look(struct shell *sh, const char *value)
     return E_INVAL;
 }
 
-static const struct setting s_look = {"look", "dune|mist|night|sunset", "desktop design: colors, wallpaper and layout",
+static const struct setting s_look = {"look", "dune|mist|night", "desktop design: colors, wallpaper and layout",
                                       get_look, set_look};
 SETTING(s_look);

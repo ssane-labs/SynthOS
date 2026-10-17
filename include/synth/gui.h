@@ -146,6 +146,8 @@ enum symbol_id {
     SYM_MORE,
     SYM_WEATHER,
     SYM_CALENDAR,
+    SYM_PIN,
+    SYM_GLOBE,
     SYM_COUNT,
 };
 
@@ -316,7 +318,7 @@ enum window_flags {
     WIN_OVERLAY = 1u << 10,
     WIN_NOSHADOW = 1u << 11,
     WIN_PASSIVE = 1u << 12,
-    WIN_GLOW = 1u << 13,
+    WIN_PINNED = 1u << 13,
 };
 
 #define MENU_HEADER (-2)
@@ -385,6 +387,7 @@ void wm_hide(struct window *w);
 void wm_focus(struct window *w);
 struct window *wm_focused(void);
 void wm_invalidate(struct window *w);
+void wm_set_pinned(struct window *w, bool on);
 void wm_set_title(struct window *w, const char *title);
 void wm_set_timer(struct window *w, uint32_t ms);
 void wm_set_menus(struct window *w, const struct app_menu *menus, int count);

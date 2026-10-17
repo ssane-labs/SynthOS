@@ -1054,6 +1054,19 @@ def sym_calendar(d):
         d.rounded_rectangle([x - 7, y - 7, x + 7, y + 7], radius=3, fill=255)
 
 
+def sym_pin(d):
+    d.polygon([(44, 14), (84, 14), (78, 24), (78, 56), (98, 76), (30, 76), (50, 56), (50, 24)], fill=255)
+    d.line([(64, 76), (64, 118)], fill=255, width=W - 1)
+
+
+def sym_globe(d):
+    d.ellipse([12, 12, 116, 116], outline=255, width=W)
+    d.ellipse([40, 12, 88, 116], outline=255, width=W - 2)
+    d.line([(14, 64), (114, 64)], fill=255, width=W - 2)
+    d.arc([22, -10, 106, 46], 30, 150, fill=255, width=W - 3)
+    d.arc([22, 82, 106, 138], 210, 330, fill=255, width=W - 3)
+
+
 SYMBOLS = [
     ("SYM_LOGO", sym_logo), ("SYM_SEARCH", sym_search), ("SYM_CONTROL", sym_control), ("SYM_WIFI", sym_wifi),
     ("SYM_HOME", sym_home), ("SYM_DESKTOP", sym_desktop), ("SYM_DOC", sym_doc), ("SYM_APPS", sym_apps),
@@ -1072,7 +1085,7 @@ SYMBOLS = [
     ("SYM_NEWFOLDER", sym_newfolder), ("SYM_USB", sym_usb), ("SYM_BATTERY", sym_battery), ("SYM_EJECT", sym_eject),
     ("SYM_MUSIC", sym_music), ("SYM_VIDEO", sym_video), ("SYM_PLAY", sym_play), ("SYM_PAUSE", sym_pause),
     ("SYM_PREV", sym_prev), ("SYM_NEXT", sym_next), ("SYM_VOLUME", sym_volume), ("SYM_MORE", sym_more),
-    ("SYM_WEATHER", sym_weather), ("SYM_CALENDAR", sym_calendar),
+    ("SYM_WEATHER", sym_weather), ("SYM_CALENDAR", sym_calendar), ("SYM_PIN", sym_pin), ("SYM_GLOBE", sym_globe),
 ]
 
 

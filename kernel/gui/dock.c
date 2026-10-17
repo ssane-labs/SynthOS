@@ -28,10 +28,6 @@
 #define GRID_CELL 86
 #define GRID_MAX 24
 #define FILLET 22
-#define ARC_R0 236
-#define ARC_R1 258
-#define ARC_MAX 8
-#define ORB_R 58
 
 enum item_kind {
     DI_APP,
@@ -81,29 +77,7 @@ struct corner_shape {
     int x, y, w, h, radius, fillet, bottom;
 };
 
-struct arc_shape {
-    int cx, cy, inner, outer, orb;
-};
-
 static struct corner_shape corner;
-static struct arc_shape arc;
-
-static const int16_t sin_deg[91] = {
-    0,    18,   36,   54,   71,   89,   107,  125,  143,  160,  178,  195,  213,  230,  248,  265,  282,  299,  316,
-    333,  350,  367,  384,  400,  416,  433,  449,  465,  481,  496,  512,  527,  543,  558,  573,  587,  602,  616,
-    630,  644,  658,  672,  685,  698,  711,  724,  737,  749,  761,  773,  784,  796,  807,  818,  828,  839,  849,
-    859,  868,  878,  887,  896,  904,  912,  920,  928,  935,  943,  949,  956,  962,  968,  974,  979,  984,  989,
-    994,  998,  1002, 1005, 1008, 1011, 1014, 1016, 1018, 1020, 1022, 1023, 1023, 1024, 1024};
-
-static int sin_d(int deg)
-{
-    return sin_deg[CLAMP(deg, 0, 90)];
-}
-
-static int cos_d(int deg)
-{
-    return sin_deg[CLAMP(90 - deg, 0, 90)];
-}
 
 static int max_size(void)
 {
@@ -147,7 +121,7 @@ static void add_app(const char *name)
 static void build(void)
 {
     count = 0;
-    if (kind != DOCK_CENTER && kind != DOCK_ARC)
+    if (kind != DOCK_CENTER)
         items[count++] = (struct item){.kind = DI_SYSTEM};
     if (kind == DOCK_CORNER)
         items[count++] = (struct item){.kind = DI_LAUNCHPAD};
@@ -174,20 +148,11 @@ static void build(void)
     for (int k = 0; k < count; k++)
         if (items[k].kind == DI_APP && !items[k].running)
             items[k].running = wm_app_window_count(items[k].app) > 0;
-    if (kind != DOCK_ARC)
-        items[count++] = (struct item){.kind = DI_SEPARATOR};
+    items[count++] = (struct item){.kind = DI_SEPARATOR};
     for (int i = 0; i < n && count < MAX_ITEMS - 1; i++)
         if ((list[i]->flags & WIN_MINIMIZED) && list[i]->thumb.px)
             items[count++] = (struct item){.kind = DI_WINDOW, .win = list[i]};
     items[count++] = (struct item){.kind = DI_TRASH};
-    if (kind == DOCK_ARC)
-        for (int i = 0; i < count; i++)
-            if (items[i].kind == DI_SEPARATOR)
-                memmove(&items[i], &items[i + 1], sizeof(items[0]) * (size_t)(--count - i));
-    if (kind == DOCK_ARC && count > ARC_MAX) {
-        items[ARC_MAX - 1] = items[count - 1];
-        count = ARC_MAX;
-    }
     grid_count = 0;
     gui_app_foreach(add_grid, NULL);
 }
@@ -316,27 +281,47 @@ static int corner_row_count(void)
     return n;
 }
 
-static int corner_cover(int x, int y, const void *ctx)
+/* Signed distance (1/16 px) to the corner panel's edge and the outward normal (1/256); the screen sides are not
+   edges, the two fillets curve the other way. */
+static int corner_sdf(int x, int y, const void *ctx, int *nx, int *ny)
 {
     const struct corner_shape *k = ctx;
-    int l = k->x, r = k->x + k->w, t = k->y, b = k->bottom;
+    int l = k->x, r = k->x + k->w, t = k->y, b = k->bottom, f = k->fillet;
     int px = x * 16 + 8, py = y * 16 + 8;
     if (x >= l && x < r && y >= t && y < b) {
-        int cx = r - k->radius, cy = t + k->radius;
-        if (x >= cx && y < cy)
-            return gfx_cover(k->radius * 16 - gfx_dist16(px - cx * 16, py - cy * 16));
-        return gfx_cover(MIN(r * 16 - px, MIN(py - t * 16, (b - y) * 16)));
+        int cx = (r - k->radius) * 16, cy = (t + k->radius) * 16;
+        if (px >= cx && py < cy) {
+            int vx = px - cx, vy = py - cy, len = MAX(gfx_dist16(vx, vy), 1);
+            *nx = vx * 256 / len;
+            *ny = vy * 256 / len;
+            return k->radius * 16 - len;
+        }
+        int dr = r * 16 - px, dt = py - t * 16;
+        *nx = dr < dt ? 256 : 0;
+        *ny = dr < dt ? 0 : -256;
+        return MIN(dr, dt);
     }
-    int f = k->fillet;
+    int fx, fy;
     if (x >= l && x < l + f && y >= t - f && y < t) {
-        int d = gfx_dist16(px - (l + f) * 16, py - (t - f) * 16) - f * 16;
-        return gfx_cover(d);
+        fx = (l + f) * 16;
+        fy = (t - f) * 16;
+    } else if (x >= r && x < r + f && y >= b - f && y < b) {
+        fx = (r + f) * 16;
+        fy = (b - f) * 16;
+    } else {
+        *nx = *ny = 0;
+        return -256;
     }
-    if (x >= r && x < r + f && y >= b - f && y < b) {
-        int d = gfx_dist16(px - (r + f) * 16, py - (b - f) * 16) - f * 16;
-        return gfx_cover(d);
-    }
-    return 0;
+    int vx = fx - px, vy = fy - py, len = MAX(gfx_dist16(vx, vy), 1);
+    *nx = vx * 256 / len;
+    *ny = vy * 256 / len;
+    return len - f * 16;
+}
+
+static int corner_cover(int x, int y, const void *ctx)
+{
+    int nx, ny;
+    return gfx_cover(corner_sdf(x, y, ctx, &nx, &ny));
 }
 
 static bool corner_span(int y, const void *ctx, int *x0, int *x1)
@@ -383,39 +368,6 @@ static void layout_corner(void)
                          full_h + TOOLTIP_H + 30};
 }
 
-static int arc_cover(int x, int y, const void *ctx)
-{
-    const struct arc_shape *a = ctx;
-    if (x < a->cx || y > a->cy)
-        return 0;
-    int d = gfx_dist16((x - a->cx) * 16 + 8, (y - a->cy) * 16 + 8);
-    int band = MIN(d - a->inner * 16, a->outer * 16 - d);
-    int orb = a->orb * 16 - d;
-    return MAX(gfx_cover(band), gfx_cover(orb));
-}
-
-static void layout_arc(void)
-{
-    struct rect s = wm_screen_rect(0);
-    int g = CLAMP(grow.pos, -80, 1150);
-    int R = lerp_i(ARC_R0, ARC_R1, g), half = lerp_i(32, 38, g);
-    arc = (struct arc_shape){s.x, s.y + s.h, R - half, R + half, ORB_R + g * 6 / 1024};
-    int outer = R + half;
-    dock_rect = (struct rect){s.x, s.y + s.h - outer - 2, outer + 2, outer + 2};
-    int n = count;
-    for (int i = 0; i < n; i++) {
-        struct item *it = &items[i];
-        int deg = n > 1 ? 8 + 74 * i / (n - 1) : 45;
-        int size = 42 + g * 6 / 1024 + lift[i].pos * 18 / 1024;
-        int rr = R + bounce_offset(it) / 2;
-        int cx = arc.cx + rr * cos_d(deg) / 1024, cy = arc.cy - rr * sin_d(deg) / 1024;
-        it->size = size;
-        it->r = (struct rect){cx - size / 2, cy - size / 2, size, size};
-    }
-    int reach = ARC_R1 + 60 + TOOLTIP_H + 40;
-    zone = (struct rect){s.x, s.y + s.h - reach, reach + 60, reach};
-}
-
 static const char *item_label(const struct item *it);
 
 static struct rect tip_rect(int i)
@@ -425,7 +377,7 @@ static struct rect tip_rect(int i)
         return (struct rect){0, 0, 0, 0};
     struct rect r = items[i].r;
     int w = gfx_text_width(&font_sans, label) + 22;
-    bool beside = kind == DOCK_RAIL || kind == DOCK_ARC;
+    bool beside = kind == DOCK_RAIL;
     struct rect tip = beside ? (struct rect){r.x + r.w + 12, r.y + r.h / 2 - 12, w, 24}
                              : (struct rect){r.x + r.w / 2 - w / 2, r.y - TOOLTIP_H, w, 24};
     return rect_inset(tip, -14);
@@ -489,7 +441,6 @@ static void layout(void)
     switch (kind) {
     case DOCK_RAIL: layout_rail(); break;
     case DOCK_CORNER: layout_corner(); break;
-    case DOCK_ARC: layout_arc(); break;
     default: layout_center(); break;
     }
     glass_set_frame(&glass, dock_rect);
@@ -604,7 +555,7 @@ static void tooltip(struct canvas *c, struct rect r, const char *label, bool bes
     int w = gfx_text_width(&font_sans, label) + 22;
     struct rect tip = beside ? (struct rect){r.x + r.w + 12, r.y + r.h / 2 - 12, w, 24}
                              : (struct rect){r.x + r.w / 2 - w / 2, r.y - TOOLTIP_H, w, 24};
-    gfx_drop_shadow(c, tip, 12, 10, 50, 3);
+    gfx_drop_shadow(c, tip, 12, 5, 30, 1);
     gfx_round(c, tip, 12, style.dark ? RGBA(46, 44, 54, 235) : RGBA(252, 252, 254, 235));
     gfx_round_frame_gradient(c, tip, 12, style.dark ? ALPHA(0xffffffffu, 60) : ALPHA(0xffffffffu, 255),
                              style.dark ? ALPHA(0xffffffffu, 16) : ALPHA(0, 26));
@@ -618,13 +569,6 @@ static void running_dot(struct canvas *c, struct rect r)
     case DOCK_RAIL:
         gfx_round(c, (struct rect){dock_rect.x + 4, r.y + r.h / 2 - 7, 3, 14}, 1, style.accent);
         break;
-    case DOCK_ARC: {
-        int cx = r.x + r.w / 2 - arc.cx, cy = arc.cy - (r.y + r.h / 2);
-        int len = MAX(gfx_dist16(cx * 16, cy * 16) / 16, 1);
-        int off = r.w / 2 + 6;
-        gfx_circle(c, r.x + r.w / 2 + cx * off / len, r.y + r.h / 2 - cy * off / len, 2, col);
-        break;
-    }
     default:
         gfx_circle(c, r.x + r.w / 2, (kind == DOCK_CENTER ? dock_rect.y + dock_rect.h : r.y + r.h + 9) - 4, 2, col);
         break;
@@ -647,7 +591,7 @@ static void paint_items(struct canvas *c)
         if (rect_empty(r) || rect_empty(rect_intersect(rect_inset(r, -12), c->clip)))
             continue;
         int alpha = pressed_item == i ? 160 : 255;
-        if (kind == DOCK_ARC || kind == DOCK_CORNER) {
+        if (kind == DOCK_CORNER) {
             int glow = lift[i].pos * 90 / 1024;
             if (glow > 0)
                 gfx_glow(c, r, r.w / 3, 14, glow, style.accent);
@@ -673,8 +617,6 @@ static void paint_center(struct canvas *c)
     struct glass_look look;
     int radius = dock_rect.h * 2 / 5;
     glass_look_for(&look, GLASS_DOCK, radius);
-    if (style.glass == GLASS_LIQUID)
-        gfx_drop_shadow(c, dock_rect, radius, 16, style.dark ? 90 : 40, 5);
     glass_draw(c, &glass, &look);
     paint_items(c);
     if (hover_item >= 0 && hover_item < count && pressed_item < 0) {
@@ -688,7 +630,6 @@ static void paint_rail(struct canvas *c)
 {
     struct glass_look look;
     glass_look_for(&look, GLASS_PANEL, PANEL_RADIUS);
-    gfx_drop_shadow(c, dock_rect, PANEL_RADIUS, 22, style.dark ? 80 : 30, 6);
     glass_draw(c, &glass, &look);
     gfx_round_frame(c, dock_rect, PANEL_RADIUS, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
     if (hl_alpha.pos > 8) {
@@ -709,6 +650,7 @@ static void paint_corner(struct canvas *c)
     glass_look_for(&look, GLASS_PANEL, 0);
     look.shape = corner_cover;
     look.shape_span = corner_span;
+    look.shape_sdf = corner_sdf;
     look.shape_ctx = &corner;
     look.shape_key = corner.w * 4096 + corner.h;
     glass_draw(c, &glass, &look);
@@ -746,27 +688,6 @@ static void paint_corner(struct canvas *c)
     }
 }
 
-static void paint_arc(struct canvas *c)
-{
-    struct glass_look look;
-    glass_look_for(&look, GLASS_PANEL, 0);
-    look.shape = arc_cover;
-    look.shape_ctx = &arc;
-    look.shape_key = arc.inner * 65536 + arc.outer * 256 + arc.orb;
-    int glow = 60 + CLAMP(grow.pos, 0, 1024) * 60 / 1024;
-    gfx_glow(c, (struct rect){arc.cx - arc.orb, arc.cy - arc.orb, arc.orb * 2, arc.orb * 2}, arc.orb, 30, glow, style.accent);
-    glass_draw(c, &glass, &look);
-    int cx = arc.cx + arc.orb * 42 / 100, cy = arc.cy - arc.orb * 42 / 100;
-    gfx_circle(c, cx, cy, 22, ALPHA(style.accent, 230));
-    gfx_symbol(c, cx - 8, cy - 8, SYM_GRID, 16, RGB(255, 255, 255));
-    paint_items(c);
-    if (hover_item >= 0 && pressed_item < 0) {
-        const char *label = item_label(&items[hover_item]);
-        if (label)
-            tooltip(c, items[hover_item].r, label, true);
-    }
-}
-
 void dock_paint(struct canvas *c, int screen)
 {
     if (!started || screen != 0 || rect_empty(rect_intersect(zone, c->clip)))
@@ -774,7 +695,6 @@ void dock_paint(struct canvas *c, int screen)
     switch (kind) {
     case DOCK_RAIL: paint_rail(c); break;
     case DOCK_CORNER: paint_corner(c); break;
-    case DOCK_ARC: paint_arc(c); break;
     default: paint_center(c); break;
     }
 }
@@ -808,19 +728,10 @@ static int grid_at(int x, int y)
     return -1;
 }
 
-static bool in_orb(int x, int y)
-{
-    if (kind != DOCK_ARC)
-        return false;
-    int dx = x - arc.cx, dy = arc.cy - y;
-    return dx >= 0 && dy >= 0 && dx * dx + dy * dy <= arc.orb * arc.orb;
-}
-
 static bool inside(int x, int y)
 {
     switch (kind) {
     case DOCK_CORNER: return corner_cover(x, y, &corner) > 0;
-    case DOCK_ARC: return arc_cover(x, y, &arc) > 0;
     default: return rect_contains(dock_rect, x, y);
     }
 }
@@ -961,8 +872,6 @@ void dock_mouse(int x, int y, unsigned button, bool down, int clicks)
         else
             gui_app_launch(app, NULL);
         grow.target = 0;
-    } else if (i < 0 && g < 0 && in_orb(x, y)) {
-        launcher_toggle(arc.cx + arc.orb + 20, arc.cy - arc.orb - 20);
     }
 }
 
@@ -1024,7 +933,7 @@ void dock_start(void)
     glass.z = Z_DOCK;
     kind = look_current()->dock;
     hover_x = hover_item = pressed_item = grid_hover = grid_pressed = -1;
-    spring_set(&grow, kind == DOCK_CORNER || kind == DOCK_ARC ? -900 : 0);
+    spring_set(&grow, kind == DOCK_CORNER ? -900 : 0);
     grow.target = 0;
     spring_set(&hl, 0);
     spring_set(&hl_alpha, 0);

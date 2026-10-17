@@ -921,7 +921,7 @@ static void frame(struct ui *ui, void *data)
         ksnprintf(text, sizeof(text), "%s  ·  %d", f->search.buf, f->count);
         int tw = gfx_text_width(&font_sans, text) + 44;
         struct rect pill = {area.x + area.w - tw - 14, area.y + area.h - 44, tw, 32};
-        gfx_drop_shadow(ui->c, pill, 16, 14, 70, 4);
+        gfx_drop_shadow(ui->c, pill, 16, 6, 40, 1);
         gfx_round(ui->c, pill, 16, style.menu);
         gfx_symbol(ui->c, pill.x + 12, pill.y + 8, SYM_SEARCH, 16, style.secondary);
         gfx_text_box(ui->c, (struct rect){pill.x + 34, pill.y, pill.w - 40, pill.h}, &font_sans, text, style.text, ALIGN_LEFT);

@@ -228,12 +228,12 @@ static void paint(struct window *w, struct canvas *c)
             }
         }
         if (ph->fitted.px) {
-            gfx_drop_shadow(c, r, 4, 24, 120 * alpha / 255, 8);
+            gfx_drop_shadow(c, r, 4, 8, 60 * alpha / 255, 2);
             gfx_blit_alpha(c, r.x, r.y, &ph->fitted, (struct rect){0, 0, r.w, r.h}, alpha);
             return;
         }
     }
-    gfx_drop_shadow(c, r, 4, 24, 120 * alpha / 255, 8);
+    gfx_drop_shadow(c, r, 4, 8, 60 * alpha / 255, 2);
     gfx_scale_fast(c, r, &src, alpha);
 }
 

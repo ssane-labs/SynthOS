@@ -969,10 +969,12 @@ static BOOL WINAPI MoveWindow(HANDLE h, int x, int y, int width, int height, BOO
 
 static BOOL WINAPI SetWindowPos(HANDLE h, HANDLE after, int x, int y, int cx, int cy, UINT flags)
 {
-    UNUSED(after);
     struct w32_window *w = w32_win(h);
     if (!w)
         return FALSE;
+    struct w32_window *top = w32_top(w);
+    if (!(flags & 0x4) && top && top->wm && (after == (HANDLE)-1 || after == (HANDLE)-2))
+        wm_set_pinned(top->wm, after == (HANDLE)-1);
     bool move = !(flags & 0x2), size = !(flags & 0x1);
     if (move || size) {
         struct rect r = screen_rect(w);

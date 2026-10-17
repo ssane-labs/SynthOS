@@ -273,7 +273,7 @@ static void paint(struct window *w, struct canvas *c)
     if (show < 16)
         return;
     struct rect b = bar_rect(W, H, show);
-    gfx_drop_shadow(c, b, b.h / 2, 16, 120, 4);
+    gfx_drop_shadow(c, b, b.h / 2, 6, 60, 1);
     gfx_round(c, b, b.h / 2, RGBA(24, 24, 30, 210));
     gfx_round_frame(c, b, b.h / 2, ALPHA(0xffffffffu, 40));
     int cx = b.x + 28, cy = b.y + b.h / 2;

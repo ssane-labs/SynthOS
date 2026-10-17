@@ -105,7 +105,7 @@ static void tasks_load(void)
     size_t size;
     tasks_path(path, sizeof(path));
     if (vfs_read_all(path, &data, &size) != 0) {
-        static const char *const first[] = {"Try the four looks in Settings", "Play some music", "Write a note"};
+        static const char *const first[] = {"Try the looks in Settings", "Play some music", "Write a note"};
         for (int i = 0; i < 3; i++)
             str_copy(tasks.text[tasks.count++], first[i], sizeof(tasks.text[0]));
         return;
@@ -167,10 +167,6 @@ static struct rect base_rect(int id)
         }
         break;
     }
-    case DOCK_ARC:
-        if (id == WIDGET_WEATHER)
-            return (struct rect){right - 210, s.y + s.h - 70, 210, 52};
-        break;
     }
     return (struct rect){0, 0, 0, 0};
 }
@@ -232,8 +228,8 @@ static void card(struct canvas *c, struct widget *w, int alpha)
     int radius = w->r.h < 60 ? w->r.h / 2 : MIN(PANEL_RADIUS, w->r.h / 3);
     glass_look_for(&look, GLASS_PANEL, radius);
     int lift = CLAMP(w->lift.pos, 0, 1024);
-    gfx_drop_shadow(c, w->r, radius, 20 + lift * 12 / 1024, (style.dark ? 70 : 24) * alpha / 255 + lift * 34 / 1024,
-                    5 + lift * 6 / 1024);
+    if (lift > 0)
+        gfx_drop_shadow(c, w->r, radius, 8, lift * (style.dark ? 60 : 22) / 1024, 2);
     glass_draw(c, &w->glass, &look);
     gfx_round_frame(c, w->r, radius, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
 }

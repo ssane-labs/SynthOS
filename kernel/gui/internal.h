@@ -16,13 +16,11 @@ enum dock_kind {
     DOCK_CENTER,
     DOCK_CORNER,
     DOCK_RAIL,
-    DOCK_ARC,
 };
 
 enum status_kind {
     STATUS_MENUBAR,
     STATUS_PILL,
-    STATUS_CORNER,
 };
 
 enum widget_id {
@@ -91,6 +89,7 @@ struct glass_look {
     gfx_cover_fn shape;
     const void *shape_ctx;
     bool (*shape_span)(int y, const void *ctx, int *x0, int *x1);
+    int (*shape_sdf)(int x, int y, const void *ctx, int *nx, int *ny);
     int shape_key;
 };
 
@@ -99,7 +98,7 @@ struct glass {
     int z;
     bool valid;
     bool registered;
-    struct canvas small;
+    struct canvas small, sharp;
     struct rect src;
     int scale;
     void *geo;
@@ -156,7 +155,7 @@ void wm_window_menu(struct window *w, int x, int y);
 int shell_left_reserved(void);
 
 #define PLACES_W 190
-#define PANEL_RADIUS 34
+#define PANEL_RADIUS 44
 
 void panel_paint(struct canvas *c, int screen);
 bool panel_hit(int x, int y);
@@ -170,7 +169,6 @@ int status_bottom(void);
 int panel_weekday(int y, int m, int d);
 const char *panel_day_name(int i);
 const char *panel_month_name(int i);
-void launcher_toggle(int x, int y);
 void calendar_toggle(int right, int y);
 void shell_system_menu(int x, int y);
 void shell_power_menu(bool restart);

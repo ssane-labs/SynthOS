@@ -80,7 +80,7 @@ static void art(struct canvas *c, struct rect r, int index, int pulse)
     int i = index < 0 ? 2 : index % 3;
     int grow = pulse * 6 / 1024;
     r = rect_inset(r, -grow);
-    gfx_drop_shadow(c, r, 22, 26, 110, 10);
+    gfx_drop_shadow(c, r, 22, 10, 60, 3);
     gfx_round_gradient(c, r, 22, tops[i], bottoms[i]);
     struct canvas clip = *c;
     clip.clip = rect_intersect(c->clip, r);

@@ -189,13 +189,6 @@ static void draw_layout(struct canvas *c, struct rect r, const struct gui_look *
         gfx_round(&k, (struct rect){r.x - 4 * u, r.y + r.h - 9 * u, 22 * u, 14 * u}, 4 * u, glass);
         win.x += 4 * u;
         break;
-    case DOCK_ARC:
-        gfx_ring(&k, r.x, r.y + r.h, 15 * u, glass);
-        gfx_ring(&k, r.x, r.y + r.h, 15 * u + 1, glass);
-        gfx_ring(&k, r.x, r.y + r.h, 15 * u + 2, glass);
-        gfx_circle(&k, r.x, r.y + r.h, 6 * u, ALPHA(l->accent, 230));
-        gfx_circle(&k, r.x + r.w, r.y, 11 * u, glass);
-        break;
     }
     if (l->status == STATUS_PILL)
         gfx_round(&k, (struct rect){r.x + r.w - 15 * u, r.y + 2 * u, 13 * u, 3 * u}, (3 * u) / 2, glass);

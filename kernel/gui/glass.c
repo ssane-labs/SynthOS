@@ -3,6 +3,8 @@
 
 #include "internal.h"
 
+#define LENS_SCALE 2
+
 static struct glass *glass_list;
 uint64_t glass_stat_renders, glass_stat_pixels;
 
@@ -34,6 +36,7 @@ void glass_unregister(struct glass *g)
         }
     g->registered = false;
     canvas_free(&g->small);
+    canvas_free(&g->sharp);
     kfree(g->geo);
     g->geo = NULL;
     canvas_free(&g->out);
@@ -139,7 +142,50 @@ void glass_freeze(bool on)
     no_capture = on;
 }
 
-static bool capture(struct canvas *c, struct glass *g, int blur, int scale)
+static void blur_canvas(struct canvas *cv, int blur, int passes)
+{
+    uint32_t *tmp = kmalloc((size_t)MAX(cv->w, cv->h) * 4);
+    if (!tmp)
+        return;
+    for (int pass = 0; pass < passes; pass++) {
+        box_pass(cv->px, cv->w, cv->h, cv->w, 1, 0, blur, tmp);
+        box_pass(cv->px, cv->w, cv->h, cv->w, 0, 1, blur, tmp);
+    }
+    kfree(tmp);
+}
+
+static bool fit(struct canvas *cv, int w, int h)
+{
+    if (cv->px && cv->w == w && cv->h == h)
+        return true;
+    canvas_free(cv);
+    return canvas_alloc(cv, w, h);
+}
+
+/* Averages scale x scale blocks of `from` (sampling every step-th pixel) into `to`. */
+static void shrink(const uint32_t *from, int stride, struct rect area, int scale, int step, struct canvas *to)
+{
+    for (int y = 0; y < to->h; y++)
+        for (int x = 0; x < to->w; x++) {
+            unsigned r = 0, gg = 0, b = 0, n = 0;
+            int x0 = area.x + x * scale, y0 = area.y + y * scale;
+            int x1 = MIN(x0 + scale, area.x + area.w), y1 = MIN(y0 + scale, area.y + area.h);
+            for (int yy = y0; yy < y1; yy += step)
+                for (int xx = x0; xx < x1; xx += step) {
+                    uint32_t p = from[yy * stride + xx];
+                    r += p >> 16 & 0xff;
+                    gg += p >> 8 & 0xff;
+                    b += p & 0xff;
+                    n++;
+                }
+            n = MAX(n, 1u);
+            to->px[y * to->w + x] = 0xff000000u | (r / n) << 16 | (gg / n) << 8 | (b / n);
+        }
+}
+
+/* The frosted copy is `scale` times smaller and blurred; liquid glass also keeps a sharp half-size copy that the
+   edge refracts, so the lens shows the background crisp at the rim and frosted inside. */
+static bool capture(struct canvas *c, struct glass *g, int blur, int scale, bool lens)
 {
     if (no_capture)
         return false;
@@ -150,38 +196,19 @@ static bool capture(struct canvas *c, struct glass *g, int blur, int scale)
     if (rect_empty(src) || !rect_inside(src, c->clip))
         return false;
     int sw = (src.w + scale - 1) / scale, sh = (src.h + scale - 1) / scale;
-    if (!g->small.px || g->small.w != sw || g->small.h != sh) {
-        canvas_free(&g->small);
-        if (!canvas_alloc(&g->small, sw, sh))
-            return false;
+    if (!fit(&g->small, sw, sh))
+        return false;
+    if (lens && scale % LENS_SCALE == 0 && fit(&g->sharp, (src.w + LENS_SCALE - 1) / LENS_SCALE,
+                                              (src.h + LENS_SCALE - 1) / LENS_SCALE)) {
+        shrink(c->px, c->stride, src, LENS_SCALE, 1, &g->sharp);
+        shrink(g->sharp.px, g->sharp.w, (struct rect){0, 0, g->sharp.w, g->sharp.h}, scale / LENS_SCALE, 1, &g->small);
+        blur_canvas(&g->sharp, 1, 1);
+    } else {
+        canvas_free(&g->sharp);
+        shrink(c->px, c->stride, src, scale, scale >= 4 ? 2 : 1, &g->small);
     }
-    int step = scale >= 4 ? 2 : 1;
-    for (int y = 0; y < sh; y++)
-        for (int x = 0; x < sw; x++) {
-            unsigned r = 0, gg = 0, b = 0, n = 0;
-            int x0 = src.x + x * scale, y0 = src.y + y * scale;
-            int x1 = MIN(x0 + scale, src.x + src.w), y1 = MIN(y0 + scale, src.y + src.h);
-            for (int yy = y0; yy < y1; yy += step)
-                for (int xx = x0; xx < x1; xx += step) {
-                    uint32_t p = c->px[yy * c->stride + xx];
-                    r += p >> 16 & 0xff;
-                    gg += p >> 8 & 0xff;
-                    b += p & 0xff;
-                    n++;
-                }
-            n = MAX(n, 1u);
-            g->small.px[y * sw + x] = 0xff000000u | (r / n) << 16 | (gg / n) << 8 | (b / n);
-        }
-    if (blur > 0) {
-        uint32_t *tmp = kmalloc((size_t)MAX(sw, sh) * 4);
-        if (tmp) {
-            for (int pass = 0; pass < 2; pass++) {
-                box_pass(g->small.px, sw, sh, sw, 1, 0, blur, tmp);
-                box_pass(g->small.px, sw, sh, sw, 0, 1, blur, tmp);
-            }
-            kfree(tmp);
-        }
-    }
+    if (blur > 0)
+        blur_canvas(&g->small, blur, 2);
     g->src = src;
     g->scale = scale;
     g->valid = true;
@@ -193,19 +220,19 @@ void glass_prepare(struct canvas *c, struct glass *g, const struct glass_look *l
 {
     int scale = look->scale ? look->scale : 4;
     if (!look->solid && (!g->valid || g->scale != scale))
-        capture(c, g, look->blur, scale);
+        capture(c, g, look->blur, scale, look->liquid);
 }
 
-static uint32_t sample(const struct glass *g, int fx, int fy)
+static uint32_t sample_from(const struct canvas *cv, struct rect src, int scale, int fx, int fy)
 {
-    fx = (fx - g->src.x * 256) / g->scale - 128;
-    fy = (fy - g->src.y * 256) / g->scale - 128;
-    int w = g->small.w, h = g->small.h;
+    fx = (fx - src.x * 256) / scale - 128;
+    fy = (fy - src.y * 256) / scale - 128;
+    int w = cv->w, h = cv->h;
     fx = CLAMP(fx, 0, (w - 1) * 256);
     fy = CLAMP(fy, 0, (h - 1) * 256);
     int x0 = fx >> 8, y0 = fy >> 8, tx = fx & 255, ty = fy & 255;
     int x1 = MIN(x0 + 1, w - 1), y1 = MIN(y0 + 1, h - 1);
-    const uint32_t *px = g->small.px;
+    const uint32_t *px = cv->px;
     uint32_t a = px[y0 * w + x0], b = px[y0 * w + x1], c = px[y1 * w + x0], d = px[y1 * w + x1];
     uint32_t wa = (uint32_t)((256 - tx) * (256 - ty)), wb = (uint32_t)(tx * (256 - ty)), wc = (uint32_t)((256 - tx) * ty),
              wd = (uint32_t)(tx * ty);
@@ -214,6 +241,14 @@ static uint32_t sample(const struct glass *g, int fx, int fy)
     uint32_t gch = ((a & 0xff00u) * (wa >> 8) + (b & 0xff00u) * (wb >> 8) + (c & 0xff00u) * (wc >> 8) +
                     (d & 0xff00u) * (wd >> 8)) >> 8;
     return 0xff000000u | (rb & 0xff00ffu) | (gch & 0xff00u);
+}
+
+/* What the lens shows at (fx, fy): the sharp copy when there is one, else the frosted one. */
+static uint32_t sample(const struct glass *g, int fx, int fy)
+{
+    if (g->sharp.px)
+        return sample_from(&g->sharp, g->src, LENS_SCALE, fx, fy);
+    return sample_from(&g->small, g->src, g->scale, fx, fy);
 }
 
 struct tap {
@@ -322,12 +357,14 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
 {
     int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
     unsigned tint_a = look->tint >> 24, sat = (unsigned)look->saturation;
-    int band = look->liquid && !look->shape ? MIN(look->band, MIN(f.w, f.h) / 2) : 0;
+    const void *ctx = look->shape_ctx;
+    bool sdf = look->shape && look->shape_sdf && look->liquid;
+    int band = look->liquid && (!look->shape || sdf) ? MIN(look->band, MIN(f.w, f.h) / 2) : 0;
     int band16 = MAX(band, 1) * 16;
     int refract = look->refract * 256;
     int inner = band + radius;
     int lift = look->brightness;
-    const struct geo *geo = band ? geometry(g, f, radius) : NULL;
+    const struct geo *geo = band && !look->shape ? geometry(g, f, radius) : NULL;
     struct tap *cols = kmalloc(sizeof(struct tap) * (size_t)(f.w + f.h));
     if (!cols)
         return;
@@ -335,7 +372,7 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
     taps(cols, f.x, f.w, g->src.x, g->scale, g->small.w);
     taps(rows, f.y, f.h, g->src.y, g->scale, g->small.h);
     int cw = f.w + 4;
-    uint16_t *cover = look->shape ? kmalloc(sizeof(uint16_t) * (size_t)cw * (size_t)(f.h + 4)) : NULL;
+    uint16_t *cover = look->shape && !sdf ? kmalloc(sizeof(uint16_t) * (size_t)cw * (size_t)(f.h + 4)) : NULL;
     if (cover)
         for (int y = 0; y < f.h + 4; y++) {
             int x0 = 0, x1 = 0;
@@ -362,7 +399,15 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
         for (int x = f.x; x < f.x + f.w; x++) {
             int cov = 256, d = band16, nx = 0, ny = 0;
             int shape_rim = 0;
-            if (cover) {
+            if (sdf) {
+                d = look->shape_sdf(x, y, ctx, &nx, &ny);
+                if (d <= -8) {
+                    row[x] = 0;
+                    continue;
+                }
+                if (d < 8)
+                    cov = (d + 8) * 16;
+            } else if (cover) {
                 const uint16_t *cp = cover + (y - f.y + 2) * cw + (x - f.x + 2);
                 cov = *cp;
                 if (cov <= 0) {
@@ -398,9 +443,10 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
             if (plain)
                 plain_x = x;
             uint32_t p;
-            int spec = 0;
+            int spec = 0, ta = (int)tint_a, shade = 0;
             if (band && d < band16) {
                 int i = MAX(d, 0) * 64 / band16;
+                ta = ta * (112 + i * 2) >> 8;
                 int k = refract * refract_lut[i] / 255;
                 int dx = nx * k >> 8, dy = ny * k >> 8;
                 int sx = x * 256 + 128, sy = y * 256 + 128;
@@ -412,9 +458,14 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
                 } else {
                     p = sample(g, sx + dx, sy + dy);
                 }
+                if (g->sharp.px)
+                    p = color_mix(bilerp(r0, r1, &cols[x - f.x], ry->t), p, 255 - i * 4);
                 int light = (-nx * 181 - ny * 181) >> 8;
                 int dir = light > 0 ? light * light >> 8 : (light * light >> 8) * 5 / 8;
                 spec = rim_lut[i] * (look->rim * (64 + dir * 3 / 4) >> 8) >> 8;
+                if (d < 28)
+                    spec += (28 - MAX(d, 0)) * (90 + dir * 2 / 3) / 28;
+                shade = refract_lut[i] * 26 >> 8;
                 if (look->pointer_light) {
                     int mx = mouse_x - x, my = mouse_y - y;
                     int dist = mx * mx + my * my, reach = look->pointer_light * look->pointer_light;
@@ -426,12 +477,12 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
             }
             int r = (int)(p >> 16 & 0xff), gg = (int)(p >> 8 & 0xff), b = (int)(p & 0xff);
             int luma = (r * 77 + gg * 151 + b * 28) >> 8;
-            r = clamp8(luma + ((r - luma) * (int)sat >> 8) + lift);
-            gg = clamp8(luma + ((gg - luma) * (int)sat >> 8) + lift);
-            b = clamp8(luma + ((b - luma) * (int)sat >> 8) + lift);
+            r = clamp8(luma + ((r - luma) * (int)sat >> 8) + lift - shade);
+            gg = clamp8(luma + ((gg - luma) * (int)sat >> 8) + lift - shade);
+            b = clamp8(luma + ((b - luma) * (int)sat >> 8) + lift - shade);
             uint32_t out = (uint32_t)r << 16 | (uint32_t)gg << 8 | (uint32_t)b;
-            if (tint_a)
-                out = color_mix(out | 0xff000000u, look->tint | 0xff000000u, (int)tint_a) & 0xffffffu;
+            if (ta)
+                out = color_mix(out | 0xff000000u, look->tint | 0xff000000u, ta) & 0xffffffu;
             spec += shape_rim;
             if (spec > 0) {
                 spec = MIN(spec, 255);
@@ -467,7 +518,7 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
     int scale = look->scale ? look->scale : 4;
     if (g->valid && g->scale != scale)
         g->valid = false;
-    if (look->solid || (!g->valid && !capture(c, g, look->blur, scale))) {
+    if (look->solid || (!g->valid && !capture(c, g, look->blur, scale, look->liquid))) {
         uint32_t fallback = look->solid ? look->solid_color : ALPHA(look->tint, 255);
         if (look->shape)
             gfx_shape(c, f, look->shape, look->shape_ctx, fallback);
@@ -579,8 +630,8 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         look->brightness = dark ? 8 : 16;
         look->solid_color = dark ? RGB(44, 44, 48) : RGB(244, 244, 246);
         look->blur = 3;
-        look->band = 18;
-        look->refract = 16;
+        look->band = 26;
+        look->refract = 24;
         look->dispersion = look->liquid;
         if (look->liquid)
             look->outline = dark ? ALPHA(0, 90) : ALPHA(0, 14);

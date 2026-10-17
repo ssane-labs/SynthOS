@@ -27,7 +27,7 @@ Commands
   exit                      leave the desktop (text mode)
   desktop  (startx, gui)    start the desktop again from text mode
   config desktop off        boot into text mode; config save remembers it
-  config look night         the design: dune, mist, night or sunset
+  config look night         the design: dune, mist or night
   config appearance dark    auto (what the look prefers), light or dark
   config wallpaper sunset   auto, dune, mist, night, sunset, waves, hills,
                             aurora, synthwave, solid or a picture file
@@ -48,8 +48,6 @@ Looks
   Mist      menu bar on top, a floating Dock, calendar with tasks
   Night     an app rail on the left that opens with names, a big clock,
             the music player and a visualizer
-  Sunset    a Dock curved around the corner with a glowing launcher, the
-            time in a bubble at the top-right corner, the weather in a pill
 
 Every window has only its title and one small button: ... opens a list
 with all the commands of the app and Minimize, Fill Screen and Close.

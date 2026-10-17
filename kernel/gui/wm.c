@@ -15,8 +15,8 @@
 #define RADIUS 20
 #define DOUBLE_CLICK_MS 400
 #define EDGE 6
-#define SHADOW 34
-#define SHADOW_DY 12
+#define SHADOW 12
+#define SHADOW_DY 3
 #define CURSOR_SIZE 28
 #define THUMB_MAX 128
 
@@ -256,7 +256,7 @@ static struct rect outer_rect(const struct window *w)
 {
     if (w->flags & WIN_NOSHADOW)
         return w->frame;
-    int size = w->flags & WIN_GLOW ? 30 : floating(w) ? 18 : SHADOW, dy = floating(w) ? 6 : SHADOW_DY;
+    int size = floating(w) ? 8 : SHADOW, dy = floating(w) ? 2 : SHADOW_DY;
     struct rect s = {w->frame.x - size, w->frame.y + dy - size, w->frame.w + 2 * size, w->frame.h + 2 * size};
     return rect_union(s, w->frame);
 }
@@ -274,8 +274,53 @@ bool wm_window_alive(const struct window *w)
     return false;
 }
 
+/* Popups float over everything, windows kept on top over the rest; the order inside each layer stays. */
+static int layer(const struct window *w)
+{
+    if (floating(w))
+        return 2;
+    if (w->flags & WIN_PINNED)
+        return 1;
+    return w->owner && w->owner != w && wm_window_alive(w->owner) && (w->owner->flags & WIN_PINNED) ? 1 : 0;
+}
+
+static void order_layers(void)
+{
+    struct window *was = bottom, *heads[3] = {0}, *tails[3] = {0};
+    int layers[256], n = 0;
+    for (struct window *w = was; w && n < 256; w = w->above)
+        layers[n++] = layer(w);
+    if (n == 256)
+        return;
+    n = 0;
+    for (struct window *w = was, *next; w; w = next) {
+        next = w->above;
+        int l = layers[n++];
+        w->below = tails[l];
+        w->above = NULL;
+        if (tails[l])
+            tails[l]->above = w;
+        else
+            heads[l] = w;
+        tails[l] = w;
+    }
+    bottom = top = NULL;
+    for (int l = 0; l < 3; l++) {
+        if (!heads[l])
+            continue;
+        if (top) {
+            top->above = heads[l];
+            heads[l]->below = top;
+        } else {
+            bottom = heads[l];
+        }
+        top = tails[l];
+    }
+}
+
 static void restack(void)
 {
+    order_layers();
     int normal = 0, high = 0;
     for (struct window *w = bottom; w; w = w->above) {
         w->z = floating(w) ? 2000 + 2 * high++ : 10 + 2 * normal++;
@@ -940,6 +985,18 @@ void wm_minimize(struct window *w)
     }
 }
 
+void wm_set_pinned(struct window *w, bool on)
+{
+    if (!w || !wm_window_alive(w) || !framed(w) || !(w->flags & WIN_PINNED) == !on)
+        return;
+    w->flags = on ? w->flags | WIN_PINNED : w->flags & ~WIN_PINNED;
+    restack();
+    damage_window(w);
+    for (struct window *it = bottom; it; it = it->above)
+        if (it->owner == w)
+            damage_window(it);
+}
+
 void wm_invalidate(struct window *w)
 {
     if (w && wm_window_alive(w))
@@ -1131,6 +1188,8 @@ static struct rect more_rect(const struct window *w)
 static void draw_more(struct canvas *c, struct window *w)
 {
     struct rect r = more_rect(w);
+    if (w->flags & WIN_PINNED)
+        gfx_symbol(c, r.x - 18, r.y + 4, SYM_PIN, 14, style.accent);
     bool hot = more_hover_win == w;
     if (hot)
         gfx_round(c, r, 11, style.hover);
@@ -1178,14 +1237,11 @@ static void draw_window(struct canvas *c, struct window *w)
     struct rect f = w->frame;
     bool active = w == focus || floating(w);
     if (!(w->flags & WIN_NOSHADOW)) {
-        if (w->flags & WIN_GLOW) {
-            gfx_glow(c, f, w->radius, 28, style.dark ? 150 : 110, style.accent);
-            gfx_drop_shadow(c, f, w->radius, 12, style.dark ? 120 : 50, 4);
-        } else if (floating(w))
-            gfx_drop_shadow(c, f, w->radius, 18, style.dark ? 140 : 70, 6);
+        if (floating(w))
+            gfx_drop_shadow(c, f, w->radius, 8, style.dark ? 90 : 34, 2);
         else
-            gfx_drop_shadow(c, f, w->radius, active ? SHADOW : 24, style.dark ? (active ? 200 : 140) : (active ? 105 : 60),
-                            active ? SHADOW_DY : 8);
+            gfx_drop_shadow(c, f, w->radius, active ? SHADOW : 8, style.dark ? (active ? 130 : 80) : (active ? 46 : 26),
+                            active ? SHADOW_DY : 2);
     }
     struct rect cr = wm_client_rect(w);
     bool titled = framed(w) && !(w->flags & WIN_FULLSIZE);
@@ -1448,6 +1504,7 @@ enum {
     ACT_KEY,
     ACT_MINIMIZE,
     ACT_ZOOM,
+    ACT_PIN,
     ACT_CLOSE,
 };
 
@@ -1462,6 +1519,8 @@ static void more_pick(struct window *owner, int index)
         wm_minimize(w);
     else if (act == ACT_ZOOM)
         wm_toggle_maximize(w);
+    else if (act == ACT_PIN)
+        wm_set_pinned(w, !(w->flags & WIN_PINNED));
     else if (act == ACT_CLOSE)
         wm_close(w);
     else if (act == ACT_KEY && more_items[index].key > 0) {
@@ -1489,6 +1548,8 @@ void wm_window_menu(struct window *w, int x, int y)
     }
     if (n)
         more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
+    more_action[n] = ACT_PIN;
+    more_items[n++] = (struct menu_item){w->flags & WIN_PINNED ? "Stop Keeping on Top" : "Keep on Top", 0, NULL};
     more_action[n] = ACT_MINIMIZE;
     more_items[n++] = (struct menu_item){"Minimize", 0, "\xe2\x8c\x98M"};
     if (w->flags & WIN_RESIZABLE) {
@@ -2095,6 +2156,35 @@ SETTING(s_animations);
 bool wm_animations(void)
 {
     return animations;
+}
+
+COMMAND(windows, NULL, "system", "windows [pin|unpin <n>]", "list the open windows; keep one on top of the others")
+{
+    if (!screen_count)
+        return sh_error(sh, "windows", "the desktop is not running");
+    struct window *list[64];
+    int n = wm_window_list(list, 64);
+    if (argc == 1) {
+        for (int i = 0; i < n; i++) {
+            sh_printf(sh, "%2d  %s", i + 1, list[i]->title);
+            if (list[i]->flags & (WIN_PINNED | WIN_MINIMIZED)) {
+                sh_role(sh, ROLE_MUTED);
+                sh_printf(sh, "%s%s", list[i]->flags & WIN_PINNED ? "  (on top)" : "",
+                          list[i]->flags & WIN_MINIMIZED ? "  (minimized)" : "");
+                sh_role(sh, ROLE_TEXT);
+            }
+            sh_puts(sh, "\n");
+        }
+        return 0;
+    }
+    long k;
+    bool pin = !strcmp(argv[1], "pin");
+    if (argc != 3 || (!pin && strcmp(argv[1], "unpin")) || !str_parse_long(argv[2], &k))
+        return command_usage(sh, command_find("windows"));
+    if (k < 1 || k > n)
+        return sh_error(sh, "windows", "there is no window %ld", k);
+    wm_set_pinned(list[k - 1], pin);
+    return 0;
 }
 
 COMMAND(wmstat, NULL, "dev", "wmstat [seconds]", "count desktop frames while idle (frames, pixels, glass, time)")

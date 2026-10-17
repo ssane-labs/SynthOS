@@ -101,6 +101,8 @@ config animations on; wmbench
 desktop is not running
 wmstat 1
 desktop is not running
+windows pin 1
+desktop is not running
 which ls hello
 hello: /bin/hello.sx
 formats | grep -c DOS
