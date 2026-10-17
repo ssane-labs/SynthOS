@@ -124,6 +124,18 @@ static const struct gui_app *app_of_process(void)
 
 static const struct window_ops bridge_ops;
 
+/* Programs place their windows by Windows' rules; on SynthOS they stay out of the shell's panels and docks. */
+static void move_into_work(struct window *wm, int x, int y)
+{
+    struct rect work = wm_work_area(0);
+    if (!(wm->flags & WIN_MAXIMIZED)) {
+        x = MAX(x, work.x);
+        if (x + wm->frame.w > work.x + work.w)
+            x = MAX(work.x, work.x + work.w - wm->frame.w);
+    }
+    wm_move(wm, x, MAX(y, work.y));
+}
+
 static struct w32_class *find_class(const char *name);
 
 struct w32_window *w32_windows(void)
@@ -600,7 +612,7 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         if (caption)
             w->caption_due = hal_ticks_ms() + 500;
         if (x != W32_CW_USEDEFAULT)
-            wm_move(w->wm, x, MAX(y, wm_work_area(0).y));
+            move_into_work(w->wm, x, y);
         struct rect cr = wm_client_rect(w->wm);
         w->rect = (struct rect){0, 0, cr.w, cr.h};
         w->menu = menu;
@@ -928,7 +940,7 @@ static void move_window(struct w32_window *w, int x, int y, int width, int heigh
 {
     if (w->wm) {
         if (move)
-            wm_move(w->wm, x, MAX(y, wm_work_area(0).y));
+            move_into_work(w->wm, x, y);
         if (size) {
             int ch = height - (w->wm->flags & WIN_FULLSIZE ? 0 : TITLE_HEIGHT);
             wm_resize_client(w->wm, MAX(width, 120), MAX(ch, 40));
