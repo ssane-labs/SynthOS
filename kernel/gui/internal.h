@@ -29,6 +29,7 @@ enum widget_id {
     WIDGET_MUSIC,
     WIDGET_CALENDAR,
     WIDGET_VISUALIZER,
+    WIDGET_TASKS,
     WIDGET_COUNT,
 };
 
@@ -206,6 +207,8 @@ void widgets_start(void);
 void widgets_stop(void);
 void widgets_user_changed(void);
 int widgets_right_reserved(void);
+void widgets_edit(bool on);
+bool widgets_editing(void);
 int widgets_obstacles(struct rect *out, int max);
 void gui_desktop_changed(void);
 void desktop_hover(int x, int y, bool over);

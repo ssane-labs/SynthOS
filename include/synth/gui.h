@@ -319,6 +319,7 @@ enum window_flags {
     WIN_NOSHADOW = 1u << 11,
     WIN_PASSIVE = 1u << 12,
     WIN_PINNED = 1u << 13,
+    WIN_PEEKED = 1u << 14,
 };
 
 #define MENU_HEADER (-2)
@@ -388,6 +389,7 @@ void wm_focus(struct window *w);
 struct window *wm_focused(void);
 void wm_invalidate(struct window *w);
 void wm_set_pinned(struct window *w, bool on);
+void wm_peek_desktop(bool on);
 void wm_set_title(struct window *w, const char *title);
 void wm_set_timer(struct window *w, uint32_t ms);
 void wm_set_menus(struct window *w, const struct app_menu *menus, int count);

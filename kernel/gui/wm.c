@@ -985,6 +985,30 @@ void wm_minimize(struct window *w)
     }
 }
 
+/* Steps every window aside (they shrink away) to show the desktop, and brings them back. */
+void wm_peek_desktop(bool on)
+{
+    static struct window *had_focus;
+    if (on)
+        had_focus = focus;
+    for (struct window *w = bottom; w; w = w->above) {
+        if (on && framed(w) && visible(w)) {
+            release_window(w, ANIM_CLOSE, w->frame);
+            w->flags |= WIN_HIDDEN | WIN_PEEKED;
+            wm_damage(outer_rect(w));
+        } else if (!on && (w->flags & WIN_PEEKED)) {
+            w->flags &= ~(WIN_HIDDEN | WIN_PEEKED);
+            hold_window(w, ANIM_OPEN, w->frame);
+            wm_damage(outer_rect(w));
+        }
+    }
+    if (on && focus && !visible(focus))
+        wm_focus(NULL);
+    if (!on && had_focus && wm_window_alive(had_focus) && visible(had_focus))
+        wm_focus(had_focus);
+    chrome_changed();
+}
+
 void wm_set_pinned(struct window *w, bool on)
 {
     if (!w || !wm_window_alive(w) || !framed(w) || !(w->flags & WIN_PINNED) == !on)

@@ -449,7 +449,7 @@ void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
         ui_menu(NULL, x, y, items, ARRAY_SIZE(items), volume_pick);
     } else if (button == BUTTON_RIGHT) {
         static const char *const items[] = {"New Folder", "Open Desktop in Files", "", "Change Wallpaper…",
-                                            "Open Terminal"};
+                                            "Edit Widgets…", "Open Terminal"};
         ui_menu(NULL, x, y, items, ARRAY_SIZE(items), desktop_pick);
     }
 }
@@ -507,6 +507,8 @@ static void desktop_pick(struct window *owner, int index)
         const struct gui_app *settings = gui_app_find("System Settings");
         gui_app_launch(settings, "wallpaper");
     } else if (index == 4) {
+        widgets_edit(true);
+    } else if (index == 5) {
         gui_terminal_show();
     }
 }

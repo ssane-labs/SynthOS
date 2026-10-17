@@ -103,6 +103,16 @@ wmstat 1
 desktop is not running
 windows pin 1
 desktop is not running
+widgets remove music; widgets add tasks; config widgets
+clock,weather,tasks
+head -n 1 ~/.widgets
+dune clock,weather,tasks
+config widgets all; widgets list | grep -c desktop
+6
+widgets add moon
+no widget called moon
+config widgets clock,weather,music; config widgets
+clock,weather,music
 which ls hello
 hello: /bin/hello.sx
 formats | grep -c DOS

@@ -1,3 +1,4 @@
+#include <synth/command.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
@@ -17,16 +18,32 @@
 #define MAX_TASKS 8
 #define TASK_ROW 28
 
+#define WIDGET_W 300
+#define WIDGET_GAP 14
+#define MAX_LOOKS 8
+
 struct widget {
     struct rect r;
     struct glass glass;
-    struct spring lift, intro;
+    struct spring lift, intro, ax, ay;
     int dx, dy;
-    bool shown, card;
+    bool shown, card, placed, leaving;
 };
 
-static struct widget widgets[WIDGET_COUNT + 1];
-static unsigned enabled_mask = ~0u;
+static const char *const widget_names[WIDGET_COUNT] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
+static const char *const widget_titles[WIDGET_COUNT] = {"Clock", "Weather", "Music", "Calendar", "Visualizer", "Tasks"};
+static const enum symbol_id widget_syms[WIDGET_COUNT] = {SYM_CLOCK, SYM_WEATHER, SYM_MUSIC,
+                                                         SYM_CALENDAR, SYM_VOLUME, SYM_LIST};
+static const int column_order[WIDGET_COUNT] = {WIDGET_CLOCK, WIDGET_CALENDAR, WIDGET_WEATHER,
+                                               WIDGET_TASKS, WIDGET_MUSIC, WIDGET_VISUALIZER};
+
+static struct widget widgets[WIDGET_COUNT];
+static unsigned look_masks[MAX_LOOKS];
+static bool masks_loaded;
+static bool editing;
+static struct spring edit_pop;
+static struct window *gallery;
+static int right_columns;
 static bool started;
 static int hover = -1, hover_part = -1, pressed = -1, pressed_part = -1;
 static int drag = -1, drag_x, drag_y;
@@ -36,7 +53,20 @@ static struct spring bars[MEDIA_BANDS], progress;
 static int last_minute = -1;
 static struct window *calendar;
 
-#define W_TASKS WIDGET_COUNT
+#define W_TASKS WIDGET_TASKS
+
+static void set_mask(unsigned mask);
+static unsigned current_mask(void);
+static int menu_widget = -1;
+
+static void widget_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    if (index == 0)
+        widgets_edit(true);
+    else if (index == 1 && menu_widget >= 0)
+        set_mask(current_mask() & ~(1u << menu_widget));
+}
 
 static struct {
     char text[MAX_TASKS][64];
@@ -77,11 +107,102 @@ static uint32_t soft(void)
     return ALPHA(ink(), 160);
 }
 
+static int look_index(void)
+{
+    return CLAMP((int)(look_current() - look_get(0)), 0, MAX_LOOKS - 1);
+}
+
+static void masks_path(char *out, size_t cap)
+{
+    path_join(user_home(), ".widgets", out, cap);
+}
+
+static unsigned parse_names(const char *p, size_t len, bool *ok)
+{
+    unsigned mask = 0;
+    const char *end = p + len;
+    *ok = true;
+    if (len == 3 && !strncmp(p, "all", 3))
+        return (1u << WIDGET_COUNT) - 1;
+    if (len == 4 && !strncmp(p, "none", 4))
+        return 0;
+    while (p < end) {
+        const char *comma = memchr(p, ',', (size_t)(end - p));
+        size_t n = comma ? (size_t)(comma - p) : (size_t)(end - p);
+        bool found = false;
+        for (int i = 0; i < WIDGET_COUNT; i++)
+            if (strlen(widget_names[i]) == n && !strncmp(widget_names[i], p, n)) {
+                mask |= 1u << i;
+                found = true;
+            }
+        *ok &= found;
+        p += n + 1;
+    }
+    return mask;
+}
+
+static size_t format_names(unsigned mask, char *buf, size_t cap)
+{
+    size_t n = 0;
+    buf[0] = 0;
+    for (int i = 0; i < WIDGET_COUNT; i++)
+        if (mask >> i & 1)
+            n += (size_t)ksnprintf(buf + n, cap - n, "%s%s", n ? "," : "", widget_names[i]);
+    if (!n)
+        n = (size_t)ksnprintf(buf, cap, "none");
+    return n;
+}
+
+/* Every look keeps its own set of widgets in ~/.widgets ("dune clock,weather,music"), starting from its own. */
+static void masks_load(void)
+{
+    masks_loaded = true;
+    for (int i = 0; i < look_count() && i < MAX_LOOKS; i++)
+        look_masks[i] = look_get(i)->widgets;
+    char path[PATH_MAX_LEN], *data;
+    size_t size;
+    masks_path(path, sizeof(path));
+    if (vfs_read_all(path, &data, &size) != 0)
+        return;
+    for (char *p = data, *end = data + size; p < end;) {
+        char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t n = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        char *space = memchr(p, ' ', n);
+        for (int i = 0; space && i < look_count() && i < MAX_LOOKS; i++)
+            if ((size_t)(space - p) == strlen(look_get(i)->name) && !strncmp(p, look_get(i)->name, (size_t)(space - p))) {
+                bool ok;
+                unsigned m = parse_names(space + 1, n - (size_t)(space + 1 - p), &ok);
+                if (ok)
+                    look_masks[i] = m;
+            }
+        p += n + 1;
+    }
+    kfree(data);
+}
+
+static void masks_save(void)
+{
+    char path[PATH_MAX_LEN], buf[MAX_LOOKS * 96];
+    size_t n = 0;
+    for (int i = 0; i < look_count() && i < MAX_LOOKS; i++) {
+        n += (size_t)ksnprintf(buf + n, sizeof(buf) - n, "%s ", look_get(i)->name);
+        n += format_names(look_masks[i], buf + n, sizeof(buf) - n);
+        n += (size_t)ksnprintf(buf + n, sizeof(buf) - n, "\n");
+    }
+    masks_path(path, sizeof(path));
+    vfs_write_all(path, buf, n);
+}
+
+static unsigned current_mask(void)
+{
+    if (!masks_loaded)
+        masks_load();
+    return look_masks[look_index()];
+}
+
 static bool on(int id)
 {
-    if (id == W_TASKS)
-        id = WIDGET_CALENDAR;
-    return (look_current()->widgets >> id & 1) && (enabled_mask >> id & 1);
+    return current_mask() >> id & 1;
 }
 
 static int month_days(int y, int m)
@@ -136,45 +257,50 @@ static void tasks_save(void)
     vfs_write_all(path, buf, n);
 }
 
-static struct rect base_rect(int id)
+static int widget_height(int id)
+{
+    switch (id) {
+    case WIDGET_CLOCK: return 150;
+    case WIDGET_WEATHER: return 104;
+    case WIDGET_MUSIC: return 124;
+    case WIDGET_CALENDAR: return 150;
+    case WIDGET_VISUALIZER: return 128;
+    default: return 64 + MAX(tasks.count, 1) * TASK_ROW;
+    }
+}
+
+/* Widgets stand in a column at the side of the screen away from the dock and wrap into a second column. */
+static void place_all(struct rect *out)
 {
     struct rect s = wm_screen_rect(0);
     const struct gui_look *l = look_current();
-    int right = s.x + s.w - 16, top = status_bottom() + 14;
-    switch (l->dock) {
-    case DOCK_CORNER:
-        switch (id) {
-        case WIDGET_CLOCK: return (struct rect){right - 300, top + 4, 300, 150};
-        case WIDGET_WEATHER: return (struct rect){right - 230, top + 168, 230, 104};
-        case WIDGET_MUSIC: return (struct rect){right - 300, top + 288, 300, 124};
-        default: break;
+    bool left = l->dock == DOCK_RAIL;
+    int top = left ? s.y + 22 : status_bottom() + 14;
+    int bottom = s.y + s.h - (l->dock == DOCK_CENTER ? 100 : 16);
+    int step = WIDGET_W + 16;
+    int x = left ? s.x + shell_left_reserved() + 24 : s.x + s.w - 16 - WIDGET_W, y = top;
+    right_columns = 0;
+    for (int k = 0; k < WIDGET_COUNT; k++) {
+        int id = column_order[k];
+        out[id] = (struct rect){0, 0, 0, 0};
+        if (!on(id))
+            continue;
+        int h = widget_height(id);
+        if (y + h > bottom && y > top) {
+            x += left ? step : -step;
+            y = top;
         }
-        break;
-    case DOCK_CENTER:
-        switch (id) {
-        case WIDGET_CALENDAR: return (struct rect){right - 240, top + 6, 240, 150};
-        case W_TASKS: return (struct rect){right - 240, top + 172, 240, 64 + MAX(tasks.count, 1) * TASK_ROW};
-        default: break;
-        }
-        break;
-    case DOCK_RAIL: {
-        int x = s.x + shell_left_reserved() + 24;
-        switch (id) {
-        case WIDGET_CLOCK: return (struct rect){x, s.y + 22, 320, 150};
-        case WIDGET_MUSIC: return (struct rect){x, s.y + s.h - 160 - 150, 320, 124};
-        case WIDGET_VISUALIZER: return (struct rect){x, s.y + s.h - 160, 320, 128};
-        default: break;
-        }
-        break;
+        out[id] = (struct rect){x, y, WIDGET_W, h};
+        y += h + WIDGET_GAP;
+        if (!left)
+            right_columns = MAX(right_columns, (s.x + s.w - 16 - x) / step + 1);
     }
-    }
-    return (struct rect){0, 0, 0, 0};
 }
 
 int widgets_obstacles(struct rect *out, int max)
 {
     int n = 0;
-    for (int i = 0; i <= WIDGET_COUNT && n < max; i++)
+    for (int i = 0; i < WIDGET_COUNT && n < max; i++)
         if (started && widgets[i].shown)
             out[n++] = widgets[i].r;
     return n;
@@ -182,25 +308,35 @@ int widgets_obstacles(struct rect *out, int max)
 
 int widgets_right_reserved(void)
 {
-    const struct gui_look *l = look_current();
-    if (l->dock == DOCK_CORNER && (on(WIDGET_CLOCK) || on(WIDGET_MUSIC) || on(WIDGET_WEATHER)))
-        return 310;
-    if (l->dock == DOCK_CENTER && on(WIDGET_CALENDAR))
-        return 250;
-    return 0;
+    struct rect spots[WIDGET_COUNT];
+    place_all(spots);
+    return right_columns * (WIDGET_W + 16);
 }
 
 static void layout(void)
 {
-    for (int i = 0; i <= WIDGET_COUNT; i++) {
+    struct rect spots[WIDGET_COUNT];
+    place_all(spots);
+    for (int i = 0; i < WIDGET_COUNT; i++) {
         struct widget *w = &widgets[i];
         struct rect old = w->r;
         bool was = w->shown;
-        struct rect r = base_rect(i);
-        w->shown = on(i) && !rect_empty(r);
-        int rise = (1024 - CLAMP(w->intro.pos, -200, 1024)) * 30 / 1024;
+        struct rect r = w->leaving ? (struct rect){w->ax.target, w->ay.target, old.w, old.h} : spots[i];
+        w->shown = (on(i) || w->leaving) && !rect_empty(r);
+        if (w->shown && !w->leaving) {
+            if (!w->placed) {
+                spring_set(&w->ax, r.x);
+                spring_set(&w->ay, r.y);
+                w->placed = true;
+            }
+            w->ax.target = r.x;
+            w->ay.target = r.y;
+        } else if (!w->shown) {
+            w->placed = false;
+        }
+        int rise = (1024 - CLAMP(w->intro.pos, -400, 1024)) * 30 / 1024;
         int lift = CLAMP(w->lift.pos, -300, 1300) * 8 / 1024;
-        w->r = (struct rect){r.x + w->dx, r.y + w->dy + rise - lift, r.w, r.h};
+        w->r = (struct rect){w->ax.pos + w->dx, w->ay.pos + w->dy + rise - lift, r.w, r.h};
         w->card = i != WIDGET_CLOCK;
         if (w->shown && w->card) {
             w->glass.z = Z_DESKTOP + 1;
@@ -438,7 +574,7 @@ void widgets_paint(struct canvas *c, struct rect area)
 {
     if (!started)
         return;
-    for (int i = 0; i <= WIDGET_COUNT; i++) {
+    for (int i = 0; i < WIDGET_COUNT; i++) {
         struct widget *w = &widgets[i];
         if (!w->shown || rect_empty(rect_intersect(rect_inset(w->r, -30), area)))
             continue;
@@ -457,12 +593,20 @@ void widgets_paint(struct canvas *c, struct rect area)
         case WIDGET_VISUALIZER: paint_visualizer(&clip, w->r); break;
         case W_TASKS: paint_tasks(&clip, w->r); break;
         }
+        int k = CLAMP(edit_pop.pos, 0, 1200);
+        if (k > 16 && !w->leaving) {
+            int rad = w->card ? MIN(PANEL_RADIUS, w->r.h / 3) : 18;
+            gfx_round_frame(&clip, rect_inset(w->r, -2), rad + 2, ALPHA(style.accent, MIN(k, 1024) * 170 / 1024));
+            int br = 12 * k / 1024, cx = w->r.x + 12, cy = w->r.y + 12;
+            gfx_circle(&clip, cx, cy, br, style.dark ? RGB(70, 68, 80) : RGB(60, 58, 64));
+            gfx_fill(&clip, (struct rect){cx - br / 2, cy - 1, br, 2}, RGB(255, 255, 255));
+        }
     }
 }
 
 static int widget_at(int x, int y)
 {
-    for (int i = WIDGET_COUNT; i >= 0; i--)
+    for (int i = WIDGET_COUNT - 1; i >= 0; i--)
         if (widgets[i].shown && rect_contains(widgets[i].r, x, y))
             return i;
     return -1;
@@ -536,6 +680,23 @@ bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks)
         return false;
     if (down) {
         int id = widget_at(x, y);
+        if (editing && button == BUTTON_LEFT) {
+            if (id < 0) {
+                widgets_edit(false);
+                return true;
+            }
+            int dx = x - (widgets[id].r.x + 12), dy = y - (widgets[id].r.y + 12);
+            if (dx * dx + dy * dy <= 16 * 16) {
+                set_mask(current_mask() & ~(1u << id));
+                return true;
+            }
+        }
+        if (id >= 0 && button == BUTTON_RIGHT) {
+            static const char *const items[] = {"Edit Widgets…", "Remove Widget"};
+            menu_widget = id;
+            ui_menu(NULL, x, y, items, 2, widget_pick);
+            return true;
+        }
         if (id < 0 || button != BUTTON_LEFT)
             return id >= 0;
         pressed = id;
@@ -749,9 +910,21 @@ bool widgets_animate(void)
     int dt = last_tick ? (int)MIN(now - last_tick, 64u) : 16;
     last_tick = now;
     bool moved = false;
-    for (int i = 0; i <= WIDGET_COUNT; i++) {
-        moved |= spring_step(&widgets[i].lift, 500, 26, dt);
-        moved |= spring_step(&widgets[i].intro, 140, 18, dt);
+    for (int i = 0; i < WIDGET_COUNT; i++) {
+        struct widget *w = &widgets[i];
+        moved |= spring_step(&w->lift, 500, 26, dt);
+        moved |= spring_step(&w->intro, w->leaving ? 260 : 140, w->leaving ? 26 : 18, dt);
+        moved |= spring_step(&w->ax, 240, 24, dt);
+        moved |= spring_step(&w->ay, 240, 24, dt);
+        if (w->leaving && w->intro.pos <= -300) {
+            w->leaving = false;
+            moved = true;
+        }
+    }
+    if (spring_step(&edit_pop, 420, 18, dt)) {
+        moved = true;
+        for (int i = 0; i < WIDGET_COUNT; i++)
+            damage(i);
     }
     if (moved)
         layout();
@@ -796,12 +969,13 @@ void widgets_start(void)
     hover = pressed = drag = hover_part = pressed_part = -1;
     if (!tasks.loaded)
         tasks_load();
-    for (int i = 0; i <= WIDGET_COUNT; i++) {
+    for (int i = 0; i < WIDGET_COUNT; i++) {
         struct widget *w = &widgets[i];
         w->glass = (struct glass){0};
         w->shown = false;
         w->dx = w->dy = 0;
         w->r = (struct rect){0, 0, 0, 0};
+        w->placed = w->leaving = false;
         spring_set(&w->lift, 0);
         spring_set(&w->intro, -600 - i * 220);
         w->intro.target = 1024;
@@ -813,8 +987,9 @@ void widgets_stop(void)
 {
     if (!started)
         return;
+    widgets_edit(false);
     started = false;
-    for (int i = 0; i <= WIDGET_COUNT; i++) {
+    for (int i = 0; i < WIDGET_COUNT; i++) {
         if (widgets[i].glass.registered)
             glass_unregister(&widgets[i].glass);
         if (widgets[i].shown)
@@ -826,6 +1001,7 @@ void widgets_stop(void)
 void widgets_user_changed(void)
 {
     tasks.loaded = false;
+    masks_loaded = false;
     if (started)
         layout();
 }
@@ -888,51 +1064,204 @@ void calendar_toggle(int right, int y)
         calendar->radius = 20;
 }
 
+/* Edit mode: every widget gets a remove badge and a gallery at the bottom adds or removes any of them. */
+
+#define TILE_W 88
+#define GALLERY_H 112
+#define DONE_W 88
+
+static int gallery_hover = -1;
+
+static struct rect tile_rect(int i)
+{
+    return (struct rect){16 + i * TILE_W, 8, TILE_W - 6, GALLERY_H - 16};
+}
+
+static struct rect done_rect(struct window *w)
+{
+    return (struct rect){w->frame.w - DONE_W - 16, (GALLERY_H - 36) / 2, DONE_W, 36};
+}
+
+static void gallery_paint(struct window *w, struct canvas *c)
+{
+    gfx_clear(c, (struct rect){0, 0, c->w, c->h}, 0);
+    unsigned mask = current_mask();
+    for (int i = 0; i < WIDGET_COUNT; i++) {
+        struct rect t = tile_rect(i);
+        bool shown = mask >> i & 1;
+        if (gallery_hover == i)
+            gfx_round(c, t, 18, style.hover);
+        int cx = t.x + t.w / 2, cy = t.y + 34;
+        gfx_circle(c, cx, cy, 24, shown ? style.accent : ALPHA(style.dark ? 0xffffffffu : 0xff000000u, 22));
+        gfx_symbol(c, cx - 11, cy - 11, widget_syms[i], 22, shown ? style.accent_text : style.text);
+        int bx = cx + 18, by = cy - 18;
+        gfx_circle(c, bx, by, 9, shown ? RGB(255, 255, 255) : style.accent);
+        gfx_symbol(c, bx - 7, by - 7, shown ? SYM_CHECK : SYM_PLUS, 14, shown ? style.accent : style.accent_text);
+        gfx_text_box(c, (struct rect){t.x, t.y + 64, t.w, 18}, &font_sans, widget_titles[i], style.text, ALIGN_CENTER);
+    }
+    struct rect d = done_rect(w);
+    gfx_round(c, d, 18, gallery_hover == 100 ? color_shade(style.accent, 24) : style.accent);
+    gfx_text_box(c, d, &font_bold, "Done", style.accent_text, ALIGN_CENTER);
+}
+
+static int gallery_at(struct window *w, int x, int y)
+{
+    if (rect_contains(done_rect(w), x, y))
+        return 100;
+    for (int i = 0; i < WIDGET_COUNT; i++)
+        if (rect_contains(tile_rect(i), x, y))
+            return i;
+    return -1;
+}
+
+static void gallery_event(struct window *w, struct gui_event *e)
+{
+    if (e->type == EV_MOUSE_MOVE) {
+        int h = gallery_at(w, e->x, e->y);
+        if (h != gallery_hover) {
+            gallery_hover = h;
+            wm_invalidate(w);
+        }
+    } else if (e->type == EV_MOUSE_DOWN) {
+        e->handled = true;
+    } else if (e->type == EV_MOUSE_UP && e->button == BUTTON_LEFT) {
+        e->handled = true;
+        int h = gallery_at(w, e->x, e->y);
+        if (h == 100) {
+            widgets_edit(false);
+        } else if (h >= 0) {
+            set_mask(current_mask() ^ (1u << h));
+            wm_invalidate(w);
+        }
+    } else if (e->type == EV_KEY && e->key == 27) {
+        widgets_edit(false);
+    }
+}
+
+static void gallery_destroy(struct window *w)
+{
+    if (gallery == w)
+        gallery = NULL;
+    if (editing) {
+        editing = false;
+        edit_pop.target = 0;
+        wm_peek_desktop(false);
+    }
+}
+
+static const struct window_ops gallery_ops = {gallery_paint, gallery_event, NULL, gallery_destroy};
+
+void widgets_edit(bool on_)
+{
+    if (on_ == editing || (on_ && !started))
+        return;
+    editing = on_;
+    if (on_ && edit_pop.pos <= 0)
+        spring_set(&edit_pop, 0);
+    edit_pop.target = on_ ? 1024 : 0;
+    wm_peek_desktop(on_);
+    if (!on_) {
+        if (gallery && wm_window_alive(gallery))
+            wm_destroy(gallery);
+        gallery = NULL;
+        return;
+    }
+    struct rect s = wm_screen_rect(0), spots[WIDGET_COUNT], used = {0, 0, 0, 0};
+    place_all(spots);
+    for (int i = 0; i < WIDGET_COUNT; i++)
+        used = rect_empty(used) ? spots[i] : rect_empty(spots[i]) ? used : rect_union(used, spots[i]);
+    int lo = s.x, hi = s.x + s.w;
+    if (!rect_empty(used) && used.x > s.x + s.w / 2)
+        hi = used.x - 8;
+    else if (!rect_empty(used))
+        lo = used.x + used.w + 8;
+    int w = WIDGET_COUNT * TILE_W + 32 + DONE_W + 16, x = MAX(s.x + 8, lo + (hi - lo - w) / 2);
+    gallery_hover = -1;
+    wm_close_popups();
+    gallery = wm_popup(x, s.y + s.h - GALLERY_H - 108, w, GALLERY_H, &gallery_ops, NULL, NULL);
+    if (gallery) {
+        gallery->radius = 28;
+        gallery->flags |= WIN_PASSIVE;
+    }
+    for (int i = 0; i < WIDGET_COUNT; i++)
+        damage(i);
+}
+
+bool widgets_editing(void)
+{
+    return editing;
+}
+
+COMMAND(widgets, NULL, "system", "widgets [list|add <name>|remove <name>|edit|done]",
+        "add and remove desktop widgets (each look keeps its own)")
+{
+    if (argc == 1 || !strcmp(argv[1], "list")) {
+        unsigned mask = current_mask();
+        for (int i = 0; i < WIDGET_COUNT; i++) {
+            sh_printf(sh, "%-11s", widget_names[i]);
+            sh_role(sh, mask >> i & 1 ? ROLE_OK : ROLE_MUTED);
+            sh_puts(sh, mask >> i & 1 ? "on the desktop\n" : "off\n");
+            sh_role(sh, ROLE_TEXT);
+        }
+        return 0;
+    }
+    if (!strcmp(argv[1], "edit") || !strcmp(argv[1], "done")) {
+        if (!started)
+            return sh_error(sh, "widgets", "the desktop is not running");
+        widgets_edit(!strcmp(argv[1], "edit"));
+        return 0;
+    }
+    bool add = !strcmp(argv[1], "add");
+    if (argc != 3 || (!add && strcmp(argv[1], "remove")))
+        return command_usage(sh, command_find("widgets"));
+    bool ok;
+    unsigned bits = parse_names(argv[2], strlen(argv[2]), &ok);
+    if (!ok)
+        return sh_error(sh, "widgets", "no widget called %s (clock, weather, music, calendar, visualizer, tasks)", argv[2]);
+    set_mask(add ? current_mask() | bits : current_mask() & ~bits);
+    return 0;
+}
+
+static void set_mask(unsigned mask)
+{
+    unsigned old = current_mask();
+    look_masks[look_index()] = mask;
+    masks_save();
+    if (!started)
+        return;
+    for (int i = 0; i < WIDGET_COUNT; i++) {
+        struct widget *w = &widgets[i];
+        if ((mask >> i & 1) && !(old >> i & 1)) {
+            w->leaving = false;
+            spring_set(&w->intro, -500);
+            w->intro.target = 1024;
+        } else if (!(mask >> i & 1) && (old >> i & 1) && w->shown) {
+            w->leaving = true;
+            w->intro.target = -400;
+        }
+    }
+    layout();
+    gui_desktop_changed();
+}
+
 static void get_widgets(char *buf, size_t cap)
 {
-    static const char *const names[WIDGET_COUNT] = {"clock", "weather", "music", "calendar", "visualizer"};
-    size_t n = 0;
-    buf[0] = 0;
-    for (int i = 0; i < WIDGET_COUNT; i++)
-        if (enabled_mask >> i & 1)
-            n += (size_t)ksnprintf(buf + n, cap - n, "%s%s", n ? "," : "", names[i]);
-    if (!n)
-        str_copy(buf, "none", cap);
+    format_names(current_mask(), buf, cap);
 }
 
 static int set_widgets(struct shell *sh, const char *value)
 {
     UNUSED(sh);
-    static const char *const names[WIDGET_COUNT] = {"clock", "weather", "music", "calendar", "visualizer"};
-    unsigned mask = 0;
-    if (!strcmp(value, "all"))
-        mask = ~0u;
-    else if (strcmp(value, "none")) {
-        const char *p = value;
-        while (*p) {
-            const char *end = strchr(p, ',');
-            size_t len = end ? (size_t)(end - p) : strlen(p);
-            bool found = false;
-            for (int i = 0; i < WIDGET_COUNT; i++)
-                if (strlen(names[i]) == len && !strncmp(names[i], p, len)) {
-                    mask |= 1u << i;
-                    found = true;
-                }
-            if (!found)
-                return E_INVAL;
-            p = end ? end + 1 : p + len;
-        }
-    }
-    enabled_mask = mask;
-    if (started) {
-        layout();
-        gui_desktop_changed();
-    }
+    bool ok;
+    unsigned mask = parse_names(value, strlen(value), &ok);
+    if (!ok)
+        return E_INVAL;
+    set_mask(mask);
     return 0;
 }
 
-static const struct setting s_widgets = {"widgets", "all|none|clock,weather,music,calendar,visualizer",
-                                         "desktop widgets to show (the look decides where)", get_widgets, set_widgets};
+static const struct setting s_widgets = {"widgets", "all|none|clock,weather,music,calendar,visualizer,tasks",
+                                         "widgets on the desktop of the current look", get_widgets, set_widgets};
 SETTING(s_widgets);
 
 static void get_city(char *buf, size_t cap)

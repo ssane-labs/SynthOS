@@ -296,7 +296,7 @@ static bool widget_on(const char *name)
 
 static void widget_toggle(const char *name, bool on)
 {
-    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer"};
+    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
     char out[96] = "";
     for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
         bool want = !strcmp(names[i], name) ? on : widget_on(names[i]);

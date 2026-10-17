@@ -9,7 +9,7 @@ static const struct gui_look looks[] = {
     {"dune", "Dune", "Warm desert glass, places on the left, launcher in the corner", false, RGB(214, 150, 96),
      RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, true, 1u << WIDGET_CLOCK | 1u << WIDGET_WEATHER | 1u << WIDGET_MUSIC},
     {"mist", "Mist", "Quiet morning fog, menu bar and a floating dock", false, RGB(120, 140, 170), RGB(78, 112, 214),
-     DOCK_CENTER, STATUS_MENUBAR, false, 1u << WIDGET_CALENDAR},
+     DOCK_CENTER, STATUS_MENUBAR, false, 1u << WIDGET_CALENDAR | 1u << WIDGET_TASKS},
     {"night", "Night", "Deep dark sky, an app rail and music on the desktop", true, RGB(110, 92, 200),
      RGB(150, 128, 255), DOCK_RAIL, STATUS_PILL, false,
      1u << WIDGET_CLOCK | 1u << WIDGET_MUSIC | 1u << WIDGET_VISUALIZER},
