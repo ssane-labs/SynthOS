@@ -26,13 +26,13 @@ int ease_in_out(int t)
     return 1024 - (int)((int64_t)u * u / 1024 * u / 1024 * 4);
 }
 
-/* A damped spring (damping ratio 0.88) sampled over the animation: it starts from rest, moves like a real object,
-   passes the end by a quarter percent and comes to rest exactly at t = 1, so the last frame meets the still one. */
+/* A critically damped motion sampled over the animation: it starts from rest, slows down as it arrives and never
+   passes the end, so the last frame meets the still one exactly. */
 static const uint16_t spring_curve[65] = {
-    0,    10,   35,   72,   119,  171,  226,  284,  342,  400,  455,  509,  560,  608,  653,  694,  732,
-    767,  799,  828,  854,  877,  897,  916,  932,  946,  959,  970,  979,  987,  994,  1000, 1005, 1010,
-    1013, 1016, 1019, 1021, 1022, 1024, 1025, 1025, 1026, 1026, 1027, 1027, 1027, 1027, 1027, 1027, 1026,
-    1026, 1026, 1026, 1026, 1025, 1025, 1025, 1025, 1025, 1025, 1024, 1024, 1024, 1024,
+    0,   7,   27,  56,  92,  133, 178, 224, 271,  318,  364,  409,  453,  495,  535,  573,  608,
+    642, 673, 703, 730, 755, 779, 800, 820, 839,  855,  871,  885,  898,  910,  921,  931,  940,
+    948, 955, 962, 968, 974, 979, 983, 988, 991,  995,  998,  1001, 1003, 1005, 1008, 1009, 1011,
+    1013, 1014, 1015, 1017, 1018, 1019, 1019, 1020, 1021, 1022, 1022, 1023, 1023, 1024,
 };
 
 int ease_spring(int t)
@@ -74,7 +74,7 @@ bool spring_busy(const struct spring *s)
 }
 
 /* Moves a spring on by dt ms. The position keeps 16 fraction bits, so it glides into its target instead of stopping
-   a few units short and jumping; the damping never drops below 0.86 of critical, so nothing wobbles like jelly. */
+   a few units short and jumping; the damping is never below critical, so nothing bounces or wobbles. */
 bool spring_step(struct spring *s, int stiffness, int damping, int dt)
 {
     if ((s->x + ONE / 2) >> FIX != s->pos)
@@ -84,7 +84,7 @@ bool spring_step(struct spring *s, int stiffness, int damping, int dt)
     if (!spring_busy(s))
         return false;
     int k = MAX(stiffness, 1);
-    int c = MAX(damping, isqrt(k) * 172 / 100);
+    int c = MAX(damping, isqrt(k) * 2);
     int64_t goal = (int64_t)s->target * ONE;
     dt = CLAMP(dt, 1, 64);
     while (dt > 0) {

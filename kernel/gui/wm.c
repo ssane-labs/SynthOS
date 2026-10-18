@@ -1310,7 +1310,7 @@ static void draw_lights(struct canvas *c, struct window *w)
     for (int i = 0; i < 3; i++) {
         int cx = traffic_cx(w, i);
         bool on = light_enabled(w, i);
-        int rad = 5 + grow * 2 / 1024;
+        int rad = 5;
         uint32_t color = hover && on ? color_mix(idle, colors[i], MIN(grow, 1024) * 255 / 1024) : idle;
         if (!on)
             color = ALPHA(idle, 90);

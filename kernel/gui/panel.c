@@ -199,7 +199,7 @@ void panel_hover(int x, int y)
         return;
     bool on_status = y >= 0 && in_status(x, y);
     int part = on_status ? part_at(x, y) : -1;
-    pill_grow.target = status == STATUS_PILL && on_status ? 1024 : 0;
+    pill_grow.target = 0;
     if (part != part_hover) {
         part_hover = part;
         wm_damage_z(zone_pill, Z_MENUBAR);

@@ -11,17 +11,27 @@ The network card gets an address by DHCP when SynthOS starts
   netstat                  open connections
 
 Web
+  launch chromium [url]    Chromium, the browser that comes with SynthOS
   launch chrome [url]      Google Chrome (downloads itself the first time)
   browse URL|file.html     show a page as text, links numbered at the end
   wget -O file URL         download a file;  wget -O - URL  prints it
   httpd [port] [dir]       serve a folder over HTTP until Ctrl+C
 
+Chromium
+  The image carries Chromium (the open browser Chrome is built on) in an
+  area of the disk of its own. A few seconds after the first login it is
+  unpacked into /home/apps/chromium without any network (a bar under the
+  Dock icon shows how far it got) and from then on it opens at once; links
+  and .html files open in it. bundle shows what the image carries,
+  bundle extract dir unpacks it by hand.
+
 Chrome
-  The Chrome icon in the Dock starts Google Chrome. Shortly after the first
+  Google Chrome is there too: launch Chrome. On an image without Chromium
+  the Chrome icon in the Dock starts Google Chrome. Shortly after the first
   login SynthOS fetches it by itself in the background (a bar under the
   Dock icon shows how far it got; config chromeauto off stops that). It
   asks Google's update server for the current version, downloads the
-  offline package gzip-compressed (231 MB instead of 443 MB; it needs some
+  offline package gzip-compressed with a 1 MB TCP window (231 MB instead of 443 MB; it needs some
   900 MB free in /home) and unpacks Chrome into /home/apps/chrome, with a
   shortcut on the desktop. The same from the shell: pkg install chrome.
   browse shows pages as text.

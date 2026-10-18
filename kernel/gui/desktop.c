@@ -493,19 +493,12 @@ static void icon_entry(int i, char *out, size_t cap)
     str_copy(out, app ? app->name : icons[i].path, cap);
 }
 
-/* Desktop icons rise and grow a little under the pointer. */
 void desktop_icon_hover(int x, int y)
 {
     int hit = -1;
     for (int i = 0; y >= 0 && i < icon_count; i++)
         if (rect_contains(icon_cell(i), x, y))
             hit = i;
-    if (hit == hover_icon)
-        return;
-    if (hover_icon >= 0 && hover_icon < MAX_ICONS)
-        icon_lift[hover_icon].target = 0;
-    if (hit >= 0)
-        icon_lift[hit].target = 1024;
     hover_icon = hit;
 }
 

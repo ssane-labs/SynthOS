@@ -712,7 +712,7 @@ bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks)
         return widget_at(x, y) >= 0;
     pressed = -1;
     drag = -1;
-    widgets[id].lift.target = hover == id ? 1024 : 0;
+    widgets[id].lift.target = 0;
     if (!dragged && widget_at(x, y) == id && part_at(id, x, y) == pressed_part)
         click(id, pressed_part, clicks);
     pressed_part = -1;
@@ -748,10 +748,6 @@ void widgets_hover(int x, int y)
     int id = x >= 0 ? widget_at(x, y) : -1;
     int part = id >= 0 ? part_at(id, x, y) : -1;
     if (id != hover) {
-        if (hover >= 0)
-            widgets[hover].lift.target = 0;
-        if (id >= 0)
-            widgets[id].lift.target = 1024;
         damage(hover);
         hover = id;
         damage(id);

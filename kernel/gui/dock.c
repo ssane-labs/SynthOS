@@ -81,7 +81,7 @@ static const struct gui_app *grid[GRID_MAX];
 static struct rect grid_r[GRID_MAX];
 static int grid_count, grid_hover = -1, grid_pressed = -1;
 static int base_size = 52;
-static bool magnify = true;
+static bool magnify = false;
 static bool autohide;
 static int hover_x = -1, hover_item = -1, pressed_item = -1;
 static bool revealed, over;
@@ -341,10 +341,10 @@ static int bounce_offset(const struct item *it)
     if (!bounce_app || it->kind != DI_APP || it->app != bounce_app)
         return 0;
     uint64_t t = hal_ticks_ms() - bounce_start;
-    if (t >= 1000)
+    if (t >= 420)
         return 0;
-    int phase = (int)(t % 500) * 1024 / 500, height = t < 500 ? 18 : 7;
-    return height * 4 * phase / 1024 * (1024 - phase) / 1024;
+    int phase = ease_in_out((int)t * 1024 / 420);
+    return 10 * 4 * phase / 1024 * (1024 - phase) / 1024;
 }
 
 static void layout_center(void)
@@ -401,7 +401,7 @@ static void layout_rail(void)
             continue;
         }
         int ry = it->kind == DI_TRASH ? trash_y : y;
-        int size = 34 + lift[i].pos * 10 / 1024;
+        int size = 34;
         int bx = dock_rect.x + 15 + bounce_offset(it) / 2;
         it->size = size;
         it->r = (struct rect){bx + (34 - size) / 2, ry + (RAIL_ROW - size) / 2, size, size};
@@ -499,9 +499,8 @@ static void layout_corner(void)
             it->r = (struct rect){0, 0, 0, 0};
             continue;
         }
-        int grow_px = lift[i].pos * 16 / 1024;
-        it->size = CORNER_ICON + grow_px;
-        it->r = (struct rect){x - grow_px / 2, y - grow_px - bounce_offset(it), it->size, it->size};
+        it->size = CORNER_ICON;
+        it->r = (struct rect){x, y - bounce_offset(it), it->size, it->size};
         x += CORNER_ICON + CORNER_GAP;
         shown++;
     }
@@ -880,8 +879,9 @@ bool dock_animate(void)
     busy |= spring_step(&hl, 520, 40, dt);
     busy |= spring_step(&hl_alpha, 400, 40, dt);
     for (int i = 0; i < count; i++) {
-        lift[i].target = i == hover_item && kind != DOCK_CENTER ? 1024 : 0;
-        busy |= spring_step(&lift[i], 600, 26, dt);
+        lift[i].target = i == pressed_item ? 1024 : 0;
+        if (spring_step(&lift[i], 900, 0, dt))
+            wm_damage_z(rect_inset(items[i].r, -4), Z_DOCK);
         busy |= spring_step(&ox[i], 300, 26, dt);
         busy |= spring_step(&oy[i], 300, 26, dt);
     }
@@ -977,7 +977,9 @@ static void paint_items(struct canvas *c)
         struct rect r = it->r;
         if (rect_empty(r) || rect_empty(rect_intersect(rect_inset(r, -12), c->clip)))
             continue;
-        int alpha = pressed_item == i ? 160 : 255;
+        /* A pressed icon sinks a little and comes back when it is let go. */
+        int alpha = 255 - CLAMP(lift[i].pos, 0, 1024) * 60 / 1024;
+        r = rect_inset(r, CLAMP(lift[i].pos, 0, 1024) * r.w / 1024 / 14);
         draw_icon(c, it, r, alpha);
         if (it->running)
             running_dot(c, r);
@@ -1210,7 +1212,12 @@ static void activate(int i)
             gui_app_launch(it->app, NULL);
         }
         break;
-    case DI_LAUNCHPAD: launchpad_toggle(); break;
+    case DI_LAUNCHPAD:
+        if (kind == DOCK_CORNER)
+            grow.target = grow.target > 0 ? 0 : 1024;
+        else
+            launchpad_toggle();
+        break;
     case DI_SYSTEM: shell_system_menu(it->r.x + it->r.w + 8, it->r.y); break;
     case DI_WINDOW:
         if (wm_window_alive(it->win))
@@ -1321,15 +1328,16 @@ void dock_hover(int x, int y)
     }
     int item = now_over ? item_at(x, y) : -1;
     int gi = now_over ? grid_at(x, y) : -1;
+    /* Nothing grows just because the pointer passes by: the corner launcher opens with a click on Apps and folds
+       away when the pointer leaves it, the rail shows names as tooltips. */
     if (now_over != over) {
         over = now_over;
-        grow.target = over ? 1024 : 0;
+        if (kind == DOCK_CENTER || (!over && kind == DOCK_CORNER))
+            grow.target = over ? 1024 : 0;
     }
     if (kind == DOCK_RAIL && item >= 0) {
         int ty = items[item].r.y - (RAIL_ROW - items[item].r.h) / 2 + 3;
-        if (hl_alpha.target == 0)
-            spring_set(&hl, ty);
-        hl.target = ty;
+        spring_set(&hl, ty);
         hl_alpha.target = 1024;
     } else {
         hl_alpha.target = 0;
