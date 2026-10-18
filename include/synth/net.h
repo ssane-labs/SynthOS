@@ -56,6 +56,7 @@ void net_register(struct netdev *dev);
 void net_init(void);
 void net_poll(void);
 void net_wait(int ms);
+void net_await_address(void);
 struct net_iface *net_interface(int index);
 int net_interface_count(void);
 int net_configure(struct net_iface *ifc, uint32_t ip, uint32_t mask, uint32_t gateway, uint32_t dns);

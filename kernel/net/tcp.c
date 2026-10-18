@@ -175,6 +175,7 @@ static void output(struct sock *s)
 
 int net_connect_start(int id, uint32_t ip, uint16_t port)
 {
+    net_await_address();
     struct sock *s = id >= 0 && id < NET_MAX_SOCKETS && net_socks[id].used ? &net_socks[id] : NULL;
     if (!s)
         return E_BADF;

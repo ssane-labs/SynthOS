@@ -785,31 +785,43 @@ int sfs_format(struct blockdev *dev)
     if (sb.data_start + 16 >= sb.blocks)
         return E_NOSPC;
 
+    /* Bitmap and inode table go out 64 KB at a time: a fresh 2 GB disk is ~9000 blocks of them. */
+    enum { CHUNK = 128 };
+    uint8_t *chunk = kmalloc(CHUNK * BLOCK_SIZE);
+    if (!chunk)
+        return E_NOMEM;
+    int err = 0;
+    for (uint32_t b = 0; b < sb.bitmap_blocks + sb.inode_blocks && !err; b += CHUNK) {
+        uint32_t count = MIN((uint32_t)CHUNK, sb.bitmap_blocks + sb.inode_blocks - b);
+        memset(chunk, 0, (size_t)count * BLOCK_SIZE);
+        for (uint32_t k = 0; k < count; k++) {
+            uint8_t *blk = chunk + (size_t)k * BLOCK_SIZE;
+            uint32_t at = b + k;
+            if (at >= sb.bitmap_blocks) {
+                if (at == sb.bitmap_blocks) {
+                    struct sfs_inode root = {.type = SFS_DIR, .mtime = sb.created};
+                    memcpy(blk, &root, sizeof(root));
+                }
+                continue;
+            }
+            for (uint32_t j = 0; j < BLOCK_SIZE; j++) {
+                uint32_t n = (at * BLOCK_SIZE + j) * 8;
+                if (n >= sb.data_start && n + 8 <= sb.blocks)
+                    continue;
+                for (uint32_t i = 0; i < 8; i++)
+                    if (n + i < sb.data_start || n + i >= sb.blocks)
+                        blk[j] |= (uint8_t)(1u << i);
+            }
+        }
+        err = block_write(dev, sb.bitmap_start + b, count, chunk);
+    }
+    kfree(chunk);
+    if (err)
+        return err;
     uint8_t buf[BLOCK_SIZE];
-    for (uint32_t b = 0; b < sb.bitmap_blocks; b++) {
-        memset(buf, 0, sizeof(buf));
-        for (uint32_t i = 0; i < BLOCK_SIZE * 8; i++) {
-            uint32_t blk = b * BLOCK_SIZE * 8 + i;
-            if (blk < sb.data_start || blk >= sb.blocks)
-                buf[i / 8] |= (uint8_t)(1u << (i % 8));
-        }
-        int err = block_write(dev, sb.bitmap_start + b, 1, buf);
-        if (err)
-            return err;
-    }
-    for (uint32_t b = 0; b < sb.inode_blocks; b++) {
-        memset(buf, 0, sizeof(buf));
-        if (b == 0) {
-            struct sfs_inode root = {.type = SFS_DIR, .mtime = sb.created};
-            memcpy(buf, &root, sizeof(root));
-        }
-        int err = block_write(dev, sb.inode_start + b, 1, buf);
-        if (err)
-            return err;
-    }
     memset(buf, 0, sizeof(buf));
     memcpy(buf, &sb, sizeof(sb));
-    int err = block_write(dev, 0, 1, buf);
+    err = block_write(dev, 0, 1, buf);
     if (err == 0)
         klog("sfs: formatted %s (%u blocks, %u inodes)", dev->name, (unsigned)sb.blocks, (unsigned)sb.inodes);
     return err;

@@ -34,6 +34,10 @@ fi
 
 # each case: a command line, then the text expected somewhere in the output
 cat > "$work/cases" <<'EOF'
+ping -c 1 10.0.2.2 | grep from
+64 bytes from 10.0.2.2: icmp_seq=1
+dmesg | grep formatted
+sfs: formatted data0
 echo hello world
 hello world
 imginfo /system/samples/Dune.jpg

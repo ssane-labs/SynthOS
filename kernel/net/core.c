@@ -426,6 +426,7 @@ void net_wait(int ms)
 
 int net_ping(uint32_t ip, uint16_t seq, size_t size, int timeout_ms, uint32_t *rtt_ms, uint8_t *ttl)
 {
+    net_await_address();
     size = MIN(MAX(size, (size_t)8), (size_t)1400);
     uint8_t *p = kzalloc(size + 8);
     if (!p)
@@ -453,11 +454,25 @@ int net_ping(uint32_t ip, uint16_t seq, size_t size, int timeout_ms, uint32_t *r
     return 0;
 }
 
+/* Boot does not wait for DHCP: the first thing that needs an address waits for the first lease a little. */
+static uint64_t await_until;
+
+void net_await_address(void)
+{
+    while (!hal_in_interrupt() && net_now() < await_until) {
+        for (int i = 0; i < iface_count; i++)
+            if (ifaces[i].configured)
+                return;
+        net_wait(5);
+    }
+}
+
 void net_init(void)
 {
     hal_net_init();
     if (!iface_count)
         return;
+    await_until = net_now() + 4000;
     for (int i = 0; i < iface_count; i++)
         net_dhcp_start(&ifaces[i]);
     hal_set_idle(net_poll);

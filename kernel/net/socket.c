@@ -165,6 +165,8 @@ void udp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
 
 long net_sendto(int id, const void *buf, size_t n, uint32_t ip, uint16_t port)
 {
+    if (ip != 0xffffffffu)
+        net_await_address();
     struct sock *s = get(id);
     if (!s)
         return E_BADF;

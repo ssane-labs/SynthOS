@@ -98,7 +98,7 @@ void net_dhcp_start(struct net_iface *ifc)
     memset(l, 0, sizeof(*l));
     l->xid = hal_entropy();
     l->state = SELECTING;
-    l->next = net_now() + 1000;
+    l->next = net_now() + 250;
     ifc->dhcp = true;
     send_dhcp(ifc, l, DISCOVER);
 }
@@ -181,7 +181,7 @@ void dhcp_tick(uint64_t now)
         if (l->state == IDLE || now < l->next)
             continue;
         l->attempts++;
-        uint64_t backoff = (uint64_t)MIN(1000 << MIN(l->attempts, 5), 30000);
+        uint64_t backoff = (uint64_t)MIN(250 << MIN(l->attempts, 7), 30000);
         l->next = now + backoff;
         if (l->state == REQUESTING && l->attempts % 3 == 0)
             l->state = SELECTING;

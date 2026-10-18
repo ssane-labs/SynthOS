@@ -131,7 +131,12 @@ else
 	@cp arch/x86/efi/prebuilt/BOOTX64.EFI $@
 endif
 
-$(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk $(BUNDLE_FILE)
+# The partition table depends on the bundle and disk size: rebuild stage1 whenever they change.
+$(OUT)/layout.txt: $(BUNDLE_FILE) FORCE
+	@mkdir -p $(@D)
+	@echo "$(DISK_SECTORS) $(BUNDLE_SECTORS)" | cmp -s - $@ || echo "$(DISK_SECTORS) $(BUNDLE_SECTORS)" > $@
+
+$(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk $(OUT)/layout.txt
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -Iarch/x86/boot/ -DIMAGE_SECTORS=$(DISK_SECTORS) -DBUNDLE_SECTORS=$(BUNDLE_SECTORS) $(BOOT_DEFS) -o $@ $<
@@ -309,3 +314,5 @@ clean:
 	rm -rf $(BUILD)
 
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
+
+FORCE:

@@ -127,21 +127,21 @@ static void mount_filesystems(const struct boot_info *bi)
 #endif
 }
 
-static void start_network(void)
+/* The card starts before the disks: a link takes about a second to come up (QEMU's e1000 also ignores frames for
+   a second after RCTL is written), and that second passes while /home is mounted. Boot does not wait for the
+   lease; the first connection does (net_await_address). */
+static void show_network(void)
 {
-    net_init();
     if (!net_interface_count())
         return;
     struct net_iface *ifc = net_interface(0);
-    uint64_t end = hal_ticks_ms() + 2000;
-    while (!ifc->configured && hal_ticks_ms() < end)
-        net_wait(5);
+    net_poll();
     char ip[16];
     net_format_ip(ifc->ip, ip, sizeof(ip));
     if (ifc->configured)
         boot_step(true, "Network: %s (%s) %s", ifc->dev->name, ifc->dev->driver, ip);
     else
-        boot_step(true, "Network: %s (%s) waiting for DHCP", ifc->dev->name, ifc->dev->driver);
+        boot_step(true, "Network: %s (%s) getting an address", ifc->dev->name, ifc->dev->driver);
 }
 
 static void run_startup(struct shell *sh)
@@ -195,8 +195,9 @@ void kmain(const struct boot_info *bi)
         boot_step(true, "Display: %s (line mode)", d->name);
 
     vfs_init();
+    net_init();
     mount_filesystems(bi);
-    start_network();
+    show_network();
 
     struct shell *sh = shell_create();
     if (!sh)

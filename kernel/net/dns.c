@@ -95,6 +95,7 @@ int net_resolve_start(const char *name, struct dns_query *q, uint32_t *ip)
             *ip = cache[i].ip;
             return 0;
         }
+    net_await_address();
     uint32_t server = 0;
     for (int i = 0; i < net_interface_count() && !server; i++)
         if (net_interface(i)->configured)

@@ -192,7 +192,8 @@ make clean        # удалить build/
 * Отключение подсистем для маленьких машин (`config.mk` или командная строка):
   `make CONFIG_DOS=0 CONFIG_SXVM=0 CONFIG_EDITOR=0`.
 * Дополнительные флаги QEMU: `make run QEMU_FLAGS="-smp 2 -device qemu-xhci -device usb-kbd"`.
-* Сеть в QEMU работает сразу (user-mode, адрес по DHCP). Сертификаты HTTPS проверяются по корням
+* Сеть в QEMU работает сразу (user-mode, адрес по DHCP; загрузка его не ждёт — строка
+  «Network: … getting an address», первая сетевая команда сама дождётся адреса). Сертификаты HTTPS проверяются по корням
   из `/etc/certs` (генерируются `tools/mkcerts.sh`); свои корни — файлы `.pem` в `/home/certs`
   и команда `certs reload`.
 
