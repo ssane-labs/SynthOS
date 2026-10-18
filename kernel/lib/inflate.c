@@ -371,7 +371,7 @@ struct gunzip_stream {
     size_t in_cap;
     size_t flushed;
     int mode;
-    bool last;
+    bool last, raw;
     uint32_t stored_left;
     struct huff lit, dist;
     const struct huff *plit, *pdist;
@@ -379,7 +379,7 @@ struct gunzip_stream {
     void *ctx;
 };
 
-struct gunzip_stream *gunzip_stream_new(int (*out)(void *ctx, const void *data, size_t n), void *ctx)
+static struct gunzip_stream *stream_new(int (*out)(void *ctx, const void *data, size_t n), void *ctx, bool raw)
 {
     struct gunzip_stream *z = kzalloc(sizeof(*z));
     uint8_t *buf = kmalloc(OUT_CAP);
@@ -392,7 +392,20 @@ struct gunzip_stream *gunzip_stream_new(int (*out)(void *ctx, const void *data, 
     z->s.out_cap = OUT_CAP;
     z->out = out;
     z->ctx = ctx;
+    z->raw = raw;
+    z->mode = raw ? Z_BLOCK : Z_HEADER;
     return z;
+}
+
+struct gunzip_stream *gunzip_stream_new(int (*out)(void *ctx, const void *data, size_t n), void *ctx)
+{
+    return stream_new(out, ctx, false);
+}
+
+/* The same decoder for a bare deflate stream, as zip members carry them. */
+struct gunzip_stream *inflate_stream_new(int (*out)(void *ctx, const void *data, size_t n), void *ctx)
+{
+    return stream_new(out, ctx, true);
 }
 
 void gunzip_stream_free(struct gunzip_stream *z)
@@ -536,6 +549,10 @@ static int stream_run(struct gunzip_stream *z, bool final)
             break;
         }
         case Z_TRAILER:
+            if (z->raw) {
+                z->mode = Z_DONE;
+                break;
+            }
             align(s);
             if (s->in_len - s->pos < 8)
                 return final ? E_INVAL : 0;

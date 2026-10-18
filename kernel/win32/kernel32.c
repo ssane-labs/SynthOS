@@ -346,6 +346,16 @@ static BOOL WINAPI IsWow64Process(HANDLE h, BOOL *wow)
     return TRUE;
 }
 
+/* No process runs inside a job object here. */
+static BOOL WINAPI IsProcessInJob(HANDLE process, HANDLE job, BOOL *result)
+{
+    UNUSED(process);
+    UNUSED(job);
+    if (result)
+        *result = FALSE;
+    return TRUE;
+}
+
 static void *WINAPI SetUnhandledExceptionFilter(void *filter)
 {
     void *old = unhandled_filter;
@@ -1543,7 +1553,7 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(LoadLibraryExW), W32_FN(FreeLibrary), W32_FN(GetProcAddress), W32_FN(GetCommandLineA),
     W32_FN(GetCommandLineW), W32_FN(GetStartupInfoA), W32_FN(GetStartupInfoW), W32_FN(GetVersion),
     W32_FN(GetVersionExA), W32_FN(GetVersionExW), W32_FN(IsProcessorFeaturePresent), W32_FN(GetSystemInfo),
-    W32_AS("GetNativeSystemInfo", GetSystemInfo), W32_FN(IsWow64Process), W32_FN(SetUnhandledExceptionFilter),
+    W32_AS("GetNativeSystemInfo", GetSystemInfo), W32_FN(IsWow64Process), W32_FN(IsProcessInJob), W32_FN(SetUnhandledExceptionFilter),
     W32_FN(UnhandledExceptionFilter), W32_FN(RaiseException), W32_FN(RtlUnwind), W32_FN(RtlCaptureContext),
     W32_FN(GetProcessId), W32_FN(InterlockedPushEntrySList), W32_FN(InterlockedPopEntrySList),
     W32_FN(InterlockedFlushSList), W32_FN(QueryDepthSList), W32_FN(RtlPcToFileHeader), W32_FN(IsDebuggerPresent),

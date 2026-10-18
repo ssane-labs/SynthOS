@@ -76,14 +76,32 @@ all: $(IMAGE)
 
 ESP_LBA     := 8192
 ESP_SECTORS := 8192
+
+# The desktop image carries Chromium (its own 32-bit Windows snapshot, BSD-licensed) as a bundle after the system
+# area; the first boot unpacks it into /home/apps/chromium. BUNDLE=0 or no network leaves it out.
+CHROMIUM_REV ?= 1721499
+BUNDLE       ?= $(if $(SERIAL),0,1)
+BUNDLE_FILE  := $(if $(filter 1,$(BUNDLE)),$(BUILD)/cache/chromium-$(CHROMIUM_REV).bundle)
+BUNDLE_SECTORS = $(if $(BUNDLE_FILE),$(shell echo $$(( $$(stat -c %s $(BUNDLE_FILE) 2>/dev/null || echo 0) / 512 ))),0)
+DISK_SECTORS   = $(if $(filter 0,$(BUNDLE_SECTORS)),$(IMAGE_SECTORS),$(shell echo $$(( 16384 + $(BUNDLE_SECTORS) + 4194304 ))))
+
+$(BUILD)/cache/chrome-win-$(CHROMIUM_REV).zip:
+	@mkdir -p $(@D)
+	@echo "  FETCH   Chromium $(CHROMIUM_REV) (32-bit Windows snapshot)"
+	@curl -fsSL --retry 3 -o $@.part https://commondatastorage.googleapis.com/chromium-browser-snapshots/Win/$(CHROMIUM_REV)/chrome-win.zip \
+	    && mv $@.part $@ || (rm -f $@.part; echo "  SKIP    no network: the image goes without Chromium"; : > $@)
+
+$(BUILD)/cache/chromium-$(CHROMIUM_REV).bundle: $(BUILD)/cache/chrome-win-$(CHROMIUM_REV).zip tools/mkbundle.py
+	@if [ -s $< ]; then python3 -I tools/mkbundle.py $< $@ "Chromium" chrome-win/ _tests.exe; else : > $@; fi
 EFICC       ?= $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 HAVE_ESP    := $(and $(shell command -v mkfs.fat 2>/dev/null),$(shell command -v mcopy 2>/dev/null))
 
-$(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin $(if $(HAVE_ESP),$(OUT)/esp.img)
+$(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin $(if $(HAVE_ESP),$(OUT)/esp.img) $(BUNDLE_FILE)
 	@echo "  IMAGE   $@"
 	@test $$(( $$(wc -c < $(OUT)/kernel.bin) / 512 + 17 )) -le $(ESP_LBA) || (echo "kernel too large for the disk layout"; exit 1)
 	@cat $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin > $@
-	@dd if=/dev/zero of=$@ bs=512 count=0 seek=$(IMAGE_SECTORS) 2>/dev/null
+	@dd if=/dev/zero of=$@ bs=512 count=0 seek=$(DISK_SECTORS) 2>/dev/null
+	@if [ -s "$(BUNDLE_FILE)" ]; then dd if=$(BUNDLE_FILE) of=$@ bs=1M oflag=seek_bytes seek=$$((16384 * 512)) conv=notrunc,sparse 2>/dev/null; fi
 ifneq ($(HAVE_ESP),)
 	@dd if=$(OUT)/esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
 	@echo "  ready   $@ ($$(( $$(wc -c < $(OUT)/kernel.bin) / 1024 )) KB kernel, BIOS + UEFI)"
@@ -113,10 +131,10 @@ else
 	@cp arch/x86/efi/prebuilt/BOOTX64.EFI $@
 endif
 
-$(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk
+$(OUT)/stage1.bin: arch/x86/boot/stage1.asm arch/x86/boot/layout.inc config.mk $(BUNDLE_FILE)
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
-	@$(NASM) -f bin -Iarch/x86/boot/ -DIMAGE_SECTORS=$(IMAGE_SECTORS) $(BOOT_DEFS) -o $@ $<
+	@$(NASM) -f bin -Iarch/x86/boot/ -DIMAGE_SECTORS=$(DISK_SECTORS) -DBUNDLE_SECTORS=$(BUNDLE_SECTORS) $(BOOT_DEFS) -o $@ $<
 
 $(OUT)/stage2.bin: arch/x86/boot/stage2.asm arch/x86/boot/layout.inc
 	@mkdir -p $(@D)

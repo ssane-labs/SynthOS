@@ -112,10 +112,10 @@ wmstat 1
 desktop is not running
 windows pin 1
 desktop is not running
-widgets remove music; widgets add tasks; config widgets
-clock,weather,tasks
+widgets add clock; widgets add tasks; config widgets
+clock,tasks
 head -n 1 ~/.widgets
-dune clock,weather,tasks
+dune clock,tasks
 config widgets all; widgets list | grep -c desktop
 6
 widgets add moon
@@ -123,11 +123,11 @@ no widget called moon
 config widgets clock,weather,music; config widgets
 clock,weather,music
 config dockapps
-Launchpad|Files|Chrome|Terminal
+Launchpad|Files|Chromium|Terminal
 config dockapps 'Files|/home/notes.txt|Terminal'; grep dune ~/.dock
 dune Files|/home/notes.txt|Terminal
 config dockapps default; config dockapps
-Launchpad|Files|Chrome|Terminal
+Launchpad|Files|Chromium|Terminal
 config chromeauto off; config chromeauto; config chromeauto on
 off
 config dockstyle side; config statusbar menubar; head -n 1 ~/.looks

@@ -3,6 +3,10 @@
 
 %include "layout.inc"
 
+%ifndef BUNDLE_SECTORS
+%define BUNDLE_SECTORS 0
+%endif
+
 [bits 16]
 [org 0x7c00]
 
@@ -120,7 +124,7 @@ partition_table:
     db 0x00, 0xfe, 0xff, 0xff, 0xef, 0xfe, 0xff, 0xff
     dd ESP_LBA, ESP_SECTORS
     db 0x00, 0xfe, 0xff, 0xff, 0x7f, 0xfe, 0xff, 0xff
-    dd DATA_LBA, IMAGE_SECTORS - DATA_LBA
+    dd DATA_LBA + BUNDLE_SECTORS, IMAGE_SECTORS - DATA_LBA - BUNDLE_SECTORS
     times 16 db 0
 
 dw 0xaa55

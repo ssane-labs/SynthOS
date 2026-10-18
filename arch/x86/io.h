@@ -72,6 +72,21 @@ static inline void cpu_irq_restore(uint32_t flags)
         cpu_sti();
 }
 
+static inline bool cpu_irqs_enabled(void)
+{
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0" : "=r"(flags));
+    return flags & 0x200;
+}
+
+/* Waits for the next interrupt when that is allowed: a device that raises one on completion wakes us at once,
+   instead of the CPU spinning on its registers (each read is a trap in a virtual machine). */
+static inline void cpu_wait(bool device_irq)
+{
+    if (device_irq && cpu_irqs_enabled())
+        __asm__ volatile("hlt");
+}
+
 static inline void cpu_barrier(void)
 {
     __asm__ volatile("lock; orl $0, (%%esp)" : : : "memory");
@@ -168,6 +183,7 @@ void pci_foreach(void (*fn)(const struct pci_device *d, void *ctx), void *ctx);
 bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *out);
 bool pci_bar_base(const struct pci_device *d, uint8_t offset, uint64_t *out);
 void ahci_init(void);
+void ahci_flush_all(void);
 struct display_mode;
 bool vbe_enter(int width, int height, struct framebuffer *fb);
 int vbe_modes(struct display_mode *out, int max);

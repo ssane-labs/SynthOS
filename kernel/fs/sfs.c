@@ -58,7 +58,7 @@ _Static_assert(sizeof(struct sfs_dirent) == 64, "dirent layout");
 
 struct cache_line {
     uint32_t block;
-    bool valid;
+    bool valid, dirty;
     uint8_t data[BLOCK_SIZE];
 };
 
@@ -68,6 +68,8 @@ struct sfs {
     uint8_t *bitmap;
     uint32_t free_blocks;
     uint32_t hint;
+    bool batch, zero_data;
+    uint32_t bitmap_lo, bitmap_hi;
     struct cache_line cache[SFS_CACHE];
 };
 
@@ -79,6 +81,16 @@ struct sfs_node {
 
 static const struct vnode_ops sfs_ops;
 
+/* Metadata written during one file_io (indirect tables) stays in the cache marked dirty and goes to the disk
+   once at the end; a line is written back before another block takes its place. */
+static int write_back(struct sfs *fs, struct cache_line *c)
+{
+    if (!c->dirty)
+        return 0;
+    c->dirty = false;
+    return block_write(fs->dev, c->block, 1, c->data);
+}
+
 static int bread(struct sfs *fs, uint32_t blk, void *buf)
 {
     struct cache_line *c = &fs->cache[blk % SFS_CACHE];
@@ -86,7 +98,9 @@ static int bread(struct sfs *fs, uint32_t blk, void *buf)
         memcpy(buf, c->data, BLOCK_SIZE);
         return 0;
     }
-    int err = block_read(fs->dev, blk, 1, c->data);
+    int err = write_back(fs, c);
+    if (!err)
+        err = block_read(fs->dev, blk, 1, c->data);
     if (err) {
         c->valid = false;
         return err;
@@ -100,24 +114,69 @@ static int bread(struct sfs *fs, uint32_t blk, void *buf)
 static int bwrite(struct sfs *fs, uint32_t blk, const void *buf)
 {
     struct cache_line *c = &fs->cache[blk % SFS_CACHE];
+    if (c->block != blk || !c->valid) {
+        int err = write_back(fs, c);
+        if (err)
+            return err;
+    }
+    if (fs->batch) {
+        memcpy(c->data, buf, BLOCK_SIZE);
+        c->block = blk;
+        c->valid = c->dirty = true;
+        return 0;
+    }
     int err = block_write(fs->dev, blk, 1, buf);
     if (err) {
-        c->valid = false;
+        c->valid = c->dirty = false;
         return err;
     }
     memcpy(c->data, buf, BLOCK_SIZE);
     c->block = blk;
     c->valid = true;
+    c->dirty = false;
     return 0;
+}
+
+/* Data blocks written straight to the disk must not leave an older copy in the cache. */
+static void forget(struct sfs *fs, uint32_t first, uint32_t count)
+{
+    for (uint32_t b = first; b < first + count; b++) {
+        struct cache_line *c = &fs->cache[b % SFS_CACHE];
+        if (c->valid && c->block == b)
+            c->valid = c->dirty = false;
+    }
 }
 
 static int bitmap_sync(struct sfs *fs, uint32_t blk)
 {
     uint32_t index = blk / (BLOCK_SIZE * 8);
+    if (fs->batch) {
+        fs->bitmap_lo = MIN(fs->bitmap_lo, index);
+        fs->bitmap_hi = MAX(fs->bitmap_hi, index + 1);
+        return 0;
+    }
     return bwrite(fs, fs->sb.bitmap_start + index, fs->bitmap + index * BLOCK_SIZE);
 }
 
-static int balloc(struct sfs *fs, uint32_t *out)
+static void batch_begin(struct sfs *fs)
+{
+    fs->batch = true;
+    fs->bitmap_lo = UINT32_MAX;
+    fs->bitmap_hi = 0;
+}
+
+static int batch_end(struct sfs *fs)
+{
+    fs->batch = false;
+    int err = 0;
+    for (uint32_t i = fs->bitmap_lo; i < fs->bitmap_hi && !err; i++)
+        err = block_write(fs->dev, fs->sb.bitmap_start + i, 1, fs->bitmap + i * BLOCK_SIZE);
+    for (int i = 0; i < SFS_CACHE && !err; i++)
+        err = write_back(fs, &fs->cache[i]);
+    return err;
+}
+
+static int balloc_raw(struct sfs *fs, uint32_t *out, bool zero)
 {
     uint32_t total = fs->sb.blocks;
     for (uint32_t n = 0; n < total; n++) {
@@ -130,9 +189,8 @@ static int balloc(struct sfs *fs, uint32_t *out)
         int err = bitmap_sync(fs, b);
         if (err)
             return err;
-        static const uint8_t zero[BLOCK_SIZE];
-        err = bwrite(fs, b, zero);
-        if (err)
+        static const uint8_t zeros[BLOCK_SIZE];
+        if (zero && (err = bwrite(fs, b, zeros)) != 0)
             return err;
         fs->free_blocks--;
         fs->hint = b + 1;
@@ -140,6 +198,11 @@ static int balloc(struct sfs *fs, uint32_t *out)
         return 0;
     }
     return E_NOSPC;
+}
+
+static int balloc(struct sfs *fs, uint32_t *out)
+{
+    return balloc_raw(fs, out, true);
 }
 
 static void bfree(struct sfs *fs, uint32_t b)
@@ -205,7 +268,8 @@ static int ialloc(struct sfs *fs, uint16_t type, uint32_t *out)
     return E_NOSPC;
 }
 
-static int table_entry(struct sfs *fs, uint32_t *table_blk, uint32_t index, bool alloc, uint32_t *out, bool *dirty)
+static int table_entry(struct sfs *fs, uint32_t *table_blk, uint32_t index, bool alloc, uint32_t *out, bool *dirty,
+                       bool leaf)
 {
     uint32_t table[SFS_PTRS];
     if (!*table_blk) {
@@ -222,7 +286,7 @@ static int table_entry(struct sfs *fs, uint32_t *table_blk, uint32_t index, bool
     if (err)
         return err;
     if (!table[index] && alloc) {
-        err = balloc(fs, &table[index]);
+        err = balloc_raw(fs, &table[index], fs->zero_data || !leaf);
         if (err)
             return err;
         err = bwrite(fs, *table_blk, table);
@@ -237,7 +301,7 @@ static int bmap(struct sfs *fs, struct sfs_inode *in, uint32_t index, bool alloc
 {
     if (index < SFS_DIRECT) {
         if (!in->direct[index] && alloc) {
-            int err = balloc(fs, &in->direct[index]);
+            int err = balloc_raw(fs, &in->direct[index], fs->zero_data);
             if (err)
                 return err;
             *dirty = true;
@@ -247,7 +311,7 @@ static int bmap(struct sfs *fs, struct sfs_inode *in, uint32_t index, bool alloc
     }
     index -= SFS_DIRECT;
     if (index < SFS_PTRS)
-        return table_entry(fs, &in->indirect, index, alloc, out, dirty);
+        return table_entry(fs, &in->indirect, index, alloc, out, dirty, true);
     index -= SFS_PTRS;
     uint32_t *top = &in->double_indirect, span = SFS_PTRS;
     if (index >= SFS_PTRS * SFS_PTRS) {
@@ -258,10 +322,10 @@ static int bmap(struct sfs *fs, struct sfs_inode *in, uint32_t index, bool alloc
         span = SFS_PTRS * SFS_PTRS;
     }
     uint32_t table;
-    int err = table_entry(fs, top, index / span, alloc, &table, dirty);
+    int err = table_entry(fs, top, index / span, alloc, &table, dirty, false);
     bool unused = false;
     for (index %= span, span /= SFS_PTRS; !err && table && span; index %= span, span /= SFS_PTRS)
-        err = table_entry(fs, &table, index / span, alloc, &table, &unused);
+        err = table_entry(fs, &table, index / span, alloc, &table, &unused, span == 1);
     *out = err ? 0 : table;
     return err;
 }
@@ -326,6 +390,10 @@ static void free_blocks(struct sfs *fs, struct sfs_inode *in, uint32_t keep)
     free_tree(fs, &in->triple_indirect, keep > base ? keep - base : 0, SFS_PTRS * SFS_PTRS);
 }
 
+#define RUN_MAX 256
+
+/* Whole blocks move in runs of neighbouring disk blocks, one command each; a block that is about to be
+   overwritten completely is not zeroed first; the bitmap and the tables go to the disk once, at the end. */
 static long file_io(struct sfs *fs, uint32_t ino, struct sfs_inode *in, uint32_t off, void *buf, size_t n, bool write)
 {
     uint8_t block[BLOCK_SIZE];
@@ -336,42 +404,72 @@ static long file_io(struct sfs *fs, uint32_t ino, struct sfs_inode *in, uint32_t
             return 0;
         n = MIN(n, (size_t)(in->size - off));
     }
+    batch_begin(fs);
+    int err = 0;
     while (done < n) {
         uint32_t index = (off + (uint32_t)done) / BLOCK_SIZE;
         uint32_t within = (off + (uint32_t)done) % BLOCK_SIZE;
         size_t chunk = MIN(n - done, (size_t)(BLOCK_SIZE - within));
+        uint8_t *at = (uint8_t *)buf + done;
         uint32_t blk;
-        int err = bmap(fs, in, index, write, &blk, &dirty);
-        if (err) {
-            if (done)
+        bool whole = chunk == BLOCK_SIZE;
+        fs->zero_data = !whole;
+        if ((err = bmap(fs, in, index, write, &blk, &dirty)) != 0)
+            break;
+        if (whole && blk) {
+            uint32_t count = 1;
+            while (count < RUN_MAX && n - done >= (size_t)(count + 1) * BLOCK_SIZE) {
+                uint32_t next;
+                if ((err = bmap(fs, in, index + count, write, &next, &dirty)) != 0 || next != blk + count)
+                    break;
+                count++;
+            }
+            if (err)
                 break;
-            return err;
+            for (uint32_t k = 0; k < count && !write; k++) {
+                struct cache_line *c = &fs->cache[(blk + k) % SFS_CACHE];
+                if (c->dirty && c->block == blk + k)
+                    write_back(fs, c);
+            }
+            err = write ? block_write(fs->dev, blk, count, at) : block_read(fs->dev, blk, count, at);
+            if (err)
+                break;
+            if (write)
+                forget(fs, blk, count);
+            done += (size_t)count * BLOCK_SIZE;
+            continue;
         }
         if (!blk) {
-            memset((uint8_t *)buf + done, 0, chunk);
+            memset(at, 0, chunk);
         } else {
             if ((err = bread(fs, blk, block)) != 0)
-                return err;
+                break;
             if (write) {
-                memcpy(block + within, (const uint8_t *)buf + done, chunk);
+                memcpy(block + within, at, chunk);
                 if ((err = bwrite(fs, blk, block)) != 0)
-                    return err;
+                    break;
             } else {
-                memcpy((uint8_t *)buf + done, block + within, chunk);
+                memcpy(at, block + within, chunk);
             }
         }
         done += chunk;
     }
-    if (write) {
+    fs->zero_data = false;
+    int flushed = batch_end(fs);
+    if (!err)
+        err = flushed;
+    if (err && !done)
+        return err;
+    if (write && done) {
         if (off + done > in->size)
             in->size = off + (uint32_t)done;
         in->mtime = time_now();
         dirty = true;
     }
     if (dirty) {
-        int err = iput(fs, ino, in);
-        if (err)
-            return err;
+        int e = iput(fs, ino, in);
+        if (e)
+            return e;
     }
     return (long)done;
 }

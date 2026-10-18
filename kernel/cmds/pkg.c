@@ -1,3 +1,4 @@
+#include <synth/bundle.h>
 #include <synth/command.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
@@ -432,4 +433,41 @@ COMMAND(pkg, "install", "system", "pkg [list | install name [--to dir] | remove 
         return shell_exec(sh, cmd);
     }
     return command_usage(sh, command_find("pkg"));
+}
+
+static void bundle_progress(void *ctx, uint64_t done, uint64_t total)
+{
+    struct shell *sh = ctx;
+    static uint64_t shown;
+    if (done < shown + (32u << 20) && done != total)
+        return;
+    shown = done == total ? 0 : done;
+    char a[16], b[16];
+    fmt_size(a, sizeof(a), done);
+    fmt_size(b, sizeof(b), total);
+    sh_printf(sh, "\r  %s of %s  ", a, b);
+}
+
+COMMAND(bundle, NULL, "files", "bundle [extract dir]", "show or unpack the program bundled with the disk image")
+{
+    struct bundle_info info;
+    if (!bundle_info(&info))
+        return sh_error(sh, "bundle", "this disk image carries no bundle");
+    char size[16];
+    fmt_size(size, sizeof(size), info.bytes);
+    if (argc < 3 || strcmp(argv[1], "extract")) {
+        sh_printf(sh, "%s: %u files, %s\n", info.title, info.files, size);
+        return 0;
+    }
+    char dir[PATH_MAX_LEN];
+    int err = sh_resolve(sh, argv[2], dir, sizeof(dir));
+    if (!err)
+        err = vfs_mkdirs(dir);
+    if (!err)
+        err = bundle_extract(dir, NULL, bundle_progress, sh);
+    sh_puts(sh, "\n");
+    if (err)
+        return sh_error(sh, "bundle", "%s", err_str(err));
+    sh_printf(sh, "Unpacked %s (%s) into %s\n", info.title, size, dir);
+    return 0;
 }

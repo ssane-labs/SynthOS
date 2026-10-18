@@ -1,3 +1,4 @@
+#include <synth/bundle.h>
 #include <synth/config.h>
 #include <synth/exec.h>
 #include <synth/shell.h>
@@ -34,7 +35,7 @@ static const struct gui_app chrome_app = {"Chrome", "Google's web browser", ICON
                                           &picture};
 GUI_APP(chrome_app);
 
-const struct gui_app *gui_app_for_program(const char *path)
+const struct gui_app *chrome_app_for(const char *path)
 {
     if (str_casecmp(path_basename(path), "chrome.exe"))
         return NULL;
@@ -182,9 +183,12 @@ void chrome_auto_arm(void)
 static void auto_start(void)
 {
     char exe[PATH_MAX_LEN];
+    struct bundle_info bundle;
     if (!auto_get || !auto_after || hal_ticks_ms() < auto_after || job.stage == ST_WORKING || job.pending)
         return;
     auto_after = 0;
+    if (bundle_info(&bundle))
+        return;
     if (chrome_path(exe, sizeof(exe)) || job.stage == ST_FAILED || net_interface_count() == 0 ||
         !net_interface(0)->configured)
         return;
@@ -197,7 +201,7 @@ static void auto_start(void)
     job.pending = true;
 }
 
-int gui_app_progress(const struct gui_app *app)
+int chrome_app_progress(const struct gui_app *app)
 {
     if (app != &chrome_app || job.stage != ST_WORKING)
         return -1;

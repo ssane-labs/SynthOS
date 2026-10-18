@@ -844,6 +844,7 @@ void gui_session_login(const char *name)
         gui_terminal_run("clear");
     autostart_pending = true;
     chrome_auto_arm();
+    chromium_auto_arm();
 }
 
 void gui_terminal_show(void)
@@ -1096,6 +1097,7 @@ static void pump(int timeout_ms)
     }
     wallpaper_fetch_run();
     chrome_install_run();
+    chromium_run();
 #if CONFIG_WIN32
     if (timeout_ms != 0)
         w32_background();
@@ -1186,6 +1188,7 @@ int gui_run(struct shell *sh)
     } else {
         autostart_pending = true;
         chrome_auto_arm();
+        chromium_auto_arm();
     }
     con_reset();
 

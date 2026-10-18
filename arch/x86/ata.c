@@ -7,7 +7,7 @@
 #include "io.h"
 
 #define ATA_TIMEOUT_MS 2000
-#define DMA_SECTORS 128
+#define DMA_SECTORS 256
 
 enum {
     REG_DATA = 0,
@@ -45,6 +45,9 @@ struct ata_drive {
 };
 
 static uint16_t bm_base;
+static volatile bool irq_ready[2];
+
+static void ata_irq(struct regs *r);
 
 static struct ata_drive drives[4] = {
     {.io = 0x1f0, .ctrl = 0x3f6, .slave = 0},
@@ -107,14 +110,19 @@ static int dma_transfer(struct ata_drive *d, uint32_t lba, uint32_t n, bool writ
     outb(d->io + REG_STATUS, write ? 0xca : 0xc8);
     outb(d->bm, write ? 0x01 : 0x09);
     uint64_t end = hal_ticks_ms() + ATA_TIMEOUT_MS;
+    bool irq = irq_ready[d->io == 0x170];
     for (;;) {
-        uint8_t bs = inb(d->bm + 2), st = inb(d->io + REG_STATUS);
-        if (!(bs & 0x01) && !(st & ST_BSY))
-            break;
+        uint8_t bs = inb(d->bm + 2);
+        if (!(bs & 0x01) || (bs & 0x04)) {
+            uint8_t st = inb(d->io + REG_STATUS);
+            if (!(st & ST_BSY))
+                break;
+        }
         if ((bs & 0x02) || hal_ticks_ms() > end) {
             outb(d->bm, 0);
             return E_IO;
         }
+        cpu_wait(irq);
     }
     outb(d->bm, 0);
     uint8_t bs = inb(d->bm + 2), st = inb(d->io + REG_STATUS);
@@ -238,9 +246,30 @@ static bool identify(struct ata_drive *d)
             d->buffer = mem + 4096;
             d->bm = (uint16_t)(bm_base + (d->io == 0x170 ? 8 : 0));
             d->dma = true;
+            int ch = d->io == 0x170;
+            if (!irq_ready[ch]) {
+                irq_install(ch ? 15 : 14, ata_irq);
+                irq_ready[ch] = true;
+            }
+            outb(d->ctrl, 0x00);
         }
     }
     return true;
+}
+
+/* Completion of a DMA transfer: acknowledging the drive is enough, the waiting loop reads the result. */
+static void ata_irq(struct regs *r)
+{
+    UNUSED(r);
+    for (int i = 0; i < 4; i += 2)
+        if (drives[i].dma || drives[i + 1].dma) {
+            uint16_t bm = drives[i].dma ? drives[i].bm : drives[i + 1].bm;
+            uint8_t bs = inb(bm + 2);
+            if (bs & 0x04) {
+                inb(drives[i].io + REG_STATUS);
+                outb(bm + 2, bs | 0x04);
+            }
+        }
 }
 
 static void find_busmaster(const struct pci_device *p, void *ctx)

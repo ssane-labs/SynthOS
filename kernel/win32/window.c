@@ -2837,7 +2837,7 @@ static const struct w32_export window_exports[] = {
     W32_FN(UnregisterClassA), W32_FN(UnregisterClassW), W32_FN(GetClassInfoExA), W32_FN(GetClassInfoExW),
     W32_FN(CreateWindowExA), W32_FN(CreateWindowExW), W32_FN(DestroyWindow), W32_FN(ShowWindow),
     W32_FN(UpdateWindow), W32_FN(IsWindow), W32_FN(IsWindowVisible), W32_FN(IsWindowEnabled), W32_FN(EnableWindow),
-    W32_FN(IsIconic), W32_FN(IsZoomed), W32_FN(GetClientRect), W32_FN(GetWindowRect), W32_FN(ClientToScreen),
+    W32_FN(IsIconic), W32_FN(IsZoomed), W32_FN(GetClientRect), W32_FN(GetWindowRect), W32_AS("GetWindowRgnBox", w32_zero2), W32_FN(ClientToScreen),
     W32_FN(ScreenToClient), W32_FN(MapWindowPoints), W32_FN(AdjustWindowRect), W32_FN(AdjustWindowRectEx),
     W32_FN(MoveWindow), W32_FN(SetWindowPos), W32_FN(BringWindowToTop), W32_FN(SetForegroundWindow),
     W32_FN(GetForegroundWindow), W32_FN(SetActiveWindow), W32_FN(GetActiveWindow), W32_FN(GetParent),

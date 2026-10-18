@@ -12,12 +12,11 @@
 
 static const struct gui_look defaults[] = {
     {"dune", "Dune", "Warm desert glass, launcher in the corner", false, RGB(214, 150, 96),
-     RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, 1u << WIDGET_CLOCK | 1u << WIDGET_WEATHER | 1u << WIDGET_MUSIC},
+     RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, 0},
     {"mist", "Mist", "Quiet morning fog, menu bar and a floating dock", false, RGB(120, 140, 170), RGB(78, 112, 214),
-     DOCK_CENTER, STATUS_MENUBAR, 1u << WIDGET_CALENDAR | 1u << WIDGET_TASKS},
-    {"night", "Night", "Deep dark sky, an app rail and music on the desktop", true, RGB(110, 92, 200),
-     RGB(150, 128, 255), DOCK_RAIL, STATUS_PILL,
-     1u << WIDGET_CLOCK | 1u << WIDGET_MUSIC | 1u << WIDGET_VISUALIZER},
+     DOCK_CENTER, STATUS_MENUBAR, 0},
+    {"night", "Night", "Deep dark sky and an app rail", true, RGB(110, 92, 200), RGB(150, 128, 255), DOCK_RAIL,
+     STATUS_PILL, 0},
 };
 
 #define LOOKS ARRAY_SIZE(defaults)

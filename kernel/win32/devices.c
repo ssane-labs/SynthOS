@@ -81,6 +81,7 @@ STUB(HidP_Caps, 4, HIDP_STATUS_INVALID_PREPARSED_DATA, 0)
 STUB(HidP_GetCaps, 2, HIDP_STATUS_INVALID_PREPARSED_DATA, 0)
 STUB(HidP_Value, 8, HIDP_STATUS_INVALID_PREPARSED_DATA, 0)
 STUB(HidP_GetUsagesEx, 7, HIDP_STATUS_INVALID_PREPARSED_DATA, 0)
+STUB(HidP_GetLinkCollectionNodes, 3, HIDP_STATUS_INVALID_PREPARSED_DATA, 0)
 
 static void WINAPI HidD_GetHidGuid(uint8_t *guid)
 {
@@ -103,6 +104,7 @@ static const struct w32_export hid_exports[] = {
     W32_AS("HidP_GetScaledUsageValue", HidP_Value),
     W32_AS("HidP_GetUsageValue", HidP_Value),
     W32_FN(HidP_GetUsagesEx),
+    W32_FN(HidP_GetLinkCollectionNodes),
 };
 
 STUB(CM_Get_DevNode_PropertyW, 6, CR_NO_SUCH_DEVNODE, 0)
@@ -199,6 +201,9 @@ static const struct w32_export dbghelp_exports[] = {
     W32_AS("SymSetSearchPathW", w32_one2),
     W32_FN(SymSrvGetFileIndexInfo),
     W32_FN(MiniDumpWriteDump),
+    W32_AS("StackWalk64", w32_zero9),
+    W32_AS("SymFunctionTableAccess64", w32_zero3),
+    W32_AS("SymGetModuleBase64", w32_zero3),
 };
 
 STUB(PSGetPropertyKeyFromName, 2, TYPE_E_ELEMENTNOTFOUND, 0)
@@ -286,6 +291,7 @@ static const struct w32_export uxtheme_exports[] = {
     W32_AS("GetThemeBackgroundContentRect", Theme6),
     W32_AS("GetThemePartSize", Theme7),
     W32_AS("GetThemeColor", Theme5),
+    W32_AS("DrawThemeBackgroundEx", Theme6),
     W32_AS("BufferedPaintInit", w32_zero0),
     W32_AS("BufferedPaintUnInit", w32_zero0),
 };
@@ -396,7 +402,9 @@ W32_EXPORTS(propsys_module, "propsys.dll", propsys_exports);
 W32_EXPORTS(tbs_module, "tbs.dll", tbs_exports);
 W32_EXPORTS(ncrypt_module, "ncrypt.dll", ncrypt_exports);
 W32_EXPORTS(winspool_module, "winspool.drv", winspool_exports);
-W32_EXPORTS(uxtheme_module, "uxtheme.dll", uxtheme_exports);
+static const char *const uxtheme_ordinals[] = {[47] = "DrawThemeBackgroundEx"};
+W32_EXPORTS(uxtheme_module, "uxtheme.dll", uxtheme_exports, .ordinals = uxtheme_ordinals,
+            .ordinal_count = ARRAY_SIZE(uxtheme_ordinals));
 W32_EXPORTS(dcomp_module, "dcomp.dll", dcomp_exports);
 W32_EXPORTS(winusb_module, "winusb.dll", winusb_exports);
 W32_EXPORTS(bthprops_module, "bthprops.cpl", bthprops_exports);

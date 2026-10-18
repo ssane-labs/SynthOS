@@ -461,7 +461,8 @@ static bool needs_quotes(const char *s)
 /* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: chrome.exe started as
    a browser gets the switches that run it without them. */
 static const char *const chromium_switches[] = {"--no-sandbox", "--test-type", "--in-process-gpu", "--disable-gpu",
-                                                "--disable-software-rasterizer"};
+                                                "--disable-software-rasterizer", "--no-first-run",
+                                                "--no-default-browser-check"};
 
 static bool has_arg(struct exec_ctx *ctx, const char *arg, size_t n)
 {
@@ -580,6 +581,9 @@ static void build_environment(struct exec_ctx *ctx)
               "ProgramFiles=C:\\Program Files\n"
               "SystemDrive=C:\n"
               "SystemRoot=C:\\Windows\n"
+              "GOOGLE_API_KEY=no\n"
+              "GOOGLE_DEFAULT_CLIENT_ID=no\n"
+              "GOOGLE_DEFAULT_CLIENT_SECRET=no\n"
               "TEMP=C:\\Windows\\Temp\n"
               "TMP=C:\\Windows\\Temp\n"
               "USERNAME=%s\n"

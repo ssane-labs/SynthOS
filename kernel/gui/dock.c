@@ -55,7 +55,7 @@ struct item {
     const char *path;
 };
 
-static const char *const pinned[] = {"Launchpad", "Files", "Chrome", "Terminal"};
+static const char *const pinned[] = {"Launchpad", "Files", "Chromium", "Terminal"};
 
 /* What sits in the Dock is the user's: each look keeps its own list in ~/.dock ("dune Files|Browser|/home/a.txt"),
    app names or file paths, rearranged by dragging icons around, onto the Dock from the desktop or off it. */

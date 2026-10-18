@@ -10,6 +10,7 @@ int zlib_inflate_alloc(const void *in, size_t in_len, size_t limit, uint8_t **ou
 
 struct gunzip_stream;
 struct gunzip_stream *gunzip_stream_new(int (*out)(void *ctx, const void *data, size_t n), void *ctx);
+struct gunzip_stream *inflate_stream_new(int (*out)(void *ctx, const void *data, size_t n), void *ctx);
 int gunzip_stream_push(struct gunzip_stream *z, const void *data, size_t n);
 int gunzip_stream_end(struct gunzip_stream *z);
 void gunzip_stream_free(struct gunzip_stream *z);

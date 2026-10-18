@@ -154,6 +154,16 @@ uint32_t hal_system_sectors(void)
     return DISK_DATA_LBA;
 }
 
+/* A program bundle (tools/mkbundle.py) may sit right after the system area; the data partition follows it. */
+static uint32_t bundle_sectors(struct blockdev *dev)
+{
+    static uint8_t sector[BLOCK_SIZE];
+    if (dev->sectors <= DISK_DATA_LBA || block_read(dev, DISK_DATA_LBA, 1, sector) || memcmp(sector, "SYNTHBDL", 8))
+        return 0;
+    uint32_t n = (uint32_t)sector[12] | (uint32_t)sector[13] << 8 | (uint32_t)sector[14] << 16 | (uint32_t)sector[15] << 24;
+    return n < dev->sectors - DISK_DATA_LBA ? n : 0;
+}
+
 static bool attach_boot_disk(void)
 {
     for (struct blockdev *dev = block_list(); dev; dev = dev->next) {
@@ -164,8 +174,11 @@ static bool attach_boot_disk(void)
             klog("disk: kernel image overlaps the data area, persistence disabled");
             return true;
         }
-        if (dev->sectors > DISK_DATA_LBA + 256)
-            block_add_partition(dev, "data0", DISK_DATA_LBA, dev->sectors - DISK_DATA_LBA);
+        uint32_t data = DISK_DATA_LBA + bundle_sectors(dev);
+        if (data > DISK_DATA_LBA)
+            block_add_partition(dev, "bundle0", DISK_DATA_LBA, data - DISK_DATA_LBA);
+        if (dev->sectors > data + 256)
+            block_add_partition(dev, "data0", data, dev->sectors - data);
         return true;
     }
     return false;
@@ -221,6 +234,7 @@ const char *hal_machine(void)
 
 void hal_reboot(void)
 {
+    ahci_flush_all();
     cpu_cli();
     for (int i = 0; i < 100000 && (inb(0x64) & 2); i++)
         ;
@@ -236,6 +250,7 @@ void hal_reboot(void)
 
 void hal_poweroff(void)
 {
+    ahci_flush_all();
     outw(0x604, 0x2000);
     outw(0xb004, 0x2000);
     outw(0x4004, 0x3400);

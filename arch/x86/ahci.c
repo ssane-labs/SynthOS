@@ -10,12 +10,13 @@
 #include "io.h"
 
 #define MAX_PORTS 8
-#define BUFFER_SECTORS 128
+#define BUFFER_SECTORS 256
 #define TIMEOUT_MS 3000
 
 enum {
     HBA_CAP = 0x00,
     HBA_GHC = 0x04,
+    HBA_IS = 0x08,
     HBA_PI = 0x0c,
     PORT_BASE = 0x100,
     PORT_SIZE = 0x80,
@@ -24,6 +25,7 @@ enum {
     P_FB = 0x08,
     P_FBU = 0x0c,
     P_IS = 0x10,
+    P_IE = 0x14,
     P_CMD = 0x18,
     P_TFD = 0x20,
     P_SIG = 0x24,
@@ -70,10 +72,24 @@ struct ahci_port {
     struct cmd_header *list;
     struct cmd_table *table;
     uint8_t *buffer;
+    volatile uint8_t *hba;
+    bool dirty;
+    uint64_t flushed;
 };
 
 static struct ahci_port ports[MAX_PORTS];
 static int port_count;
+static bool use_irq;
+
+static void ahci_irq(struct regs *r)
+{
+    UNUSED(r);
+    for (int i = 0; i < port_count; i++) {
+        volatile uint8_t *regs = ports[i].regs;
+        *(volatile uint32_t *)(regs + P_IS) = *(volatile uint32_t *)(regs + P_IS) & ~IS_TFES;
+        *(volatile uint32_t *)(ports[i].hba + HBA_IS) = *(volatile uint32_t *)(ports[i].hba + HBA_IS);
+    }
+}
 
 static uint32_t rd(struct ahci_port *p, uint32_t reg)
 {
@@ -126,8 +142,9 @@ static int command(struct ahci_port *p, uint8_t cmd, uint64_t lba, uint32_t coun
     while (rd(p, P_CI) & 1) {
         if ((rd(p, P_IS) & IS_TFES) || hal_ticks_ms() > end)
             return E_IO;
+        cpu_wait(use_irq);
     }
-    return rd(p, P_IS) & IS_TFES ? E_IO : 0;
+    return (rd(p, P_IS) & IS_TFES) || (rd(p, P_TFD) & 1) ? E_IO : 0;
 }
 
 static int ahci_read(struct blockdev *dev, uint32_t lba, uint32_t count, void *buf)
@@ -161,8 +178,24 @@ static int ahci_write(struct blockdev *dev, uint32_t lba, uint32_t count, const 
         lba += n;
         count -= n;
     }
-    command(p, 0xea, 0, 0, false);
+    /* A cache flush after every write makes a virtual machine's host sync its disk each time: once a second is
+       enough, and ahci_flush_all runs before the power goes off. */
+    p->dirty = true;
+    if (hal_ticks_ms() - p->flushed >= 1000) {
+        command(p, 0xea, 0, 0, false);
+        p->dirty = false;
+        p->flushed = hal_ticks_ms();
+    }
     return 0;
+}
+
+void ahci_flush_all(void)
+{
+    for (int i = 0; i < port_count; i++)
+        if (ports[i].dirty) {
+            command(&ports[i], 0xea, 0, 0, false);
+            ports[i].dirty = false;
+        }
 }
 
 static bool start_port(struct ahci_port *p)
@@ -208,6 +241,7 @@ static void probe_port(volatile uint8_t *hba, int index)
         return;
     struct ahci_port *p = &ports[port_count];
     p->regs = hba + PORT_BASE + (uint32_t)index * PORT_SIZE;
+    p->hba = hba;
     uint32_t ssts = rd(p, P_SSTS);
     if ((ssts & 0x0f) != 3 || ((ssts >> 8) & 0x0f) != 1 || rd(p, P_SIG) != 0x00000101u)
         return;
@@ -241,9 +275,19 @@ static void probe_controller(const struct pci_device *d, void *ctx)
         return;
     *(volatile uint32_t *)(hba + HBA_GHC) |= 1u << 31;
     uint32_t implemented = *(volatile uint32_t *)(hba + HBA_PI);
+    int first = port_count;
     for (int i = 0; i < 32; i++)
         if (implemented & (1u << i))
             probe_port(hba, i);
+    uint8_t line = (uint8_t)pci_read(d, 0x3c);
+    if (port_count > first && line > 1 && line < 16 && line != 12 && !use_irq) {
+        irq_install(line, ahci_irq);
+        for (int i = first; i < port_count; i++)
+            wr(&ports[i], P_IE, IS_TFES | 0x0f);
+        *(volatile uint32_t *)(hba + HBA_IS) = 0xffffffffu;
+        *(volatile uint32_t *)(hba + HBA_GHC) |= 1u << 1;
+        use_irq = true;
+    }
 }
 
 void ahci_init(void)
