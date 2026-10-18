@@ -12,6 +12,7 @@
 #define PTE_PRESENT 0x001u
 #define PTE_WRITE 0x002u
 #define PTE_USER 0x004u
+#define PTE_PWT 0x008u
 #define PTE_LARGE 0x080u
 #define MAX_REGIONS 8
 
@@ -241,7 +242,19 @@ void vmm_unmap(uintptr_t vaddr, size_t size)
     flush_range(vaddr, size);
 }
 
+static void *map_phys(uint64_t phys, size_t size, uint32_t cache);
+
 void *vmm_map_phys64(uint64_t phys, size_t size)
+{
+    return map_phys(phys, size, 0);
+}
+
+void *vmm_map_framebuffer(uint64_t phys, size_t size)
+{
+    return map_phys(phys, size, cpu_info()->pat ? PTE_PWT : 0);
+}
+
+static void *map_phys(uint64_t phys, size_t size, uint32_t cache)
 {
     static uint32_t next = VMM_USER_END;
     uint32_t offset = (uint32_t)(phys & 4095u);
@@ -258,7 +271,7 @@ void *vmm_map_phys64(uint64_t phys, size_t size)
         uint32_t v = virt + off;
         if (!ensure_table(v, 0))
             return NULL;
-        set_pte(v, base + off, PTE_PRESENT | PTE_WRITE);
+        set_pte(v, base + off, PTE_PRESENT | PTE_WRITE | cache);
         invlpg(v);
     }
     next += size;

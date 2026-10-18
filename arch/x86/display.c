@@ -193,7 +193,7 @@ static bool bochs_set(struct output *o, int w, int h, struct framebuffer *fb)
     if (w < 320 || h < 200 || w > 4096 || h > 4096 || (uint32_t)w * (uint32_t)h > max_pixels(o))
         return false;
     if (!o->fb_virt) {
-        o->fb_virt = vmm_map_phys(o->fb_phys, MIN(o->vram, MAX_MAP));
+        o->fb_virt = vmm_map_framebuffer(o->fb_phys, MIN(o->vram, MAX_MAP));
         if (!o->fb_virt)
             return false;
     }

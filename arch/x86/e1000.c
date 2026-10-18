@@ -57,7 +57,7 @@ struct e1000 {
     volatile struct rx_desc *rx;
     volatile struct tx_desc *tx;
     uint8_t *rx_buf, *tx_buf;
-    int rx_next, tx_next;
+    int rx_next, tx_next, rx_unposted;
     bool new_eeprom;
 };
 
@@ -109,8 +109,13 @@ static int e1000_receive(struct netdev *dev, void *frame, size_t cap)
     d->status = 0;
     int done = n->rx_next;
     n->rx_next = (n->rx_next + 1) % RX_COUNT;
-    cpu_barrier();
-    wr(n, RDT, (uint32_t)done);
+    /* Every register write is a trap into the hypervisor in a VM: the card hears about free buffers in batches,
+       and at once when the ring has been drained. */
+    if (++n->rx_unposted >= 16 || !(n->rx[n->rx_next].status & 1)) {
+        cpu_barrier();
+        wr(n, RDT, (uint32_t)done);
+        n->rx_unposted = 0;
+    }
     return length ? length : -1;
 }
 

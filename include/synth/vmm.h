@@ -13,6 +13,7 @@ void vmm_unmap(uintptr_t vaddr, size_t size);
 bool vmm_range_free(uintptr_t vaddr, size_t size);
 void *vmm_map_phys(uint32_t phys, size_t size);
 void *vmm_map_phys64(uint64_t phys, size_t size);
+void *vmm_map_framebuffer(uint64_t phys, size_t size);
 bool vmm_pae(void);
 size_t vmm_high_pages(void);
 size_t vmm_high_total_pages(void);

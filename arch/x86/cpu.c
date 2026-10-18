@@ -163,6 +163,7 @@ static void detect_cpu(void)
     info.tsc = edx & (1u << 4);
     info.sse = (edx & (1u << 25)) && (edx & (1u << 24));
     info.pae = edx & (1u << 6);
+    info.pat = edx & (1u << 16);
     if (ecx & (1u << 31)) {
         eax = 0x40000000u;
         __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
@@ -178,9 +179,22 @@ static void detect_cpu(void)
     }
 }
 
+/* PAT entry 1 (PWT set in a page entry) becomes write-combining. The firmware's MTRRs make video memory uncached,
+   and in a virtual machine every uncached pixel store is slow; write-combined stores go out in bursts. */
+static void pat_init(void)
+{
+    if (!info.pat)
+        return;
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0x277u));
+    lo = (lo & ~0xff00u) | 0x0100u;
+    __asm__ volatile("wbinvd; wrmsr; wbinvd" : : "a"(lo), "d"(hi), "c"(0x277u) : "memory");
+}
+
 static void fpu_init(void)
 {
     detect_cpu();
+    pat_init();
     uint32_t cr0;
     uint16_t status = 0xffff;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));

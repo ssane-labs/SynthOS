@@ -119,7 +119,7 @@ static struct display *framebuffer_display(void)
         .green_shift = bootinfo->fb_shift[1],
         .blue_shift = bootinfo->fb_shift[2],
     };
-    fb.base = vmm_map_phys(bootinfo->fb_addr, (size_t)fb.pitch * fb.height);
+    fb.base = vmm_map_framebuffer(bootinfo->fb_addr, (size_t)fb.pitch * fb.height);
     uefi_fb = fb;
     struct display *d = fbcon_create(&fb);
     framebuffer_console = d != NULL;

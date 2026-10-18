@@ -444,8 +444,10 @@ static void receive_data(struct sock *s, uint32_t seq, const uint8_t *data, size
             s->linger_until = net_now() + TIME_WAIT_MS;
         }
     }
-    if (k || fin)
+    if (fin || s->ahead || ++s->ack_due >= 2) {
         segment(s, s->snd_nxt, ACK, NULL, 0);
+        s->ack_due = 0;
+    }
 }
 
 static void process_ack(struct sock *s, uint32_t ack, uint32_t wnd)
@@ -631,6 +633,10 @@ void tcp_tick(uint64_t now)
         struct sock *s = &net_socks[i];
         if (!s->used || s->type != NET_TCP)
             continue;
+        if (s->ack_due) {
+            s->ack_due = 0;
+            segment(s, s->snd_nxt, ACK, NULL, 0);
+        }
         if (s->state == TCP_TIME_WAIT && now >= s->linger_until) {
             closed(s, 0);
             continue;

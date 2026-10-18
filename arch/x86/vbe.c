@@ -123,7 +123,7 @@ bool vbe_enter(int want_w, int want_h, struct framebuffer *fb)
         return false;
     uint32_t pitch = chosen.linear_pitch ? chosen.linear_pitch : chosen.pitch;
     if (mapped_phys != chosen.framebuffer) {
-        mapped_base = vmm_map_phys(chosen.framebuffer, 16u << 20);
+        mapped_base = vmm_map_framebuffer(chosen.framebuffer, 16u << 20);
         mapped_phys = chosen.framebuffer;
     }
     if (!mapped_base) {

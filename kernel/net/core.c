@@ -381,18 +381,21 @@ static void eth_input(struct net_iface *ifc, const uint8_t *frame, size_t length
         ip_input(ifc, frame + 14, length - 14);
 }
 
-void net_poll(void)
+static int poll_frames(void)
 {
     if (polling)
-        return;
+        return 0;
     polling = true;
+    int frames = 0;
     for (int i = 0; i < iface_count; i++) {
         struct netdev *dev = ifaces[i].dev;
         for (int k = 0; k < POLL_BUDGET; k++) {
             int n = dev->receive(dev, rx_frame, sizeof(rx_frame));
-            if (n <= 0)
+            if (n == 0)
                 break;
-            eth_input(iface_for(dev), rx_frame, (size_t)n);
+            frames++;
+            if (n > 0)
+                eth_input(iface_for(dev), rx_frame, (size_t)n);
         }
     }
     for (int guard = 0; loop_count && guard < LOOP_QUEUE * 4; guard++) {
@@ -406,12 +409,18 @@ void net_poll(void)
     tcp_tick(now);
     dhcp_tick(now);
     polling = false;
+    return frames;
 }
 
+void net_poll(void)
+{
+    poll_frames();
+}
+
+/* Sleeps only when the network had nothing: a busy download is read back to back instead of in 2 ms steps. */
 void net_wait(int ms)
 {
-    net_poll();
-    if (ms > 0 && !loop_count)
+    if (!poll_frames() && ms > 0 && !loop_count)
         hal_sleep_ms((uint32_t)MIN(ms, 2));
 }
 

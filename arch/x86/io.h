@@ -124,6 +124,7 @@ struct cpu_info {
     bool fpu;
     bool sse;
     bool pae;
+    bool pat;
     bool long_mode;
     bool emulated;
     uint32_t family;

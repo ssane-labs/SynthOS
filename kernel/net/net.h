@@ -37,7 +37,7 @@ struct sock {
     uint8_t *rx;
     size_t rx_cap, rx_head, rx_len;
     uint64_t rx_total;
-    uint8_t snd_shift, rcv_shift;
+    uint8_t snd_shift, rcv_shift, ack_due;
     struct tcp_segment *ahead;
     int ahead_count;
     bool fin_received, fin_queued, fin_sent;
