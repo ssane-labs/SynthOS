@@ -382,6 +382,12 @@ browse -n /mnt/hdb/page.html | wc
       17      23     125
 EOF
 
+# SynthFS read-ahead and cache must not serve old data after the file is rewritten and appended to
+cat >> "$work/cases" <<EOF
+seq 1 20000 > /home/ra.txt; sha256sum /home/ra.txt; seq 7 20006 > /home/ra.txt; tail -n 1 /home/ra.txt; echo end >> /home/ra.txt; sha256sum /home/ra.txt
+$( (seq 7 20006; echo end) | sha256sum | cut -c1-64)  /home/ra.txt
+EOF
+
 apps="$(dirname "$(dirname "$image")")/rootfs/apps"
 if [ -f "$apps/winbench.exe" ]; then
     cat >> "$work/cases" <<EOF

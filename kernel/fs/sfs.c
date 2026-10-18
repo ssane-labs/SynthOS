@@ -14,7 +14,8 @@
 #define SFS_DIRENTS_PER_BLOCK (BLOCK_SIZE / sizeof(struct sfs_dirent))
 #define SFS_NAME_MAX 57
 #define SFS_ROOT 1
-#define SFS_CACHE 64
+#define SFS_CACHE 128
+#define SFS_WAYS 4
 
 enum {
     SFS_FREE = 0,
@@ -57,7 +58,7 @@ _Static_assert(sizeof(struct sfs_inode) == 64, "inode layout");
 _Static_assert(sizeof(struct sfs_dirent) == 64, "dirent layout");
 
 struct cache_line {
-    uint32_t block;
+    uint32_t block, used;
     bool valid, dirty;
     uint8_t data[BLOCK_SIZE];
 };
@@ -70,6 +71,8 @@ struct sfs {
     uint32_t hint;
     bool batch, zero_data;
     uint32_t bitmap_lo, bitmap_hi;
+    uint8_t *ra;
+    uint32_t ra_start, ra_count, clock, inode_hint;
     struct cache_line cache[SFS_CACHE];
 };
 
@@ -91,34 +94,70 @@ static int write_back(struct sfs *fs, struct cache_line *c)
     return block_write(fs->dev, c->block, 1, c->data);
 }
 
+/* The cache is set-associative: a big file's tables at different levels often fall on the same set, and with one
+   line per set they pushed each other out on every block. */
+static struct cache_line *cached(struct sfs *fs, uint32_t blk)
+{
+    struct cache_line *set = &fs->cache[blk % (SFS_CACHE / SFS_WAYS) * SFS_WAYS];
+    for (int i = 0; i < SFS_WAYS; i++)
+        if (set[i].valid && set[i].block == blk)
+            return &set[i];
+    return NULL;
+}
+
+static struct cache_line *victim(struct sfs *fs, uint32_t blk)
+{
+    struct cache_line *set = &fs->cache[blk % (SFS_CACHE / SFS_WAYS) * SFS_WAYS], *v = set;
+    for (int i = 0; i < SFS_WAYS; i++) {
+        if (!set[i].valid)
+            return &set[i];
+        if (set[i].used < v->used)
+            v = &set[i];
+    }
+    return v;
+}
+
 static int bread(struct sfs *fs, uint32_t blk, void *buf)
 {
-    struct cache_line *c = &fs->cache[blk % SFS_CACHE];
-    if (c->valid && c->block == blk) {
-        memcpy(buf, c->data, BLOCK_SIZE);
-        return 0;
+    struct cache_line *c = cached(fs, blk);
+    if (!c) {
+        c = victim(fs, blk);
+        int err = write_back(fs, c);
+        if (!err)
+            err = block_read(fs->dev, blk, 1, c->data);
+        if (err) {
+            c->valid = false;
+            return err;
+        }
+        c->block = blk;
+        c->valid = true;
     }
-    int err = write_back(fs, c);
-    if (!err)
-        err = block_read(fs->dev, blk, 1, c->data);
-    if (err) {
-        c->valid = false;
-        return err;
-    }
-    c->block = blk;
-    c->valid = true;
+    c->used = ++fs->clock;
     memcpy(buf, c->data, BLOCK_SIZE);
     return 0;
 }
 
+/* Read-ahead: a small read brings up to 64 KB of the file's next neighbouring blocks in one command (a command costs
+   about the same whatever its size); any write or allocation forgets it. */
+#define RA_BLOCKS 128
+
+static void ra_forget(struct sfs *fs, uint32_t first, uint32_t count)
+{
+    if (first < fs->ra_start + fs->ra_count && fs->ra_start < first + count)
+        fs->ra_count = 0;
+}
+
 static int bwrite(struct sfs *fs, uint32_t blk, const void *buf)
 {
-    struct cache_line *c = &fs->cache[blk % SFS_CACHE];
-    if (c->block != blk || !c->valid) {
+    ra_forget(fs, blk, 1);
+    struct cache_line *c = cached(fs, blk);
+    if (!c) {
+        c = victim(fs, blk);
         int err = write_back(fs, c);
         if (err)
             return err;
     }
+    c->used = ++fs->clock;
     if (fs->batch) {
         memcpy(c->data, buf, BLOCK_SIZE);
         c->block = blk;
@@ -141,8 +180,8 @@ static int bwrite(struct sfs *fs, uint32_t blk, const void *buf)
 static void forget(struct sfs *fs, uint32_t first, uint32_t count)
 {
     for (uint32_t b = first; b < first + count; b++) {
-        struct cache_line *c = &fs->cache[b % SFS_CACHE];
-        if (c->valid && c->block == b)
+        struct cache_line *c = cached(fs, b);
+        if (c)
             c->valid = c->dirty = false;
     }
 }
@@ -192,6 +231,7 @@ static int balloc_raw(struct sfs *fs, uint32_t *out, bool zero)
         static const uint8_t zeros[BLOCK_SIZE];
         if (zero && (err = bwrite(fs, b, zeros)) != 0)
             return err;
+        ra_forget(fs, b, 1);
         fs->free_blocks--;
         fs->hint = b + 1;
         *out = b;
@@ -213,6 +253,7 @@ static void bfree(struct sfs *fs, uint32_t b)
         return;
     fs->bitmap[b / 8] &= (uint8_t) ~(1u << (b % 8));
     fs->free_blocks++;
+    ra_forget(fs, b, 1);
     bitmap_sync(fs, b);
 }
 
@@ -238,13 +279,17 @@ static int iput(struct sfs *fs, uint32_t ino, const struct sfs_inode *in)
     if (err)
         return err;
     memcpy(buf + (idx % SFS_INODES_PER_BLOCK) * sizeof(*in), in, sizeof(*in));
+    if (in->type == SFS_FREE)
+        fs->inode_hint = MIN(fs->inode_hint, idx / (uint32_t)SFS_INODES_PER_BLOCK);
     return bwrite(fs, blk, buf);
 }
 
+/* The blocks before inode_hint have no free inode, so creating a file does not read the whole table again. */
 static int ialloc(struct sfs *fs, uint16_t type, uint32_t *out)
 {
     uint8_t buf[BLOCK_SIZE];
-    for (uint32_t b = 0; b < fs->sb.inode_blocks; b++) {
+    for (uint32_t b = fs->inode_hint; b < fs->sb.inode_blocks; b++) {
+        fs->inode_hint = b;
         int err = bread(fs, fs->sb.inode_start + b, buf);
         if (err)
             return err;
@@ -416,6 +461,25 @@ static long file_io(struct sfs *fs, uint32_t ino, struct sfs_inode *in, uint32_t
         fs->zero_data = !whole;
         if ((err = bmap(fs, in, index, write, &blk, &dirty)) != 0)
             break;
+        if (!write && blk && blk - fs->ra_start < fs->ra_count) {
+            memcpy(at, fs->ra + (size_t)(blk - fs->ra_start) * BLOCK_SIZE + within, chunk);
+            done += chunk;
+            continue;
+        }
+        if (!write && blk && fs->ra && in->type == SFS_FILE && n - done < (size_t)RA_BLOCKS * BLOCK_SIZE) {
+            uint32_t count = 1, blocks = (in->size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            for (uint32_t next; count < RA_BLOCKS && index + count < blocks; count++)
+                if (bmap(fs, in, index + count, false, &next, &dirty) != 0 || next != blk + count)
+                    break;
+            if (count > 1) {
+                fs->ra_count = 0;
+                if ((err = block_read(fs->dev, blk, count, fs->ra)) != 0)
+                    break;
+                fs->ra_start = blk;
+                fs->ra_count = count;
+                continue;
+            }
+        }
         if (whole && blk) {
             uint32_t count = 1;
             while (count < RUN_MAX && n - done >= (size_t)(count + 1) * BLOCK_SIZE) {
@@ -427,10 +491,12 @@ static long file_io(struct sfs *fs, uint32_t ino, struct sfs_inode *in, uint32_t
             if (err)
                 break;
             for (uint32_t k = 0; k < count && !write; k++) {
-                struct cache_line *c = &fs->cache[(blk + k) % SFS_CACHE];
-                if (c->dirty && c->block == blk + k)
+                struct cache_line *c = cached(fs, blk + k);
+                if (c && c->dirty)
                     write_back(fs, c);
             }
+            if (write)
+                ra_forget(fs, blk, count);
             err = write ? block_write(fs->dev, blk, count, at) : block_read(fs->dev, blk, count, at);
             if (err)
                 break;
@@ -845,13 +911,15 @@ static int sfs_mount(const char *source, struct vnode **root)
         kfree(fs);
         return E_NOMEM;
     }
-    for (uint32_t b = 0; b < fs->sb.bitmap_blocks; b++) {
-        if (block_read(dev, fs->sb.bitmap_start + b, 1, fs->bitmap + b * BLOCK_SIZE) != 0) {
+    for (uint32_t b = 0; b < fs->sb.bitmap_blocks; b += RA_BLOCKS) {
+        uint32_t count = MIN((uint32_t)RA_BLOCKS, fs->sb.bitmap_blocks - b);
+        if (block_read(dev, fs->sb.bitmap_start + b, count, fs->bitmap + b * BLOCK_SIZE) != 0) {
             kfree(fs->bitmap);
             kfree(fs);
             return E_IO;
         }
     }
+    fs->ra = kmalloc(RA_BLOCKS * BLOCK_SIZE);
     for (uint32_t b = fs->sb.data_start; b < fs->sb.blocks; b++)
         if (!(fs->bitmap[b / 8] & (1u << (b % 8))))
             fs->free_blocks++;
