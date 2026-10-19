@@ -90,7 +90,8 @@ Apps
   Terminal        the SynthOS shell in a window (closing only hides it)
   Files           browse, open, copy, cut, paste, rename, delete; type to
                   search, picture thumbnails, sidebar from the ... menu
-  Notepad         text editor: selection, clipboard, auto-indent
+  Notepad         text editor: selection, clipboard, auto-indent; Open and
+                  Save As show the file panel (favorites, disks, folders)
   Photos          PNG, JPEG, GIF (animated) and BMP: zoom, rotate,
                   slideshow, set as wallpaper; arrows go to the next one
   Music           the built-in songs and WAV files from ~/Music

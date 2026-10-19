@@ -24,6 +24,8 @@ Chromium
   Dock icon shows how far it got) and from then on it opens at once; links
   and .html files open in it. bundle shows what the image carries,
   bundle extract dir unpacks it by hand.
+  Menus, drop-down lists, pop-up windows, downloads and choosing a file
+  to upload (the SynthOS file panel) work like on any computer.
 
 Chrome
   Google Chrome is there too: launch Chrome. On an image without Chromium
