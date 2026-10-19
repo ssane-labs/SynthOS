@@ -318,6 +318,8 @@ wingdi | grep section
 section dib=123456
 config logserial on; config logserial; config logserial off
 on
+w32ps
+no Windows programs are running
 wingdi | grep extent
 text extent ok, ink ok
 wingdi | grep blit

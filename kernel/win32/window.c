@@ -600,6 +600,8 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         unsigned flags = WIN_HIDDEN | ((style & WS_THICKFRAME) ? WIN_RESIZABLE : 0);
         if (!caption)
             flags |= WIN_FULLSIZE | WIN_NOTITLE | WIN_NOSHADOW | WIN_BARE;
+        if (ex & WS_EX_NOACTIVATE)
+            flags |= WIN_NOACTIVATE;
         w->bridge = kzalloc(sizeof(*w->bridge));
         if (!w->bridge)
             return NULL;
@@ -638,7 +640,7 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
     if (style & WS_VISIBLE) {
         w->visible = true;
         if (w->wm) {
-            wm_show(w->wm);
+            wm_show_passive(w->wm);
             if (!(w->exstyle & WS_EX_NOACTIVATE))
                 wm_focus(w->wm);
         }
@@ -748,7 +750,7 @@ static void show(struct w32_window *w, int cmd)
             wm_show(w->wm);
             wm_minimize(w->wm);
         } else {
-            wm_show(w->wm);
+            wm_show_passive(w->wm);
             if (cmd == SW_SHOWMAXIMIZED && !(w->wm->flags & WIN_MAXIMIZED))
                 wm_toggle_maximize(w->wm);
             if (cmd != SW_SHOWNOACTIVATE && cmd != SW_SHOWNA && !(w->exstyle & WS_EX_NOACTIVATE))
@@ -1620,7 +1622,11 @@ static intptr_t set_long(struct w32_window *w, int index, intptr_t value)
     case -4: w->proc = (WNDPROC)value; break;
     case -12: w->id = value; break;
     case -16: w->style = (uint32_t)value & ~WS_VISIBLE; break;
-    case -20: w->exstyle = (uint32_t)value; break;
+    case -20:
+        w->exstyle = (uint32_t)value;
+        if (w->wm)
+            w->wm->flags = (w->wm->flags & ~WIN_NOACTIVATE) | (value & WS_EX_NOACTIVATE ? WIN_NOACTIVATE : 0);
+        break;
     case -21: w->userdata = value; break;
     }
     return old;

@@ -303,7 +303,8 @@ static bool floating(const struct window *w)
 }
 
 /* WIN_BARE: a program's own popup (menu, bubble, tooltip) — no frame, no buttons, no shadow, square corners; the
-   program draws and closes it. WIN_TRANSLUCENT: its surface carries alpha (layered windows). */
+   program draws and closes it. WIN_TRANSLUCENT: its surface carries alpha (layered windows). WIN_NOACTIVATE: a click
+   does not move the focus to it (WS_EX_NOACTIVATE menus and lists). */
 static bool framed(const struct window *w)
 {
     return !(w->flags & (WIN_POPUP | WIN_DIALOG | WIN_OVERLAY | WIN_BARE));
@@ -1008,19 +1009,33 @@ void wm_hide(struct window *w)
     chrome_changed();
 }
 
-void wm_show(struct window *w)
+static void show_window(struct window *w, bool activate)
 {
     bool minimized = w->flags & WIN_MINIMIZED, hidden = w->flags & WIN_HIDDEN;
     struct rect from = minimized ? dock_window_rect(w) : w->frame;
     w->flags &= ~(WIN_HIDDEN | WIN_MINIMIZED);
     canvas_free(&w->thumb);
-    wm_focus(w);
+    if (activate)
+        wm_focus(w);
+    else if (!floating(w))
+        raise(w);
     if (minimized && !rect_empty(from))
         hold_window(w, ANIM_RESTORE, from);
     else if (hidden)
         hold_window(w, ANIM_OPEN, w->frame);
     wm_damage(outer_rect(w));
     chrome_changed();
+}
+
+void wm_show(struct window *w)
+{
+    show_window(w, true);
+}
+
+/* Shown on top without taking the focus, like SW_SHOWNOACTIVATE: a program's menu must not deactivate its window. */
+void wm_show_passive(struct window *w)
+{
+    show_window(w, false);
 }
 
 void wm_restore(struct window *w)
@@ -1683,8 +1698,10 @@ static void mouse_down(unsigned button)
         desktop_mouse(mouse_x, mouse_y, button, true, click_count);
         return;
     }
-    if (!floating(w))
+    if (!floating(w) && !(w->flags & WIN_NOACTIVATE))
         wm_focus(w);
+    else if (w->flags & WIN_NOACTIVATE)
+        raise(w);
     if (has_more(w) && rect_contains(more_rect(w), mouse_x, mouse_y)) {
         struct rect r = more_rect(w);
         wm_window_menu(w, r.x + r.w - 230, r.y + r.h + 6);

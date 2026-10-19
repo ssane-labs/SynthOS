@@ -24,6 +24,7 @@ struct stream {
 
 struct stream *stream_console(void);
 struct stream *stream_null(void);
+struct stream *stream_log(void);
 struct stream *stream_buffer(void);
 struct stream *stream_file(const char *path, unsigned flags, int *err);
 

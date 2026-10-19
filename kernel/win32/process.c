@@ -1,4 +1,5 @@
 #include <synth/codepage.h>
+#include <synth/command.h>
 #include <synth/config.h>
 #include <synth/console.h>
 #include <synth/error.h>
@@ -7,6 +8,7 @@
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/log.h>
+#include <synth/shell.h>
 #include <synth/stream.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
@@ -464,6 +466,10 @@ static const char *const chromium_switches[] = {"--no-sandbox", "--test-type", "
                                                 "--disable-software-rasterizer", "--no-first-run",
                                                 "--no-default-browser-check"};
 
+/* Its child processes quit when the browser has not connected to them within 15 seconds; a busy machine (or one
+   without hardware virtualization) needs longer, or the network service dies and pages never load. */
+static const char *const chromium_child_switches[] = {"--ipc-connection-timeout=600"};
+
 static bool has_arg(struct exec_ctx *ctx, const char *arg, size_t n)
 {
     for (int i = 1; i < ctx->argc; i++)
@@ -475,10 +481,14 @@ static bool has_arg(struct exec_ctx *ctx, const char *arg, size_t n)
 static int command_args(struct exec_ctx *ctx, const char **list)
 {
     int n = 0;
-    if (!str_casecmp(path_basename(ctx->path), "chrome.exe") && !has_arg(ctx, "--type=", 7))
+    bool chrome = !str_casecmp(path_basename(ctx->path), "chrome.exe"), child = has_arg(ctx, "--type=", 7);
+    if (chrome && !child)
         for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++)
             if (!has_arg(ctx, chromium_switches[i], strlen(chromium_switches[i]) + 1))
                 list[n++] = chromium_switches[i];
+    if (chrome && child && !has_arg(ctx, "--ipc-connection-timeout", 24))
+        for (size_t i = 0; i < ARRAY_SIZE(chromium_child_switches); i++)
+            list[n++] = chromium_child_switches[i];
     for (int i = 1; i < ctx->argc; i++)
         list[n++] = ctx->argv[i];
     return n;
@@ -910,6 +920,19 @@ static int call_trail(struct w32_process *p, const struct w32_thread *t, uint32_
     return k;
 }
 
+static struct shell *dump_sh;
+
+static void dump_line(const char *line)
+{
+    if (dump_sh) {
+        sh_puts(dump_sh, line);
+        size_t n = strlen(line);
+        klog("w32ps: %.*s", (int)(n && line[n - 1] == '\n' ? n - 1 : n), line);
+    }
+    else
+        w32_console_write(WH_STDERR, line, strlen(line));
+}
+
 void w32_dump_status(void)
 {
     char line[160], at[96];
@@ -920,36 +943,50 @@ void w32_dump_status(void)
         ksnprintf(line, sizeof(line), "pid %u %s %s: %d live threads%s%s\n", p->child ? p->child->pid : 0,
                   p->main ? p->main->name : "?", p->tag, p->live_threads, p->frozen ? " frozen" : "",
                   p->dead ? " dead" : "");
-        w32_console_write(WH_STDERR, line, strlen(line));
+        dump_line(line);
         struct w32_thread *t = p->threads;
         if (t)
             do {
                 where(p, t->wait_caller, at, sizeof(at));
                 ksnprintf(line, sizeof(line), "  tid %u %s%s from %s\n", t->id,
                           t->done ? "done" : t->waiting ? "waiting" : "running", t->suspended ? " suspended" : "", at);
-                w32_console_write(WH_STDERR, line, strlen(line));
+                dump_line(line);
                 if (!t->waiting && t->user_eip) {
                     where(p, t->user_eip, at, sizeof(at));
                     ksnprintf(line, sizeof(line), "      at %s\n", at);
-                    w32_console_write(WH_STDERR, line, strlen(line));
+                    dump_line(line);
                 }
                 uint32_t trail[16];
                 int n = t->waiting ? call_trail(p, t, trail, 16) : 0;
                 for (int k = 0; k < n; k++) {
                     where(p, trail[k], at, sizeof(at));
                     ksnprintf(line, sizeof(line), "      <- %s\n", at);
-                    w32_console_write(WH_STDERR, line, strlen(line));
+                    dump_line(line);
                 }
                 for (unsigned r = 0; r < 8; r++) {
                     const char *name = t->recent[(t->recent_pos + r) % 8];
                     if (name && !t->done) {
                         ksnprintf(line, sizeof(line), "      %s\n", name);
-                        w32_console_write(WH_STDERR, line, strlen(line));
+                        dump_line(line);
                     }
                 }
             } while ((t = t->next) != p->threads);
     } while ((p = p->ring_next) && p != ring);
     w32_pipe_dump();
+}
+
+COMMAND(w32ps, NULL, "system", "w32ps", "list the running Windows processes and what each thread waits for")
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    if (!ring) {
+        sh_puts(sh, "no Windows programs are running\n");
+        return 0;
+    }
+    dump_sh = sh;
+    w32_dump_status();
+    dump_sh = NULL;
+    return 0;
 }
 
 struct w32_process *w32_ring_next(struct w32_process *p)
@@ -1010,6 +1047,9 @@ void w32_child_release(struct w32_child *c)
 static void finish_child(struct w32_process *p, uint32_t code)
 {
     w32_kick_all();
+    if (p->child)
+        klog("win32: pid %u %s exited with 0x%08x%s%s", p->child->pid, p->tag, code, p->message[0] ? ": " : "",
+             p->message);
     if (p->child) {
         p->child->done = true;
         p->child->exit_code = code;
@@ -1332,7 +1372,7 @@ int w32_start(struct shell *sh, const char *path, int argc, char **argv, const c
     }
     for (int i = 0; i < argc; i++)
         copy[i] = kstrdup(argv[i]);
-    *c = (struct exec_ctx){sh, kstrdup(path), argc, copy, stream_null(), stream_null(), stream_null(), NULL,
+    *c = (struct exec_ctx){sh, kstrdup(path), argc, copy, stream_null(), stream_null(), stream_log(), NULL,
                            kstrdup(cwd ? cwd : sh->cwd), NULL};
     struct w32_child *child = NULL;
     if (host_enter()) {

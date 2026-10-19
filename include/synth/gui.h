@@ -329,6 +329,7 @@ enum window_flags {
     WIN_PEEKED = 1u << 14,
     WIN_BARE = 1u << 15,
     WIN_TRANSLUCENT = 1u << 16,
+    WIN_NOACTIVATE = 1u << 17,
 };
 
 #define MENU_HEADER (-2)
@@ -393,6 +394,7 @@ struct window *wm_open(const char *title, enum icon_id icon, int w, int h, const
 void wm_close(struct window *w);
 void wm_destroy(struct window *w);
 void wm_show(struct window *w);
+void wm_show_passive(struct window *w);
 void wm_hide(struct window *w);
 void wm_focus(struct window *w);
 struct window *wm_focused(void);

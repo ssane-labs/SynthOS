@@ -47,6 +47,7 @@ static BOOL WINAPI TerminateProcess(HANDLE process, UINT code)
         w32_exit(code);
     struct w32_object *o = w32_handle_get(process);
     if (o && o->type == WH_PROCESS && o->child) {
+        klog("win32: pid %u terminates pid %u with 0x%08x", w32_current_pid(), o->child->pid, code);
         w32_terminate_child(o->child, code);
         return TRUE;
     }

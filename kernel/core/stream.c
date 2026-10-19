@@ -4,6 +4,7 @@
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/lineedit.h>
+#include <synth/log.h>
 #include <synth/stream.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -99,6 +100,35 @@ static struct stream null_stream = {&null_ops, NULL, STREAM_STATIC};
 struct stream *stream_null(void)
 {
     return &null_stream;
+}
+
+/* stream_log: what desktop programs write to stderr ends up in the kernel log, one line at a time. */
+static char log_line[200];
+static size_t log_len;
+
+static long log_write(struct stream *s, const void *buf, size_t n)
+{
+    UNUSED(s);
+    const char *p = buf;
+    for (size_t i = 0; i < n; i++) {
+        bool end = p[i] == '\n' || log_len == sizeof(log_line) - 1;
+        if (p[i] != '\n' && p[i] != '\r')
+            log_line[log_len++] = p[i];
+        if (end && log_len) {
+            log_line[log_len] = 0;
+            klog("stderr: %s", log_line);
+            log_len = 0;
+        }
+    }
+    return (long)n;
+}
+
+static const struct stream_ops log_ops = {null_read, log_write, NULL};
+static struct stream log_stream = {&log_ops, NULL, STREAM_STATIC};
+
+struct stream *stream_log(void)
+{
+    return &log_stream;
 }
 
 static long buffer_read(struct stream *s, void *buf, size_t n)
