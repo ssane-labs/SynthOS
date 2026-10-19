@@ -1,6 +1,7 @@
 #include <synth/block.h>
 #include <synth/bundle.h>
 #include <synth/error.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/inflate.h>
 #include <synth/path.h>
@@ -91,29 +92,6 @@ static int to_file(void *ctx, const void *data, size_t n)
     return vfs_write(s->f, data, n) == (long)n ? 0 : E_NOSPC;
 }
 
-/* Copies (or inflates) `csize` bytes of the record body into the sink. */
-static int unpack(struct reader *r, uint8_t method, uint32_t csize, struct sink *s)
-{
-    struct gunzip_stream *z = method == 8 ? inflate_stream_new(to_file, s) : NULL;
-    if (method == 8 && !z)
-        return E_NOMEM;
-    int err = 0;
-    while (csize && !err) {
-        if ((err = refill(r)))
-            break;
-        size_t k = MIN((size_t)csize, r->len - r->pos);
-        err = z ? gunzip_stream_push(z, r->buf + r->pos, k) : to_file(s, r->buf + r->pos, k);
-        r->pos += k;
-        csize -= (uint32_t)k;
-    }
-    if (z) {
-        if (!err)
-            err = gunzip_stream_end(z);
-        gunzip_stream_free(z);
-    }
-    return err;
-}
-
 static int write_whole(const char *path, const uint8_t *data, size_t n)
 {
     char dir[PATH_MAX_LEN];
@@ -122,74 +100,178 @@ static int write_whole(const char *path, const uint8_t *data, size_t n)
     return vfs_write_all(path, data, n);
 }
 
+/* The unpacking is a job done in short steps, so the desktop (and the shell under it) keeps running between them;
+   the program's start file `last` is kept in memory and written at the very end. */
+struct bundle_job {
+    struct bundle_info info;
+    struct reader r;
+    char dest[PATH_MAX_LEN], last[NAME_MAX_LEN];
+    uint32_t index;
+    uint64_t done;
+    bool in_record, deferred;
+    uint32_t crc, csize, usize;
+    struct sink sink;
+    struct gunzip_stream *z;
+    char path[PATH_MAX_LEN], last_path[PATH_MAX_LEN];
+    uint8_t *last_data;
+    size_t last_len;
+};
+
+struct bundle_job *bundle_job_start(const char *dest, const char *last, int *err)
+{
+    struct bundle_job *j = kzalloc(sizeof(*j));
+    *err = E_NOMEM;
+    if (!j)
+        return NULL;
+    *err = E_NOENT;
+    if (!bundle_info(&j->info)) {
+        kfree(j);
+        return NULL;
+    }
+    j->r = (struct reader){.dev = block_find("bundle0"), .lba = 0, .end = j->info.sectors};
+    str_copy(j->dest, dest, sizeof(j->dest));
+    str_copy(j->last, last ? last : "", sizeof(j->last));
+    uint8_t header[BLOCK_SIZE];
+    *err = E_NOMEM;
+    if (!(j->r.buf = kmalloc(CHUNK)) || (*err = read_bytes(&j->r, header, sizeof(header))) != 0) {
+        kfree(j->r.buf);
+        kfree(j);
+        return NULL;
+    }
+    *err = 0;
+    return j;
+}
+
+static int open_record(struct bundle_job *j)
+{
+    uint8_t rec[20];
+    char name[PATH_MAX_LEN];
+    int err = read_bytes(&j->r, rec, sizeof(rec));
+    if (err)
+        return err;
+    uint32_t name_len = (uint32_t)rec[4] | (uint32_t)rec[5] << 8;
+    if (memcmp(rec, "SBE1", 4) || name_len >= sizeof(name) || (rec[6] != 0 && rec[6] != 8))
+        return E_INVAL;
+    j->crc = rd32(rec + 8);
+    j->csize = rd32(rec + 12);
+    j->usize = rd32(rec + 16);
+    if ((err = read_bytes(&j->r, name, name_len)))
+        return err;
+    name[name_len] = 0;
+    size_t prefix = strlen(j->info.prefix);
+    const char *rel = !strncmp(name, j->info.prefix, prefix) ? name + prefix : name;
+    path_join(j->dest, rel, j->path, sizeof(j->path));
+    j->sink = (struct sink){.crc = 0};
+    j->deferred = j->last[0] && !str_casecmp(rel, j->last);
+    if (j->deferred) {
+        if (!(j->sink.keep = kmalloc(MAX(j->usize, 1u))))
+            return E_NOMEM;
+    } else {
+        char dir[PATH_MAX_LEN];
+        path_dirname(j->path, dir, sizeof(dir));
+        vfs_mkdirs(dir);
+        if ((err = vfs_open(j->path, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &j->sink.f)))
+            return err;
+    }
+    if (rec[6] == 8 && !(j->z = inflate_stream_new(to_file, &j->sink)))
+        return E_NOMEM;
+    j->in_record = true;
+    return 0;
+}
+
+static int close_record(struct bundle_job *j)
+{
+    int err = 0;
+    if (j->z) {
+        err = gunzip_stream_end(j->z);
+        gunzip_stream_free(j->z);
+        j->z = NULL;
+    }
+    if (j->sink.f)
+        vfs_close(j->sink.f);
+    j->sink.f = NULL;
+    if (!err && (j->sink.crc != j->crc || j->sink.written != j->usize))
+        err = E_INVAL;
+    if (j->deferred && !err) {
+        kfree(j->last_data);
+        j->last_data = j->sink.keep;
+        j->last_len = j->sink.kept;
+        str_copy(j->last_path, j->path, sizeof(j->last_path));
+    } else {
+        kfree(j->sink.keep);
+    }
+    j->sink.keep = NULL;
+    j->in_record = false;
+    j->done += j->usize;
+    j->index++;
+    return err;
+}
+
+/* Works for about budget_ms; returns 1 while there is more to do, 0 when everything is in place, or an error. */
+int bundle_job_step(struct bundle_job *j, uint32_t budget_ms)
+{
+    uint64_t end = hal_ticks_ms() + budget_ms;
+    do {
+        int err;
+        if (!j->in_record) {
+            if (j->index == j->info.files) {
+                err = j->last_data ? write_whole(j->last_path, j->last_data, j->last_len) : 0;
+                kfree(j->last_data);
+                j->last_data = NULL;
+                return err;
+            }
+            if ((err = open_record(j)))
+                return err;
+        }
+        while (j->csize && hal_ticks_ms() < end) {
+            if ((err = refill(&j->r)))
+                return err;
+            size_t k = MIN(MIN((size_t)j->csize, j->r.len - j->r.pos), (size_t)65536);
+            err = j->z ? gunzip_stream_push(j->z, j->r.buf + j->r.pos, k) : to_file(&j->sink, j->r.buf + j->r.pos, k);
+            if (err)
+                return err;
+            j->r.pos += k;
+            j->csize -= (uint32_t)k;
+        }
+        if (!j->csize && (err = close_record(j)))
+            return err;
+    } while (hal_ticks_ms() < end);
+    return 1;
+}
+
+void bundle_job_progress(const struct bundle_job *j, uint64_t *done, uint64_t *total)
+{
+    *done = j->done + j->sink.written;
+    *total = j->info.bytes;
+}
+
+void bundle_job_free(struct bundle_job *j)
+{
+    if (!j)
+        return;
+    if (j->z)
+        gunzip_stream_free(j->z);
+    if (j->sink.f)
+        vfs_close(j->sink.f);
+    kfree(j->sink.keep);
+    kfree(j->last_data);
+    kfree(j->r.buf);
+    kfree(j);
+}
+
 int bundle_extract(const char *dest, const char *last, void (*progress)(void *ctx, uint64_t done, uint64_t total),
                    void *ctx)
 {
-    struct bundle_info info;
-    if (!bundle_info(&info))
-        return E_NOENT;
-    struct reader r = {.dev = block_find("bundle0"), .lba = 0, .end = info.sectors};
-    r.buf = kmalloc(CHUNK);
-    if (!r.buf)
-        return E_NOMEM;
-    uint8_t header[BLOCK_SIZE];
-    int err = read_bytes(&r, header, sizeof(header));
-    size_t prefix = strlen(info.prefix);
-    uint64_t done = 0;
-    char path[PATH_MAX_LEN], last_path[PATH_MAX_LEN] = "";
-    uint8_t *last_data = NULL;
-    size_t last_len = 0;
-    for (uint32_t i = 0; i < info.files && !err; i++) {
-        uint8_t rec[20];
-        char name[PATH_MAX_LEN];
-        if ((err = read_bytes(&r, rec, sizeof(rec))))
-            break;
-        uint32_t name_len = (uint32_t)rec[4] | (uint32_t)rec[5] << 8, crc = rd32(rec + 8), csize = rd32(rec + 12),
-                 usize = rd32(rec + 16);
-        if (memcmp(rec, "SBE1", 4) || name_len >= sizeof(name) || (rec[6] != 0 && rec[6] != 8)) {
-            err = E_INVAL;
-            break;
+    int err;
+    struct bundle_job *j = bundle_job_start(dest, last, &err);
+    if (!j)
+        return err;
+    while ((err = bundle_job_step(j, 100)) > 0)
+        if (progress) {
+            uint64_t done, total;
+            bundle_job_progress(j, &done, &total);
+            progress(ctx, done, total);
         }
-        if ((err = read_bytes(&r, name, name_len)))
-            break;
-        name[name_len] = 0;
-        const char *rel = !strncmp(name, info.prefix, prefix) ? name + prefix : name;
-        path_join(dest, rel, path, sizeof(path));
-        struct sink s = {.crc = 0};
-        bool deferred = last && !str_casecmp(rel, last);
-        if (deferred) {
-            s.keep = kmalloc(MAX(usize, 1u));
-            if (!s.keep) {
-                err = E_NOMEM;
-                break;
-            }
-        } else {
-            char dir[PATH_MAX_LEN];
-            path_dirname(path, dir, sizeof(dir));
-            vfs_mkdirs(dir);
-            if ((err = vfs_open(path, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &s.f)))
-                break;
-        }
-        err = unpack(&r, rec[6], csize, &s);
-        if (s.f)
-            vfs_close(s.f);
-        if (!err && (s.crc != crc || s.written != usize))
-            err = E_INVAL;
-        if (deferred && !err) {
-            kfree(last_data);
-            last_data = s.keep;
-            last_len = s.kept;
-            str_copy(last_path, path, sizeof(last_path));
-        } else {
-            kfree(s.keep);
-        }
-        done += usize;
-        if (progress)
-            progress(ctx, done, info.bytes);
-    }
-    if (!err && last_data)
-        err = write_whole(last_path, last_data, last_len);
-    kfree(last_data);
-    kfree(r.buf);
+    bundle_job_free(j);
     return err;
 }

@@ -95,24 +95,6 @@ static void destroy(struct window *w)
 
 static const struct window_ops ops = {paint, event, NULL, destroy};
 
-static void progress(void *ctx, uint64_t done, uint64_t total)
-{
-    UNUSED(ctx);
-    job.done = done;
-    job.total = total;
-    uint64_t now = hal_ticks_ms();
-    if (now - job.drawn < 40)
-        return;
-    job.drawn = now;
-    if (job.win)
-        wm_invalidate(job.win);
-    dock_redraw();
-    input_poll();
-#if CONFIG_WIN32
-    w32_background();
-#endif
-}
-
 void chromium_auto_arm(void)
 {
     job.auto_after = hal_ticks_ms() + 4000;
@@ -130,19 +112,12 @@ static void start(bool open_after)
     job.open_after |= open_after;
 }
 
-void chromium_run(void)
+static struct bundle_job *unpacking;
+
+static void unpack_finished(int err)
 {
-    if (job.auto_after && hal_ticks_ms() >= job.auto_after) {
-        job.auto_after = 0;
-        start(false);
-    }
-    if (!job.pending)
-        return;
-    job.pending = false;
-    job.working = true;
-    dock_redraw();
-    vfs_mkdirs(DIR);
-    int err = bundle_extract(DIR, "chrome.exe", progress, NULL);
+    bundle_job_free(unpacking);
+    unpacking = NULL;
     job.working = false;
     dock_redraw();
     if (err) {
@@ -160,6 +135,41 @@ void chromium_run(void)
         job.open_after = false;
         launch(job.arg[0] ? job.arg : NULL);
     }
+}
+
+/* Called from the desktop's event pump: unpacks a short step at a time, so the desktop keeps answering. */
+void chromium_run(void)
+{
+    if (job.auto_after && hal_ticks_ms() >= job.auto_after) {
+        job.auto_after = 0;
+        start(false);
+    }
+    if (job.pending) {
+        job.pending = false;
+        vfs_mkdirs(DIR);
+        int err;
+        if (!(unpacking = bundle_job_start(DIR, "chrome.exe", &err))) {
+            job.failed = true;
+            if (job.win)
+                wm_invalidate(job.win);
+            return;
+        }
+        job.working = true;
+        dock_redraw();
+    }
+    if (!unpacking)
+        return;
+    int r = bundle_job_step(unpacking, 20);
+    bundle_job_progress(unpacking, &job.done, &job.total);
+    uint64_t now = hal_ticks_ms();
+    if (now - job.drawn >= 100) {
+        job.drawn = now;
+        if (job.win)
+            wm_invalidate(job.win);
+        dock_redraw();
+    }
+    if (r <= 0)
+        unpack_finished(r);
 }
 
 static void launch(const char *arg)
