@@ -108,6 +108,8 @@ int history_save(const struct history *h, const char *path);
 const struct setting *setting_find(const char *name);
 int setting_apply(struct shell *sh, const char *name, const char *value);
 int settings_save(const char *path);
+int setting_flag(const char *value, bool *out);
+void setting_flag_get(bool value, char *buf, size_t cap);
 
 void prompt_render(struct shell *sh);
 const char *prompt_preset(const char *name);

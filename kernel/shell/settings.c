@@ -2,6 +2,7 @@
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -59,6 +60,61 @@ static int parse_bool(const char *v)
         return 0;
     return -1;
 }
+
+int setting_flag(const char *value, bool *out)
+{
+    int b = parse_bool(value);
+    if (b < 0)
+        return E_INVAL;
+    *out = b;
+    return 0;
+}
+
+void setting_flag_get(bool value, char *buf, size_t cap)
+{
+    str_copy(buf, value ? "on" : "off", cap);
+}
+
+static int key_delay = 500, key_rate = 30;
+
+static void get_key_delay(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", key_delay);
+}
+
+static int set_key_delay(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 250 || v > 1000)
+        return E_INVAL;
+    key_delay = (int)v;
+    hal_key_repeat(key_delay, key_rate);
+    return 0;
+}
+
+static void get_key_rate(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", key_rate);
+}
+
+static int set_key_rate(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 2 || v > 30)
+        return E_INVAL;
+    key_rate = (int)v;
+    hal_key_repeat(key_delay, key_rate);
+    return 0;
+}
+
+static const struct setting s_key_delay = {"keydelay", "250..1000", "how long a held key waits before it repeats, ms",
+                                           get_key_delay, set_key_delay};
+static const struct setting s_key_rate = {"keyrate", "2..30", "how many times a second a held key repeats",
+                                          get_key_rate, set_key_rate};
+SETTING(s_key_delay);
+SETTING(s_key_rate);
 
 static void get_var(const char *name, const char *fallback, char *buf, size_t cap)
 {
@@ -120,7 +176,8 @@ static int statusbar_set(struct shell *sh, const char *value)
     return 0;
 }
 
-static const struct setting s_statusbar = {"statusbar", "on|off", "status bar with clock at the bottom", statusbar_get, statusbar_set};
+static const struct setting s_statusbar = {"termstatus", "on|off", "terminal status bar with clock at the bottom",
+                                           statusbar_get, statusbar_set};
 SETTING(s_statusbar);
 
 static void highlight_get(char *buf, size_t cap)

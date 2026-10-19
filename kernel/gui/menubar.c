@@ -39,25 +39,9 @@ static struct window *open_menu, *menu_target;
 static char app_name[64];
 static bool started;
 
-static const char *const day_names[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-static const char *const month_names[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-
-static int weekday(int y, int m, int d)
-{
-    static const int t[12] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
-    if (m < 3)
-        y--;
-    return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
-}
-
 static void clock_text(char *buf, size_t cap)
 {
-    struct rtc_time t;
-    hal_rtc(&t);
-    int m = CLAMP((int)t.month, 1, 12);
-    ksnprintf(buf, cap, "%s %u %s  %02u:%02u", day_names[weekday((int)t.year, m, (int)t.day)], t.day, month_names[m - 1],
-              t.hour, t.minute);
+    gui_clock_text(buf, cap, true);
 }
 
 static struct rect bar_rect(int screen)

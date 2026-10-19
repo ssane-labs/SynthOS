@@ -3,6 +3,7 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/string.h>
+#include <synth/time.h>
 
 #include "internal.h"
 
@@ -85,14 +86,14 @@ void prompt_render(struct shell *sh)
             break;
         case 't':
         case 'T':
-            hal_rtc(&t);
+            time_local(&t);
             if (*p == 't')
                 ksnprintf(buf, sizeof(buf), "%02u:%02u", t.hour, t.minute);
             else
                 ksnprintf(buf, sizeof(buf), "%02u:%02u:%02u", t.hour, t.minute, t.second);
             break;
         case 'd':
-            hal_rtc(&t);
+            time_local(&t);
             ksnprintf(buf, sizeof(buf), "%04u-%02u-%02u", t.year, t.month, t.day);
             break;
         case '?':

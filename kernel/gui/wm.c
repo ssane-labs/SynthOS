@@ -13,7 +13,6 @@
 
 #define MAX_DIRTY 32
 #define RADIUS 20
-#define DOUBLE_CLICK_MS 400
 #define EDGE 6
 #define SHADOW 12
 #define SHADOW_DY 3
@@ -40,7 +39,8 @@ static const struct gui_app *launching_app;
 int mouse_x, mouse_y;
 static unsigned mouse_buttons;
 static int mouse_speed = 5, accel_x, accel_y;
-static bool natural_scroll;
+static bool natural_scroll, left_handed;
+static int double_click_ms = 400, scroll_lines = 1;
 static bool cursor_visible = true;
 
 enum cursor_kind {
@@ -1951,18 +1951,22 @@ void wm_pointer(const struct pointer_event *ev)
         }
         mouse_moved();
     }
-    unsigned changed = ev->buttons ^ mouse_buttons;
+    unsigned buttons = ev->buttons;
+    if (left_handed)
+        buttons = (buttons & ~(unsigned)(BUTTON_LEFT | BUTTON_RIGHT)) | (buttons & BUTTON_LEFT ? BUTTON_RIGHT : 0) |
+                  (buttons & BUTTON_RIGHT ? BUTTON_LEFT : 0);
+    unsigned changed = buttons ^ mouse_buttons;
     for (unsigned b = 1; b <= 4; b <<= 1) {
         if (!(changed & b))
             continue;
-        if (ev->buttons & b) {
+        if (buttons & b) {
             mouse_buttons |= b;
             uint64_t now = hal_ticks_ms();
             int dist = MAX(mouse_x > last_click_x ? mouse_x - last_click_x : last_click_x - mouse_x,
                            mouse_y > last_click_y ? mouse_y - last_click_y : last_click_y - mouse_y);
             struct window *at;
             hit_test(mouse_x, mouse_y, &at);
-            if (b == BUTTON_LEFT && now - last_click_time < DOUBLE_CLICK_MS && dist < 5 && at == last_click_win)
+            if (b == BUTTON_LEFT && now - last_click_time < (uint64_t)double_click_ms && dist < 5 && at == last_click_win)
                 click_count++;
             else
                 click_count = 1;
@@ -1981,7 +1985,7 @@ void wm_pointer(const struct pointer_event *ev)
     if (ev->wheel) {
         struct window *w;
         if (hit_test(mouse_x, mouse_y, &w) == HIT_WINDOW && w)
-            client_event(w, EV_WHEEL, 0, natural_scroll ? -ev->wheel : ev->wheel, 0);
+            client_event(w, EV_WHEEL, 0, (natural_scroll ? -ev->wheel : ev->wheel) * scroll_lines, 0);
     }
 }
 
@@ -2324,6 +2328,61 @@ static int set_natural(struct shell *sh, const char *value)
 static const struct setting s_natural = {"naturalscroll", "on|off", "invert the scroll wheel", get_natural,
                                          set_natural};
 SETTING(s_natural);
+
+static void get_double(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", double_click_ms);
+}
+
+static int set_double(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 150 || v > 1500)
+        return E_INVAL;
+    double_click_ms = (int)v;
+    return 0;
+}
+
+static void get_scroll(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", scroll_lines);
+}
+
+static int set_scroll(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 1 || v > 5)
+        return E_INVAL;
+    scroll_lines = (int)v;
+    return 0;
+}
+
+static void get_primary(char *buf, size_t cap)
+{
+    str_copy(buf, left_handed ? "right" : "left", cap);
+}
+
+static int set_primary(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "left") && strcmp(value, "right"))
+        return E_INVAL;
+    left_handed = !strcmp(value, "right");
+    return 0;
+}
+
+static const struct setting s_double = {"doubleclick", "150..1500",
+                                        "longest pause between the clicks of a double-click, ms", get_double,
+                                        set_double};
+static const struct setting s_scroll = {"scrollspeed", "1..5", "how far one notch of the wheel scrolls", get_scroll,
+                                        set_scroll};
+static const struct setting s_primary = {"mouseprimary", "left|right", "the button that clicks (right for left hands)",
+                                         get_primary, set_primary};
+SETTING(s_double);
+SETTING(s_scroll);
+SETTING(s_primary);
 
 static void get_animations(char *buf, size_t cap)
 {

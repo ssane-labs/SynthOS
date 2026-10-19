@@ -648,8 +648,12 @@ struct rect dock_window_rect(struct window *w)
     return (struct rect){0, 0, 0, 0};
 }
 
+static bool show_dots = true, bounce = true;
+
 void dock_bounce(const struct gui_app *app)
 {
+    if (!bounce)
+        return;
     bounce_app = app;
     bounce_start = hal_ticks_ms();
 }
@@ -981,7 +985,7 @@ static void paint_items(struct canvas *c)
         int alpha = 255 - CLAMP(lift[i].pos, 0, 1024) * 60 / 1024;
         r = rect_inset(r, CLAMP(lift[i].pos, 0, 1024) * r.w / 1024 / 14);
         draw_icon(c, it, r, alpha);
-        if (it->running)
+        if (it->running && show_dots)
             running_dot(c, r);
         if (kind == DOCK_RAIL) {
             int a = CLAMP((grow.pos - 300) * 255 / 600, 0, 255);
@@ -1487,6 +1491,37 @@ static int set_hide(struct shell *sh, const char *value)
 static const struct setting s_dockhide = {"dockhide", "on|off", "hide the dock until the pointer reaches the bottom",
                                           get_hide, set_hide};
 SETTING(s_dockhide);
+
+static void get_dots(char *buf, size_t cap)
+{
+    setting_flag_get(show_dots, buf, cap);
+}
+
+static int set_dots(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int err = setting_flag(value, &show_dots);
+    if (gui_active())
+        dock_redraw();
+    return err;
+}
+
+static void get_bounce(char *buf, size_t cap)
+{
+    setting_flag_get(bounce, buf, cap);
+}
+
+static int set_bounce(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return setting_flag(value, &bounce);
+}
+
+static const struct setting s_dots = {"dockdots", "on|off", "show a dot under apps that are open", get_dots, set_dots};
+static const struct setting s_bounce = {"dockbounce", "on|off", "an app hops in the Dock while it opens", get_bounce,
+                                        set_bounce};
+SETTING(s_dots);
+SETTING(s_bounce);
 
 static const struct setting s_dockapps = {"dockapps", "default|<app or /path>|...",
                                           "what the Dock of the current look holds, in order", get_apps, set_apps};

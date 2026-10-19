@@ -978,6 +978,43 @@ def sym_globe(d):
     d.arc([22, 82, 106, 138], 210, 330, fill=255, width=W - 3)
 
 
+def sym_bell(d):
+    d.chord([26, 14, 102, 90], 180, 360, fill=255)
+    d.polygon([(26, 52), (102, 52), (108, 92), (20, 92)], fill=255)
+    d.rounded_rectangle([12, 86, 116, 100], radius=7, fill=255)
+    d.ellipse([52, 98, 76, 122], fill=255)
+    d.ellipse([56, 4, 72, 20], fill=255)
+
+
+def sym_hand(d):
+    for x, top in ((30, 34), (50, 16), (70, 14), (90, 26)):
+        d.rounded_rectangle([x - 8, top, x + 8, 84], radius=8, fill=255)
+    d.rounded_rectangle([22, 62, 98, 118], radius=26, fill=255)
+    d.line([(26, 86), (8, 58)], fill=255, width=W + 7)
+
+
+def sym_access(d):
+    d.ellipse([52, 6, 76, 30], fill=255)
+    d.line([(14, 42), (64, 52), (114, 42)], fill=255, width=W + 2, joint="curve")
+    d.line([(64, 50), (64, 78)], fill=255, width=W + 4)
+    d.line([(64, 76), (40, 120)], fill=255, width=W + 2)
+    d.line([(64, 76), (88, 120)], fill=255, width=W + 2)
+
+
+def sym_window(d):
+    d.rounded_rectangle([10, 18, 118, 110], radius=12, outline=255, width=W)
+    d.rectangle([10, 18, 118, 44], fill=255)
+    d.rounded_rectangle([10, 18, 118, 50], radius=12, fill=255)
+    d.rectangle([14, 44, 114, 48], fill=0)
+
+
+def sym_text(d):
+    d.polygon([(8, 108), (40, 18), (56, 18), (88, 108), (72, 108), (64, 84), (32, 84), (24, 108)], fill=255)
+    d.polygon([(37, 70), (59, 70), (48, 36)], fill=0)
+    d.ellipse([80, 58, 120, 110], outline=255, width=W)
+    d.line([(116, 58), (116, 110)], fill=255, width=W)
+
+
 SYMBOLS = [
     ("SYM_LOGO", sym_logo), ("SYM_SEARCH", sym_search), ("SYM_CONTROL", sym_control), ("SYM_WIFI", sym_wifi),
     ("SYM_HOME", sym_home), ("SYM_DESKTOP", sym_desktop), ("SYM_DOC", sym_doc), ("SYM_APPS", sym_apps),
@@ -997,6 +1034,8 @@ SYMBOLS = [
     ("SYM_MUSIC", sym_music), ("SYM_VIDEO", sym_video), ("SYM_PLAY", sym_play), ("SYM_PAUSE", sym_pause),
     ("SYM_PREV", sym_prev), ("SYM_NEXT", sym_next), ("SYM_VOLUME", sym_volume), ("SYM_MORE", sym_more),
     ("SYM_WEATHER", sym_weather), ("SYM_CALENDAR", sym_calendar), ("SYM_PIN", sym_pin), ("SYM_GLOBE", sym_globe),
+    ("SYM_BELL", sym_bell), ("SYM_HAND", sym_hand), ("SYM_ACCESS", sym_access), ("SYM_WINDOW", sym_window),
+    ("SYM_TEXT", sym_text),
 ]
 
 

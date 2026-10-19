@@ -373,9 +373,9 @@ static void card(struct canvas *c, struct widget *w, int alpha)
 static void paint_clock(struct canvas *c, struct rect r)
 {
     struct rtc_time t;
-    hal_rtc(&t);
-    char time[8], date[48];
-    ksnprintf(time, sizeof(time), "%02u:%02u", t.hour, t.minute);
+    time_local(&t);
+    char time[16], date[48];
+    gui_clock_time(&t, time, sizeof(time), false, false);
     int m = CLAMP((int)t.month, 1, 12);
     ksnprintf(date, sizeof(date), "%s, %u %s", panel_day_name(panel_weekday((int)t.year, m, (int)t.day)), t.day,
               panel_month_name(m - 1));
@@ -486,7 +486,7 @@ static void paint_music(struct canvas *c, struct rect r)
 static void paint_calendar(struct canvas *c, struct rect r)
 {
     struct rtc_time t;
-    hal_rtc(&t);
+    time_local(&t);
     int m = CLAMP((int)t.month, 1, 12);
     char day[8], month[32];
     ksnprintf(day, sizeof(day), "%u", t.day);
@@ -946,7 +946,7 @@ bool widgets_animate(void)
         }
     }
     struct rtc_time t;
-    hal_rtc(&t);
+    time_local(&t);
     if ((int)t.minute != last_minute) {
         last_minute = (int)t.minute;
         damage(WIDGET_CLOCK);
@@ -1008,7 +1008,7 @@ static void calendar_paint(struct window *w, struct canvas *c)
     UNUSED(w);
     gfx_clear(c, (struct rect){0, 0, c->w, c->h}, 0);
     struct rtc_time t;
-    hal_rtc(&t);
+    time_local(&t);
     int y = (int)t.year, m = CLAMP((int)t.month, 1, 12), d = (int)t.day;
     char title[40];
     ksnprintf(title, sizeof(title), "%s %d", panel_month_name(m - 1), y);

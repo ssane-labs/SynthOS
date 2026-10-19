@@ -6,8 +6,6 @@
 #include "io.h"
 #include "usb.h"
 
-#define REPEAT_DELAY 500
-#define REPEAT_RATE 33
 #define EXT 0x80
 
 enum {
@@ -49,6 +47,7 @@ static const uint8_t scancodes[0x66] = {
 static const uint8_t modifier_codes[8] = {0x1d, 0x2a, 0x38, EXT | 0x5b, EXT | 0x1d, 0x36, EXT | 0x38, EXT | 0x5c};
 
 static struct hid *repeat_owner;
+static uint32_t repeat_delay = 500, repeat_period = 33;
 static uint8_t repeat_code;
 static uint32_t repeat_at;
 
@@ -91,10 +90,16 @@ static void keyboard_report(struct hid *h, const uint8_t *r)
             send(scancodes[u], false);
             repeat_owner = h;
             repeat_code = scancodes[u];
-            repeat_at = usb_now() + REPEAT_DELAY;
+            repeat_at = usb_now() + repeat_delay;
         }
     }
     memcpy(h->last, r, 8);
+}
+
+void usbhid_repeat(int delay_ms, int period_ms)
+{
+    repeat_delay = (uint32_t)delay_ms;
+    repeat_period = (uint32_t)period_ms;
 }
 
 static void repeat_tick(void)
@@ -102,7 +107,7 @@ static void repeat_tick(void)
     if (!repeat_owner || (int32_t)(usb_now() - repeat_at) < 0)
         return;
     send(repeat_code, false);
-    repeat_at = usb_now() + REPEAT_RATE;
+    repeat_at = usb_now() + repeat_period;
 }
 
 static int32_t extract(const uint8_t *data, int length, const struct field *f)

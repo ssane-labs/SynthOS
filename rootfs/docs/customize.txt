@@ -19,7 +19,7 @@ Prompt
 
 Settings
   config                list everything
-  config statusbar on   bottom bar with path, theme, memory and clock
+  config termstatus on  bottom bar with path, theme, memory and clock
   config cursor bar     block, underline or bar
   config highlight off  turn off live syntax colors
   config suggest off    turn off history suggestions
