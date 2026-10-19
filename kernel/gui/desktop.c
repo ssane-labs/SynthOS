@@ -1100,9 +1100,12 @@ static void pump(int timeout_ms)
 #if CONFIG_WIN32
     if (timeout_ms != 0)
         w32_background();
-#endif
+    if (!busy && timeout_ms != 0)
+        w32_host_sleep((uint32_t)(timeout_ms > 0 ? MIN(timeout_ms, 8) : 8));
+#else
     if (!busy && timeout_ms != 0)
         hal_sleep_ms((uint32_t)(timeout_ms > 0 ? MIN(timeout_ms, 8) : 8));
+#endif
 }
 
 static void copy_samples(const char *dir, const char *ext)

@@ -332,6 +332,8 @@ winhello one 7 > /tmp/w.txt; schedstat | grep -c "switches.*waits"
 1
 config w32precise | head -n 1
 w32precise = on
+prof start; calc 6 * 7; prof stop | grep -c "prof: .* samples"
+1
 config w32errors on; config w32errors | head -n 1
 w32errors = on
 config w32errors off; config w32trace | head -n 1

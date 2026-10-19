@@ -248,17 +248,19 @@ static struct w32_image *load_builtin(const char *name)
     return img;
 }
 
+static bool image_space_free(uint32_t base, uint32_t size);
+
 static uint32_t pick_base(uint64_t preferred, uint32_t size, bool relocatable)
 {
     bool clear = preferred + size <= w32->arena_base || preferred >= (uint64_t)w32->arena_base + w32->arena_size;
     if (clear && preferred >= VMM_USER_START && preferred + size <= VMM_USER_END &&
-        vmm_range_free((uint32_t)preferred, size))
+        image_space_free((uint32_t)preferred, size))
         return (uint32_t)preferred;
     if (!relocatable)
         return 0;
     for (uint32_t base = 0x10000000u; base < 0xb0000000u; base += 0x10000u)
         if ((base + size <= w32->arena_base || base >= w32->arena_base + w32->arena_size) &&
-            vmm_range_free(base, size))
+            image_space_free(base, size))
             return base;
     return 0;
 }
@@ -557,20 +559,40 @@ static int resolve_imports(struct w32_image *img, const struct pe_info *pe, cons
 /* The cache lives on the kernel heap: shared DLLs belong there, a huge program (an installer) does not. */
 #define CACHE_EXE_MAX (64u * 1024 * 1024)
 
+/* Big DLLs are shared by every process that loads them at the same address. Their pages are read and relocated
+   when first touched, so a program starts without reading all of a 200 MB DLL, and they stay after the last user
+   exits while memory allows, so starting it again reads nothing. */
+struct cache_section {
+    uint32_t va, size, ptr;
+};
+
 struct image_cache {
     char path[PATH_MAX_LEN];
-    uint32_t base, size, file_size;
+    uint32_t base, size, file_size, mtime;
     void **pages;
     int users;
     struct image_cache *next;
+    struct file *file;
+    uint8_t *headers;
+    uint32_t headers_size;
+    struct cache_section *sections;
+    uint16_t section_count;
+    uint8_t *relocs;
+    uint32_t reloc_size;
+    uint32_t *reloc_at;
+    uint64_t delta;
+    uint32_t loaded;
 };
 
 static struct image_cache *image_caches;
 
-static struct image_cache *cache_find(const char *path, uint32_t base, uint32_t size, uint32_t file_size)
+#define CACHE_KEEP_FREE (256u * 1024 * 1024)
+
+static struct image_cache *cache_find(const char *path, uint32_t base, uint32_t size, const struct vstat *st)
 {
     for (struct image_cache *c = image_caches; c; c = c->next)
-        if (c->base == base && c->size == size && c->file_size == file_size && !strcmp(c->path, path))
+        if (c->base == base && c->size == size && c->file_size == st->size && c->mtime == st->mtime &&
+            !strcmp(c->path, path))
             return c;
     return NULL;
 }
@@ -578,29 +600,201 @@ static struct image_cache *cache_find(const char *path, uint32_t base, uint32_t 
 static void cache_free(struct image_cache *c)
 {
     for (uint32_t i = 0; c->pages && i < c->size / 4096u; i++)
-        kfree_pages(c->pages[i]);
+        if (c->pages[i])
+            kfree_pages(c->pages[i]);
+    if (c->file)
+        vfs_close(c->file);
     kfree(c->pages);
+    kfree(c->headers);
+    kfree(c->sections);
+    kfree(c->relocs);
+    kfree(c->reloc_at);
     kfree(c);
 }
 
-static struct image_cache *cache_new(const char *path, uint32_t base, uint32_t size, uint32_t file_size)
+static void cache_unlink(struct image_cache *c)
 {
-    struct image_cache *c = kzalloc(sizeof(*c));
-    uint32_t count = ALIGN_UP(size, 4096u) / 4096u;
-    if (!c || !(c->pages = kzalloc(count * sizeof(*c->pages)))) {
-        kfree(c);
+    for (struct image_cache **pp = &image_caches; *pp; pp = &(*pp)->next)
+        if (*pp == c) {
+            *pp = c->next;
+            break;
+        }
+}
+
+/* Unused caches go first when memory gets short. */
+static void cache_trim(size_t want)
+{
+    struct image_cache *c = image_caches;
+    while (c && heap_free_bytes() < want + CACHE_KEEP_FREE) {
+        struct image_cache *next = c->next;
+        if (!c->users) {
+            cache_unlink(c);
+            cache_free(c);
+        }
+        c = next;
+    }
+}
+
+/* The image bytes at [rva, rva + n) as the file has them, before relocation. */
+static bool cache_raw(struct image_cache *c, uint32_t rva, uint8_t *out, uint32_t n)
+{
+    memset(out, 0, n);
+    if (rva < c->headers_size)
+        memcpy(out, c->headers + rva, MIN(n, c->headers_size - rva));
+    for (uint16_t i = 0; i < c->section_count; i++) {
+        const struct cache_section *s = &c->sections[i];
+        uint32_t from = MAX(rva, s->va), to = MIN(rva + n, s->va + s->size);
+        if (from >= to)
+            continue;
+        vfs_seek(c->file, (long)(s->ptr + from - s->va), VFS_SEEK_SET);
+        if (vfs_read(c->file, out + from - rva, to - from) != (long)(to - from))
+            return false;
+    }
+    return true;
+}
+
+static void cache_relocate(struct image_cache *c, uint32_t page, uint8_t *buf, uint32_t lo, uint32_t hi)
+{
+    if (page >= c->size / 4096u || !c->reloc_at[page])
+        return;
+    for (uint32_t off = c->reloc_at[page] - 1; off + 8 <= c->reloc_size;) {
+        uint32_t rva = rd32(c->relocs + off), block = rd32(c->relocs + off + 4);
+        if (block < 8 || rva != page * 4096u)
+            break;
+        for (uint32_t i = 8; i + 2 <= block && off + i + 2 <= c->reloc_size; i += 2) {
+            uint16_t entry = rd16(c->relocs + off + i);
+            uint32_t target = rva + (entry & 0xfff), width = 0;
+            switch (entry >> 12) {
+            case 1:
+            case 2: width = 2; break;
+            case 3: width = 4; break;
+            case 10: width = 8; break;
+            }
+            if (!width || target < lo || target + width > hi)
+                continue;
+            uint8_t *at = buf + (target - lo);
+            if (width == 8) {
+                uint64_t v = rd64(at) + c->delta;
+                memcpy(at, &v, 8);
+            } else if (width == 4) {
+                uint32_t v = rd32(at) + (uint32_t)c->delta;
+                memcpy(at, &v, 4);
+            } else {
+                uint16_t v = (uint16_t)(rd16(at) + (entry >> 12 == 2 ? (c->delta & 0xffff) : (c->delta >> 16 & 0xffff)));
+                memcpy(at, &v, 2);
+            }
+        }
+        off += block;
+    }
+}
+
+static void *cache_page(struct image_cache *c, uint32_t index)
+{
+    static uint8_t buf[4096 + 16];
+    if (index >= c->size / 4096u)
+        return NULL;
+    if (c->pages[index])
+        return c->pages[index];
+    cache_trim(4096);
+    uint8_t *page = kmalloc_pages_uninit(4096);
+    if (!page)
+        return NULL;
+    uint32_t start = index * 4096u, lo = start >= 8 ? start - 8 : 0, hi = MIN(start + 4096u + 8, c->size);
+    if (!cache_raw(c, lo, buf, hi - lo)) {
+        kfree_pages(page);
         return NULL;
     }
+    if (c->delta) {
+        if (index)
+            cache_relocate(c, index - 1, buf, lo, hi);
+        cache_relocate(c, index, buf, lo, hi);
+    }
+    memcpy(page, buf + (start - lo), 4096);
+    c->pages[index] = page;
+    c->loaded++;
+    return page;
+}
+
+static struct image_cache *cache_new(const char *path, struct file *f, const struct vstat *st,
+                                     const struct pe_info *pe, uint32_t base)
+{
+    uint32_t count = pe->image_size / 4096u, rva, size;
+    cache_trim(count * sizeof(void *) + pe->headers_size);
+    struct image_cache *c = kzalloc(sizeof(*c));
+    if (!c)
+        return NULL;
     str_copy(c->path, path, sizeof(c->path));
     c->base = base;
-    c->size = count * 4096u;
-    c->file_size = file_size;
-    for (uint32_t i = 0; i < count; i++)
-        if (!(c->pages[i] = kmalloc_pages(4096))) {
-            cache_free(c);
-            return NULL;
+    c->size = pe->image_size;
+    c->file_size = st->size;
+    c->mtime = st->mtime;
+    c->file = f;
+    c->delta = base - pe->image_base;
+    c->headers_size = MIN(pe->headers_size, MIN((uint32_t)pe->file_size, pe->image_size));
+    c->section_count = pe->sections;
+    c->pages = kzalloc(count * sizeof(*c->pages));
+    c->headers = kmalloc(MAX(c->headers_size, 1u));
+    c->sections = kzalloc(sizeof(*c->sections) * MAX(pe->sections, (uint16_t)1));
+    c->reloc_at = kzalloc(count * sizeof(*c->reloc_at));
+    if (!c->pages || !c->headers || !c->sections || !c->reloc_at)
+        goto fail;
+    memcpy(c->headers, pe->file, c->headers_size);
+    if (c->delta) {
+        uint64_t base64 = base;
+        if (pe->pe64 && pe->opt + 32 <= c->headers_size)
+            memcpy(c->headers + pe->opt + 24, &base64, 8);
+        else if (!pe->pe64 && pe->opt + 32 <= c->headers_size)
+            memcpy(c->headers + pe->opt + 28, &base, 4);
+    }
+    uint32_t sec = pe->opt + rd16(pe->file + pe->coff + 16);
+    for (uint16_t i = 0; i < pe->sections && sec + 40 <= pe->file_size; i++, sec += 40) {
+        uint32_t vsize = rd32(pe->file + sec + 8), va = rd32(pe->file + sec + 12);
+        uint32_t raw = rd32(pe->file + sec + 16), ptr = rd32(pe->file + sec + 20);
+        uint32_t copy = vsize && vsize < raw ? vsize : raw;
+        if (va >= pe->image_size || ptr >= st->size)
+            continue;
+        copy = MIN(copy, MIN(pe->image_size - va, st->size - ptr));
+        c->sections[i] = (struct cache_section){va, copy, ptr};
+    }
+    dir_of(pe, DIR_RELOC, &rva, &size);
+    if (c->delta && rva && size && rva + size <= pe->image_size) {
+        if (!(c->relocs = kmalloc(size)) || !cache_raw(c, rva, c->relocs, size))
+            goto fail;
+        c->reloc_size = size;
+        for (uint32_t off = 0; off + 8 <= size;) {
+            uint32_t page = rd32(c->relocs + off), block = rd32(c->relocs + off + 4);
+            if (block < 8)
+                break;
+            if (page / 4096u < count && !c->reloc_at[page / 4096u])
+                c->reloc_at[page / 4096u] = off + 1;
+            off += block;
         }
+    }
     return c;
+fail:
+    c->file = NULL;
+    cache_free(c);
+    return NULL;
+}
+
+/* Maps the pages this cache already holds; the rest come in through w32_image_fault. */
+static void cache_map(struct image_cache *c)
+{
+    for (uint32_t i = 0; i < c->size / 4096u; i++)
+        if (c->pages[i])
+            vmm_map_pages(c->base + i * 4096u, &c->pages[i], 1, true);
+}
+
+bool w32_image_fault(uint32_t address)
+{
+    for (struct w32_image *img = w32 ? w32->images : NULL; img; img = img->next) {
+        struct image_cache *c = img->cache;
+        if (!c || address < c->base || address - c->base >= c->size)
+            continue;
+        void *page = cache_page(c, (address - c->base) / 4096u);
+        return page && vmm_map_pages(address & ~4095u, &page, 1, true) == 0;
+    }
+    return false;
 }
 
 static void cache_put(struct image_cache *c, uint32_t base)
@@ -609,12 +803,16 @@ static void cache_put(struct image_cache *c, uint32_t base)
     vmm_unmap(base, c->size);
     if (--c->users > 0)
         return;
-    for (struct image_cache **pp = &image_caches; *pp; pp = &(*pp)->next)
-        if (*pp == c) {
-            *pp = c->next;
-            break;
-        }
-    cache_free(c);
+    c->users = 0;
+    cache_trim(0);
+}
+
+static bool image_space_free(uint32_t base, uint32_t size)
+{
+    for (struct w32_image *img = w32->images; img; img = img->next)
+        if (!img->builtin && base < img->base + img->size && img->base < base + size)
+            return false;
+    return vmm_range_free(base, size);
 }
 
 static struct w32_image *load_file(const char *path, const char *name, int *error)
@@ -650,29 +848,31 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     bool relocatable = reloc_rva && reloc_size && !(pe.characteristics & 0x0001);
     uint32_t base = pick_base(pe.image_base, pe.image_size, relocatable);
     struct image_cache *cache = NULL;
-    bool cached = false;
     if (base && pe.image_size >= CACHE_MIN && ((pe.characteristics & 0x2000) || pe.image_size < CACHE_EXE_MAX)) {
-        if ((cache = cache_find(path, base, ALIGN_UP(pe.image_size, 4096u), (uint32_t)size)) &&
-            vmm_map_pages(base, cache->pages, cache->size / 4096u, true) == 0) {
+        if ((cache = cache_find(path, base, pe.image_size, &st))) {
+            vfs_close(f);
+        } else if ((cache = cache_new(path, f, &st, &pe, base))) {
+            cache->next = image_caches;
+            image_caches = cache;
+        }
+        if (cache) {
+            f = NULL;
             cache->users++;
-            cached = true;
-        } else if ((cache = cache_new(path, base, pe.image_size, (uint32_t)size)) &&
-                   vmm_map_pages(base, cache->pages, cache->size / 4096u, false) != 0) {
-            cache_free(cache);
-            cache = NULL;
+            cache_map(cache);
         }
     }
     if (!base || (!cache && vmm_commit_range(base, pe.image_size) != 0)) {
         kfree(data);
-        vfs_close(f);
+        if (f)
+            vfs_close(f);
         *error = base ? ERROR_NOT_ENOUGH_MEMORY : 193;
         return NULL;
     }
     uint8_t *mem = (uint8_t *)base;
-    if (!cached)
-        memcpy(mem, data, MIN((size_t)pe.headers_size, MIN(head_size, (size_t)pe.image_size)));
     uint32_t sec = pe.opt + rd16(pe.file + pe.coff + 16);
-    for (uint16_t i = 0; !cached && i < pe.sections && sec + 40 <= head_size; i++, sec += 40) {
+    if (!cache)
+        memcpy(mem, data, MIN((size_t)pe.headers_size, MIN(head_size, (size_t)pe.image_size)));
+    for (uint16_t i = 0; !cache && i < pe.sections && sec + 40 <= head_size; i++, sec += 40) {
         uint32_t vsize = rd32(pe.file + sec + 8), va = rd32(pe.file + sec + 12);
         uint32_t raw = rd32(pe.file + sec + 16), ptr = rd32(pe.file + sec + 20);
         uint32_t copy = vsize && vsize < raw ? vsize : raw;
@@ -681,10 +881,6 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         copy = MIN(copy, MIN(pe.image_size - va, (uint32_t)(size - ptr)));
         vfs_seek(f, (long)ptr, VFS_SEEK_SET);
         if (vfs_read(f, mem + va, copy) != (long)copy) {
-            if (cache) {
-                vmm_unmap(base, cache->size);
-                cache_free(cache);
-            }
             vmm_release(base, pe.image_size);
             kfree(data);
             vfs_close(f);
@@ -693,13 +889,17 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         }
     }
     kfree(data);
-    vfs_close(f);
+    if (f)
+        vfs_close(f);
     pe.file = mem;
     uint8_t *memory = NULL;
 
     struct w32_image *img = image_new(name);
     if (!img) {
-        vmm_release(base, pe.image_size);
+        if (cache)
+            cache_put(cache, base);
+        else
+            vmm_release(base, pe.image_size);
         *error = ERROR_NOT_ENOUGH_MEMORY;
         return NULL;
     }
@@ -710,22 +910,17 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     img->memory = memory;
     img->entry = pe.entry ? base + pe.entry : 0;
     img->dll = pe.characteristics & 0x2000;
-    if (base != pe.image_base && !cached) {
+    img->cache = cache;
+    if (base != pe.image_base && !cache) {
         uint64_t delta = base - pe.image_base, base64 = base;
         if (pe.pe64)
             memcpy(mem + pe.opt + 24, &base64, 8);
         else
             memcpy(mem + pe.opt + 28, &base, 4);
         apply_relocations(&pe, mem, delta);
+    }
+    if (base != pe.image_base && (!cache || cache->users == 1))
         klog("win32: %s relocated to 0x%08x", name, base);
-    }
-    if (cache && !cached) {
-        vmm_make_cow(base, cache->size);
-        cache->users = 1;
-        cache->next = image_caches;
-        image_caches = cache;
-    }
-    img->cache = cache;
     char dir[PATH_MAX_LEN];
     path_dirname(path, dir, sizeof(dir));
     int err2 = resolve_imports(img, &pe, dir);

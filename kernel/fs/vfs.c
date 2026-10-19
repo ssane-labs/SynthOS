@@ -3,6 +3,7 @@
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
+#include <synth/vmm.h>
 
 SYNTH_TABLE_DECLARE(synth_fs, struct fs_type);
 
@@ -241,6 +242,17 @@ int vfs_open(const char *path, unsigned flags, struct file **out)
     return 0;
 }
 
+/* A program's page can be read in from a file when first touched (a DLL's): that has to happen before the file
+   system and the disk driver are in the middle of this transfer, not inside it. */
+static void touch_user(const void *buf, size_t n)
+{
+    uintptr_t a = (uintptr_t)buf;
+    if (!n || a < VMM_USER_START || a >= VMM_USER_END)
+        return;
+    for (uintptr_t p = a; p < a + n; p = (p & ~(uintptr_t)4095) + 4096)
+        (void)*(const volatile uint8_t *)p;
+}
+
 long vfs_read(struct file *f, void *buf, size_t n)
 {
     if (!(f->flags & VFS_READ))
@@ -249,6 +261,7 @@ long vfs_read(struct file *f, void *buf, size_t n)
         return E_ISDIR;
     if (!f->vn->ops->read)
         return E_PERM;
+    touch_user(buf, n);
     long got = f->vn->ops->read(f->vn, f->pos, buf, n);
     if (got > 0)
         f->pos += (uint32_t)got;
@@ -266,6 +279,7 @@ long vfs_write(struct file *f, const void *buf, size_t n)
         if (vfs_fstat(f, &st) == 0)
             f->pos = st.size;
     }
+    touch_user(buf, n);
     long put = f->vn->ops->write(f->vn, f->pos, buf, n);
     if (put > 0)
         f->pos += (uint32_t)put;

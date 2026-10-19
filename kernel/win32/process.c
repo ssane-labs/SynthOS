@@ -8,6 +8,7 @@
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/log.h>
+#include <synth/net.h>
 #include <synth/shell.h>
 #include <synth/stream.h>
 #include <synth/string.h>
@@ -1350,9 +1351,43 @@ void w32_background(void)
 {
     if (w32 || !ring || hal_in_interrupt() || !host_enter())
         return;
-    w32_kick_all();
+    w32_signal_tick();
     w32_yield();
     host_leave();
+}
+
+static bool runnable(void)
+{
+    struct w32_process *p = ring;
+    if (!p)
+        return false;
+    do {
+        if (p->dead || p->frozen || !p->current || w32_is_host(p))
+            continue;
+        struct w32_thread *t = p->current;
+        do {
+            if (w32_thread_ready(t))
+                return true;
+        } while ((t = t->next) != p->current);
+    } while ((p = p->ring_next) && p != ring);
+    return false;
+}
+
+/* The desktop's idle wait: a Windows thread whose timer ran out, or whose data arrived, runs at once instead of
+   after the desktop's next frame. */
+void w32_host_sleep(uint32_t ms)
+{
+    uint64_t end = hal_ticks_ms() + ms;
+    do {
+        if (!w32 && ring) {
+            net_poll();
+            if (runnable()) {
+                w32_background();
+                return;
+            }
+        }
+        hal_sleep_ms(1);
+    } while (hal_ticks_ms() < end);
 }
 
 int w32_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd)

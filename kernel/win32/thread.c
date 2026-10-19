@@ -196,7 +196,7 @@ void w32_signal_local(void)
     }
 }
 
-#define SAFETY_NET_MS 20
+#define SAFETY_NET_MS 250
 
 static bool object_ready(const struct w32_object *o, uint32_t tid)
 {
@@ -249,6 +249,11 @@ static bool wait_over(const struct w32_thread *t)
 static bool stale(const struct w32_thread *t)
 {
     return !t->done && !t->suspended && t->waiting && wait_over(t);
+}
+
+bool w32_thread_ready(const struct w32_thread *t)
+{
+    return !t->done && !t->suspended && (!t->waiting || wait_over(t));
 }
 
 /* A waiting thread, here or in another process, that has not looked since the last signal. */
@@ -316,7 +321,7 @@ static void check_stack(struct w32_thread *t);
 
 static struct {
     uint32_t switches, process_switches, blocks, idles;
-    uint32_t reasons[6];
+    uint32_t reasons[8];
     uint64_t since;
     struct {
         uint32_t site, count;
@@ -1155,6 +1160,10 @@ void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), 
         for (int i = 0; i < w->count; i++)
             if (object_ready(w->objects[i], t->id))
                 reason = 5;
+    if (reason == 4 && w32->io_gen != w32->io_seen)
+        reason = 6;
+    else if (reason == 4 && t->seen != signal_gen && hal_ticks_ms() - w->since >= SAFETY_NET_MS)
+        reason = 7;
     stats.reasons[reason]++;
     w->kind = W32_WAIT_ANY;
     w->deadline = 0;
@@ -1618,8 +1627,9 @@ static void stats_tick(void)
             if (kick_sites[i].count > 50)
                 klog("sched: kick from %08x: %u", kick_sites[i].site, kick_sites[i].count);
         memset(kick_sites, 0, sizeof(kick_sites));
-        klog("sched: woke by deadline %u, process %u, network %u, ready %u, other %u, objects %u", stats.reasons[0],
-             stats.reasons[1], stats.reasons[2], stats.reasons[3], stats.reasons[4], stats.reasons[5]);
+        klog("sched: woke by deadline %u, process %u, network %u, ready %u, other %u, objects %u, io %u, late %u",
+             stats.reasons[0], stats.reasons[1], stats.reasons[2], stats.reasons[3], stats.reasons[4], stats.reasons[5],
+             stats.reasons[6], stats.reasons[7]);
         char line[160];
         stats_take(line, sizeof(line));
         klog("sched: %s", line);

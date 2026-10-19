@@ -214,6 +214,8 @@ uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t cou
 
 bool w32_vm_fault(uintptr_t address)
 {
+    if (w32 && w32_image_fault((uint32_t)address))
+        return true;
     if (!w32 || !w32->vm)
         return false;
     struct vregion *r = region_at((uint32_t)address);

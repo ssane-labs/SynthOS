@@ -173,7 +173,7 @@ struct w32_wait {
     uint8_t kind, count;
     bool all, equal;
     uint64_t deadline;
-    struct w32_object *objects[8];
+    struct w32_object *objects[16];
     const volatile uint32_t *addr;
     uint32_t mask, value;
     bool net;
@@ -401,6 +401,7 @@ void w32_fcache_truncate(const char *path, uint32_t size);
 void w32_fcache_forget(const char *path);
 uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count);
 bool w32_vm_fault(uintptr_t address);
+bool w32_image_fault(uint32_t address);
 
 struct dw_point {
     int32_t x, y;
@@ -417,6 +418,7 @@ void w32_pipe_dump(void);
 void w32_kick(struct w32_process *p);
 void w32_kick_all(void);
 void w32_signal_local(void);
+bool w32_thread_ready(const struct w32_thread *t);
 void w32_signal_tick(void);
 void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), const void *arg);
 void w32_wait_word(const volatile uint32_t *addr, uint32_t mask, uint32_t value, bool equal, uint64_t deadline);
