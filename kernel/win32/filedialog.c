@@ -1,3 +1,4 @@
+#include <synth/error.h>
 #include <synth/path.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -543,13 +544,170 @@ static uint32_t WINAPI fd_notimpl4(void *p, void *a, void *b, void *c, void *d)
 static const void *const open_vt[] = {DIALOG_SLOTS, fd_get_results, fd_get_results};
 static const void *const save_vt[] = {DIALOG_SLOTS, fd_set_save_as_item, fd_ok1, fd_ok2, fd_notimpl1, fd_notimpl4};
 
+/* IFileOperation: the shell's queue of file operations; Chromium renames every finished download through it. */
+static const uint8_t clsid_file_operation[16] =
+    GUID(0x3ad05575, 0x8857, 0x4850, 0x92, 0x77, 0x11, 0xb8, 0x5b, 0xdb, 0x8e, 0x09);
+static const uint8_t iid_file_operation[16] =
+    GUID(0x947aab5f, 0x0a5c, 0x4c13, 0xb4, 0xd6, 0x4b, 0xf7, 0x83, 0x6f, 0xc9, 0xf8);
+
+enum { OP_MOVE, OP_COPY, OP_DELETE, OP_NEW_FILE, OP_NEW_FOLDER };
+
+struct file_op {
+    int kind;
+    char from[PATH_MAX_LEN], to[PATH_MAX_LEN];
+};
+
+struct file_operation {
+    const void *vt;
+    LONG refs;
+    bool aborted;
+    int count;
+    struct file_op ops[8];
+};
+
+#define OPERATION(p) ((struct file_operation *)(p))
+
+static uint32_t WINAPI fo_query(void *p, const uint8_t *iid, void **out)
+{
+    if (!out)
+        return E_POINTER;
+    if (memcmp(iid, iid_unknown, 16) && memcmp(iid, iid_file_operation, 16)) {
+        *out = NULL;
+        return E_NOINTERFACE;
+    }
+    OPERATION(p)->refs++;
+    *out = p;
+    return S_OK;
+}
+
+static ULONG WINAPI fo_add_ref(void *p)
+{
+    return (ULONG)++OPERATION(p)->refs;
+}
+
+static ULONG WINAPI fo_release(void *p)
+{
+    struct file_operation *o = OPERATION(p);
+    if (--o->refs > 0)
+        return (ULONG)o->refs;
+    w32_free(o);
+    return 0;
+}
+
+static struct file_op *queue_op(struct file_operation *o, int kind, void *item, void *folder, const WCHAR *name)
+{
+    if (o->count == (int)ARRAY_SIZE(o->ops))
+        return NULL;
+    struct file_op *op = &o->ops[o->count];
+    memset(op, 0, sizeof(*op));
+    op->kind = kind;
+    if (item && !item_path(item, op->from, sizeof(op->from)))
+        return NULL;
+    char dir[PATH_MAX_LEN], leaf[NAME_MAX_LEN];
+    if (folder ? !item_path(folder, dir, sizeof(dir)) : (path_dirname(op->from, dir, sizeof(dir)), false))
+        return NULL;
+    narrow_into(name, leaf, sizeof(leaf));
+    path_join(dir, leaf[0] ? leaf : path_basename(op->from), op->to, sizeof(op->to));
+    o->count++;
+    return op;
+}
+
+static uint32_t WINAPI fo_rename(void *p, void *item, const WCHAR *name, void *sink)
+{
+    UNUSED(sink);
+    return queue_op(OPERATION(p), OP_MOVE, item, NULL, name) ? S_OK : E_INVALIDARG;
+}
+
+static uint32_t WINAPI fo_move(void *p, void *item, void *folder, const WCHAR *name, void *sink)
+{
+    UNUSED(sink);
+    return queue_op(OPERATION(p), OP_MOVE, item, folder, name) ? S_OK : E_INVALIDARG;
+}
+
+static uint32_t WINAPI fo_copy(void *p, void *item, void *folder, const WCHAR *name, void *sink)
+{
+    UNUSED(sink);
+    return queue_op(OPERATION(p), OP_COPY, item, folder, name) ? S_OK : E_INVALIDARG;
+}
+
+static uint32_t WINAPI fo_delete(void *p, void *item, void *sink)
+{
+    UNUSED(sink);
+    return queue_op(OPERATION(p), OP_DELETE, item, NULL, NULL) ? S_OK : E_INVALIDARG;
+}
+
+static uint32_t WINAPI fo_new(void *p, void *folder, DWORD attrs, const WCHAR *name, const WCHAR *template_name,
+                              void *sink)
+{
+    UNUSED(template_name);
+    UNUSED(sink);
+    return queue_op(OPERATION(p), attrs & 0x10 ? OP_NEW_FOLDER : OP_NEW_FILE, NULL, folder, name) ? S_OK
+                                                                                                  : E_INVALIDARG;
+}
+
+static uint32_t WINAPI fo_perform(void *p)
+{
+    struct file_operation *o = OPERATION(p);
+    uint32_t hr = S_OK;
+    for (int i = 0; i < o->count && !hr; i++) {
+        struct file_op *op = &o->ops[i];
+        int err = 0;
+        w32_fcache_forget(op->from);
+        w32_fcache_forget(op->to);
+        switch (op->kind) {
+        case OP_MOVE:
+            if (strcmp(op->from, op->to) && vfs_exists(op->to))
+                vfs_unlink(op->to);
+            err = vfs_rename(op->from, op->to);
+            if (err == E_XDEV && (err = vfs_copy(op->from, op->to)) == 0)
+                err = vfs_unlink(op->from);
+            break;
+        case OP_COPY: err = vfs_copy(op->from, op->to); break;
+        case OP_DELETE: err = vfs_unlink(op->from); break;
+        case OP_NEW_FOLDER: err = vfs_mkdirs(op->to); break;
+        case OP_NEW_FILE: err = vfs_write_all(op->to, "", 0); break;
+        }
+        if (err) {
+            hr = 0x80070000u | w32_error_from_vfs(err);
+            o->aborted = true;
+        }
+    }
+    o->count = 0;
+    return hr;
+}
+
+static uint32_t WINAPI fo_aborted(void *p, BOOL *out)
+{
+    *out = OPERATION(p)->aborted;
+    return S_OK;
+}
+
+/* IUnknown, Advise, Unadvise, SetOperationFlags, SetProgressMessage, SetProgressDialog, SetProperties,
+   SetOwnerWindow, ApplyPropertiesToItem(s), RenameItem(s), MoveItem(s), CopyItem(s), DeleteItem(s), NewItem,
+   PerformOperations, GetAnyOperationsAborted. */
+static const void *const operation_vt[] = {fo_query,   fo_add_ref,  fo_release, fd_advise, fd_ok1, fd_ok1,
+                                           fd_ok1,     fd_ok1,      fd_ok1,     fd_ok1,    fd_ok1, fd_ok1,
+                                           fo_rename,  fd_ok2,      fo_move,    fd_ok2,    fo_copy, fd_ok2,
+                                           fo_delete,  fd_ok1,      fo_new,     fo_perform, fo_aborted};
+
 bool w32_is_file_dialog(const uint8_t *clsid)
 {
-    return !memcmp(clsid, clsid_open_dialog, 16) || !memcmp(clsid, clsid_save_dialog, 16);
+    return !memcmp(clsid, clsid_open_dialog, 16) || !memcmp(clsid, clsid_save_dialog, 16) ||
+           !memcmp(clsid, clsid_file_operation, 16);
 }
 
 uint32_t w32_new_file_dialog(const uint8_t *clsid, const uint8_t *iid, void **out)
 {
+    if (!memcmp(clsid, clsid_file_operation, 16)) {
+        struct file_operation *o = w32_zalloc(sizeof(*o));
+        if (!o)
+            return E_OUTOFMEMORY;
+        o->vt = operation_vt;
+        o->refs = 1;
+        uint32_t hr = fo_query(o, iid, out);
+        fo_release(o);
+        return hr;
+    }
     struct file_dialog *d = w32_zalloc(sizeof(*d));
     if (!d)
         return E_OUTOFMEMORY;

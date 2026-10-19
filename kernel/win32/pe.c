@@ -344,6 +344,8 @@ void w32_trace_note(const char *module, const char *name)
         return;
     ksnprintf(label, sizeof(label), "GetProcAddress %s!%s", module, name);
     trace_record(label);
+    if (w32_logging_errors())
+        klog("win32: %s", label);
 }
 
 void w32_trace_dump(void)

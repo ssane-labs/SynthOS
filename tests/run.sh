@@ -220,6 +220,10 @@ winfiles | grep "file dialog"
 file dialog hr=0 options=20 item=C:\Temp\wtest
 winfiles | grep "open dialog"
 open dialog without desktop=0
+winfiles | grep stream
+stream write=1 read=0
+winfiles | grep "file operation"
+file operation hr=0 aborted=0 moved=1 left=0
 wincpp | grep caught
 caught: boom
 wincpp | grep area | head -n 1
@@ -324,6 +328,14 @@ config logserial on; config logserial; config logserial off
 on
 w32ps
 no Windows programs are running
+winhello one 7 > /tmp/w.txt; schedstat | grep -c "switches.*waits"
+1
+config w32precise | head -n 1
+w32precise = on
+config w32errors on; config w32errors | head -n 1
+w32errors = on
+config w32errors off; config w32trace | head -n 1
+w32trace = off
 wingdi | grep extent
 text extent ok, ink ok
 wingdi | grep blit

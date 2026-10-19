@@ -1,3 +1,5 @@
+#include <synth/command.h>
+#include <synth/config.h>
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
@@ -5,6 +7,7 @@
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/log.h>
+#include <synth/net.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
@@ -119,33 +122,133 @@ static struct w32_thread *pick(struct w32_thread *cur, bool active_only)
 /* Bumped whenever something a waiting thread might be waiting for happens. */
 static uint32_t signal_gen;
 
+static struct {
+    uint32_t site, count;
+} kick_sites[8];
+
+static void kick_note(uint32_t site)
+{
+    int slot = 0;
+    for (int i = 0; i < (int)ARRAY_SIZE(kick_sites); i++) {
+        if (kick_sites[i].site == site) {
+            kick_sites[i].count++;
+            return;
+        }
+        if (kick_sites[i].count < kick_sites[slot].count)
+            slot = i;
+    }
+    kick_sites[slot].site = site;
+    kick_sites[slot].count = 1;
+}
+
 void w32_signal(void)
 {
     signal_gen++;
-    if (w32)
+    if (w32) {
         w32->kicked = true;
+        w32->signal_gen++;
+    }
 }
 
+/* Something for the process from outside its own locks and events: pipe data, desktop events, its messages. */
 void w32_kick(struct w32_process *p)
 {
+    kick_note((uint32_t)(uintptr_t)__builtin_return_address(0));
     signal_gen++;
-    if (p)
+    if (p) {
         p->kicked = true;
+        p->signal_gen++;
+        p->kick_gen++;
+    }
+}
+
+/* The periodic nudge for waits that poll; precise waits do not need it. */
+void w32_signal_tick(void)
+{
+    signal_gen++;
 }
 
 void w32_kick_all(void)
 {
+    kick_note((uint32_t)(uintptr_t)__builtin_return_address(0));
     signal_gen++;
     struct w32_process *p = w32;
     do {
-        if (p)
+        if (p) {
             p->kicked = true;
+            p->signal_gen++;
+            p->kick_gen++;
+            p->io_gen++;
+        }
     } while ((p = w32_ring_next(p)) && p != w32);
+}
+
+/* Locks, condition variables and WaitOnAddress live in one process's memory: only its own threads need to look. */
+static bool precise_waits = true;
+
+void w32_signal_local(void)
+{
+    if (!precise_waits)
+        signal_gen++;
+    if (w32) {
+        w32->signal_gen++;
+        w32->kicked = true;
+    }
+}
+
+#define SAFETY_NET_MS 20
+
+static bool object_ready(const struct w32_object *o, uint32_t tid)
+{
+    switch (o->type) {
+    case WH_EVENT:
+    case WH_SEMAPHORE: return o->value > 0;
+    case WH_MUTEX: return !o->value || o->owner == tid;
+    case WH_THREAD: return o->thread->done;
+    case WH_PROCESS: return !o->child || o->child->done;
+    case WH_TIMER: return o->due && hal_ticks_ms() >= o->due;
+    default: return true;
+    }
+}
+
+static bool wait_over(const struct w32_thread *t)
+{
+    const struct w32_wait *w = &t->wait;
+    if (!precise_waits)
+        return t->seen != signal_gen;
+    if (w->deadline && hal_ticks_ms() >= w->deadline)
+        return true;
+    /* Pending pipe I/O completes when a thread of its process polls: any one of them will do. */
+    if (t->proc->io_gen != t->proc->io_seen)
+        return true;
+    switch (w->kind) {
+    case W32_WAIT_TIME: return false;
+    case W32_WAIT_OBJECTS:
+        for (int i = 0; i < w->count; i++)
+            if (object_ready(w->objects[i], t->id) != w->all)
+                return !w->all;
+        return w->all;
+    case W32_WAIT_WORD:
+        if (t->proc == w32)
+            return ((*w->addr & w->mask) == w->value) == w->equal;
+        return t->proc->signal_gen != t->seen_local;
+    case W32_WAIT_PROCESS:
+        /* Signals for the process, network data, or what the caller can check from anywhere; anything else that
+           happened elsewhere is looked at now and then. */
+        if (t->proc->kick_gen != w->seen_kick || (w->net && net_activity() != w->seen_net) ||
+            (w->ready && w->ready(w->arg)))
+            return true;
+        for (int i = 0; i < w->count; i++)
+            if (object_ready(w->objects[i], t->id))
+                return true;
+        return t->seen != signal_gen && hal_ticks_ms() - w->since >= SAFETY_NET_MS;
+    default: return t->seen != signal_gen || t->proc->signal_gen != t->seen_local;
+    }
 }
 
 static bool stale(const struct w32_thread *t)
 {
-    return !t->done && !t->suspended && t->waiting && t->seen != signal_gen;
+    return !t->done && !t->suspended && t->waiting && wait_over(t);
 }
 
 /* A waiting thread, here or in another process, that has not looked since the last signal. */
@@ -211,11 +314,42 @@ static struct w32_thread *pick_other(bool active_only)
 
 static void check_stack(struct w32_thread *t);
 
+static struct {
+    uint32_t switches, process_switches, blocks, idles;
+    uint32_t reasons[6];
+    uint64_t since;
+    struct {
+        uint32_t site, count;
+        uint8_t kind;
+    } sites[16];
+} stats;
+
+static void stats_site(uint32_t site, uint8_t kind)
+{
+    int slot = 0;
+    for (int i = 0; i < (int)ARRAY_SIZE(stats.sites); i++) {
+        if (stats.sites[i].site == site && stats.sites[i].kind == kind) {
+            stats.sites[i].count++;
+            return;
+        }
+        if (stats.sites[i].count < stats.sites[slot].count)
+            slot = i;
+    }
+    stats.sites[slot].site = site;
+    stats.sites[slot].kind = kind;
+    stats.sites[slot].count = 1;
+}
+
+static void stats_tick(void);
+
 static void switch_to(struct w32_thread *next)
 {
     struct w32_thread *cur = w32->current;
     if (next == cur)
         return;
+    stats.switches++;
+    if (next->proc && next->proc != w32)
+        stats.process_switches++;
     check_stack(cur);
     cur->irq_depth = arch_irq_depth();
     arch_fpu_save(fpu_of(cur));
@@ -290,15 +424,26 @@ static uint32_t user_caller(struct w32_thread *t)
 
 void w32_block(void)
 {
-    static uint64_t polled;
+    static uint64_t polled, net_polled;
     uint64_t now = hal_ticks_ms();
     if (now - polled >= 20) {
         polled = now;
         input_poll();
     }
+    if (now != net_polled) {
+        net_polled = now;
+        net_poll();
+    }
     w32_io_poll();
     if (input_info_take())
         w32_dump_status();
+    stats.blocks++;
+    if (w32->current) {
+        struct w32_wait *w = &w32->current->wait;
+        stats_site(w->site ? w->site : (uint32_t)(uintptr_t)__builtin_return_address(0), w->kind);
+        w->site = 0;
+    }
+    stats_tick();
     struct w32_thread *cur = w32->current;
     if (!cur) {
         w32_idle(1);
@@ -306,6 +451,7 @@ void w32_block(void)
         cur->wait_caller = user_caller(cur);
         cur->waiting = true;
         cur->seen = signal_gen;
+        cur->seen_local = cur->proc->signal_gen;
         struct w32_thread *next = sweep_next(cur);
         if (!next && w32->live_threads > 1)
             next = pick(cur, true);
@@ -316,6 +462,8 @@ void w32_block(void)
         if (!next)
             next = w32_host_thread();
         if (!next) {
+            stats.idles++;
+            net_poll();
             w32_idle(1);
             signal_gen++;
             next = pick_stale(cur);
@@ -899,7 +1047,19 @@ static DWORD wait_objects(DWORD count, const HANDLE *handles, BOOL all, DWORD ms
         }
         if (ms == 0 || (ms != INFINITE && hal_ticks_ms() >= deadline))
             return WAIT_TIMEOUT;
+        struct w32_wait *w = &w32->current->wait;
+        if (count <= ARRAY_SIZE(w->objects)) {
+            w->kind = W32_WAIT_OBJECTS;
+            for (DWORD i = 0; i < count && w->kind; i++)
+                if (!(w->objects[i] = objects[i]) || handles[i] == W32_PSEUDO_THREAD)
+                    w->kind = W32_WAIT_ANY;
+            w->count = (uint8_t)count;
+            w->all = all;
+            w->deadline = deadline;
+        }
         w32_block();
+        w->kind = W32_WAIT_ANY;
+        w->deadline = 0;
     }
 }
 
@@ -973,10 +1133,54 @@ static BOOL WINAPI TryEnterCriticalSection(struct critical_section *cs)
     return TRUE;
 }
 
+void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), const void *arg)
+{
+    struct w32_wait *w = &w32->current->wait;
+    if (w->kind != W32_WAIT_OBJECTS)
+        w->count = 0;
+    w->kind = W32_WAIT_PROCESS;
+    w->deadline = deadline;
+    w->net = net;
+    w->seen_net = net_activity();
+    w->seen_kick = w32->kick_gen;
+    w->ready = ready;
+    w->arg = arg;
+    w->since = hal_ticks_ms();
+    w->site = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    w32_block();
+    struct w32_thread *t = w32->current;
+    int reason = w->deadline && hal_ticks_ms() >= w->deadline ? 0 : w32->kick_gen != w->seen_kick ? 1
+                 : net && net_activity() != w->seen_net ? 2 : w->ready && w->ready(w->arg) ? 3 : 4;
+    if (reason == 4)
+        for (int i = 0; i < w->count; i++)
+            if (object_ready(w->objects[i], t->id))
+                reason = 5;
+    stats.reasons[reason]++;
+    w->kind = W32_WAIT_ANY;
+    w->deadline = 0;
+    w->count = 0;
+    w->ready = NULL;
+}
+
+void w32_wait_word(const volatile uint32_t *addr, uint32_t mask, uint32_t value, bool equal, uint64_t deadline)
+{
+    struct w32_wait *w = &w32->current->wait;
+    w->kind = W32_WAIT_WORD;
+    w->addr = addr;
+    w->mask = mask;
+    w->value = value;
+    w->equal = equal;
+    w->deadline = deadline;
+    w->site = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    w32_block();
+    w->kind = W32_WAIT_ANY;
+    w->deadline = 0;
+}
+
 static void WINAPI EnterCriticalSection(struct critical_section *cs)
 {
     while (!TryEnterCriticalSection(cs))
-        w32_block();
+        w32_wait_word((const volatile uint32_t *)&cs->owner, ~0u, 0, true, 0);
 }
 
 static void WINAPI LeaveCriticalSection(struct critical_section *cs)
@@ -986,7 +1190,7 @@ static void WINAPI LeaveCriticalSection(struct critical_section *cs)
     __atomic_sub_fetch(&cs->lock_count, 1, __ATOMIC_RELAXED);
     if (--cs->recursion == 0) {
         __atomic_store_n(&cs->owner, 0, __ATOMIC_RELEASE);
-        w32_signal();
+        w32_signal_local();
     }
 }
 
@@ -1005,13 +1209,13 @@ static uint8_t WINAPI TryAcquireSRWLockExclusive(uint32_t *lock)
 static void WINAPI AcquireSRWLockExclusive(uint32_t *lock)
 {
     while (!TryAcquireSRWLockExclusive(lock))
-        w32_block();
+        w32_wait_word(lock, ~0u, 0, true, 0);
 }
 
 static void WINAPI ReleaseSRWLockExclusive(uint32_t *lock)
 {
     __atomic_store_n(lock, 0, __ATOMIC_RELEASE);
-    w32_signal();
+    w32_signal_local();
 }
 
 static uint8_t WINAPI TryAcquireSRWLockShared(uint32_t *lock)
@@ -1026,7 +1230,7 @@ static uint8_t WINAPI TryAcquireSRWLockShared(uint32_t *lock)
 static void WINAPI AcquireSRWLockShared(uint32_t *lock)
 {
     while (!TryAcquireSRWLockShared(lock))
-        w32_block();
+        w32_wait_word(lock, 1, 0, true, 0);
 }
 
 static void WINAPI ReleaseSRWLockShared(uint32_t *lock)
@@ -1034,7 +1238,7 @@ static void WINAPI ReleaseSRWLockShared(uint32_t *lock)
     uint32_t v = __atomic_load_n(lock, __ATOMIC_RELAXED);
     while (v >= 2 && !__atomic_compare_exchange_n(lock, &v, v - 2, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
         ;
-    w32_signal();
+    w32_signal_local();
 }
 
 static void WINAPI InitializeConditionVariable(uint32_t *cv)
@@ -1045,7 +1249,7 @@ static void WINAPI InitializeConditionVariable(uint32_t *cv)
 static void WINAPI WakeConditionVariable(uint32_t *cv)
 {
     __atomic_add_fetch(cv, 1, __ATOMIC_RELEASE);
-    w32_signal();
+    w32_signal_local();
 }
 
 static bool wait_generation(uint32_t *cv, uint32_t generation, DWORD ms)
@@ -1056,7 +1260,7 @@ static bool wait_generation(uint32_t *cv, uint32_t generation, DWORD ms)
             w32_set_error(ERROR_TIMEOUT);
             return false;
         }
-        w32_block();
+        w32_wait_word(cv, ~0u, generation, false, deadline);
     }
     return true;
 }
@@ -1068,12 +1272,12 @@ static BOOL WINAPI SleepConditionVariableCS(uint32_t *cv, struct critical_sectio
     cs->recursion = 0;
     __atomic_sub_fetch(&cs->lock_count, depth, __ATOMIC_RELAXED);
     __atomic_store_n(&cs->owner, 0, __ATOMIC_RELEASE);
-    w32_signal();
+    w32_signal_local();
     bool woke = wait_generation(cv, generation, ms);
     DWORD me = w32_thread_id(), free = 0;
     while (!__atomic_compare_exchange_n(&cs->owner, &free, me, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         free = 0;
-        w32_block();
+        w32_wait_word((const volatile uint32_t *)&cs->owner, ~0u, 0, true, 0);
     }
     cs->recursion = depth;
     __atomic_add_fetch(&cs->lock_count, depth, __ATOMIC_RELAXED);
@@ -1113,13 +1317,14 @@ static bool once_claim(uint32_t *once, void **context, bool check_only, bool *do
             *done = false;
             return true;
         }
-        w32_block();
+        w32_wait_word(once, 3, 1, false, 0);
     }
 }
 
 static void once_finish(uint32_t *once, void *context, bool ok)
 {
     __atomic_store_n(once, ok ? (((uint32_t)(uintptr_t)context & ~3u) | 2) : 0, __ATOMIC_RELEASE);
+    w32_signal_local();
 }
 
 static BOOL WINAPI InitOnceExecuteOnce(uint32_t *once, void *fn, void *param, void **context)
@@ -1150,7 +1355,6 @@ static BOOL WINAPI InitOnceBeginInitialize(uint32_t *once, DWORD flags, BOOL *pe
 
 static BOOL WINAPI InitOnceComplete(uint32_t *once, DWORD flags, void *context)
 {
-    w32_signal();
     once_finish(once, context, !(flags & 4));
     return TRUE;
 }
@@ -1163,14 +1367,17 @@ static BOOL WINAPI WaitOnAddress(volatile void *addr, const void *compare, SIZE_
             w32_set_error(ERROR_TIMEOUT);
             return FALSE;
         }
-        w32_block();
+        if (size == 4 && !((uintptr_t)addr & 3))
+            w32_wait_word(addr, ~0u, *(const uint32_t *)compare, false, deadline);
+        else
+            w32_block();
     }
     return TRUE;
 }
 
 static void WINAPI WakeByAddress(void *addr)
 {
-    w32_signal();
+    w32_signal_local();
     UNUSED(addr);
 }
 
@@ -1278,12 +1485,33 @@ static bool reg_fire_one(void)
     return false;
 }
 
+static void reg_wait(void)
+{
+    struct w32_wait *w = &w32->current->wait;
+    uint64_t deadline = 0;
+    w->count = 0;
+    for (struct registered_wait *r = reg_waits; r; r = r->next) {
+        if (r->spent)
+            continue;
+        struct w32_object *o = w32_handle_get(r->object);
+        if (!o || w->count == ARRAY_SIZE(w->objects)) {
+            w32_block();
+            return;
+        }
+        w->objects[w->count++] = o;
+        if (r->ms != INFINITE && (!deadline || r->deadline < deadline))
+            deadline = MAX(r->deadline, (uint64_t)1);
+    }
+    w->kind = W32_WAIT_OBJECTS;
+    w32_wait_process(deadline, false, NULL, NULL);
+}
+
 static DWORD WINAPI reg_wait_thread(void *arg)
 {
     UNUSED(arg);
     for (;;)
         if (!reg_fire_one())
-            w32_block();
+            reg_wait();
     return 0;
 }
 
@@ -1367,3 +1595,68 @@ static const struct w32_export thread_exports[] = {
 };
 
 W32_EXPORTS(thread_module, "kernel32.dll", thread_exports);
+
+static uint32_t stats_every;
+
+static void stats_take(char *buf, size_t cap)
+{
+    uint64_t now = hal_ticks_ms(), ms = now - stats.since ? now - stats.since : 1;
+    ksnprintf(buf, cap, "%u ms: %u switches (%u between processes, %u/s), %u waits (%u/s), %u idle ms",
+              (unsigned)ms, stats.switches, stats.process_switches, (unsigned)(stats.switches * 1000ull / ms),
+              stats.blocks, (unsigned)(stats.blocks * 1000ull / ms), stats.idles);
+    memset(&stats, 0, sizeof(stats));
+    stats.since = now;
+}
+
+static void stats_tick(void)
+{
+    if (stats_every && hal_ticks_ms() - stats.since >= stats_every) {
+        for (int i = 0; i < (int)ARRAY_SIZE(stats.sites); i++)
+            if (stats.sites[i].count > 50)
+                klog("sched: site %08x kind %u: %u", stats.sites[i].site, stats.sites[i].kind, stats.sites[i].count);
+        for (int i = 0; i < (int)ARRAY_SIZE(kick_sites); i++)
+            if (kick_sites[i].count > 50)
+                klog("sched: kick from %08x: %u", kick_sites[i].site, kick_sites[i].count);
+        memset(kick_sites, 0, sizeof(kick_sites));
+        klog("sched: woke by deadline %u, process %u, network %u, ready %u, other %u, objects %u", stats.reasons[0],
+             stats.reasons[1], stats.reasons[2], stats.reasons[3], stats.reasons[4], stats.reasons[5]);
+        char line[160];
+        stats_take(line, sizeof(line));
+        klog("sched: %s", line);
+    }
+}
+
+COMMAND(schedstat, NULL, "dev", "schedstat [seconds]",
+        "Windows thread switches and waits since the last call; with seconds, log them that often")
+{
+    if (argc > 1) {
+        long seconds;
+        if (!str_parse_long(argv[1], &seconds) || seconds < 0)
+            return command_usage(sh, command_find("schedstat"));
+        stats_every = (uint32_t)seconds * 1000u;
+        return 0;
+    }
+    char line[160];
+    stats_take(line, sizeof(line));
+    sh_printf(sh, "%s\n", line);
+    return 0;
+}
+
+static void get_precise(char *buf, size_t cap)
+{
+    str_copy(buf, precise_waits ? "on" : "off", cap);
+}
+
+static int set_precise(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    precise_waits = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_precise = {"w32precise", "on|off",
+                                         "wake a waiting Windows thread only when what it waits for happened",
+                                         get_precise, set_precise};
+SETTING(s_precise);

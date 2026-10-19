@@ -28,8 +28,20 @@ struct w32_process *w32;
 bool w32_is_pe(const uint8_t *file, size_t size);
 struct w32_image *w32_load_main(const char *path, int *error);
 
+static bool log_errors;
+
+bool w32_logging_errors(void)
+{
+    return log_errors;
+}
+
 void w32_set_error(DWORD error)
 {
+    if (log_errors && error && w32 && w32->current) {
+        const char *api = w32->current->recent[(w32->current->recent_pos + 7) % 8];
+        klog("win32: pid %u tid %u %s failed with %u", w32->child ? w32->child->pid : 0, w32->current->id, api ? api : "?",
+             (unsigned)error);
+    }
     if (w32 && w32->teb)
         memcpy(w32->teb + 0x34, &error, 4);
     if (w32 && w32->teb64)
@@ -440,10 +452,8 @@ static void on_tick(uint32_t eip)
             arch_w32_abort(&w32->jump, STATUS_CONTROL_C_EXIT);
         }
     }
-    if (ticks % 32 == 0)
-        w32_kick_all();
-    else if (ticks % 4 == 0)
-        w32_signal();
+    if (ticks % 4 == 0)
+        w32_signal_tick();
     if (ticks % 10 == 0)
         w32_preempt();
     else if (ticks % 2 == 0 && hal_input_pending())
@@ -1430,6 +1440,33 @@ static const struct setting s_trace = {"w32trace", "on|off",
                                        "remember the last Windows API calls and log them when a program crashes",
                                        get_trace, set_trace};
 SETTING(s_trace);
+
+/* config w32errors on: every API call that sets an error code is logged with its name (it turns w32trace on). */
+static void get_errors(char *buf, size_t cap)
+{
+    str_copy(buf, log_errors ? "on" : "off", cap);
+}
+
+static int set_errors(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    static bool traced;
+    bool on = !strcmp(value, "on");
+    if (on && !log_errors)
+        traced = w32_trace;
+    if (log_errors && !on)
+        w32_trace = traced;
+    log_errors = on;
+    if (on)
+        w32_trace = true;
+    return 0;
+}
+
+static const struct setting s_errors = {"w32errors", "on|off", "log every Windows API call that fails, with its name",
+                                        get_errors, set_errors};
+SETTING(s_errors);
 
 bool w32_headless;
 

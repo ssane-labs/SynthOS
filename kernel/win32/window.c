@@ -228,7 +228,7 @@ static uint32_t message_time(void)
 
 static void enqueue(HANDLE hwnd, uint32_t thread, UINT msg, WPARAM wp, LPARAM lp)
 {
-    w32_signal();
+    w32_kick(w32);
     if (queue_tail - queue_head >= QUEUE_SIZE)
         return;
     struct queued *q = &queue[queue_tail++ % QUEUE_SIZE];
@@ -258,6 +258,7 @@ void w32_invalidate(struct w32_window *w, const struct rect *r, bool erase)
         return;
     w->update = w->need_paint ? rect_union(w->update, add) : add;
     w->need_paint = true;
+    w32_kick(w32);
     w->erase |= erase;
     struct rect area = w32_area(w);
     struct rect abs = {area.x + add.x, area.y + add.y, add.w, add.h};
@@ -1976,12 +1977,24 @@ bool w32_next_message(MSG *msg)
     return next_message(msg, NULL, 0, 0, true);
 }
 
+/* Messages come from this process, from the desktop (it kicks the process) or from timers: wait for those. */
+static void wait_messages(uint64_t deadline)
+{
+    uint32_t me = w32_thread_id();
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        struct timer *t = &timers[i];
+        if (t->used && (!t->win || t->win->thread == me) && (!deadline || t->due < deadline))
+            deadline = MAX(t->due, (uint64_t)1);
+    }
+    w32_wait_process(deadline, false, NULL, NULL);
+}
+
 static BOOL get_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi)
 {
     for (;;) {
         if (next_message(msg, hwnd, lo, hi, true))
             return msg->message != WM_QUIT;
-        w32_block();
+        wait_messages(0);
     }
 }
 
@@ -2003,7 +2016,7 @@ static BOOL WINAPI WaitMessage(void)
 {
     MSG m;
     while (!next_message(&m, NULL, 0, 0, false))
-        w32_block();
+        wait_messages(0);
     return TRUE;
 }
 
@@ -2025,7 +2038,19 @@ static DWORD WINAPI MsgWaitForMultipleObjects(DWORD count, const HANDLE *handles
         }
         if (ms != 0xffffffffu && hal_ticks_ms() >= deadline)
             return 0x102;
-        w32_block();
+        if (count > ARRAY_SIZE(w32->current->wait.objects)) {
+            w32_block();
+            continue;
+        }
+        struct w32_wait *w = &w32->current->wait;
+        w->count = 0;
+        for (DWORD i = 0; i < count; i++) {
+            struct w32_object *o = w32_handle_get(handles[i]);
+            if (o)
+                w->objects[w->count++] = o;
+        }
+        w->kind = W32_WAIT_OBJECTS;
+        wait_messages(ms == 0xffffffffu ? 0 : deadline);
     }
 }
 

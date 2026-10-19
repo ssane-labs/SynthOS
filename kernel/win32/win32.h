@@ -164,6 +164,25 @@ struct w32_child {
     struct w32_process *proc;
 };
 
+/* What a blocked thread waits for, so the scheduler can tell without switching to it whether it can go on. */
+enum { W32_WAIT_ANY, W32_WAIT_TIME, W32_WAIT_OBJECTS, W32_WAIT_WORD, W32_WAIT_PROCESS };
+
+struct w32_object;
+
+struct w32_wait {
+    uint8_t kind, count;
+    bool all, equal;
+    uint64_t deadline;
+    struct w32_object *objects[8];
+    const volatile uint32_t *addr;
+    uint32_t mask, value;
+    bool net;
+    bool (*ready)(const void *arg);
+    const void *arg;
+    uint32_t seen_net, seen_kick, site;
+    uint64_t since;
+};
+
 struct w32_thread {
     uint32_t esp;
     uint32_t id;
@@ -176,7 +195,8 @@ struct w32_thread {
     bool waiting;
     int suspended;
     uint32_t wait_caller, wait_sp;
-    uint32_t seen, user_eip;
+    uint32_t seen, seen_local, user_eip;
+    struct w32_wait wait;
     const char *recent[8];
     unsigned recent_pos;
     int irq_depth;
@@ -225,6 +245,7 @@ struct vmm_space;
 struct w32_process {
     struct exec_ctx *ctx;
     bool kicked;
+    uint32_t signal_gen, kick_gen, io_gen, io_seen;
     char tag[20];
     struct vmm_space *space;
     struct heap heap;
@@ -395,6 +416,11 @@ void w32_dump_status(void);
 void w32_pipe_dump(void);
 void w32_kick(struct w32_process *p);
 void w32_kick_all(void);
+void w32_signal_local(void);
+void w32_signal_tick(void);
+void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), const void *arg);
+void w32_wait_word(const volatile uint32_t *addr, uint32_t mask, uint32_t value, bool equal, uint64_t deadline);
+bool w32_logging_errors(void);
 void w32_io_forget(struct w32_process *p);
 void w32_io_drop(HANDLE h);
 void w32_signal(void);

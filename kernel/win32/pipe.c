@@ -453,13 +453,12 @@ void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32
 
 static void pipe_kick(struct w32_pipe *p)
 {
-    if (p->sync_waiters > 0) {
-        w32_kick_all();
-        return;
-    }
+    w32_signal_tick();
     for (struct pending_io *q = pending; q; q = q->next)
-        if (q->pipe == p)
-            w32_kick(q->proc);
+        if (q->pipe == p) {
+            q->proc->io_gen++;
+            q->proc->kicked = true;
+        }
 }
 
 static void pending_add(HANDLE h, struct w32_pipe *pipe, uint8_t *buf, DWORD n, uint32_t *ov, bool connect)
@@ -481,6 +480,7 @@ void w32_io_poll(void)
     w32_sock_poll();
     if (!w32)
         return;
+    w32->io_seen = w32->io_gen;
     for (struct pending_io **pp = &pending; *pp;) {
         struct pending_io *p = *pp;
         if (p->proc != w32) {

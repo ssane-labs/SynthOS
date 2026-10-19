@@ -347,14 +347,19 @@ static void sort_u32(uint32_t *a, uint32_t n)
     }
 }
 
-COMMAND(prof, NULL, "dev", "prof [-o file] command [args...]",
-        "run a command and list where the CPU spent its time (addresses for addr2line)")
+COMMAND(prof, NULL, "dev", "prof [-o file|-k] command [args...]",
+        "run a command and list where the CPU spent its time (addresses for addr2line); -k writes to the kernel log")
 {
     const char *report = NULL;
+    bool to_log = false;
     if (argc > 3 && !strcmp(argv[1], "-o")) {
         report = argv[2];
         argc -= 2;
         argv += 2;
+    } else if (argc > 2 && !strcmp(argv[1], "-k")) {
+        to_log = true;
+        argc--;
+        argv++;
     }
     if (argc < 2)
         return command_usage(sh, command_find("prof"));
@@ -366,8 +371,8 @@ COMMAND(prof, NULL, "dev", "prof [-o file] command [args...]",
     int rc = run_argv(sh, argc - 1, argv + 1);
     uint32_t n = hal_profile_stop();
     sort_u32(buf, n);
-    char *text = kmalloc(8192);
-    size_t len = 0;
+    size_t cap_text = 16384, len = 0;
+    char *text = kmalloc(cap_text);
     if (!text) {
         kfree(buf);
         return rc;
@@ -375,9 +380,9 @@ COMMAND(prof, NULL, "dev", "prof [-o file] command [args...]",
     uint32_t user = 0;
     for (uint32_t i = 0; i < n; i++)
         user += buf[i] >= VMM_USER_START && buf[i] < VMM_USER_END;
-    len += (size_t)ksnprintf(text + len, 8192 - len, "prof: %u samples, %u in the kernel, %u in programs\n", n, n - user,
-                             user);
-    for (int k = 0; k < 60; k++) {
+    len += (size_t)ksnprintf(text + len, cap_text - len, "prof: %u samples, %u in the kernel, %u in programs\n", n,
+                             n - user, user);
+    for (int k = 0; k < 300 && len + 32 < cap_text; k++) {
         uint32_t best = 0, at = 0;
         for (uint32_t i = 0, j; i < n; i = j) {
             for (j = i; j < n && buf[j] == buf[i];)
@@ -389,16 +394,24 @@ COMMAND(prof, NULL, "dev", "prof [-o file] command [args...]",
         }
         if (!best)
             break;
-        len += (size_t)ksnprintf(text + len, 8192 - len, "prof %08x %u\n", buf[at], best);
+        len += (size_t)ksnprintf(text + len, cap_text - len, "prof %08x %u\n", buf[at], best);
         for (uint32_t i = at; i < at + best; i++)
             buf[i] = 0xffffffffu;
     }
     kfree(buf);
     char path[PATH_MAX_LEN];
-    if (report && sh_resolve(sh, report, path, sizeof(path)) == 0)
+    if (to_log) {
+        for (char *line = text, *end; *line; line = end + 1) {
+            if (!(end = strchr(line, '\n')))
+                break;
+            *end = 0;
+            klog("%s", line);
+        }
+    } else if (report && sh_resolve(sh, report, path, sizeof(path)) == 0) {
         vfs_write_all(path, text, len);
-    else
+    } else {
         sh_puts(sh, text);
+    }
     kfree(text);
     return rc;
 }

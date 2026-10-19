@@ -579,6 +579,12 @@ void w32_port_post(HANDLE port, DWORD bytes, uintptr_t key, void *ov)
     PostQueuedCompletionStatus(port, bytes, key, ov);
 }
 
+static bool port_ready(const void *arg)
+{
+    const struct w32_port *p = arg;
+    return p->head != p->tail;
+}
+
 static bool port_wait(struct w32_port *p, DWORD ms)
 {
     uint64_t deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
@@ -587,7 +593,7 @@ static bool port_wait(struct w32_port *p, DWORD ms)
     while (p->head == p->tail) {
         if (ms == 0 || (ms != INFINITE && hal_ticks_ms() >= deadline))
             return false;
-        w32_block();
+        w32_wait_process(deadline, true, port_ready, p);
         w32_winsock_poll();
         w32_io_poll();
     }
@@ -602,7 +608,7 @@ static BOOL WINAPI GetOverlappedResult(HANDLE h, uint32_t *ov, DWORD *bytes, BOO
         w32_winsock_poll();
         w32_io_poll();
         if (ov[0] == 0x103u)
-            w32_block();
+            w32_wait_process(0, true, NULL, NULL);
     }
     if (ov[0] == 0x103u) {
         w32_set_error(996);

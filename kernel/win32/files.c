@@ -2,6 +2,7 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/log.h>
 #include <synth/string.h>
 #include <synth/winpath.h>
 
@@ -103,6 +104,15 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
         w32_set_error(ERROR_PATH_NOT_FOUND);
         return INVALID_HANDLE_VALUE;
     }
+    if (strchr(path_basename(path), ':')) {
+        /* Alternate data streams (file:Zone.Identifier) are not stored: writes vanish, reads find nothing. */
+        if (disposition == OPEN_EXISTING || disposition == TRUNCATE_EXISTING) {
+            w32_set_error(ERROR_FILE_NOT_FOUND);
+            return INVALID_HANDLE_VALUE;
+        }
+        w32_set_error(0);
+        return w32_handle_new(WH_NULL);
+    }
     bool exists = vfs_exists(path);
     bool dir = exists && vfs_is_dir(path);
     unsigned flags = 0;
@@ -139,6 +149,8 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
         return INVALID_HANDLE_VALUE;
     }
     if (!exists && (disposition == OPEN_EXISTING || disposition == TRUNCATE_EXISTING)) {
+        if (w32_logging_errors())
+            klog("win32: open %s: missing", path);
         char parent[PATH_MAX_LEN];
         path_dirname(path, parent, sizeof(parent));
         w32_set_error(vfs_is_dir(parent) ? ERROR_FILE_NOT_FOUND : ERROR_PATH_NOT_FOUND);
@@ -148,6 +160,8 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
         flags = VFS_READ;
     struct file *f;
     int err = vfs_open(path, flags, &f);
+    if (err && w32_logging_errors())
+        klog("win32: open %s flags %x disposition %u: %d", path, flags, (unsigned)disposition, err);
     if (err) {
         w32_set_error(w32_error_from_vfs(err));
         return INVALID_HANDLE_VALUE;
@@ -456,6 +470,8 @@ static BOOL move_file(const char *from, const char *to, DWORD flags)
     err = vfs_rename(a, b);
     if (err == E_XDEV && (err = vfs_copy(a, b)) == 0)
         err = vfs_unlink(a);
+    if (err && w32_logging_errors())
+        klog("win32: move %s -> %s: %d", a, b, err);
     return fs_result(err);
 }
 
@@ -562,6 +578,8 @@ static DWORD attributes(const char *name, struct vstat *st)
 {
     char path[PATH_MAX_LEN];
     if (w32_path(name, path, sizeof(path)) != 0 || vfs_stat(path, st) != 0) {
+        if (w32_logging_errors())
+            klog("win32: attributes %s: missing", name);
         w32_set_error(ERROR_FILE_NOT_FOUND);
         return INVALID_ATTRIBUTES;
     }

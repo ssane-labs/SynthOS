@@ -168,7 +168,12 @@ static UINT handle_of(int id)
 static void wait_step(void)
 {
     net_poll();
-    w32_block();
+    w32_wait_process(0, true, NULL, NULL);
+}
+
+static uint64_t deadline_after(uint64_t start, uint64_t ms, bool forever)
+{
+    return forever ? 0 : start + ms;
 }
 
 static uint32_t to_host(uint32_t be)
@@ -588,7 +593,7 @@ static int WINAPI select(int nfds, struct fd_set *r, struct fd_set *wr, struct f
             filter(ex, has_error);
             return n;
         }
-        w32_block();
+        w32_wait_process(deadline_after(start, timeout, !t), true, NULL, NULL);
     }
 }
 
@@ -719,7 +724,7 @@ static DWORD WINAPI WSAWaitForMultipleEvents(DWORD count, const HANDLE *events, 
             return first;
         if (timeout != 0xffffffffu && hal_ticks_ms() - start >= timeout)
             return WAIT_TIMEOUT;
-        w32_block();
+        w32_wait_process(deadline_after(start, timeout, timeout == 0xffffffffu), true, NULL, NULL);
     }
 }
 
@@ -753,7 +758,7 @@ static int WINAPI WSAPoll(struct pollfd *fds, ULONG count, int timeout)
         }
         if (ready || (timeout >= 0 && hal_ticks_ms() - start >= (uint64_t)timeout))
             return ready;
-        w32_block();
+        w32_wait_process(deadline_after(start, (uint64_t)timeout, timeout < 0), true, NULL, NULL);
     }
 }
 

@@ -55,6 +55,7 @@ struct net_socket_info {
 void net_register(struct netdev *dev);
 void net_init(void);
 void net_poll(void);
+uint32_t net_activity(void);
 void net_wait(int ms);
 void net_await_address(void);
 struct net_iface *net_interface(int index);

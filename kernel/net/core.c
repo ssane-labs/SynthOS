@@ -381,6 +381,14 @@ static void eth_input(struct net_iface *ifc, const uint8_t *frame, size_t length
         ip_input(ifc, frame + 14, length - 14);
 }
 
+/* Counts received packets, so code waiting for the network knows when to look again. */
+static uint32_t activity;
+
+uint32_t net_activity(void)
+{
+    return activity;
+}
+
 static int poll_frames(void)
 {
     if (polling)
@@ -394,6 +402,7 @@ static int poll_frames(void)
             if (n == 0)
                 break;
             frames++;
+            activity++;
             if (n > 0)
                 eth_input(iface_for(dev), rx_frame, (size_t)n);
         }
@@ -402,6 +411,7 @@ static int poll_frames(void)
         struct loop_packet *p = loop_queue[loop_head];
         loop_head = (loop_head + 1) % LOOP_QUEUE;
         loop_count--;
+        activity++;
         ip_input(NULL, p->data, p->length);
         kfree(p);
     }
