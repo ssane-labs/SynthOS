@@ -803,8 +803,9 @@ static void place(struct window *w)
     struct rect work = wm_work_area(screen);
     if (w->flags & WIN_DIALOG) {
         struct rect ref = w->owner && wm_window_alive(w->owner) ? w->owner->frame : work;
-        w->frame.x = ref.x + (ref.w - w->frame.w) / 2;
-        w->frame.y = MAX(work.y + 8, ref.y + MIN(60, (ref.h - w->frame.h) / 3));
+        w->frame.x = CLAMP(ref.x + (ref.w - w->frame.w) / 2, work.x + 8, MAX(work.x + 8, work.x + work.w - w->frame.w - 8));
+        w->frame.y = CLAMP(ref.y + MIN(60, (ref.h - w->frame.h) / 3), work.y + 8,
+                           MAX(work.y + 8, work.y + work.h - w->frame.h - 8));
         return;
     }
     best_spot(w, work, work.x + (work.w - w->frame.w) / 2, work.y + (work.h - w->frame.h) / 3);

@@ -336,9 +336,8 @@ static const struct w32_export bthprops_exports[] = {
 };
 
 static const struct w32_export comdlg32_exports[] = {
-    W32_AS("PrintDlgExW", w32_notimpl1),       W32_AS("GetOpenFileNameW", w32_zero1),
-    W32_AS("GetSaveFileNameW", w32_zero1),     W32_AS("GetOpenFileNameA", w32_zero1),
-    W32_AS("GetSaveFileNameA", w32_zero1),     W32_AS("CommDlgExtendedError", w32_zero0),
+    W32_AS("PrintDlgExW", w32_notimpl1),
+    W32_AS("CommDlgExtendedError", w32_zero0),
 };
 
 static DWORD WINAPI DhcpCApiInitialize(DWORD *version)

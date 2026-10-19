@@ -469,7 +469,7 @@ static const struct w32_export shell32_exports[] = {
     W32_FN(SHQueryUserNotificationState), W32_FN(ILFree),      W32_FN(SHChangeNotify),
     W32_AS("SHGetMalloc", shell_notimpl1), W32_AS("SHGetDesktopFolder", shell_notimpl1),
     W32_AS("SHGetSpecialFolderLocation", shell_notimpl3), W32_AS("SHGetPathFromIDListW", w32_zero2),
-    W32_AS("SHParseDisplayName", shell_notimpl5), W32_AS("SHCreateItemFromParsingName", shell_notimpl4),
+    W32_AS("SHParseDisplayName", shell_notimpl5),
     W32_AS("SHOpenFolderAndSelectItems", w32_notimpl4), W32_AS("SHGetFileInfoW", w32_zero5),
     W32_AS("SHAppBarMessage", w32_zero2), W32_AS("SHGetStockIconInfo", w32_notimpl3),
     W32_AS("SHGetPropertyStoreForWindow", shell_notimpl3), W32_AS("SetCurrentProcessExplicitAppUserModelID", w32_zero1),

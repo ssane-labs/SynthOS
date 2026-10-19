@@ -1,6 +1,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
+#include <commdlg.h>
+#include <shobjidl.h>
+
+static const CLSID open_dialog = {0xdc1c5a9c, 0xe88a, 0x4dde, {0xa5, 0xa1, 0x60, 0xf8, 0x2a, 0x20, 0xae, 0xf7}};
+static const IID open_dialog_iid = {0xd57c7288, 0xd4ad, 0x4768, {0xbe, 0x02, 0x9d, 0x96, 0x95, 0x32, 0xd9, 0x60}};
+static const IID shell_item_iid = {0x43826d1e, 0xe718, 0x42ee, {0xbc, 0x55, 0xa1, 0xe2, 0x61, 0xc3, 0x7b, 0xfe}};
 
 int main(void)
 {
@@ -46,6 +52,35 @@ int main(void)
     printf("cwd=%s files=%d\n", cwd, files);
     printf("attr=%lx missing=%lx err=%lu\n", GetFileAttributesA("copy.bin"), GetFileAttributesA("nope.txt"),
            GetLastError());
+
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    IFileOpenDialog *dlg = NULL;
+    HRESULT hr = CoCreateInstance(&open_dialog, NULL, CLSCTX_INPROC_SERVER, &open_dialog_iid, (void **)&dlg);
+    DWORD opts = 0;
+    if (SUCCEEDED(hr)) {
+        dlg->lpVtbl->SetOptions(dlg, FOS_PICKFOLDERS);
+        dlg->lpVtbl->GetOptions(dlg, &opts);
+    }
+    IShellItem *item = NULL;
+    WCHAR *wide = NULL;
+    char shown[MAX_PATH] = "-";
+    if (SUCCEEDED(SHCreateItemFromParsingName(L"C:\\Temp\\wtest", NULL, &shell_item_iid, (void **)&item)) &&
+        SUCCEEDED(item->lpVtbl->GetDisplayName(item, SIGDN_FILESYSPATH, &wide)))
+        WideCharToMultiByte(CP_UTF8, 0, wide, -1, shown, sizeof(shown), NULL, NULL);
+    if (dlg && item)
+        dlg->lpVtbl->SetFolder(dlg, item);
+    printf("file dialog hr=%lx options=%lx item=%s\n", (unsigned long)hr, opts, shown);
+    OPENFILENAMEA ofn = {sizeof(ofn)};
+    char file[MAX_PATH] = "";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    printf("open dialog without desktop=%d\n", GetOpenFileNameA(&ofn));
+    if (item)
+        item->lpVtbl->Release(item);
+    if (dlg)
+        dlg->lpVtbl->Release(dlg);
+    CoTaskMemFree(wide);
+
     DeleteFileA("copy.bin");
     return 0;
 }

@@ -2595,6 +2595,53 @@ int w32_gui_message_box(const char *text, const char *caption, UINT type)
     return result.choice >= 0 ? ids[set][result.choice] : ids[set][0];
 }
 
+struct pick_result {
+    bool done, chosen;
+    char path[PATH_MAX_LEN];
+};
+
+static void pick_done(void *ctx, const char *path)
+{
+    struct pick_result *r = ctx;
+    if (path) {
+        str_copy(r->path, path, sizeof(r->path));
+        r->chosen = true;
+    }
+    r->done = true;
+    w32_kick_all();
+}
+
+/* Shows the desktop's open/save panel and waits for it like a modal dialog, dispatching the program's messages. */
+bool w32_gui_pick_file(const struct gui_picker *o, char *out, size_t cap)
+{
+    if (!gui_active())
+        return false;
+    struct pick_result result = {0};
+    struct window *owner = active && active->wm ? active->wm : NULL;
+    if (!gui_file_picker(owner, o, pick_done, &result))
+        return false;
+    while (!result.done) {
+        MSG m;
+        if (!next_message(&m, NULL, 0, 0, true)) {
+            w32_block();
+            continue;
+        }
+        bool input = (m.message >= WM_KEYDOWN && m.message <= WM_SYSCHAR) ||
+                     (m.message >= WM_MOUSEMOVE && m.message <= WM_MOUSEWHEEL) || m.message == WM_CLOSE;
+        if (m.message == WM_QUIT) {
+            PostQuitMessage((int)m.wParam);
+            break;
+        }
+        if (!input) {
+            extern LRESULT WINAPI w32_dispatch(const MSG *msg);
+            w32_dispatch(&m);
+        }
+    }
+    if (result.chosen)
+        str_copy(out, result.path, cap);
+    return result.chosen;
+}
+
 static struct w32_window *window_at(struct w32_window *w, int x, int y)
 {
     for (struct w32_window *c = w->child; c; c = c->sibling) {

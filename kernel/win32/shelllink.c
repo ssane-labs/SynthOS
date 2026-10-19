@@ -435,6 +435,8 @@ static uint32_t WINAPI CoCreateInstance(const uint8_t *clsid, void *outer, DWORD
     *out = NULL;
     if (!memcmp(clsid, clsid_shell_link, 16))
         return outer ? 0x80040110u : new_shell_link(iid, out);
+    if (w32_is_file_dialog(clsid))
+        return outer ? 0x80040110u : w32_new_file_dialog(clsid, iid, out);
     void *factory;
     uint32_t hr = CoGetClassObject(clsid, ctx, NULL, iid_class_factory, &factory);
     if (hr)

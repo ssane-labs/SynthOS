@@ -229,6 +229,7 @@ const struct ui_font *w32_font_of(HANDLE font);
 HANDLE w32_stock(int index);
 void w32_fill_brush(HANDLE dc, const RECT *r, HANDLE brush);
 struct canvas *w32_dc_canvas(HANDLE dc, int *ox, int *oy);
+bool w32_gui_pick_file(const struct gui_picker *o, char *out, size_t cap);
 void w32_dc_damage(HANDLE dc, struct rect r);
 HANDLE w32_dc_font(HANDLE dc);
 COLORREF w32_dc_text_color(HANDLE dc);

@@ -4,6 +4,7 @@
 #include <synth/keys.h>
 #include <synth/path.h>
 #include <synth/string.h>
+#include <synth/users.h>
 #include <synth/vfs.h>
 
 #include "../internal.h"
@@ -249,29 +250,31 @@ static void save_to(struct window *w, struct notepad *n, const char *path)
     title(w, n);
 }
 
-static void resolve(const char *in, char *out)
+static void picked_save(void *ctx, const char *path)
 {
-    if (path_resolve("/home", in, out, PATH_MAX_LEN) != 0)
-        str_copy(out, in, PATH_MAX_LEN);
+    struct window *w = ctx;
+    if (path && wm_window_alive(w))
+        save_to(w, w->data, path);
 }
 
-static void on_save_as(struct window *w, const char *value)
+static void picked_open(void *ctx, const char *path)
 {
-    if (!*value)
+    struct window *w = ctx;
+    if (!path || !wm_window_alive(w))
         return;
-    char p[PATH_MAX_LEN];
-    resolve(value, p);
-    save_to(w, w->data, p);
-}
-
-static void on_open(struct window *w, const char *value)
-{
-    if (!*value)
-        return;
-    char p[PATH_MAX_LEN];
-    resolve(value, p);
-    open_path(w, w->data, p);
+    open_path(w, w->data, path);
     wm_invalidate(w);
+}
+
+static void ask(struct window *w, struct notepad *n, bool saving)
+{
+    char dir[PATH_MAX_LEN];
+    if (n->path[0])
+        path_dirname(n->path, dir, sizeof(dir));
+    else
+        path_join(user_home(), "Documents", dir, sizeof(dir));
+    struct gui_picker o = {.save = saving, .dir = dir, .name = n->path[0] ? path_basename(n->path) : "Untitled.txt"};
+    gui_file_picker(w, &o, saving ? picked_save : picked_open, w);
 }
 
 static void save(struct window *w, struct notepad *n)
@@ -279,7 +282,7 @@ static void save(struct window *w, struct notepad *n)
     if (n->path[0])
         save_to(w, n, n->path);
     else
-        ui_prompt(w, "Save As", "Choose a file name and folder:", "/home/Documents/Untitled.txt", on_save_as);
+        ask(w, n, true);
 }
 
 static void copy_selection(struct notepad *n)
@@ -368,13 +371,12 @@ static void key(struct window *w, struct notepad *n, int k)
         const char *clip = gui_clipboard();
         insert(n, clip, strlen(clip));
     } else if (k == (KEY_CTRL('s') | KEY_MOD_SHIFT) || k == KEY_COMMAND(CMD_SAVE_AS)) {
-        ui_prompt(w, "Save As", "Choose a file name and folder:", n->path[0] ? n->path : "/home/Documents/Untitled.txt",
-                  on_save_as);
+        ask(w, n, true);
         return;
     } else if (k == KEY_CTRL('s') || k == KEY_COMMAND(CMD_SAVE)) {
         save(w, n);
     } else if (k == KEY_CTRL('o') || k == KEY_COMMAND(CMD_OPEN)) {
-        ui_prompt(w, "Open", "Enter the path of a text file:", n->path[0] ? n->path : "/home/", on_open);
+        ask(w, n, false);
         return;
     } else if (k == KEY_CTRL('n') || k == KEY_COMMAND(CMD_NEW)) {
         gui_app_launch(w->app, NULL);

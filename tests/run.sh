@@ -214,8 +214,12 @@ winhello 9 > /tmp/w.txt; echo st=$?; grep -c arg /tmp/w.txt
 st=9
 winhello x | grep pi=
 pi=3.14159 e=2.71828 big=1.234568e+04
-winfiles | tail -n 2
+winfiles | grep cwd=
 cwd=C:\Temp\wtest files=3
+winfiles | grep "file dialog"
+file dialog hr=0 options=20 item=C:\Temp\wtest
+winfiles | grep "open dialog"
+open dialog without desktop=0
 wincpp | grep caught
 caught: boom
 wincpp | grep area | head -n 1

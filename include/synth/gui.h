@@ -526,6 +526,14 @@ void gui_app_launch(const struct gui_app *app, const char *arg);
 bool gui_open_file(const char *path);
 bool gui_program_icon(const char *path, int size, struct canvas *out);
 void gui_message(const char *title, const char *text);
+
+/* The open/save panel; done gets the chosen path, or NULL when cancelled. exts: ".png;.jpg" or NULL for any file. */
+struct gui_picker {
+    bool save, folders;
+    const char *title, *dir, *name, *exts, *button;
+};
+typedef void (*gui_picker_fn)(void *ctx, const char *path);
+struct window *gui_file_picker(struct window *owner, const struct gui_picker *o, gui_picker_fn done, void *ctx);
 void gui_notify(const char *title, const char *text);
 bool gui_eject(const char *path);
 void gui_terminal_run(const char *command);
