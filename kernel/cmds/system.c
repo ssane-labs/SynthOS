@@ -301,7 +301,7 @@ COMMAND(uptime, NULL, "system", "uptime", "time since boot")
 COMMAND(date, NULL, "system", "date", "show the current date and time")
 {
     struct rtc_time t;
-    hal_rtc(&t);
+    time_local(&t);
     sh_printf(sh, "%s %s %2u %02u:%02u:%02u %04u\n", time_weekday_name(time_weekday(&t)),
               time_month_name(t.month), t.day, t.hour, t.minute, t.second, t.year);
     return 0;
@@ -587,7 +587,7 @@ COMMAND(random, "rand", "system", "random [max]", "print a random number (0..max
 COMMAND(cal, "calendar", "system", "cal [month [year]]", "show a calendar")
 {
     struct rtc_time now;
-    hal_rtc(&now);
+    time_local(&now);
     long month = now.month, year = now.year;
     if ((argc > 1 && (!str_parse_long(argv[1], &month) || month < 1 || month > 12)) ||
         (argc > 2 && (!str_parse_long(argv[2], &year) || year < 1970 || year > 2100)))

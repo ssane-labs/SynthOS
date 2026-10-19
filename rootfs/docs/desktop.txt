@@ -50,6 +50,16 @@ Commands
   lock, logout              lock the screen, switch user
   displays                  monitors and their resolutions
   config animations off     no animations (for very slow PCs)
+  config clock24 off        12-hour time; clockseconds, clockdate too
+  config timezone +03:00    time zone for clocks, date and cal (UTC)
+  config dnd on             Do Not Disturb: no notification banners
+  config volume 40          output volume 0..100; config mute on
+  config keyrate 20         key repeat per second; keydelay 250..1000
+  config doubleclick 600    double-click speed in ms; scrollspeed 1..5
+  config mouseprimary right the right button clicks (left hand)
+  config dockdots off       no dots under open apps; dockbounce off
+  config browser chrome     which browser opens pages: chromium, chrome
+  launch Settings mouse     open System Settings at one pane
   wmbench                   how many milliseconds a desktop frame takes
   wmstat [seconds]          frames, pixels and glass redraws while you use it
 
@@ -90,8 +100,9 @@ Apps
   Paint           pencil, brush, eraser, line, rectangle, ellipse, fill,
                   color picker; opens and saves 24-bit BMP files
   Calculator      keyboard or mouse, %, 1/x, x^2, square root
-  System Settings looks, widgets, login items, wallpaper, displays,
-                  network, users, lock screen, terminal, mouse, about
+  System Settings every setting, like on a Mac: search on the left
+                  (it looks inside every pane), panes in groups, General
+                  with About, Storage, Date & Time and Login Items
   System Monitor  memory graph, disks, open windows (End task), kernel log
   Minesweeper     three levels; left click opens, right click flags
 

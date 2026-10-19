@@ -318,7 +318,7 @@ static void render_status(int cols)
 {
     struct shell *sh = current;
     struct rtc_time t;
-    hal_rtc(&t);
+    time_local(&t);
     char left[96], right[64], clock[16];
     uint8_t base = theme_attr(ROLE_STATUS), accent = theme_attr(ROLE_STATUS_ACCENT);
     ksnprintf(left, sizeof(left), " \x04 %s ", SYNTH_NAME);

@@ -179,6 +179,38 @@ void keyboard_init(void)
     irq_install(1, keyboard_irq);
 }
 
+static bool ps2_send(uint8_t v)
+{
+    for (int i = 0; i < 20000 && (inb(0x64) & 2); i++)
+        ;
+    outb(0x60, v);
+    for (int i = 0; i < 20000; i++)
+        if (inb(0x64) & 1)
+            return inb(0x60) == 0xfa;
+    return false;
+}
+
+/* USB keyboards repeat in software; a PS/2 keyboard gets the nearest typematic setting
+   (delay 250..1000 ms, period (8 + A) * 2^B * 4.17 ms). */
+void hal_key_repeat(int delay_ms, int rate)
+{
+    int period = 1000 / MAX(rate, 1);
+    usbhid_repeat(delay_ms, period);
+    int best = 0, best_err = 1 << 30;
+    for (int code = 0; code < 32; code++) {
+        int p = (8 + (code & 7)) * (1 << (code >> 3)) * 417 / 100, err = p > period ? p - period : period - p;
+        if (err < best_err) {
+            best = code;
+            best_err = err;
+        }
+    }
+    uint8_t typematic = (uint8_t)(CLAMP((delay_ms + 125) / 250 - 1, 0, 3) << 5 | best);
+    uint32_t flags = cpu_irq_save();
+    if (ps2_send(0xf3))
+        ps2_send(typematic);
+    cpu_irq_restore(flags);
+}
+
 bool keyboard_pending(void)
 {
     return head != tail;

@@ -20,7 +20,7 @@ Making it yours
   prompt                   choose a prompt style (prompt twoline)
   config                   all settings; 'config save' keeps them
   color accent pink        recolor any part of the interface
-  config statusbar on      status bar with clock and memory
+  config termstatus on     status bar with clock and memory
 
 Shell power
   ls /bin | grep sx > /home/list.txt    pipes and redirection

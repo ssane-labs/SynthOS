@@ -70,9 +70,7 @@ int status_bottom(void)
 
 static void clock_text(char *buf, size_t cap)
 {
-    struct rtc_time t;
-    hal_rtc(&t);
-    ksnprintf(buf, cap, "%02u:%02u", t.hour, t.minute);
+    gui_clock_text(buf, cap, false);
 }
 
 static void layout(void)

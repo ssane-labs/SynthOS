@@ -33,7 +33,7 @@ SYNTH_TABLE_DECLARE(synth_gui_apps, struct gui_app);
 struct gui_style style;
 
 static struct canvas wallpapers[MAX_SCREENS];
-static bool active;
+static bool active, do_not_disturb;
 static int quit_action = -1;
 static struct shell *session;
 static char wallpaper_setting[PATH_MAX_LEN] = "auto";
@@ -777,6 +777,11 @@ bool gui_open_file(const char *path)
         return true;
     }
     const char *ext = path_ext(path);
+    const struct gui_app *web = gui_default_browser();
+    if (web && extension_listed(".html;.htm;.xhtml;.url", ext)) {
+        gui_app_launch(web, path);
+        return true;
+    }
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         if (extension_listed(app->extensions, ext)) {
             gui_app_launch(app, path);
@@ -924,7 +929,7 @@ static void note_below(struct window *w, void *ctx)
 
 void gui_notify(const char *title, const char *text)
 {
-    if (!active)
+    if (!active || do_not_disturb)
         return;
     struct note *n = kzalloc(sizeof(*n));
     if (!n)
@@ -1072,9 +1077,10 @@ static void pump(int timeout_ms)
     }
     wm_timers();
     struct rtc_time t;
-    hal_rtc(&t);
-    if (t.minute != last_minute) {
-        last_minute = t.minute;
+    time_local(&t);
+    int tick = gui_clock_seconds() ? t.minute * 60 + t.second : t.minute;
+    if (tick != last_minute) {
+        last_minute = tick;
         chrome_changed();
     }
     if (now - last_scan > 2000) {
@@ -1446,6 +1452,46 @@ static int set_locktime(struct shell *sh, const char *value)
     lock_minutes = (int)v;
     return 0;
 }
+
+static bool chrome_default;
+
+const struct gui_app *gui_default_browser(void)
+{
+    const struct gui_app *app = chrome_default ? gui_app_find("Chrome") : NULL;
+    return app ? app : gui_app_find("Chromium");
+}
+
+static void get_browser(char *buf, size_t cap)
+{
+    str_copy(buf, chrome_default ? "chrome" : "chromium", cap);
+}
+
+static int set_browser(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "chromium") && strcmp(value, "chrome"))
+        return E_INVAL;
+    chrome_default = !strcmp(value, "chrome");
+    return 0;
+}
+
+static const struct setting s_browser = {"browser", "chromium|chrome", "the web browser that opens pages and links",
+                                         get_browser, set_browser};
+SETTING(s_browser);
+
+static void get_dnd(char *buf, size_t cap)
+{
+    setting_flag_get(do_not_disturb, buf, cap);
+}
+
+static int set_dnd(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return setting_flag(value, &do_not_disturb);
+}
+
+static const struct setting s_dnd = {"dnd", "on|off", "Do Not Disturb: no notification banners", get_dnd, set_dnd};
+SETTING(s_dnd);
 
 static const struct setting s_locktime = {"locktime", "<minutes>|0", "lock the desktop after this many idle minutes",
                                           get_locktime, set_locktime};

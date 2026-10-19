@@ -111,6 +111,7 @@ void usb_hub_service(struct usb_device *hub);
 int usb_hub_prepare(struct usb_device *dev);
 uint32_t usb_now(void);
 void keyboard_scancode(uint8_t code);
+void usbhid_repeat(int delay_ms, int period_ms);
 void mouse_report(int dx, int dy, int wheel, unsigned buttons);
 void mouse_absolute(int x, int y, int wheel, unsigned buttons);
 void timer_hook(void (*fn)(void));

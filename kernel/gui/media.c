@@ -570,6 +570,45 @@ int media_levels(int *out, int n)
     return n;
 }
 
+static int volume = 100;
+static bool muted;
+
+int media_volume(void)
+{
+    return muted ? 0 : volume;
+}
+
+static void get_volume(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", volume);
+}
+
+static int set_volume(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 0 || v > 100)
+        return E_INVAL;
+    volume = (int)v;
+    return 0;
+}
+
+static void get_mute(char *buf, size_t cap)
+{
+    setting_flag_get(muted, buf, cap);
+}
+
+static int set_mute(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return setting_flag(value, &muted);
+}
+
+static const struct setting s_volume = {"volume", "0..100", "output volume", get_volume, set_volume};
+static const struct setting s_mute = {"mute", "on|off", "silence all sound", get_mute, set_mute};
+SETTING(s_volume);
+SETTING(s_mute);
+
 bool media_tick(void)
 {
     uint64_t now = hal_ticks_ms();
@@ -589,6 +628,10 @@ bool media_tick(void)
                 break;
             int n = MIN(space, BLOCK);
             render(buf, n);
+            int gain = muted ? 0 : volume * volume * 256 / 10000;
+            if (gain < 256)
+                for (int k = 0; k < n * 2; k++)
+                    buf[k] = (int16_t)(buf[k] * gain / 256);
             hal_audio_write(buf, n);
         }
     } else {

@@ -148,6 +148,11 @@ enum symbol_id {
     SYM_CALENDAR,
     SYM_PIN,
     SYM_GLOBE,
+    SYM_BELL,
+    SYM_HAND,
+    SYM_ACCESS,
+    SYM_WINDOW,
+    SYM_TEXT,
     SYM_COUNT,
 };
 

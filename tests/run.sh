@@ -128,6 +128,40 @@ config widgets clock,weather,music; config widgets
 clock,weather,music
 config dockapps
 Launchpad|Files|Chromium|Terminal
+config clock24 off; config clockseconds on; config clockdate off; config clock24; config clock24 on
+clock24 = off
+config clockseconds; config clockseconds off
+clockseconds = on
+config timezone +03:00; config timezone; config timezone UTC
+timezone = +03:00
+config timezone -05:30; config timezone; config timezone 0
+timezone = -05:30
+config timezone +15:00
+timezone: invalid value '+15:00'
+a=$(date); config timezone +12:00; b=$(date); config timezone UTC; test "$a" != "$b" && echo zone-applied
+zone-applied
+config dnd on; config dnd; config dnd off
+dnd = on
+config browser chrome; config browser; config browser chromium
+browser = chrome
+config dockdots off; config dockbounce off; config dockdots; config dockdots on
+dockdots = off
+config dockbounce; config dockbounce on
+dockbounce = off
+config doubleclick 600; config doubleclick; config doubleclick 400
+doubleclick = 600
+config scrollspeed 3; config scrollspeed; config scrollspeed 1
+scrollspeed = 3
+config mouseprimary right; config mouseprimary; config mouseprimary left
+mouseprimary = right
+config keydelay 250; config keyrate 20; config keyrate; config keydelay 500
+keyrate = 20
+config volume 40; config mute on; config volume; config mute
+volume = 40
+config mute; config mute off; config volume 100
+mute = on
+config termstatus off; config termstatus
+termstatus = off
 config dockapps 'Files|/home/notes.txt|Terminal'; grep dune ~/.dock
 dune Files|/home/notes.txt|Terminal
 config dockapps default; config dockapps

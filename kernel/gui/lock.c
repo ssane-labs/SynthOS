@@ -108,11 +108,11 @@ static void frame(struct ui *ui, void *data)
             gfx_clear(ui->c, (struct rect){0, 0, W, H}, RGB(30, 30, 40));
         gfx_fill(ui->c, (struct rect){0, 0, W, H}, ALPHA(0, 70));
         struct rtc_time t;
-        hal_rtc(&t);
+        time_local(&t);
         int m = CLAMP((int)t.month, 1, 12);
-        char date[64], clock[8];
+        char date[64], clock[16];
         ksnprintf(date, sizeof(date), "%s %u %s", day_names[weekday((int)t.year, m, (int)t.day)], t.day, month_names[m - 1]);
-        ksnprintf(clock, sizeof(clock), "%u:%02u", t.hour, t.minute);
+        gui_clock_time(&t, clock, sizeof(clock), false, false);
         gfx_text_box(ui->c, (struct rect){0, H / 10, W, 30}, &font_title, date, ALPHA(0xffffffffu, 230), ALIGN_CENTER);
         gfx_text_box(ui->c, (struct rect){0, H / 10 + 26, W, font_clock.height}, &font_clock, clock,
                      ALPHA(0xffffffffu, 235), ALIGN_CENTER);

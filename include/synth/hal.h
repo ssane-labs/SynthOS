@@ -87,6 +87,7 @@ int hal_screen_modes(int index, struct display_mode *out, int max);
 bool hal_screen_open(int index, int width, int height, struct framebuffer *fb);
 void hal_screen_close(int index);
 int hal_key_read(int timeout_ms);
+void hal_key_repeat(int delay_ms, int rate);
 
 struct usb_info {
     char name[48];

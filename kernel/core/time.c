@@ -1,4 +1,7 @@
+#include <synth/error.h>
 #include <synth/fmt.h>
+#include <synth/shell.h>
+#include <synth/string.h>
 #include <synth/time.h>
 
 static bool leap(int y)
@@ -46,6 +49,60 @@ uint32_t time_now(void)
     hal_rtc(&t);
     return time_from_rtc(&t);
 }
+
+/* The hardware clock keeps UTC; clocks people read add the time zone. */
+static int zone_minutes;
+
+void time_local(struct rtc_time *t)
+{
+    hal_rtc(t);
+    if (zone_minutes)
+        time_to_rtc((uint32_t)((int64_t)time_from_rtc(t) + zone_minutes * 60), t);
+}
+
+int time_zone(void)
+{
+    return zone_minutes;
+}
+
+void time_zone_format(int minutes, char *buf, size_t cap)
+{
+    int m = minutes < 0 ? -minutes : minutes;
+    ksnprintf(buf, cap, "%c%02d:%02d", minutes < 0 ? '-' : '+', m / 60, m % 60);
+}
+
+static void get_zone(char *buf, size_t cap)
+{
+    time_zone_format(zone_minutes, buf, cap);
+}
+
+static int set_zone(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (!str_casecmp(value, "utc") || !str_casecmp(value, "gmt")) {
+        zone_minutes = 0;
+        return 0;
+    }
+    int sign = *value == '-' ? -1 : 1;
+    if (*value == '+' || *value == '-')
+        value++;
+    long hours = 0, minutes = 0;
+    char part[8];
+    const char *colon = strchr(value, ':');
+    str_copy(part, value, MIN(sizeof(part), colon ? (size_t)(colon - value) + 1 : sizeof(part)));
+    if (!str_parse_long(part, &hours) || (colon && !str_parse_long(colon + 1, &minutes)) || minutes < 0 ||
+        minutes > 59)
+        return E_INVAL;
+    int total = sign * (int)(hours * 60 + minutes);
+    if (total < -12 * 60 || total > 14 * 60)
+        return E_INVAL;
+    zone_minutes = total;
+    return 0;
+}
+
+static const struct setting s_zone = {"timezone", "UTC|+HH:MM|-HH:MM", "time zone for clocks, date and cal", get_zone,
+                                      set_zone};
+SETTING(s_zone);
 
 int time_weekday(const struct rtc_time *t)
 {
