@@ -322,6 +322,8 @@ enum window_flags {
     WIN_PASSIVE = 1u << 12,
     WIN_PINNED = 1u << 13,
     WIN_PEEKED = 1u << 14,
+    WIN_BARE = 1u << 15,
+    WIN_TRANSLUCENT = 1u << 16,
 };
 
 #define MENU_HEADER (-2)

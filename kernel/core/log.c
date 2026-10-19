@@ -1,12 +1,15 @@
 #include <synth/config.h>
 #include <synth/console.h>
+#include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/log.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 
 static char ring[CONFIG_LOG_SIZE];
 static size_t ring_len;
+static bool to_serial;
 
 static void ring_append(const char *s, size_t n)
 {
@@ -38,7 +41,28 @@ void klog(const char *fmt, ...)
     size_t len = strnlen(line, sizeof(line) - 2);
     line[len++] = '\n';
     ring_append(line, len);
+    if (to_serial)
+        hal_debug_write(line, len);
 }
+
+/* config logserial on: the kernel log also goes to the first serial port, to follow the desktop from outside. */
+static void get_logserial(char *buf, size_t cap)
+{
+    str_copy(buf, to_serial ? "on" : "off", cap);
+}
+
+static int set_logserial(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    to_serial = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_logserial = {"logserial", "on|off", "copy the kernel log to the serial port",
+                                           get_logserial, set_logserial};
+SETTING(s_logserial);
 
 size_t log_snapshot(char *buf, size_t cap)
 {

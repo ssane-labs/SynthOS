@@ -302,9 +302,11 @@ static bool floating(const struct window *w)
     return w->flags & (WIN_POPUP | WIN_OVERLAY);
 }
 
+/* WIN_BARE: a program's own popup (menu, bubble, tooltip) — no frame, no buttons, no shadow, square corners; the
+   program draws and closes it. WIN_TRANSLUCENT: its surface carries alpha (layered windows). */
 static bool framed(const struct window *w)
 {
-    return !(w->flags & (WIN_POPUP | WIN_DIALOG | WIN_OVERLAY));
+    return !(w->flags & (WIN_POPUP | WIN_DIALOG | WIN_OVERLAY | WIN_BARE));
 }
 
 struct rect wm_client_rect(const struct window *w)
@@ -538,7 +540,7 @@ static int ghost_ms(enum anim_kind kind, unsigned flags)
 
 static struct ghost *ghost_new(enum anim_kind kind, struct window *w)
 {
-    if (!animations || !screen_count)
+    if (!animations || !screen_count || (w->flags & WIN_BARE))
         return NULL;
     struct ghost *g = kzalloc(sizeof(*g));
     if (!g)
@@ -848,7 +850,9 @@ struct window *wm_open(const char *title, enum icon_id icon, int cw, int ch, con
     w->flags = flags;
     w->min_w = 220;
     w->min_h = 120;
-    w->radius = flags & WIN_DIALOG ? 16 : RADIUS;
+    w->radius = flags & WIN_BARE ? 0 : flags & WIN_DIALOG ? 16 : RADIUS;
+    if (flags & WIN_BARE)
+        w->min_w = w->min_h = 1;
     w->app = launching_app;
     w->toolbar_h = flags & WIN_FULLSIZE ? TITLE_HEIGHT : 0;
     struct rect work = wm_work_area(0);
@@ -1365,7 +1369,7 @@ static void draw_window(struct canvas *c, struct window *w)
         src.h += TITLE_HEIGHT;
         body.clip = rect_intersect(c->clip, cr);
     }
-    gfx_blit_round(&body, f, &src, w->radius, w->glass != NULL);
+    gfx_blit_round(&body, f, &src, w->radius, w->glass != NULL || (w->flags & WIN_TRANSLUCENT));
     if (framed(w)) {
         if (!(w->flags & WIN_NOTITLE)) {
             struct rect tr = {f.x + 76, f.y, f.w - 152, title_band(w)};
@@ -1377,7 +1381,7 @@ static void draw_window(struct canvas *c, struct window *w)
         if (has_more(w))
             draw_more(c, w);
     }
-    if (!(w->flags & WIN_OVERLAY)) {
+    if (!(w->flags & (WIN_OVERLAY | WIN_BARE))) {
         gfx_round_frame(c, f, w->radius, style.dark ? ALPHA(0, 230) : ALPHA(0, 44));
         if (style.dark)
             gfx_round_frame_gradient(c, rect_inset(f, 1), w->radius - 1, ALPHA(0xffffffffu, 40), ALPHA(0xffffffffu, 12));

@@ -280,6 +280,10 @@ wingdi | grep line=
 line=64
 wingdi | grep dib
 dib pixel=ff0000
+wingdi | grep section
+section dib=123456
+config logserial on; config logserial; config logserial off
+on
 wingdi | grep extent
 text extent ok, ink ok
 wingdi | grep blit

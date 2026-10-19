@@ -54,6 +54,7 @@ struct gdi_obj {
     struct canvas canvas;
     int bpp;
     void *bits;
+    bool mapped;
     struct rect region;
 };
 
@@ -597,7 +598,9 @@ static BOOL WINAPI DeleteObject(HANDLE h)
         return FALSE;
     if (o->stock)
         return TRUE;
-    if (o->kind == OBJ_BITMAP && o->bits)
+    if (o->kind == OBJ_BITMAP && o->bits && o->mapped)
+        w32_unmap_section(o->bits);
+    else if (o->kind == OBJ_BITMAP && o->bits)
         w32_free(o->bits);
     o->magic = 0;
     w32_free(o);
@@ -1813,12 +1816,24 @@ static HANDLE WINAPI CreateDIBSection(HANDLE h, const struct bitmap_info *bmi, U
 {
     UNUSED(h);
     UNUSED(usage);
-    UNUSED(section);
-    UNUSED(offset);
     if (!bmi || bmi->width <= 0 || !bmi->height)
         return NULL;
-    struct gdi_obj *o = new_bitmap(bmi->width, bmi->height, NULL, bmi->bpp);
-    if (o && bits)
+    /* With a section the pixels live in shared memory another process draws into (Chromium's compositor). */
+    void *shared = NULL;
+    if (section) {
+        uint32_t rows = (uint32_t)(bmi->height < 0 ? -bmi->height : bmi->height);
+        uint32_t stride = ((uint32_t)bmi->width * bmi->bpp + 31) / 32 * 4;
+        if (!(shared = w32_map_section(section, offset, stride * rows)))
+            return NULL;
+    }
+    struct gdi_obj *o = new_bitmap(bmi->width, bmi->height, shared, bmi->bpp);
+    if (!o) {
+        if (shared)
+            w32_unmap_section(shared);
+        return NULL;
+    }
+    o->mapped = shared != NULL;
+    if (bits)
         *bits = o->bits;
     return o;
 }

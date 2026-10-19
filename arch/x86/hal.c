@@ -39,6 +39,11 @@ void hal_set_idle(void (*fn)(void))
     idle_hook = fn;
 }
 
+void hal_debug_write(const char *s, size_t n)
+{
+    serial_write(s, n);
+}
+
 void hal_net_init(void)
 {
     e1000_init();

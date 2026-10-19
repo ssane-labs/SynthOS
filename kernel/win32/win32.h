@@ -341,6 +341,8 @@ uint32_t w32_current_pid(void);
 HANDLE w32_npipe_open(const char *name);
 bool w32_is_pipe_name(const char *name);
 void w32_section_release(struct w32_section *s);
+void *w32_map_section(HANDLE h, uint32_t offset, uint32_t bytes);
+void w32_unmap_section(const void *p);
 long w32_pipe_write(struct w32_pipe *p, const void *data, size_t n);
 long w32_pipe_read(struct w32_pipe *p, void *out, size_t n, bool wait);
 size_t w32_pipe_available(struct w32_pipe *p);

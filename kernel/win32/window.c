@@ -4,6 +4,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
+#include <synth/log.h>
 #include <synth/string.h>
 
 #include "w32gui.h"
@@ -587,16 +588,18 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
                                 height == W32_CW_USEDEFAULT ? 0 : MAX(height, 0)};
     } else {
         struct rect work = wm_work_area(0);
+        klog("win32: window %s style %08x ex %08x at %d,%d %dx%d", (uintptr_t)class_name < 0x10000 ? "#atom" : class_name,
+             (unsigned)style, (unsigned)ex, x, y, width, height);
         bool caption = (style & WS_CAPTION) == WS_CAPTION || !(style & WS_POPUP);
         int cw = width == W32_CW_USEDEFAULT ? MIN(DEFAULT_W, work.w * 3 / 4) : width;
         int ch = height == W32_CW_USEDEFAULT ? MIN(DEFAULT_H, work.h * 3 / 4) : height;
         if (caption && height != W32_CW_USEDEFAULT)
             ch -= TITLE_HEIGHT;
-        cw = MAX(cw, 120);
-        ch = MAX(ch, 40);
+        cw = MAX(cw, caption ? 120 : 1);
+        ch = MAX(ch, caption ? 40 : 1);
         unsigned flags = WIN_HIDDEN | ((style & WS_THICKFRAME) ? WIN_RESIZABLE : 0);
         if (!caption)
-            flags |= WIN_FULLSIZE | WIN_NOTITLE | WIN_NOSHADOW;
+            flags |= WIN_FULLSIZE | WIN_NOTITLE | WIN_NOSHADOW | WIN_BARE;
         w->bridge = kzalloc(sizeof(*w->bridge));
         if (!w->bridge)
             return NULL;
@@ -611,8 +614,10 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         w->wm->app = app_of_process();
         if (caption)
             w->caption_due = hal_ticks_ms() + 500;
-        if (x != W32_CW_USEDEFAULT)
+        if (x != W32_CW_USEDEFAULT && caption)
             move_into_work(w->wm, x, y);
+        else if (x != W32_CW_USEDEFAULT)
+            wm_move(w->wm, x, y);
         struct rect cr = wm_client_rect(w->wm);
         w->rect = (struct rect){0, 0, cr.w, cr.h};
         w->menu = menu;
@@ -939,11 +944,14 @@ static void send_pos_changed(struct w32_window *w, bool move, bool size)
 static void move_window(struct w32_window *w, int x, int y, int width, int height, bool move, bool size)
 {
     if (w->wm) {
-        if (move)
+        bool bare = w->wm->flags & WIN_BARE;
+        if (move && bare)
+            wm_move(w->wm, x, y);
+        else if (move)
             move_into_work(w->wm, x, y);
         if (size) {
             int ch = height - (w->wm->flags & WIN_FULLSIZE ? 0 : TITLE_HEIGHT);
-            wm_resize_client(w->wm, MAX(width, 120), MAX(ch, 40));
+            wm_resize_client(w->wm, MAX(width, bare ? 1 : 120), MAX(ch, bare ? 1 : 40));
             struct rect cr = wm_client_rect(w->wm);
             w->rect.w = cr.w;
             w->rect.h = cr.h;
@@ -970,6 +978,56 @@ static void move_window(struct w32_window *w, int x, int y, int width, int heigh
     if (move)
         w32_send(w, WM_MOVE, 0, (LPARAM)((uint32_t)(uint16_t)x | (uint32_t)(uint16_t)y << 16));
     w32_invalidate(w, NULL, true);
+}
+
+typedef struct {
+    BYTE op, flags, alpha, format;
+} BLENDFUNCTION;
+
+/* Layered windows (menus, bubbles with soft shadows) hand over a whole premultiplied-alpha picture; the window takes
+   its position and size from it and is composited by its alpha. */
+static BOOL WINAPI UpdateLayeredWindow(HANDLE h, HANDLE dst, const POINT *pos, const SIZE *size, HANDLE src,
+                                       const POINT *src_pos, COLORREF key, const BLENDFUNCTION *blend, DWORD flags)
+{
+    UNUSED(dst);
+    struct w32_window *w = w32_win(h);
+    if (!w || is_child(w))
+        return FALSE;
+    if (!w->wm)
+        return TRUE;
+    struct rect r = screen_rect(w);
+    if ((pos && (pos->x != r.x || pos->y != r.y)) || (size && (size->cx != r.w || size->cy != r.h)))
+        move_window(w, pos ? pos->x : r.x, pos ? pos->y : r.y, size ? size->cx : r.w, size ? size->cy : r.h, pos != NULL,
+                    size != NULL);
+    int ox, oy;
+    struct canvas *from = src ? w32_dc_canvas(src, &ox, &oy) : NULL;
+    if (!from)
+        return TRUE;
+    struct canvas *to = &w->wm->surface;
+    struct rect cr = wm_client_rect(w->wm);
+    int sx = ox + (src_pos ? src_pos->x : 0), sy = oy + (src_pos ? src_pos->y : 0);
+    bool alpha = (flags & 2) && blend && (blend->format & 1);
+    unsigned constant = flags & 2 && blend ? blend->alpha : 255;
+    uint32_t transparent = w32_rgb(key) & 0xffffff;
+    for (int y = 0; y < MIN(cr.h, to->h); y++) {
+        int fy = sy + y;
+        uint32_t *d = to->px + (size_t)y * to->stride;
+        for (int x = 0; x < MIN(cr.w, to->w); x++) {
+            int fx = sx + x;
+            uint32_t p = fy >= 0 && fy < from->h && fx >= 0 && fx < from->w ? from->px[(size_t)fy * from->stride + fx] : 0;
+            unsigned a = alpha ? p >> 24 : 255;
+            if ((flags & 1) && (p & 0xffffff) == transparent)
+                a = 0;
+            if (alpha && a && a < 255)
+                p = RGB(MIN(255u, ((p >> 16) & 0xff) * 255 / a), MIN(255u, ((p >> 8) & 0xff) * 255 / a),
+                        MIN(255u, (p & 0xff) * 255 / a));
+            a = a * constant / 255;
+            d[x] = (p & 0xffffff) | a << 24;
+        }
+    }
+    w->wm->flags |= WIN_TRANSLUCENT;
+    wm_damage_client(w->wm, (struct rect){0, 0, cr.w, cr.h});
+    return TRUE;
 }
 
 static BOOL WINAPI MoveWindow(HANDLE h, int x, int y, int width, int height, BOOL repaint)
@@ -2693,6 +2751,8 @@ static void gui_replay(void)
 static void bridge_paint(struct window *wm, struct canvas *c)
 {
     UNUSED(c);
+    if (wm->flags & WIN_TRANSLUCENT)
+        return;
     if (defer(wm, NULL, DEFER_PAINT))
         return;
     struct w32_window *w = bridged(wm);
@@ -2839,7 +2899,7 @@ static const struct w32_export window_exports[] = {
     W32_FN(UpdateWindow), W32_FN(IsWindow), W32_FN(IsWindowVisible), W32_FN(IsWindowEnabled), W32_FN(EnableWindow),
     W32_FN(IsIconic), W32_FN(IsZoomed), W32_FN(GetClientRect), W32_FN(GetWindowRect), W32_AS("GetWindowRgnBox", w32_zero2), W32_FN(ClientToScreen),
     W32_FN(ScreenToClient), W32_FN(MapWindowPoints), W32_FN(AdjustWindowRect), W32_FN(AdjustWindowRectEx),
-    W32_FN(MoveWindow), W32_FN(SetWindowPos), W32_FN(BringWindowToTop), W32_FN(SetForegroundWindow),
+    W32_FN(MoveWindow), W32_FN(SetWindowPos), W32_FN(UpdateLayeredWindow), W32_FN(BringWindowToTop), W32_FN(SetForegroundWindow),
     W32_FN(GetForegroundWindow), W32_FN(SetActiveWindow), W32_FN(GetActiveWindow), W32_FN(GetParent),
     W32_FN(SetParent), W32_FN(GetDlgItem), W32_FN(GetDlgCtrlID), W32_FN(GetWindow), W32_FN(GetDesktopWindow),
     W32_FN(EnumChildWindows), W32_FN(EnumWindows), W32_FN(FindWindowA), W32_FN(FindWindowW),

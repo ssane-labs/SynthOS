@@ -199,6 +199,11 @@ static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T
     return mem;
 }
 
+void *w32_map_section(HANDLE h, uint32_t offset, uint32_t bytes)
+{
+    return map_view(h, FILE_MAP_WRITE, 0, offset, bytes);
+}
+
 static void *WINAPI MapViewOfFile(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T bytes)
 {
     return map_view(h, access, off_hi, off_lo, bytes);
@@ -256,6 +261,11 @@ static BOOL WINAPI UnmapViewOfFile(const void *p)
     w32_section_release(v->section);
     memset(v, 0, sizeof(*v));
     return TRUE;
+}
+
+void w32_unmap_section(const void *p)
+{
+    UnmapViewOfFile(p);
 }
 
 static DWORD WINAPI NtQuerySection(HANDLE h, int cls, uint32_t *info, ULONG len, ULONG *ret)

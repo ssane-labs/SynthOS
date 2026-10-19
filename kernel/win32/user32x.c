@@ -838,7 +838,6 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("GetWindowDisplayAffinity", w32_one2),
     W32_AS("SetWindowDisplayAffinity", w32_one2),
     W32_AS("GetLayeredWindowAttributes", w32_zero4),
-    W32_AS("UpdateLayeredWindow", w32_one9),
     W32_AS("PrintWindow", w32_zero3),
     W32_AS("WindowFromDC", w32_zero1),
     W32_AS("WindowFromPoint", w32_zero2),

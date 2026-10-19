@@ -51,6 +51,16 @@ int main(void)
     unsigned *px = bits;
     printf("dib pixel=%06x\n", px[5 * 64 + 5] & 0xffffff);
 
+    HANDLE section = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 64 * 64 * 4 + 4096, NULL);
+    unsigned *view = MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    void *shared_bits = NULL;
+    HBITMAP shared = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &shared_bits, section, 4096);
+    view[1024 + 7 * 64 + 3] = 0x00123456;
+    printf("section dib=%06x\n", shared_bits ? ((unsigned *)shared_bits)[7 * 64 + 3] & 0xffffff : 0);
+    DeleteObject(shared);
+    UnmapViewOfFile(view);
+    CloseHandle(section);
+
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(0, 0, 0));
     SIZE size;
