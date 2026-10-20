@@ -8,6 +8,7 @@ SECTIONS
     .text : {
         KEEP(*(.entry))
         *(.text .text.*)
+        __text_end = .;
     }
 
     .rodata : ALIGN(16) {

@@ -101,6 +101,8 @@ static bool pte_present(uint32_t v)
     return pae ? (((uint64_t *)t)[(v >> 12) & 511] & PTE_PRESENT) : (((uint32_t *)t)[(v >> 12) & 1023] & PTE_PRESENT);
 }
 
+static void note_table(uint32_t index);
+
 static bool ensure_table(uint32_t v, uint32_t flags)
 {
     uint32_t index = v >> shift();
@@ -112,6 +114,7 @@ static bool ensure_table(uint32_t v, uint32_t flags)
     memset(t, 0, 4096);
     tables[index] = t;
     set_pde(index, phys_of(t) | PTE_PRESENT | PTE_WRITE | flags);
+    note_table(index);
     return true;
 }
 
@@ -420,6 +423,7 @@ uint32_t vmm_pae_root(void)
 
 struct vmm_space {
     void *tables[2048];
+    uint32_t used[2048 / 32];
     uint32_t commit_start, commit_end;
 };
 
@@ -443,6 +447,11 @@ static void reload_cr3(void)
     __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
 }
 
+static void note_table(uint32_t index)
+{
+    current_space->used[index / 32] |= 1u << (index % 32);
+}
+
 struct vmm_space *vmm_space_create(void)
 {
     return kzalloc(sizeof(struct vmm_space));
@@ -459,11 +468,16 @@ void vmm_space_switch(struct vmm_space *s)
         s = &boot_space;
     if (!enabled || s == current_space)
         return;
-    for (uint32_t i = user_first(); i < user_last(); i++) {
-        current_space->tables[i] = tables[i];
-        tables[i] = s->tables[i];
-        set_pde(i, tables[i] ? phys_of(tables[i]) | PTE_PRESENT | PTE_WRITE | PTE_USER : 0);
-    }
+    /* only the directory entries either space ever had a table for */
+    for (uint32_t w = 0; w < ARRAY_SIZE(s->used); w++)
+        for (uint32_t bits = current_space->used[w] | s->used[w]; bits; bits &= bits - 1) {
+            uint32_t i = w * 32 + (uint32_t)__builtin_ctz(bits);
+            if (i < user_first() || i >= user_last())
+                continue;
+            current_space->tables[i] = tables[i];
+            tables[i] = s->tables[i];
+            set_pde(i, tables[i] ? phys_of(tables[i]) | PTE_PRESENT | PTE_WRITE | PTE_USER : 0);
+        }
     current_space = s;
     reload_cr3();
 }

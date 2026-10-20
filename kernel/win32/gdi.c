@@ -1994,19 +1994,42 @@ static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx
     if (!dw || !dh)
         return TRUE;
     struct bitmap_info bmi = {40, sb ? sb->canvas.w : 0, sb ? sb->height : 0, 1, (WORD)(sb ? sb->bpp : 32), 0, 0, 0, 0, 0, 0};
+    if (rop == SRCCOPY && uses_src && !(sb && sb->bpp != 32) && dw == sw && dh == sh && dw > 0 && dh > 0) {
+        /* BitBlt: rows of a 32-bit source copied as they are (how programs present their frames) */
+        int x0 = MAX(dt.clip.x - (dt.ox + dx), MAX(-(st.ox + sx), 0));
+        int x1 = MIN(dt.clip.x + dt.clip.w - (dt.ox + dx), MIN(st.c->w - (st.ox + sx), dw));
+        for (int y = 0; y < dh && x0 < x1; y++) {
+            int ty = dt.oy + dy + y, py = st.oy + sy + y;
+            if (ty < dt.clip.y || ty >= dt.clip.y + dt.clip.h || py < 0 || py >= st.c->h)
+                continue;
+            uint32_t *out = dt.c->px + ty * dt.c->stride + dt.ox + dx + x0;
+            const uint32_t *in = st.c->px + py * st.c->stride + st.ox + sx + x0;
+            for (int x = 0; x < x1 - x0; x++)
+                out[x] = in[x] | 0xff000000u;
+        }
+        dt.c->clip = dt.clip;
+        damage(d, &dt, (struct rect){dt.ox + dx, dt.oy + dy, dw + 1, dh + 1});
+        return TRUE;
+    }
+    int adw = ABS(dw);
+    int *xmap = uses_src ? kmalloc(sizeof(int) * (size_t)adw) : NULL;
+    if (uses_src && !xmap)
+        return FALSE;
+    for (int x = 0; uses_src && x < adw; x++)
+        xmap[x] = sx + (int)((int64_t)x * sw / dw);
     for (int y = 0; y < ABS(dh); y++) {
         int ty = dt.oy + dy + (dh < 0 ? -y : y);
         if (ty < dt.clip.y || ty >= dt.clip.y + dt.clip.h)
             continue;
         int yy = sy + (int)((int64_t)y * sh / dh);
-        for (int x = 0; x < ABS(dw); x++) {
+        for (int x = 0; x < adw; x++) {
             int tx = dt.ox + dx + (dw < 0 ? -x : x);
             if (tx < dt.clip.x || tx >= dt.clip.x + dt.clip.w)
                 continue;
             uint32_t *out = dt.c->px + ty * dt.c->stride + tx;
             uint32_t src = 0;
             if (uses_src) {
-                int xx = sx + (int)((int64_t)x * sw / dw);
+                int xx = xmap[x];
                 if (sb && sb->bpp != 32) {
                     if (xx < 0 || yy < 0 || xx >= sb->canvas.w || yy >= sb->canvas.h)
                         continue;
@@ -2022,6 +2045,7 @@ static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx
             *out = (v & 0xffffff) | 0xff000000u;
         }
     }
+    kfree(xmap);
     dt.c->clip = dt.clip;
     damage(d, &dt, (struct rect){dt.ox + MIN(dx, dx + dw), dt.oy + MIN(dy, dy + dh), ABS(dw) + 1, ABS(dh) + 1});
     return TRUE;

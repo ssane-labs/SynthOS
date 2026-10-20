@@ -30,7 +30,7 @@ struct view {
 
 #define MAX_VIEWS 256
 
-static W32_STATE struct view views[MAX_VIEWS];
+static W32_STATE struct view *views;
 
 void w32_section_retain(struct w32_section *s)
 {
@@ -143,6 +143,10 @@ static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T
         return NULL;
     }
     struct view *v = NULL;
+    if (!views && !(views = w32_zalloc(sizeof(*views) * MAX_VIEWS))) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
     for (int i = 0; i < MAX_VIEWS && !v; i++)
         if (!views[i].base)
             v = &views[i];
@@ -217,7 +221,7 @@ static void *WINAPI MapViewOfFileEx(HANDLE h, DWORD access, DWORD off_hi, DWORD 
 
 static struct view *find_view(const void *p)
 {
-    for (int i = 0; i < MAX_VIEWS; i++)
+    for (int i = 0; views && i < MAX_VIEWS; i++)
         if (views[i].base && (const uint8_t *)p >= views[i].base &&
             (const uint8_t *)p < views[i].base + MAX(views[i].length, 1u))
             return &views[i];

@@ -1433,14 +1433,28 @@ static void draw_fade(struct canvas *c, int index)
     gfx_blit_alpha(c, a.x, a.y, &fade_snap, (struct rect){0, 0, fade_snap.w, fade_snap.h}, alpha);
 }
 
+/* An opaque window that hides all of the area: nothing below it needs drawing. */
+static bool covers(const struct window *w, struct rect area)
+{
+    if (!visible(w) || w->anim_hold || floating(w) || w->glass || (w->flags & WIN_TRANSLUCENT))
+        return false;
+    struct rect inner = rect_intersect(rect_inset(w->frame, MAX(w->radius, 1)), area);
+    return inner.x == area.x && inner.y == area.y && inner.w == area.w && inner.h == area.h;
+}
+
 static void compose(int index, struct rect area)
 {
     struct screen *s = &screens[index];
     compose_area = s->area;
     struct canvas *c = &s->back;
     c->clip = rect_intersect(area, s->area);
-    desktop_paint(c, index, c->clip);
-    for (struct window *w = bottom; w; w = w->above)
+    struct window *from = NULL;
+    for (struct window *w = top; w && !from; w = w->below)
+        if (covers(w, c->clip))
+            from = w;
+    if (!from)
+        desktop_paint(c, index, c->clip);
+    for (struct window *w = from ? from : bottom; w; w = w->above)
         if (visible(w) && !w->anim_hold && !floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);
     if (ghosts)

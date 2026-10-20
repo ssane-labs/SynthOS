@@ -81,9 +81,10 @@ struct menu_bar {
 
 static W32_STATE struct w32_class *classes;
 static W32_STATE struct w32_window *windows;
-static W32_STATE struct queued queue[QUEUE_SIZE];
+/* Big tables live on the program's heap, not in the state copied at every switch between processes. */
+static W32_STATE struct queued *queue;
 static W32_STATE unsigned queue_head, queue_tail;
-static W32_STATE struct timer timers[MAX_TIMERS];
+static W32_STATE struct timer *timers;
 static W32_STATE uint32_t quit_thread;
 static W32_STATE int quit_code;
 static W32_STATE bool quit_posted;
@@ -229,7 +230,7 @@ static uint32_t message_time(void)
 static void enqueue(HANDLE hwnd, uint32_t thread, UINT msg, WPARAM wp, LPARAM lp)
 {
     w32_kick(w32);
-    if (queue_tail - queue_head >= QUEUE_SIZE)
+    if (queue_tail - queue_head >= QUEUE_SIZE || (!queue && !(queue = w32_zalloc(sizeof(*queue) * QUEUE_SIZE))))
         return;
     struct queued *q = &queue[queue_tail++ % QUEUE_SIZE];
     q->msg = (MSG){hwnd, msg, wp, lp, message_time(), {mouse_x, mouse_y}};
@@ -676,7 +677,7 @@ static HANDLE WINAPI CreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR title, DWORD
 
 static void kill_timers(struct w32_window *w)
 {
-    for (int i = 0; i < MAX_TIMERS; i++)
+    for (int i = 0; timers && i < MAX_TIMERS; i++)
         if (timers[i].used && timers[i].win == w)
             timers[i].used = false;
 }
@@ -1814,6 +1815,8 @@ static uintptr_t WINAPI SetTimer(HANDLE h, uintptr_t id, UINT ms, void *proc)
     if (!w)
         id = 0;
     struct timer *slot = NULL;
+    if (!timers && !(timers = w32_zalloc(sizeof(*timers) * MAX_TIMERS)))
+        return 0;
     for (int i = 0; i < MAX_TIMERS && !slot; i++)
         if (timers[i].used && timers[i].win == w && w && timers[i].id == id)
             slot = &timers[i];
@@ -1831,7 +1834,7 @@ static uintptr_t WINAPI SetTimer(HANDLE h, uintptr_t id, UINT ms, void *proc)
 static BOOL WINAPI KillTimer(HANDLE h, uintptr_t id)
 {
     struct w32_window *w = h ? w32_win(h) : NULL;
-    for (int i = 0; i < MAX_TIMERS; i++)
+    for (int i = 0; timers && i < MAX_TIMERS; i++)
         if (timers[i].used && timers[i].win == w && timers[i].id == id) {
             timers[i].used = false;
             return TRUE;
@@ -1956,7 +1959,7 @@ static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
         }
     if ((!lo && !hi) || (WM_TIMER >= lo && WM_TIMER <= hi)) {
         uint64_t now = hal_ticks_ms();
-        for (int i = 0; i < MAX_TIMERS; i++) {
+        for (int i = 0; timers && i < MAX_TIMERS; i++) {
             struct timer *t = &timers[i];
             if (!t->used || now < t->due || (t->win && t->win->thread != me))
                 continue;
@@ -1981,7 +1984,7 @@ bool w32_next_message(MSG *msg)
 static void wait_messages(uint64_t deadline)
 {
     uint32_t me = w32_thread_id();
-    for (int i = 0; i < MAX_TIMERS; i++) {
+    for (int i = 0; timers && i < MAX_TIMERS; i++) {
         struct timer *t = &timers[i];
         if (t->used && (!t->win || t->win->thread == me) && (!deadline || t->due < deadline))
             deadline = MAX(t->due, (uint64_t)1);
@@ -2953,7 +2956,8 @@ void w32_gui_cleanup(void)
     classes = NULL;
     windows = NULL;
     queue_head = queue_tail = 0;
-    memset(timers, 0, sizeof(timers));
+    queue = NULL;
+    timers = NULL;
     quit_posted = false;
     capture = active = hover = NULL;
     next_atom = 0;

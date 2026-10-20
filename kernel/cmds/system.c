@@ -393,12 +393,17 @@ static void prof_report(struct shell *sh, uint32_t *buf, uint32_t n, const char 
 
 static uint32_t *prof_running;
 
-COMMAND(prof, NULL, "dev", "prof [-o file|-k] command [args...] | prof start | prof [-o file|-k] stop",
+COMMAND(prof, NULL, "dev", "prof [-c] [-o file|-k] command [args...] | prof [-c] start | prof [-o file|-k] stop",
         "list where the CPU spent its time while a command ran, or between start and stop (addresses for addr2line); "
-        "-k writes to the kernel log")
+        "-k writes to the kernel log, -c counts kernel time at the caller of the function it was in")
 {
     const char *report = NULL;
-    bool to_log = false;
+    bool to_log = false, callers = false;
+    if (argc > 2 && !strcmp(argv[1], "-c")) {
+        callers = true;
+        argc--;
+        argv++;
+    }
     if (argc > 3 && !strcmp(argv[1], "-o")) {
         report = argv[2];
         argc -= 2;
@@ -415,6 +420,7 @@ COMMAND(prof, NULL, "dev", "prof [-o file|-k] command [args...] | prof start | p
             return sh_error(sh, "prof", "already running");
         if (!(prof_running = kmalloc(PROF_SAMPLES * sizeof(uint32_t))))
             return sh_error(sh, "prof", "out of memory");
+        hal_profile_callers(callers);
         hal_profile_start(prof_running, PROF_SAMPLES);
         return 0;
     }
@@ -432,6 +438,7 @@ COMMAND(prof, NULL, "dev", "prof [-o file|-k] command [args...] | prof start | p
     uint32_t *buf = kmalloc(PROF_SAMPLES * sizeof(uint32_t));
     if (!buf)
         return sh_error(sh, "prof", "out of memory");
+    hal_profile_callers(callers);
     hal_profile_start(buf, PROF_SAMPLES);
     int rc = run_argv(sh, argc - 1, argv + 1);
     uint32_t n = hal_profile_stop();

@@ -381,10 +381,12 @@ static LONG WINAPI GetDisplayConfigBufferSizes(UINT flags, UINT *paths, UINT *mo
 }
 
 #define ATOM_MAX 128
-static W32_STATE char atom_names[ATOM_MAX][48];
+static W32_STATE char (*atom_names)[48];
 
 static UINT register_name(const char *name)
 {
+    if (!atom_names && !(atom_names = w32_zalloc(sizeof(*atom_names) * ATOM_MAX)))
+        return 0;
     for (int i = 0; i < ATOM_MAX; i++)
         if (atom_names[i][0] && !str_casecmp(atom_names[i], name))
             return 0xc000u + (UINT)i;
@@ -411,7 +413,8 @@ static UINT WINAPI RegisterWindowMessageW(const WCHAR *name)
 
 static int WINAPI GetClipboardFormatNameW(UINT format, WCHAR *out, int max)
 {
-    if (format < 0xc000u || format >= 0xc000u + ATOM_MAX || !atom_names[format - 0xc000u][0] || max <= 0)
+    if (!atom_names || format < 0xc000u || format >= 0xc000u + ATOM_MAX || !atom_names[format - 0xc000u][0] ||
+        max <= 0)
         return 0;
     put_wide(out, atom_names[format - 0xc000u], (size_t)max);
     return (int)w32_wcslen(out);
