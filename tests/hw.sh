@@ -29,6 +29,7 @@ boot() {
     extra=""
     [ "$fw" = uefi ] && extra="-bios $ovmf"
     [ "$cpu" = 486 ] && qemu=qemu-system-i386 && extra="$extra -cpu 486"
+    [ "$cpu" = smp ] && extra="$extra -smp 4"
     rm -f "$work/in" "$work/out"
     mkfifo "$work/in"
     timeout 90 $qemu $extra $(disk_args "$disk") -m 128 -display none -serial stdio < "$work/in" > "$work/out" 2>&1 &
@@ -58,7 +59,7 @@ check() {
     fi
 }
 
-for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:any bios:ide:486 uefi:ide:any uefi:ahci:any uefi:nvme:any uefi:xhci:any; do
+for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:any bios:ide:486 uefi:ide:any uefi:ahci:any uefi:nvme:any uefi:xhci:any bios:ahci:smp uefi:ahci:smp; do
     fw=${config%%:*}
     rest=${config#*:}
     disk=${rest%%:*}
@@ -73,6 +74,7 @@ for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:an
     second=$(boot "$fw" "$disk" "$cpu" "cat /home/hw.txt")
     check "$config shell" "$first" "42"
     [ "$cpu" = 486 ] || check "$config windows" "$first" "Hello from Windows"
+    [ "$cpu" = smp ] && check "$config processors" "$first" "Processors: 4 cores"
     check "$config persistence" "$second" "$tag"
 done
 echo "hardware tests: $pass passed, $fail failed"

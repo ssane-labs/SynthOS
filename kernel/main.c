@@ -189,6 +189,9 @@ void kmain(const struct boot_info *bi)
     } else {
         boot_step(true, "Memory: %s available to the kernel heap", size);
     }
+    int cpus = hal_start_cpus();
+    if (cpus > 1)
+        boot_step(true, "Processors: %d cores", cpus);
     if (con_is_grid())
         boot_step(true, "Display: %s %dx%d, 16-color palette", d->name, d->cols, d->rows);
     else

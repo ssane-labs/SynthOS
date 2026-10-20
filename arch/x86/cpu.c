@@ -164,6 +164,7 @@ static void detect_cpu(void)
     info.sse = (edx & (1u << 25)) && (edx & (1u << 24));
     info.pae = edx & (1u << 6);
     info.pat = edx & (1u << 16);
+    info.apic = edx & (1u << 9);
     if (ecx & (1u << 31)) {
         eax = 0x40000000u;
         __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
@@ -191,9 +192,17 @@ static void pat_init(void)
     __asm__ volatile("wbinvd; wrmsr; wbinvd" : : "a"(lo), "d"(hi), "c"(0x277u) : "memory");
 }
 
+static void cpu_local_init(void);
+
 static void fpu_init(void)
 {
     detect_cpu();
+    cpu_local_init();
+}
+
+/* The control registers every processor sets for itself: x87 (or its emulation trap), SSE, write-combining. */
+static void cpu_local_init(void)
+{
     pat_init();
     uint32_t cr0;
     uint16_t status = 0xffff;
@@ -214,6 +223,19 @@ static void fpu_init(void)
         __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
         sse = true;
     }
+}
+
+static struct gdt_entry ap_gdt[MAX_CPUS][8];
+
+/* An application processor's own GDT (it will hold that processor's TEB segments), the shared IDT, its control
+   registers. */
+void cpu_ap_init(int index)
+{
+    memcpy(ap_gdt[index], gdt, sizeof(gdt));
+    struct table_ptr gp = {sizeof(gdt) - 1, (uint32_t)ap_gdt[index]};
+    gdt_flush(&gp);
+    __asm__ volatile("lidt %0" : : "m"(idt32_ptr));
+    cpu_local_init();
 }
 
 const struct cpu_info *cpu_info(void)

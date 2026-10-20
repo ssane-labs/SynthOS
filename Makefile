@@ -174,10 +174,15 @@ $(OUT)/biosthunk.bin: arch/x86/biosthunk.asm
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -o $@ $<
 
-$(OUT)/obj/biosblob.o: arch/x86/biosblob.asm $(OUT)/biosthunk.bin
+$(OUT)/smpboot.bin: arch/x86/smpboot.asm
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
-	@$(NASM) -f elf32 -DTHUNK_FILE='"$(OUT)/biosthunk.bin"' -o $@ $<
+	@$(NASM) -f bin -o $@ $<
+
+$(OUT)/obj/biosblob.o: arch/x86/biosblob.asm $(OUT)/biosthunk.bin $(OUT)/smpboot.bin
+	@mkdir -p $(@D)
+	@echo "  NASM    $<"
+	@$(NASM) -f elf32 -DTHUNK_FILE='"$(OUT)/biosthunk.bin"' -DSMP_FILE='"$(OUT)/smpboot.bin"' -o $@ $<
 
 $(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(W32_BIN) $(wildcard programs/sx/*)
 	@mkdir -p $(BUILD)/rootfs

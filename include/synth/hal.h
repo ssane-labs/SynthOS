@@ -123,6 +123,8 @@ uint32_t hal_system_sectors(void);
 void hal_set_codepage(int codepage);
 const char *hal_arch(void);
 const char *hal_machine(void);
+int hal_start_cpus(void);
+int hal_cpu_count(void);
 NORETURN void hal_reboot(void);
 NORETURN void hal_poweroff(void);
 

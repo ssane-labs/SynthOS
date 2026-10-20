@@ -142,8 +142,14 @@ struct cpu_info {
     bool pat;
     bool long_mode;
     bool emulated;
+    bool apic;
     uint32_t family;
 };
+
+#define MAX_CPUS 16
+
+void cpu_ap_init(int index);
+void *vmm_map_uncached(uint64_t phys, size_t size);
 
 void cpu_init(void);
 const struct cpu_info *cpu_info(void);

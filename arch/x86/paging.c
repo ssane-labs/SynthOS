@@ -298,6 +298,11 @@ void *vmm_map_phys64(uint64_t phys, size_t size)
     return map_phys(phys, size, 0);
 }
 
+void *vmm_map_uncached(uint64_t phys, size_t size)
+{
+    return map_phys(phys, size, PTE_PWT | 0x10u);
+}
+
 void *vmm_map_framebuffer(uint64_t phys, size_t size)
 {
     return map_phys(phys, size, cpu_info()->pat ? PTE_PWT : 0);
