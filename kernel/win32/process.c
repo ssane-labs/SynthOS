@@ -455,7 +455,11 @@ static void on_tick(uint32_t eip)
     }
     if (ticks % 4 == 0)
         w32_signal_tick();
-    if (ticks % 10 == 0)
+    /* Packets are picked up here too while a program computes (only program code is interrupted, so the network
+       code is never in the middle of something); the thread waiting for them runs next. */
+    uint32_t seen = net_activity();
+    net_poll();
+    if (ticks % 10 == 0 || net_activity() != seen)
         w32_preempt();
     else if (ticks % 2 == 0 && hal_input_pending())
         w32_input_boost();

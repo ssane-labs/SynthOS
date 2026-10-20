@@ -122,25 +122,6 @@ static struct w32_thread *pick(struct w32_thread *cur, bool active_only)
 /* Bumped whenever something a waiting thread might be waiting for happens. */
 static uint32_t signal_gen;
 
-static struct {
-    uint32_t site, count;
-} kick_sites[8];
-
-static void kick_note(uint32_t site)
-{
-    int slot = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(kick_sites); i++) {
-        if (kick_sites[i].site == site) {
-            kick_sites[i].count++;
-            return;
-        }
-        if (kick_sites[i].count < kick_sites[slot].count)
-            slot = i;
-    }
-    kick_sites[slot].site = site;
-    kick_sites[slot].count = 1;
-}
-
 void w32_signal(void)
 {
     signal_gen++;
@@ -153,7 +134,6 @@ void w32_signal(void)
 /* Something for the process from outside its own locks and events: pipe data, desktop events, its messages. */
 void w32_kick(struct w32_process *p)
 {
-    kick_note((uint32_t)(uintptr_t)__builtin_return_address(0));
     signal_gen++;
     if (p) {
         p->kicked = true;
@@ -170,7 +150,6 @@ void w32_signal_tick(void)
 
 void w32_kick_all(void)
 {
-    kick_note((uint32_t)(uintptr_t)__builtin_return_address(0));
     signal_gen++;
     struct w32_process *p = w32;
     do {
@@ -220,6 +199,9 @@ static bool wait_over(const struct w32_thread *t)
         return true;
     /* Pending pipe I/O completes when a thread of its process polls: any one of them will do. */
     if (t->proc->io_gen != t->proc->io_seen)
+        return true;
+    /* Sockets watched with events or overlapped reads are checked when a thread of their process polls. */
+    if (t->proc->net_watch && net_activity() != t->proc->net_seen)
         return true;
     switch (w->kind) {
     case W32_WAIT_TIME: return false;
@@ -294,9 +276,11 @@ static struct w32_thread *sweep_next(struct w32_thread *cur)
 {
     if (sweep_left <= 0)
         return NULL;
-    struct w32_thread *t = w32->kicked ? stale_in(w32, cur) : NULL;
+    /* precise waits are cheap to check: every process, not only the kicked ones (a timer or socket data
+       does not kick) */
+    struct w32_thread *t = w32->kicked || precise_waits ? stale_in(w32, cur) : NULL;
     for (struct w32_process *p = w32_ring_next(w32); !t && p && p != w32; p = w32_ring_next(p))
-        if (p->kicked && !p->dead && !p->frozen && p->current && !w32_is_host(p))
+        if ((p->kicked || precise_waits) && !p->dead && !p->frozen && p->current && !w32_is_host(p))
             t = stale_in(p, p->current);
     sweep_left = t ? sweep_left - 1 : 0;
     return t;
@@ -327,7 +311,26 @@ static struct {
         uint32_t site, count;
         uint8_t kind;
     } sites[16];
+    struct {
+        uint32_t site, caller, count;
+    } late[12];
 } stats;
+
+static void stats_late(uint32_t site, uint32_t caller)
+{
+    int slot = 0;
+    for (int i = 0; i < (int)ARRAY_SIZE(stats.late); i++) {
+        if (stats.late[i].site == site && stats.late[i].caller == caller) {
+            stats.late[i].count++;
+            return;
+        }
+        if (stats.late[i].count < stats.late[slot].count)
+            slot = i;
+    }
+    stats.late[slot].site = site;
+    stats.late[slot].caller = caller;
+    stats.late[slot].count = 1;
+}
 
 static void stats_site(uint32_t site, uint8_t kind)
 {
@@ -458,6 +461,9 @@ void w32_block(void)
         cur->seen = signal_gen;
         cur->seen_local = cur->proc->signal_gen;
         struct w32_thread *next = sweep_next(cur);
+        /* a thread whose wait just ended goes before busy ones, like the boost Windows gives it */
+        if (!next && precise_waits)
+            next = pick_stale(cur);
         if (!next && w32->live_threads > 1)
             next = pick(cur, true);
         if (!next)
@@ -1151,11 +1157,12 @@ void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), 
     w->ready = ready;
     w->arg = arg;
     w->since = hal_ticks_ms();
-    w->site = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    uint32_t site = w->site = (uint32_t)(uintptr_t)__builtin_return_address(0);
     w32_block();
     struct w32_thread *t = w32->current;
     int reason = w->deadline && hal_ticks_ms() >= w->deadline ? 0 : w32->kick_gen != w->seen_kick ? 1
-                 : net && net_activity() != w->seen_net ? 2 : w->ready && w->ready(w->arg) ? 3 : 4;
+                 : (net && net_activity() != w->seen_net) || (w32->net_watch && net_activity() != w32->net_seen) ? 2
+                 : w->ready && w->ready(w->arg) ? 3 : 4;
     if (reason == 4)
         for (int i = 0; i < w->count; i++)
             if (object_ready(w->objects[i], t->id))
@@ -1165,10 +1172,22 @@ void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), 
     else if (reason == 4 && t->seen != signal_gen && hal_ticks_ms() - w->since >= SAFETY_NET_MS)
         reason = 7;
     stats.reasons[reason]++;
+    t->late_site = reason == 7 ? site : 0;
+    t->late_caller = t->wait_caller;
     w->kind = W32_WAIT_ANY;
     w->deadline = 0;
     w->count = 0;
     w->ready = NULL;
+}
+
+/* The wait a thread just left got what it waited for: if only the safety net woke it, a wake-up was missed. */
+void w32_wait_done(void)
+{
+    struct w32_thread *t = w32 ? w32->current : NULL;
+    if (t && t->late_site) {
+        stats_late(t->late_site, t->late_caller);
+        t->late_site = 0;
+    }
 }
 
 void w32_wait_word(const volatile uint32_t *addr, uint32_t mask, uint32_t value, bool equal, uint64_t deadline)
@@ -1521,6 +1540,8 @@ static DWORD WINAPI reg_wait_thread(void *arg)
     for (;;)
         if (!reg_fire_one())
             reg_wait();
+        else
+            w32_wait_done();
     return 0;
 }
 
@@ -1550,7 +1571,7 @@ static BOOL WINAPI RegisterWaitForSingleObject(HANDLE *out, HANDLE object, void 
     w->deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
     w->next = reg_waits;
     reg_waits = w;
-    w32_signal();
+    w32_kick(w32);
     *out = (HANDLE)w;
     return TRUE;
 }
@@ -1566,7 +1587,7 @@ static BOOL WINAPI UnregisterWaitEx(HANDLE handle, HANDLE completion)
     }
     w->cancelled = true;
     w->done_event = completion;
-    w32_signal();
+    w32_kick(w32);
     if (completion == INVALID_HANDLE_VALUE && w32_thread_id() != reg_thread)
         while (w->running)
             w32_block();
@@ -1623,10 +1644,10 @@ static void stats_tick(void)
         for (int i = 0; i < (int)ARRAY_SIZE(stats.sites); i++)
             if (stats.sites[i].count > 50)
                 klog("sched: site %08x kind %u: %u", stats.sites[i].site, stats.sites[i].kind, stats.sites[i].count);
-        for (int i = 0; i < (int)ARRAY_SIZE(kick_sites); i++)
-            if (kick_sites[i].count > 50)
-                klog("sched: kick from %08x: %u", kick_sites[i].site, kick_sites[i].count);
-        memset(kick_sites, 0, sizeof(kick_sites));
+        for (int i = 0; i < (int)ARRAY_SIZE(stats.late); i++)
+            if (stats.late[i].count)
+                klog("sched: missed wake %08x from %08x: %u", stats.late[i].site, stats.late[i].caller,
+                     stats.late[i].count);
         klog("sched: woke by deadline %u, process %u, network %u, ready %u, other %u, objects %u, io %u, late %u",
              stats.reasons[0], stats.reasons[1], stats.reasons[2], stats.reasons[3], stats.reasons[4], stats.reasons[5],
              stats.reasons[6], stats.reasons[7]);

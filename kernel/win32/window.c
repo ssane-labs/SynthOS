@@ -1995,8 +1995,10 @@ static void wait_messages(uint64_t deadline)
 static BOOL get_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi)
 {
     for (;;) {
-        if (next_message(msg, hwnd, lo, hi, true))
+        if (next_message(msg, hwnd, lo, hi, true)) {
+            w32_wait_done();
             return msg->message != WM_QUIT;
+        }
         wait_messages(0);
     }
 }
@@ -2029,15 +2031,19 @@ static DWORD WINAPI MsgWaitForMultipleObjects(DWORD count, const HANDLE *handles
     uint64_t deadline = hal_ticks_ms() + ms;
     for (;;) {
         MSG m;
-        if (next_message(&m, NULL, 0, 0, false))
+        if (next_message(&m, NULL, 0, 0, false)) {
+            w32_wait_done();
             return count;
+        }
         if (count) {
             typedef DWORD WINAPI (*wait_fn)(DWORD, const HANDLE *, BOOL, DWORD);
             struct w32_image *k = w32_find_module("kernel32.dll");
             wait_fn wait = k ? (wait_fn)w32_get_proc(k, "WaitForMultipleObjects", 0) : NULL;
             DWORD r = wait ? wait(count, handles, all, 0) : 0x102;
-            if (r != 0x102)
+            if (r != 0x102) {
+                w32_wait_done();
                 return r;
+            }
         }
         if (ms != 0xffffffffu && hal_ticks_ms() >= deadline)
             return 0x102;

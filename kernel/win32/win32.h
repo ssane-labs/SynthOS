@@ -195,7 +195,7 @@ struct w32_thread {
     bool waiting;
     int suspended;
     uint32_t wait_caller, wait_sp;
-    uint32_t seen, seen_local, user_eip;
+    uint32_t seen, seen_local, user_eip, late_site, late_caller;
     struct w32_wait wait;
     const char *recent[8];
     unsigned recent_pos;
@@ -245,7 +245,8 @@ struct vmm_space;
 struct w32_process {
     struct exec_ctx *ctx;
     bool kicked;
-    uint32_t signal_gen, kick_gen, io_gen, io_seen;
+    uint32_t signal_gen, kick_gen, io_gen, io_seen, net_seen;
+    bool net_watch;
     char tag[20];
     struct vmm_space *space;
     struct heap heap;
@@ -418,6 +419,7 @@ void w32_pipe_dump(void);
 void w32_kick(struct w32_process *p);
 void w32_kick_all(void);
 void w32_signal_local(void);
+void w32_wait_done(void);
 bool w32_thread_ready(const struct w32_thread *t);
 void w32_signal_tick(void);
 void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), const void *arg);

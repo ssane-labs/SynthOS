@@ -480,6 +480,8 @@ void w32_io_poll(void)
     w32_sock_poll();
     if (!w32)
         return;
+    if (w32->net_watch)
+        w32_winsock_poll();
     w32->io_seen = w32->io_gen;
     for (struct pending_io **pp = &pending; *pp;) {
         struct pending_io *p = *pp;

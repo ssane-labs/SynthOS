@@ -621,6 +621,8 @@ void w32_sock_poll(void)
     if (!any)
         return;
     net_poll();
+    if (w32)
+        w32->net_seen = net_activity();
     for (int i = 0; i < NET_MAX_SOCKETS; i++) {
         struct w32_object *o = socks[i].used && socks[i].event ? w32_handle_get(socks[i].event) : NULL;
         if (o && o->type == WH_EVENT && !o->value && sock_events(&socks[i])) {
@@ -673,8 +675,10 @@ static int WINAPI WSAEventSelect(UINT s, HANDLE event, long mask)
     w->event = event;
     w->mask = event ? mask : 0;
     w->reported = 0;
-    if (event)
+    if (event) {
         w->nonblocking = true;
+        w32->net_watch = true;
+    }
     return 0;
 }
 
@@ -997,6 +1001,7 @@ static int overlapped_recv(UINT s, struct wsock *w, char *buf, ULONG len, DWORD 
     for (int i = 0; i < MAX_PENDING; i++)
         if (!pending[i].used) {
             pending[i] = (struct pending){true, s, buf, len, ov, from, fromlen};
+            w32->net_watch = true;
             ov[0] = STATUS_PENDING;
             w32_set_error(WSA_IO_PENDING);
             return SOCKET_ERROR;
@@ -1007,6 +1012,8 @@ static int overlapped_recv(UINT s, struct wsock *w, char *buf, ULONG len, DWORD 
 void w32_winsock_poll(void)
 {
     net_poll();
+    if (w32)
+        w32->net_seen = net_activity();
     for (int i = 0; i < MAX_PENDING; i++) {
         struct pending *p = &pending[i];
         if (!p->used)

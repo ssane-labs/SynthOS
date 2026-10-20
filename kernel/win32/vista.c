@@ -597,6 +597,7 @@ static bool port_wait(struct w32_port *p, DWORD ms)
         w32_winsock_poll();
         w32_io_poll();
     }
+    w32_wait_done();
     return true;
 }
 
