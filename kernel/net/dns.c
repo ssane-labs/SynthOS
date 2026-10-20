@@ -1,6 +1,8 @@
 #include <synth/error.h>
 #include <synth/hal.h>
+#include <synth/heap.h>
 #include <synth/string.h>
+#include <synth/vfs.h>
 
 #include "net.h"
 
@@ -80,10 +82,66 @@ static void remember(const char *name, uint32_t ip, uint32_t ttl)
     c->expires = net_now() + (uint64_t)MIN(MAX(ttl, 30u), 3600u) * 1000;
 }
 
+/* /home/etc/hosts (C:\Windows\System32\drivers\etc\hosts): "address name..." lines, read again when it changes */
+#define HOSTS_FILE "/home/etc/hosts"
+
+static char *hosts;
+static uint32_t hosts_mtime, hosts_size;
+
+static bool hosts_lookup(const char *name, uint32_t *ip)
+{
+    struct vstat st;
+    if (vfs_stat(HOSTS_FILE, &st) != 0) {
+        kfree(hosts);
+        hosts = NULL;
+        return false;
+    }
+    if (!hosts || st.mtime != hosts_mtime || st.size != hosts_size) {
+        kfree(hosts);
+        hosts = NULL;
+        size_t len;
+        if (vfs_read_all(HOSTS_FILE, &hosts, &len) != 0)
+            return false;
+        hosts_mtime = st.mtime;
+        hosts_size = st.size;
+    }
+    for (const char *p = hosts; *p;) {
+        const char *end = strchr(p, '\n');
+        size_t n = end ? (size_t)(end - p) : strlen(p);
+        char line[256], *words[8];
+        str_copy(line, p, MIN(n + 1, sizeof(line)));
+        p += n + (end ? 1 : 0);
+        char *hash = strchr(line, '#');
+        if (hash)
+            *hash = 0;
+        int count = 0;
+        for (char *w = line; *w && count < 8;) {
+            while (*w && is_space(*w))
+                *w++ = 0;
+            if (!*w)
+                break;
+            words[count++] = w;
+            while (*w && !is_space(*w))
+                w++;
+        }
+        uint32_t addr;
+        if (count < 2 || !net_parse_ip(words[0], &addr))
+            continue;
+        for (int i = 1; i < count; i++)
+            if (!str_casecmp(words[i], name)) {
+                *ip = addr;
+                return true;
+            }
+    }
+    return false;
+}
+
 int net_resolve_start(const char *name, struct dns_query *q, uint32_t *ip)
 {
     q->sock = -1;
     if (net_parse_ip(name, ip))
+        return 0;
+    if (hosts_lookup(name, ip))
         return 0;
     if (!str_casecmp(name, "localhost")) {
         *ip = LOOPBACK;

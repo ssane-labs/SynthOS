@@ -10,6 +10,7 @@
 #define E_NOTIMPL 0x80004001u
 #define REGDB_E_CLASSNOTREG 0x80040154u
 #define CRYPT_E_NOT_FOUND 0x80092004u
+#define CRYPT_E_ASN1_BADTAG 0x8009310bu
 #define ERROR_RESOURCE_TYPE_NOT_FOUND 1813
 
 static const uint8_t *rsrc_find(const uint8_t *file, size_t size, uint32_t *out_size)
@@ -333,6 +334,32 @@ struct cert_store {
 
 #define STORE_MAGIC 0x53435254u
 
+/* CERT_INFO with what programs read from it: version, issuer, validity, subject; the rest stays empty */
+#define CERT_INFO_SIZE 112
+
+static uint64_t filetime_of(int64_t t)
+{
+    return (uint64_t)(t + 11644473600ll) * 10000000ull;
+}
+
+static void *cert_info(void *out, const BYTE *data, DWORD size)
+{
+    struct x509 x;
+    if (!x509_parse(data, size, &x))
+        return NULL;
+    uint8_t *info = out;
+    uint32_t version = 2, issuer_len = (uint32_t)x.issuer_len, subject_len = (uint32_t)x.subject_len;
+    uint64_t before = filetime_of(x.not_before), after = filetime_of(x.not_after);
+    memcpy(info, &version, 4);
+    memcpy(info + 24, &issuer_len, 4);
+    memcpy(info + 28, &x.issuer, 4);
+    memcpy(info + 32, &before, 8);
+    memcpy(info + 40, &after, 8);
+    memcpy(info + 48, &subject_len, 4);
+    memcpy(info + 52, &x.subject, 4);
+    return info;
+}
+
 static bool store_add(struct cert_store *s, const BYTE *data, DWORD size, const struct cert_context **out)
 {
     if (s->count == s->cap) {
@@ -343,10 +370,10 @@ static bool store_add(struct cert_store *s, const BYTE *data, DWORD size, const 
         s->certs = grown;
         s->cap = cap;
     }
-    struct cert_context *c = w32_zalloc(sizeof(*c));
+    struct cert_context *c = w32_zalloc(sizeof(*c) + CERT_INFO_SIZE);
     if (!c)
         return false;
-    *c = (struct cert_context){1, data, size, NULL, s};
+    *c = (struct cert_context){1, data, size, cert_info(c + 1, data, size), s};
     s->certs[s->count++] = c;
     if (out)
         *out = c;
@@ -544,6 +571,192 @@ static const struct cert_context *WINAPI CertDuplicateCertificateContext(const s
     return ctx;
 }
 
+/* a context outside any store, for a DER certificate the program holds */
+static const struct cert_context *WINAPI CertCreateCertificateContext(DWORD encoding, const BYTE *data, DWORD size)
+{
+    struct x509 x;
+    if (!data || !size || !x509_parse(data, size, &x)) {
+        w32_set_error(CRYPT_E_ASN1_BADTAG);
+        return NULL;
+    }
+    struct cert_context *c = w32_zalloc(sizeof(*c) + CERT_INFO_SIZE + size);
+    if (!c) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
+    BYTE *der = (BYTE *)(c + 1) + CERT_INFO_SIZE;
+    memcpy(der, data, size);
+    *c = (struct cert_context){encoding, der, size, cert_info(c + 1, der, size), NULL};
+    return c;
+}
+
+/* CERT_CHAIN_CONTEXT, one CERT_SIMPLE_CHAIN and its CERT_CHAIN_ELEMENTs in one block: the certificate, issuers from
+   the extra store, and a trusted root at the end when one signs the last of them */
+#define CHAIN_MAX 8
+#define TRUST_NOT_TIME_VALID 0x1u
+#define TRUST_NOT_SIGNATURE_VALID 0x8u
+#define TRUST_UNTRUSTED_ROOT 0x20u
+#define TRUST_PARTIAL_CHAIN 0x10000u
+#define TRUST_EXACT_ISSUER 0x1u
+#define TRUST_SELF_SIGNED 0x8u
+#define TRUST_IN_ROOTS 0x100u
+
+struct chain_block {
+    uint32_t context[14];
+    uint32_t simple[8];
+    uint32_t element[CHAIN_MAX][8];
+    void *element_ptrs[CHAIN_MAX];
+    void *simple_ptr;
+    struct cert_context roots[CHAIN_MAX];
+    BYTE root_info[CHAIN_MAX][CERT_INFO_SIZE];
+};
+
+static const struct cert_context *chain_issuer(struct cert_store *extra, const struct x509 *child,
+                                               const struct cert_context *self)
+{
+    for (int i = 0; extra && i < extra->count; i++) {
+        struct x509 x;
+        const struct cert_context *c = extra->certs[i];
+        if (c != self && x509_parse(c->data, c->size, &x) && x.subject_len == child->issuer_len &&
+            !memcmp(x.subject, child->issuer, x.subject_len) && x509_verify_signature(child, &x))
+            return c;
+    }
+    for (int k = 0; extra && k < extra->siblings; k++) {
+        const struct cert_context *c = chain_issuer(extra->sibling[k], child, self);
+        if (c)
+            return c;
+    }
+    return NULL;
+}
+
+static BOOL WINAPI CertGetCertificateChain(HANDLE engine, const struct cert_context *cert, const void *time,
+                                           HANDLE extra, const void *para, DWORD flags, void *reserved, void **out)
+{
+    UNUSED(engine);
+    UNUSED(time);
+    UNUSED(para);
+    UNUSED(flags);
+    UNUSED(reserved);
+    struct x509 x;
+    if (!cert || !out || !x509_parse(cert->data, cert->size, &x)) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    struct chain_block *b = w32_zalloc(sizeof(*b));
+    if (!b) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    struct cert_store *store = store_of(extra);
+    int64_t now = x509_now();
+    uint32_t errors = 0, n = 0;
+    const struct cert_context *c = cert;
+    for (;;) {
+        uint32_t e = 0, info = 0;
+        if (now < x.not_before || now > x.not_after)
+            e |= TRUST_NOT_TIME_VALID;
+        bool self = x.issuer_len == x.subject_len && !memcmp(x.issuer, x.subject, x.subject_len);
+        if (self)
+            info |= TRUST_SELF_SIGNED;
+        if (tls_root_contains(&x))
+            info |= TRUST_IN_ROOTS;
+        uint32_t *el = b->element[n];
+        el[0] = 32;
+        el[1] = (uint32_t)(uintptr_t)c;
+        el[2] = e;
+        el[3] = info;
+        b->element_ptrs[n++] = el;
+        errors |= e;
+        if (info & TRUST_IN_ROOTS)
+            break;
+        if (self) {
+            if (!x509_verify_signature(&x, &x))
+                el[2] |= TRUST_NOT_SIGNATURE_VALID;
+            errors |= el[2] | TRUST_UNTRUSTED_ROOT;
+            el[2] |= TRUST_UNTRUSTED_ROOT;
+            break;
+        }
+        const struct cert_context *next = n < CHAIN_MAX ? chain_issuer(store, &x, c) : NULL;
+        const struct x509 *root = !next && n < CHAIN_MAX ? tls_find_root(x.issuer, x.issuer_len, &x) : NULL;
+        if (root) {
+            struct cert_context *rc = &b->roots[n];
+            *rc = (struct cert_context){1, root->raw, (DWORD)root->raw_len,
+                                        cert_info(b->root_info[n], root->raw, (DWORD)root->raw_len), NULL};
+            next = rc;
+        }
+        if (!next) {
+            errors |= TRUST_PARTIAL_CHAIN;
+            break;
+        }
+        el[3] |= TRUST_EXACT_ISSUER;
+        c = next;
+        if (!x509_parse(c->data, c->size, &x)) {
+            errors |= TRUST_PARTIAL_CHAIN;
+            break;
+        }
+    }
+    uint32_t *sc = b->simple;
+    sc[0] = 32;
+    sc[1] = errors;
+    sc[3] = n;
+    sc[4] = (uint32_t)(uintptr_t)b->element_ptrs;
+    b->simple_ptr = sc;
+    b->context[0] = 56;
+    b->context[1] = errors;
+    b->context[3] = 1;
+    b->context[4] = (uint32_t)(uintptr_t)&b->simple_ptr;
+    *out = b->context;
+    return TRUE;
+}
+
+static void WINAPI CertFreeCertificateChain(void *chain)
+{
+    w32_free(chain);
+}
+
+static const void *WINAPI CertDuplicateCertificateChain(const void *chain)
+{
+    return chain;
+}
+
+/* CERT_CHAIN_POLICY_BASE and _SSL: the chain's first error, and for SSL the server name in the leaf */
+static BOOL WINAPI CertVerifyCertificateChainPolicy(const char *policy, const uint32_t *chain, const uint32_t *para,
+                                                    uint32_t *status)
+{
+    if (!chain || !status) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    uint32_t errors = chain[1], error = 0;
+    DWORD ignore = para ? para[1] : 0;
+    if (ignore & 0x1)
+        errors &= ~TRUST_NOT_TIME_VALID;
+    if (ignore & 0x10)
+        errors &= ~TRUST_UNTRUSTED_ROOT;
+    if (errors & TRUST_NOT_SIGNATURE_VALID)
+        error = 0x80096004u;
+    else if (errors & TRUST_PARTIAL_CHAIN)
+        error = 0x800b010au;
+    else if (errors & TRUST_UNTRUSTED_ROOT)
+        error = 0x800b0109u;
+    else if (errors & TRUST_NOT_TIME_VALID)
+        error = 0x800b0101u;
+    const uint32_t *extra = para ? (const uint32_t *)(uintptr_t)para[2] : NULL;
+    if (!error && (uintptr_t)policy == 4 && extra && extra[3] && !(extra[2] & 0x1000)) {
+        const uint32_t *simple = *(const uint32_t *const *)(uintptr_t)chain[4];
+        const uint32_t *leaf = *(const uint32_t *const *)(uintptr_t)simple[4];
+        const struct cert_context *c = (const struct cert_context *)(uintptr_t)leaf[1];
+        char *host = w32_narrow((const WCHAR *)(uintptr_t)extra[3]);
+        struct x509 x;
+        if (!host || !x509_parse(c->data, c->size, &x) || !x509_matches_host(&x, host))
+            error = 0x800b010fu;
+        w32_free(host);
+    }
+    status[1] = error;
+    status[2] = status[3] = error ? 0 : 0xffffffffu;
+    return TRUE;
+}
+
 static void store_release(struct cert_store *s)
 {
     if (--s->refs > 0)
@@ -625,6 +838,11 @@ static const struct w32_export crypt32_exports[] = {
     W32_FN(CryptHashCertificate),
     W32_FN(CertAddCertificateContextToStore),
     W32_FN(CertDuplicateCertificateContext),
+    W32_FN(CertCreateCertificateContext),
+    W32_FN(CertGetCertificateChain),
+    W32_FN(CertFreeCertificateChain),
+    W32_FN(CertDuplicateCertificateChain),
+    W32_FN(CertVerifyCertificateChainPolicy),
 };
 
 static uint32_t WINAPI not_supported1(uint32_t a)

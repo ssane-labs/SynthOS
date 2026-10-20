@@ -493,9 +493,40 @@ static SIZE_T WINAPI VirtualQueryEx(HANDLE process, const void *addr, struct mbi
     return VirtualQuery(addr, info, len);
 }
 
+/* every page committed and not PAGE_NOACCESS or a guard page; write also needs a writable protection */
+static BOOL bad_pointer(const void *p, SIZE_T size, bool write)
+{
+    if (!size)
+        return FALSE;
+    uint32_t a = (uint32_t)p, end = a + (uint32_t)size - 1;
+    if (!p || end < a)
+        return TRUE;
+    for (uint32_t page = a & ~4095u;; page += 4096u) {
+        struct mbi m;
+        VirtualQuery((const void *)page, &m, sizeof(m));
+        DWORD prot = m.protect & 0xffu;
+        if (m.state != MEM_COMMIT || prot == 0x01u || (m.protect & 0x100u) ||
+            (write && !(prot & (0x04u | 0x08u | 0x40u | 0x80u))))
+            return TRUE;
+        if (page >= (end & ~4095u))
+            return FALSE;
+    }
+}
+
+static BOOL WINAPI IsBadReadPtr(const void *p, SIZE_T size)
+{
+    return bad_pointer(p, size, false);
+}
+
+static BOOL WINAPI IsBadWritePtr(void *p, SIZE_T size)
+{
+    return bad_pointer(p, size, true);
+}
+
 static const struct w32_export virtual_exports[] = {
     W32_FN(VirtualAlloc),   W32_FN(VirtualFree),   W32_FN(VirtualProtect),   W32_FN(VirtualQuery),
     W32_FN(VirtualAllocEx), W32_FN(VirtualFreeEx), W32_FN(VirtualProtectEx), W32_FN(VirtualQueryEx),
+    W32_FN(IsBadReadPtr),   W32_FN(IsBadWritePtr),
 };
 
 W32_EXPORTS(virtual_module, "kernel32.dll", virtual_exports);

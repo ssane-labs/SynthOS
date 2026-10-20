@@ -12,7 +12,8 @@
 #define SFS_PTRS (BLOCK_SIZE / 4)
 #define SFS_INODES_PER_BLOCK (BLOCK_SIZE / sizeof(struct sfs_inode))
 #define SFS_DIRENTS_PER_BLOCK (BLOCK_SIZE / sizeof(struct sfs_dirent))
-#define SFS_NAME_MAX 57
+#define SFS_NAME_MAX 255
+#define SFS_PART 58
 #define SFS_ROOT 1
 #define SFS_CACHE 128
 #define SFS_WAYS 4
@@ -21,6 +22,7 @@ enum {
     SFS_FREE = 0,
     SFS_FILE = 1,
     SFS_DIR = 2,
+    SFS_CONT = 3,
 };
 
 struct sfs_super {
@@ -567,6 +569,39 @@ static int node_new(struct sfs *fs, uint32_t ino, struct mount *mnt, struct vnod
     return 0;
 }
 
+/* A name longer than one entry holds goes on in the slots right after it: SFS_CONT entries with no inode, which
+   disks from before long names never have and which older kernels pass over as free. */
+static uint32_t name_slots(size_t len)
+{
+    return len <= SFS_PART ? 1 : 1 + (uint32_t)((len - SFS_PART + SFS_PART - 1) / SFS_PART);
+}
+
+static int entry_read(struct sfs *fs, uint32_t dir, struct sfs_inode *in, uint32_t slot, struct sfs_dirent *ent)
+{
+    long n = file_io(fs, dir, in, slot * (uint32_t)sizeof(*ent), ent, sizeof(*ent), false);
+    return n == (long)sizeof(*ent) ? 0 : n < 0 ? (int)n : E_IO;
+}
+
+static int entry_name(struct sfs *fs, uint32_t dir, struct sfs_inode *in, uint32_t slot, const struct sfs_dirent *ent,
+                      char *out)
+{
+    size_t len = ent->len, at = MIN(len, (size_t)SFS_PART);
+    memcpy(out, ent->name, at);
+    for (uint32_t s = slot + 1; at < len; s++) {
+        struct sfs_dirent c;
+        int err = entry_read(fs, dir, in, s, &c);
+        if (err)
+            return err;
+        if (c.ino || c.type != SFS_CONT)
+            return E_IO;
+        size_t part = MIN(len - at, (size_t)SFS_PART);
+        memcpy(out + at, c.name, part);
+        at += part;
+    }
+    out[len] = 0;
+    return 0;
+}
+
 static int dir_find(struct sfs *fs, uint32_t dir, const char *name, uint32_t *slot, struct sfs_dirent *out)
 {
     struct sfs_inode in;
@@ -574,18 +609,23 @@ static int dir_find(struct sfs *fs, uint32_t dir, const char *name, uint32_t *sl
     if (err)
         return err;
     struct sfs_dirent ent;
+    size_t len = strlen(name);
     uint32_t count = in.size / sizeof(ent);
     for (uint32_t i = 0; i < count; i++) {
-        long n = file_io(fs, dir, &in, i * (uint32_t)sizeof(ent), &ent, sizeof(ent), false);
-        if (n != (long)sizeof(ent))
-            return n < 0 ? (int)n : E_IO;
-        if (ent.ino && ent.len == strlen(name) && memcmp(ent.name, name, ent.len) == 0) {
-            if (slot)
-                *slot = i;
-            if (out)
-                *out = ent;
-            return 0;
+        if ((err = entry_read(fs, dir, &in, i, &ent)) != 0)
+            return err;
+        if (!ent.ino || ent.len != len || memcmp(ent.name, name, MIN(len, (size_t)SFS_PART)) != 0)
+            continue;
+        if (len > SFS_PART) {
+            char full[SFS_NAME_MAX + 1];
+            if (entry_name(fs, dir, &in, i, &ent, full) != 0 || strcmp(full, name) != 0)
+                continue;
         }
+        if (slot)
+            *slot = i;
+        if (out)
+            *out = ent;
+        return 0;
     }
     return E_NOENT;
 }
@@ -596,22 +636,30 @@ static int dir_add(struct sfs *fs, uint32_t dir, const char *name, uint32_t ino,
     int err = iget(fs, dir, &in);
     if (err)
         return err;
-    struct sfs_dirent ent;
-    uint32_t count = in.size / sizeof(ent), slot = count;
+    size_t len = strlen(name);
+    uint32_t need = name_slots(len), count = in.size / sizeof(struct sfs_dirent), slot = count, run = 0;
     for (uint32_t i = 0; i < count; i++) {
-        if (file_io(fs, dir, &in, i * (uint32_t)sizeof(ent), &ent, sizeof(ent), false) == (long)sizeof(ent) &&
-            ent.ino == 0) {
-            slot = i;
+        struct sfs_dirent ent;
+        bool free = entry_read(fs, dir, &in, i, &ent) == 0 && !ent.ino && ent.type != SFS_CONT;
+        run = free ? run + 1 : 0;
+        if (run == need) {
+            slot = i + 1 - need;
             break;
         }
     }
-    memset(&ent, 0, sizeof(ent));
-    ent.ino = ino;
-    ent.type = type;
-    ent.len = (uint8_t)strlen(name);
-    memcpy(ent.name, name, ent.len);
-    long n = file_io(fs, dir, &in, slot * (uint32_t)sizeof(ent), &ent, sizeof(ent), true);
-    return n == (long)sizeof(ent) ? 0 : n < 0 ? (int)n : E_IO;
+    struct sfs_dirent ents[5];
+    memset(ents, 0, sizeof(ents));
+    ents[0].ino = ino;
+    ents[0].type = type;
+    ents[0].len = (uint8_t)len;
+    for (uint32_t k = 0, at = 0; k < need; k++, at += SFS_PART) {
+        if (k)
+            ents[k].type = SFS_CONT;
+        memcpy(ents[k].name, name + at, MIN(len - at, (size_t)SFS_PART));
+    }
+    size_t bytes = need * sizeof(ents[0]);
+    long n = file_io(fs, dir, &in, slot * (uint32_t)sizeof(ents[0]), ents, bytes, true);
+    return n == (long)bytes ? 0 : n < 0 ? (int)n : E_IO;
 }
 
 static int dir_clear(struct sfs *fs, uint32_t dir, uint32_t slot)
@@ -620,9 +668,14 @@ static int dir_clear(struct sfs *fs, uint32_t dir, uint32_t slot)
     int err = iget(fs, dir, &in);
     if (err)
         return err;
-    struct sfs_dirent ent = {0};
-    long n = file_io(fs, dir, &in, slot * (uint32_t)sizeof(ent), &ent, sizeof(ent), true);
-    return n == (long)sizeof(ent) ? 0 : E_IO;
+    struct sfs_dirent ents[5];
+    if ((err = entry_read(fs, dir, &in, slot, &ents[0])) != 0)
+        return err;
+    uint32_t need = name_slots(ents[0].len);
+    memset(ents, 0, sizeof(ents));
+    size_t bytes = need * sizeof(ents[0]);
+    long n = file_io(fs, dir, &in, slot * (uint32_t)sizeof(ents[0]), ents, bytes, true);
+    return n == (long)bytes ? 0 : E_IO;
 }
 
 static bool dir_empty(struct sfs *fs, uint32_t dir)
@@ -733,12 +786,12 @@ static int s_readdir(struct vnode *dir, uint32_t index, struct vfs_dirent *out)
     struct sfs_dirent ent;
     uint32_t seen = 0;
     for (uint32_t i = 0; i < in.size / sizeof(ent); i++) {
-        if (file_io(d->fs, d->ino, &in, i * (uint32_t)sizeof(ent), &ent, sizeof(ent), false) != (long)sizeof(ent))
+        if (entry_read(d->fs, d->ino, &in, i, &ent) != 0)
             return E_IO;
         if (!ent.ino || seen++ != index)
             continue;
-        memcpy(out->name, ent.name, ent.len);
-        out->name[ent.len] = 0;
+        if ((err = entry_name(d->fs, d->ino, &in, i, &ent, out->name)) != 0)
+            return err;
         out->type = ent.type == SFS_DIR ? VN_DIR : VN_FILE;
         struct sfs_inode child;
         out->size = iget(d->fs, ent.ino, &child) == 0 ? child.size : 0;

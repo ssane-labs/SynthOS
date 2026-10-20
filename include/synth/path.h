@@ -4,7 +4,7 @@
 #include <synth/types.h>
 
 #define PATH_MAX_LEN 256
-#define NAME_MAX_LEN 64
+#define NAME_MAX_LEN 256
 
 int path_resolve(const char *cwd, const char *path, char *out, size_t cap);
 int path_join(const char *dir, const char *name, char *out, size_t cap);

@@ -2,6 +2,7 @@
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/net.h>
+#include <synth/log.h>
 #include <synth/string.h>
 
 #include "win32.h"
@@ -1162,7 +1163,6 @@ static BOOL WINAPI ext_unsupported4(uint32_t a, uint32_t b, uint32_t c, uint32_t
 static int WINAPI WSAIoctl(UINT s, DWORD code, const void *in, DWORD in_len, void *out, DWORD out_len, DWORD *bytes,
                            void *ov, void *cb)
 {
-    UNUSED(s);
     UNUSED(ov);
     UNUSED(cb);
     if (code == 0xc8000006u && in && in_len >= 16 && out && out_len >= 4) {
@@ -1180,6 +1180,39 @@ static int WINAPI WSAIoctl(UINT s, DWORD code, const void *in, DWORD in_len, voi
             *bytes = 4;
         return 0;
     }
+    switch (code) {
+    case 0x98000004u: /* SIO_KEEPALIVE_VALS: the stack keeps its own timers */
+    case 0x9800000cu: /* SIO_UDP_CONNRESET */
+    case 0x98000010u: /* SIO_LOOPBACK_FAST_PATH */
+    case 0x9800000fu: /* SIO_UDP_NETRESET */
+        if (bytes)
+            *bytes = 0;
+        return 0;
+    case 0x48000022u: /* SIO_BASE_HANDLE and the LSP variants */
+    case 0x48000023u:
+    case 0x48000024u:
+        if (!out || out_len < 4)
+            break;
+        memcpy(out, &s, 4);
+        if (bytes)
+            *bytes = 4;
+        return 0;
+    case 0x8004667eu: /* FIONBIO, FIONREAD */
+    case 0x4004667fu: {
+        ULONG arg = 0;
+        if (in && in_len >= 4)
+            memcpy(&arg, in, 4);
+        if (ioctlsocket(s, (LONG)code, &arg) == SOCKET_ERROR)
+            return SOCKET_ERROR;
+        if (out && out_len >= 4)
+            memcpy(out, &arg, 4);
+        if (bytes)
+            *bytes = out ? 4 : 0;
+        return 0;
+    }
+    }
+    if (w32_logging_errors())
+        klog("win32: WSAIoctl %08x is not supported", (unsigned)code);
     w32_set_error(WSAEOPNOTSUPP);
     return SOCKET_ERROR;
 }
@@ -1496,6 +1529,49 @@ static BOOL WINAPI WSAGetOverlappedResult(uint32_t s, void *overlapped, DWORD *t
     return FALSE;
 }
 
+/* Overlapped accept and file sending are not there yet; programs fall back to accept() and send(). */
+static BOOL WINAPI AcceptEx(uint32_t listener, uint32_t sock, void *buf, DWORD data, DWORD local, DWORD remote,
+                            DWORD *received, void *overlapped)
+{
+    UNUSED(listener);
+    UNUSED(sock);
+    UNUSED(buf);
+    UNUSED(data);
+    UNUSED(local);
+    UNUSED(remote);
+    UNUSED(received);
+    UNUSED(overlapped);
+    w32_set_error(WSAEOPNOTSUPP);
+    return FALSE;
+}
+
+static BOOL WINAPI TransmitFile(uint32_t sock, HANDLE file, DWORD bytes, DWORD per_send, void *overlapped,
+                                void *buffers, DWORD flags)
+{
+    UNUSED(sock);
+    UNUSED(file);
+    UNUSED(bytes);
+    UNUSED(per_send);
+    UNUSED(overlapped);
+    UNUSED(buffers);
+    UNUSED(flags);
+    w32_set_error(WSAEOPNOTSUPP);
+    return FALSE;
+}
+
+/* the AcceptEx buffer: received data, then each address as its length and the sockaddr */
+static void WINAPI GetAcceptExSockaddrs(uint8_t *buf, DWORD data, DWORD local, DWORD remote, void **local_addr,
+                                        int *local_len, void **remote_addr, int *remote_len)
+{
+    UNUSED(remote);
+    uint8_t *p = buf + data;
+    memcpy(local_len, p, 4);
+    *local_addr = p + 4;
+    p += local;
+    memcpy(remote_len, p, 4);
+    *remote_addr = p + 4;
+}
+
 static const struct w32_export winsock_exports[] = {
     W32_FN(GetAddrInfoExW), W32_FN(FreeAddrInfoExW), W32_AS("GetAddrInfoExCancel", w32_one1),
     W32_FN(WSALookupServiceBeginW), W32_FN(WSALookupServiceNextW), W32_AS("WSALookupServiceEnd", w32_zero1),
@@ -1522,6 +1598,7 @@ static const struct w32_export winsock_exports[] = {
     W32_FN(WSAIoctl),       W32_FN(WSASendTo),        W32_FN(WSARecvFrom),     W32_FN(WSAConnect),
     W32_FN(WSAStringToAddressW), W32_FN(getnameinfo), W32_FN(GetNameInfoW),    W32_FN(getprotobyname),
     W32_FN(getprotobynumber), W32_FN(getservbyport),  W32_FN(WSADuplicateSocketW),
+    W32_FN(AcceptEx),       W32_FN(GetAcceptExSockaddrs),
 };
 
 static const char *const winsock_ordinals[] = {
@@ -1534,9 +1611,18 @@ static const char *const winsock_ordinals[] = {
     [52] = "gethostbyname",  [53] = "getprotobyname", [54] = "getprotobynumber", [55] = "getservbyname",
     [56] = "getservbyport", [57] = "gethostname",   [111] = "WSAGetLastError",
     [112] = "WSASetLastError", [115] = "WSAStartup", [116] = "WSACleanup",   [151] = "__WSAFDIsSet",
+    [1141] = "AcceptEx", [1142] = "GetAcceptExSockaddrs",
 };
 
 W32_EXPORTS(winsock_module, "ws2_32.dll", winsock_exports, .attach = winsock_attach, .ordinals = winsock_ordinals,
             .ordinal_count = ARRAY_SIZE(winsock_ordinals));
 W32_EXPORTS(wsock32_module, "wsock32.dll", winsock_exports, .attach = winsock_attach, .ordinals = winsock_ordinals,
             .ordinal_count = ARRAY_SIZE(winsock_ordinals));
+
+static const struct w32_export mswsock_exports[] = {
+    W32_FN(AcceptEx),
+    W32_FN(TransmitFile),
+    W32_FN(GetAcceptExSockaddrs),
+};
+
+W32_EXPORTS(mswsock_module, "mswsock.dll", mswsock_exports);

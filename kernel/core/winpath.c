@@ -7,6 +7,7 @@
 #include <synth/winpath.h>
 
 static const struct winpath_rule rules[] = {
+    {"C:\\Windows\\System32\\drivers\\etc", "/home/etc"},
     {"C:\\Windows\\System32", "/system/win32"},
     {"C:\\Windows\\SysWOW64", "/system/win32"},
     {"C:\\Windows\\Temp", "/home/tmp"},

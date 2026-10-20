@@ -354,7 +354,8 @@ static void builtin_classes(void)
         const char *name;
         enum control_kind kind;
         int background;
-    } list[] = {{"Button", CK_BUTTON, 16}, {"Static", CK_STATIC, 16}, {"Edit", CK_EDIT, 6}};
+    } list[] = {{"Button", CK_BUTTON, 16}, {"Static", CK_STATIC, 16}, {"Edit", CK_EDIT, 6},
+                {"msctls_progress32", CK_PROGRESS, 16}};
     if (!find_class("#32770")) {
         struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
         if (c)
@@ -542,6 +543,8 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
     builtin_classes();
     struct w32_class *cls = find_class(class_name);
     if (!cls) {
+        if (w32_logging_errors())
+            klog("win32: no window class %s", class_name);
         w32_set_error(1407);
         return NULL;
     }

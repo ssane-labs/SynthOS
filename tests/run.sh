@@ -288,6 +288,18 @@ wininst | grep fileop
 fileop copy=0 copied=1 delete=0 gone=1 reboot-delete=1
 wininst | grep poll
 poll child exit=7 done=1
+wintest chain | grep root
+root chain elements=1 errors=0 policy=0
+wintest chain | grep self
+self chain elements=1 errors=20 policy=800b0109
+wintest chain | grep junk
+junk context=0 info=1
+echo long > /home/a123456789b123456789c123456789d123456789e123456789f123456789g123456789h123456789.txt && cat /home/a123456789b123456789c123456789d123456789e123456789f123456789g123456789h123456789.txt
+long
+mv /home/a123456789b123456789c123456789d123456789e123456789f123456789g123456789h123456789.txt /home/a123456789b123456789c123456789d123456789e123456789f123456789g123456789h123456789-moved.txt && ls /home | grep moved
+a123456789b123456789c123456789d123456789e123456789f123456789g123456789h123456789-moved.txt
+mkdir -p /home/etc && echo '10.1.2.3 example.test # test' > /home/etc/hosts && host example.test
+example.test has address 10.1.2.3
 ls C:/Windows/System32 | grep -c dll
 kernel32.dll
 cd 'C:\Program Files'; pwd; cd

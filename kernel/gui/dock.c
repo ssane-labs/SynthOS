@@ -1137,26 +1137,17 @@ bool dock_hit(int x, int y)
 
 static void empty_trash(void)
 {
-    struct vdir d;
-    if (vfs_opendir(TRASH_DIR, &d) != 0)
-        return;
-    char names[64][NAME_MAX_LEN];
-    int n = 0;
-    struct vfs_dirent ent;
-    while (n < 64 && vfs_readdir(&d, &ent) == 0)
-        if (strcmp(ent.name, ".") && strcmp(ent.name, ".."))
-            str_copy(names[n++], ent.name, NAME_MAX_LEN);
-    vfs_closedir(&d);
-    for (int i = 0; i < n; i++) {
+    /* the directory is read again after each removal, so deleting never skips an entry */
+    for (int left = 4096; left > 0; left--) {
+        struct vdir d;
+        struct vfs_dirent ent;
+        if (vfs_opendir(TRASH_DIR, &d) != 0)
+            break;
+        int r = vfs_readdir(&d, &ent);
+        vfs_closedir(&d);
         char path[PATH_MAX_LEN];
-        path_join(TRASH_DIR, names[i], path, sizeof(path));
-        if (vfs_is_dir(path)) {
-            char cmd[PATH_MAX_LEN + 16];
-            ksnprintf(cmd, sizeof(cmd), "rm -r '%s'", path);
-            gui_terminal_run(cmd);
-        } else {
-            vfs_unlink(path);
-        }
+        if (r != 0 || path_join(TRASH_DIR, ent.name, path, sizeof(path)) != 0 || vfs_remove_tree(path) != 0)
+            break;
     }
     dock_changed();
 }

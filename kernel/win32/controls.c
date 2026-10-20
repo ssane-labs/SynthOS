@@ -1,5 +1,6 @@
 #include <synth/config.h>
 #if CONFIG_GUI
+#include <synth/hal.h>
 #include <synth/string.h>
 
 #include "w32gui.h"
@@ -35,6 +36,16 @@ enum {
     SS_GRAYRECT = 0x5,
     SS_WHITERECT = 0x6,
     SS_ETCHEDHORZ = 0x10,
+    PBS_MARQUEE = 0x8,
+    PBM_SETRANGE = 0x401,
+    PBM_SETPOS = 0x402,
+    PBM_DELTAPOS = 0x403,
+    PBM_SETSTEP = 0x404,
+    PBM_STEPIT = 0x405,
+    PBM_SETRANGE32 = 0x406,
+    PBM_GETRANGE = 0x407,
+    PBM_GETPOS = 0x408,
+    PBM_SETMARQUEE = 0x40a,
 };
 
 static void notify(struct w32_window *w, unsigned code)
@@ -248,6 +259,86 @@ static void paint_edit(struct w32_window *w)
     end(w, &p);
 }
 
+static void paint_progress(struct w32_window *w)
+{
+    struct paint_ctx p;
+    if (!begin(w, &p, 0))
+        return;
+    struct rect r = p.r;
+    int radius = MIN(r.h / 2, 4);
+    gfx_round(p.c, r, radius, style.field);
+    gfx_round_frame(p.c, r, radius, style.field_border);
+    int span = w->range_max - w->range_min, done;
+    if (w->style & PBS_MARQUEE) {
+        int seg = r.w / 4, at = (int)(hal_ticks_ms() / 8 % (uint64_t)(r.w + seg)) - seg;
+        struct rect bar = rect_intersect((struct rect){r.x + at, r.y, seg, r.h}, r);
+        if (bar.w > 0)
+            gfx_round(p.c, bar, radius, style.accent);
+    } else if (span > 0 && (done = (int)((int64_t)(MIN(MAX(w->pos, w->range_min), w->range_max) - w->range_min) *
+                                         r.w / span)) > 0) {
+        gfx_round(p.c, (struct rect){r.x, r.y, done, r.h}, radius, style.accent);
+    }
+    end(w, &p);
+}
+
+static LRESULT set_pos(struct w32_window *w, int pos)
+{
+    int old = w->pos;
+    w->pos = MIN(MAX(pos, w->range_min), w->range_max);
+    if (w->pos != old)
+        w32_invalidate(w, NULL, true);
+    return old;
+}
+
+static LRESULT progress_msg(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (!w->range_max && !w->range_min && !w->step) {
+        w->range_max = 100;
+        w->step = 10;
+    }
+    LRESULT old_range = (LRESULT)((uint32_t)(uint16_t)w->range_min | (uint32_t)(uint16_t)w->range_max << 16);
+    switch (msg) {
+    case PBM_SETRANGE:
+        w->range_min = (int16_t)(lp & 0xffff);
+        w->range_max = (int16_t)((uint32_t)lp >> 16);
+        set_pos(w, w->pos);
+        w32_invalidate(w, NULL, true);
+        return old_range;
+    case PBM_SETRANGE32:
+        w->range_min = (int)wp;
+        w->range_max = (int)lp;
+        set_pos(w, w->pos);
+        w32_invalidate(w, NULL, true);
+        return old_range;
+    case PBM_GETRANGE:
+        if (lp) {
+            ((int *)lp)[0] = w->range_min;
+            ((int *)lp)[1] = w->range_max;
+        }
+        return wp ? w->range_min : w->range_max;
+    case PBM_SETPOS: return set_pos(w, (int)wp);
+    case PBM_DELTAPOS: return set_pos(w, w->pos + (int)wp);
+    case PBM_SETSTEP: {
+        int old = w->step;
+        w->step = (int)wp;
+        return old;
+    }
+    case PBM_STEPIT: {
+        int old = w->pos, next = w->pos + w->step;
+        if (next > w->range_max)
+            next = w->range_min + (next - w->range_max);
+        w->pos = MIN(MAX(next, w->range_min), w->range_max);
+        w32_invalidate(w, NULL, true);
+        return old;
+    }
+    case PBM_GETPOS: return w->pos;
+    case PBM_SETMARQUEE:
+        w32_invalidate(w, NULL, true);
+        return TRUE;
+    default: return 0;
+    }
+}
+
 static void edit_insert(struct w32_window *w, const char *s)
 {
     size_t len = strlen(w->text), add = strlen(s);
@@ -374,6 +465,8 @@ LRESULT WINAPI w32_control_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
             paint_button(w);
         else if (w->control == CK_STATIC)
             paint_static(w);
+        else if (w->control == CK_PROGRESS)
+            paint_progress(w);
         else
             paint_edit(w);
         return 0;
@@ -457,7 +550,10 @@ LRESULT WINAPI w32_control_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         w32_invalidate(w, NULL, true);
         return TRUE;
     case WM_GETDLGCODE: return w->control == CK_EDIT ? 0x85 : 0;
-    default: return w32_def_window_proc(h, msg, wp, lp);
+    default:
+        if (w->control == CK_PROGRESS && msg >= PBM_SETRANGE && msg <= 0x410)
+            return progress_msg(w, msg, wp, lp);
+        return w32_def_window_proc(h, msg, wp, lp);
     }
 }
 #endif

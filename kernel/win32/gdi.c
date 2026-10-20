@@ -2186,7 +2186,20 @@ void w32_gdi_reset(void)
     default_bitmap_obj.stock = true;
 }
 
+/* Fonts a program carries: accepted, and text asking for them is drawn with the closest built-in face. */
+static HANDLE WINAPI AddFontMemResourceEx(void *data, DWORD size, void *reserved, DWORD *count)
+{
+    UNUSED(reserved);
+    if (!data || !size || !count) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    *count = 1;
+    return (HANDLE)(uintptr_t)0x5f000000u;
+}
+
 static const struct w32_export gdi_exports[] = {
+    W32_FN(AddFontMemResourceEx), W32_AS("RemoveFontMemResourceEx", w32_one1),
     W32_FN(GetStockObject), W32_FN(CreateSolidBrush), W32_FN(CreateHatchBrush), W32_FN(CreateBrushIndirect),
     W32_FN(CreatePen), W32_FN(CreatePenIndirect), W32_FN(ExtCreatePen), W32_FN(CreateFontIndirectA),
     W32_FN(CreateFontIndirectW), W32_FN(CreateFontA), W32_FN(CreateFontW), W32_FN(SelectObject), W32_FN(DeleteObject),

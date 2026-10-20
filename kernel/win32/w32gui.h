@@ -142,6 +142,7 @@ enum control_kind {
     CK_BUTTON,
     CK_STATIC,
     CK_EDIT,
+    CK_PROGRESS,
 };
 
 struct w32_class {
@@ -193,6 +194,7 @@ struct w32_window {
     char *edit_buf;
     size_t edit_cap, edit_len, caret;
     int scroll;
+    int range_min, range_max, pos, step;
     void *bar;
     void *dlgproc;
     intptr_t dlg_result;
