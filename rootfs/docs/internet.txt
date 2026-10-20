@@ -26,6 +26,10 @@ Chromium
   bundle extract dir unpacks it by hand.
   Menus, drop-down lists, pop-up windows, downloads and choosing a file
   to upload (the SynthOS file panel) work like on any computer.
+  Downloads go to /home/Downloads. Chromium itself blocks a download from
+  a plain http:// site; https:// downloads (VS Code, installers) finish.
+  The second start is much faster: the browser's code stays in memory
+  after it is closed.
 
 Chrome
   Google Chrome is there too: launch Chrome. On an image without Chromium
