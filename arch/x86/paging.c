@@ -1,3 +1,4 @@
+#include <synth/arch_win32.h>
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/string.h>
@@ -25,7 +26,6 @@ static uint32_t heap_phys;
 static uint32_t heap_bytes;
 static uint32_t early_tables[4][1024] __attribute__((aligned(4096)));
 static int early_used;
-static uint64_t *pml4, *long_pdpt;
 
 struct region {
     uint32_t first_pfn, count, free, hint;
@@ -76,12 +76,58 @@ static int shift(void)
     return pae ? 21 : 22;
 }
 
+/* Every address space has page directories of its own for 0-3 GB (PAE) or a whole directory (32-bit paging), so
+   switching spaces is one CR3 load and processors can run different spaces at once. Kernel entries (the low 4 MB,
+   device memory above VMM_USER_END) are the same in all of them; the 3-4 GB directory is shared outright. */
+struct vmm_space {
+    void *tables[2048];
+    uint32_t used[2048 / 32];
+    uint32_t commit_start, commit_end;
+    uint64_t *root;
+    uint64_t *dirs[3];
+    uint32_t *dir;
+    uint64_t *pml4, *lpdpt;
+    struct vmm_space *next;
+};
+
+static struct vmm_space boot_space = {.root = pdpt, .dirs = {pdirs[0], pdirs[1], pdirs[2]}, .dir = page_dir};
+static struct vmm_space *current_space = &boot_space;
+static struct vmm_space *spaces;
+
+static uint32_t user_first(void)
+{
+    return VMM_USER_START >> shift();
+}
+
+static uint32_t user_last(void)
+{
+    return VMM_USER_END >> shift();
+}
+
+static bool user_index(uint32_t index)
+{
+    return index >= user_first() && index < user_last();
+}
+
+static void dir_write(struct vmm_space *s, uint32_t index, uint64_t value)
+{
+    if (!pae)
+        s->dir[index] = (uint32_t)value;
+    else if (index >= 1536)
+        pdirs[3][index & 511] = value;
+    else
+        s->dirs[index >> 9][index & 511] = value;
+}
+
 static void set_pde(uint32_t index, uint64_t value)
 {
-    if (pae)
-        pdirs[index >> 9][index & 511] = value;
-    else
-        page_dir[index] = (uint32_t)value;
+    if (user_index(index)) {
+        dir_write(current_space, index, value);
+        return;
+    }
+    dir_write(&boot_space, index, value);
+    for (struct vmm_space *s = spaces; s; s = s->next)
+        dir_write(s, index, value);
 }
 
 static void set_pte(uint32_t v, uint64_t phys, uint32_t flags)
@@ -395,66 +441,100 @@ int vmm_map_frames(uintptr_t vaddr, const uint32_t *pfns, size_t n)
     return 0;
 }
 
+static bool long_tables(struct vmm_space *s);
+
 uint32_t vmm_long_mode_root(void)
 {
-    if (!pae)
-        return 0;
-    if (!pml4) {
-        pml4 = kmalloc_pages(4096);
-        long_pdpt = kmalloc_pages(4096);
-        if (!pml4 || !long_pdpt)
-            return 0;
-        memset(pml4, 0, 4096);
-        memset(long_pdpt, 0, 4096);
-        for (int i = 0; i < 4; i++)
-            long_pdpt[i] = (uint32_t)pdirs[i] | PTE_PRESENT | PTE_WRITE | PTE_USER;
-        pml4[0] = phys_of(long_pdpt) | PTE_PRESENT | PTE_WRITE | PTE_USER;
-    }
-    return phys_of(pml4);
+    return pae && long_tables(current_space) ? phys_of(current_space->pml4) : 0;
 }
 
 uint32_t vmm_pae_root(void)
 {
-    return pae ? (uint32_t)pdpt : (uint32_t)page_dir;
+    return pae ? phys_of(current_space->root) : phys_of(current_space->dir);
 }
 
 #define PTE_OWNED 0x200u
 #define PTE_COW 0x400u
 
-struct vmm_space {
-    void *tables[2048];
-    uint32_t used[2048 / 32];
-    uint32_t commit_start, commit_end;
-};
-
-static struct vmm_space boot_space;
-static struct vmm_space *current_space = &boot_space;
-
-static uint32_t user_first(void)
-{
-    return VMM_USER_START >> shift();
-}
-
-static uint32_t user_last(void)
-{
-    return VMM_USER_END >> shift();
-}
-
-static void reload_cr3(void)
-{
-    uint32_t cr3;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-    __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
-}
 
 static void note_table(uint32_t index)
 {
     current_space->used[index / 32] |= 1u << (index % 32);
 }
 
+static bool long_tables(struct vmm_space *s)
+{
+    if (s->pml4)
+        return true;
+    if (!(s->pml4 = kmalloc_pages(4096)) || !(s->lpdpt = kmalloc_pages(4096))) {
+        if (s->pml4)
+            kfree_pages(s->pml4);
+        s->pml4 = NULL;
+        return false;
+    }
+    memset(s->pml4, 0, 4096);
+    memset(s->lpdpt, 0, 4096);
+    for (int i = 0; i < 4; i++)
+        s->lpdpt[i] = phys_of(i < 3 ? (void *)s->dirs[i] : (void *)pdirs[3]) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    s->pml4[0] = phys_of(s->lpdpt) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    return true;
+}
+
+static void space_free(struct vmm_space *s)
+{
+    for (int i = 0; i < 3; i++)
+        if (s->dirs[i])
+            kfree_pages(s->dirs[i]);
+    if (s->root)
+        kfree_pages(s->root);
+    if (s->dir)
+        kfree_pages(s->dir);
+    if (s->pml4)
+        kfree_pages(s->pml4);
+    if (s->lpdpt)
+        kfree_pages(s->lpdpt);
+    kfree(s);
+}
+
 struct vmm_space *vmm_space_create(void)
 {
-    return kzalloc(sizeof(struct vmm_space));
+    struct vmm_space *s = kzalloc(sizeof(struct vmm_space));
+    if (!s)
+        return NULL;
+    if (pae) {
+        s->root = kmalloc_pages(4096);
+        for (int i = 0; i < 3; i++)
+            s->dirs[i] = kmalloc_pages(4096);
+        if (!s->root || !s->dirs[0] || !s->dirs[1] || !s->dirs[2] ||
+            (arch_long_supported() && !long_tables(s))) {
+            space_free(s);
+            return NULL;
+        }
+        memset(s->root, 0, 4096);
+        for (int i = 0; i < 3; i++) {
+            memcpy(s->dirs[i], pdirs[i], 4096);
+            s->root[i] = phys_of(s->dirs[i]) | PTE_PRESENT;
+        }
+        s->root[3] = pdpt[3];
+    } else {
+        if (!(s->dir = kmalloc_pages(4096))) {
+            space_free(s);
+            return NULL;
+        }
+        memcpy(s->dir, page_dir, 4096);
+    }
+    for (uint32_t i = user_first(); i < user_last(); i++)
+        dir_write(s, i, 0);
+    s->next = spaces;
+    spaces = s;
+    return s;
+}
+
+static uint32_t space_root(struct vmm_space *s)
+{
+    if (arch_long_active() && long_tables(s))
+        return phys_of(s->pml4);
+    return pae ? phys_of(s->root) : phys_of(s->dir);
 }
 
 struct vmm_space *vmm_space_current(void)
@@ -468,18 +548,18 @@ void vmm_space_switch(struct vmm_space *s)
         s = &boot_space;
     if (!enabled || s == current_space)
         return;
-    /* only the directory entries either space ever had a table for */
+    /* the kernel's view of the tables: only the entries either space ever had a table for */
     for (uint32_t w = 0; w < ARRAY_SIZE(s->used); w++)
         for (uint32_t bits = current_space->used[w] | s->used[w]; bits; bits &= bits - 1) {
             uint32_t i = w * 32 + (uint32_t)__builtin_ctz(bits);
-            if (i < user_first() || i >= user_last())
+            if (!user_index(i))
                 continue;
             current_space->tables[i] = tables[i];
             tables[i] = s->tables[i];
-            set_pde(i, tables[i] ? phys_of(tables[i]) | PTE_PRESENT | PTE_WRITE | PTE_USER : 0);
         }
     current_space = s;
-    reload_cr3();
+    uint32_t root = space_root(s);
+    __asm__ volatile("mov %0, %%cr3" : : "r"(root) : "memory");
 }
 
 static uint64_t pte_get(void *t, uint32_t v)
@@ -529,7 +609,12 @@ void vmm_space_destroy(struct vmm_space *s)
     if (!s || s == &boot_space || s == current_space)
         return;
     release_tables(s->tables, VMM_USER_START, VMM_USER_END, true);
-    kfree(s);
+    for (struct vmm_space **pp = &spaces; *pp; pp = &(*pp)->next)
+        if (*pp == s) {
+            *pp = s->next;
+            break;
+        }
+    space_free(s);
 }
 
 void vmm_space_set_commit(uintptr_t start, size_t size)
