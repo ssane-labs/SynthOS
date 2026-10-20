@@ -278,6 +278,16 @@ winevt | grep -c "ok,"
 4
 winipc2
 duplicate ok/ok, child a exit 0, child b exit 0
+wininst | grep ini
+ini name=Valve count=42 keys=Name,Count/11 other=gone
+wininst | grep "named first"
+named first=0 second=183 same=1 wait=0 missing=0/2 wrong=0
+wininst | grep search
+search found=1 part=setup.ini system=1 none=0
+wininst | grep fileop
+fileop copy=0 copied=1 delete=0 gone=1 reboot-delete=1
+wininst | grep poll
+poll child exit=7 done=1
 ls C:/Windows/System32 | grep -c dll
 kernel32.dll
 cd 'C:\Program Files'; pwd; cd

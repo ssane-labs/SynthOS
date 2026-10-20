@@ -128,34 +128,6 @@ static DWORD WINAPI GetPriorityClass(HANDLE process)
     return 0x20;
 }
 
-static DWORD WINAPI GetPrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR def, LPWSTR out, DWORD size,
-                                             LPCWSTR file)
-{
-    UNUSED(app);
-    UNUSED(key);
-    UNUSED(file);
-    if (!out || !size)
-        return 0;
-    DWORD n = def ? (DWORD)MIN(w32_wcslen(def), size - 1) : 0;
-    if (n)
-        memcpy(out, def, n * sizeof(WCHAR));
-    out[n] = 0;
-    return n;
-}
-
-static DWORD WINAPI GetPrivateProfileStringA(LPCSTR app, LPCSTR key, LPCSTR def, LPSTR out, DWORD size, LPCSTR file)
-{
-    UNUSED(app);
-    UNUSED(key);
-    UNUSED(file);
-    if (!out || !size)
-        return 0;
-    DWORD n = def ? (DWORD)MIN(strlen(def), size - 1) : 0;
-    memcpy(out, def ? def : "", n);
-    out[n] = 0;
-    return n;
-}
-
 static BOOL WINAPI GetSystemPowerStatus(uint8_t *status)
 {
     memset(status, 0, 12);
@@ -480,8 +452,6 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_FN(GetPackagesByPackageFamily),
     W32_FN(GetPriorityClass),
     W32_AS("SetPriorityClass", w32_one2),
-    W32_FN(GetPrivateProfileStringW),
-    W32_FN(GetPrivateProfileStringA),
     W32_AS("GetProcessInformation", w32_fail4),
     W32_AS("SetProcessInformation", w32_one4),
     W32_FN(GetSystemPowerStatus),

@@ -1,7 +1,11 @@
+#include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
+#include <synth/log.h>
+#include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
+#include <synth/vfs.h>
 
 #include "win32.h"
 
@@ -80,6 +84,15 @@ static LONG WINAPI RegEnumKeyExA(HANDLE key, DWORD index, LPSTR name, DWORD *len
     UNUSED(cls);
     UNUSED(cls_len);
     UNUSED(time);
+    return ERROR_NO_MORE_ITEMS;
+}
+
+static LONG WINAPI RegEnumKeyW(HANDLE key, DWORD index, LPWSTR name, DWORD len)
+{
+    UNUSED(key);
+    UNUSED(index);
+    UNUSED(name);
+    UNUSED(len);
     return ERROR_NO_MORE_ITEMS;
 }
 
@@ -166,6 +179,7 @@ static const struct w32_export advapi32_exports[] = {
     W32_AS("RegSetValueExA", w32_zero6), W32_AS("RegSetValueExW", w32_zero6), W32_AS("RegCloseKey", w32_zero1),
     W32_AS("RegFlushKey", w32_zero1), W32_AS("RegDeleteKeyA", w32_zero2), W32_AS("RegDeleteKeyW", w32_zero2),
     W32_AS("RegDeleteValueA", w32_zero2), W32_AS("RegDeleteValueW", w32_zero2), W32_FN(RegEnumKeyExA),
+    W32_AS("RegEnumKeyA", RegEnumKeyW), W32_FN(RegEnumKeyW),
     W32_AS("RegEnumKeyExW", RegEnumKeyExA), W32_AS("RegEnumValueA", RegEnumKeyExA),
     W32_AS("RegEnumValueW", RegEnumKeyExA), W32_FN(RegQueryInfoKeyA), W32_AS("RegQueryInfoKeyW", RegQueryInfoKeyA),
     W32_FN(GetUserNameA), W32_FN(GetUserNameW), W32_AS("SystemFunction036", RtlGenRandom),
@@ -462,6 +476,147 @@ static void WINAPI SHChangeNotify(LONG event, UINT flags, const void *a, const v
     UNUSED(b);
 }
 
+#define FO_MOVE 1
+#define FO_COPY 2
+#define FO_DELETE 3
+#define FO_RENAME 4
+#define FOF_MULTIDESTFILES 0x1
+
+/* one source path (no wildcards) to its target */
+static int file_op_one(UINT func, const char *src, const char *dst)
+{
+    w32_fcache_forget(src);
+    if (func == FO_DELETE)
+        return vfs_remove_tree(src);
+    w32_fcache_forget(dst);
+    if (func == FO_COPY)
+        return vfs_copy(src, dst);
+    if (vfs_exists(dst) && strcmp(src, dst))
+        vfs_remove_tree(dst);
+    int err = vfs_rename(src, dst);
+    if (err == E_XDEV && (err = vfs_copy(src, dst)) == 0)
+        err = vfs_remove_tree(src);
+    return err;
+}
+
+/* a source, expanded when its last part has wildcards; into_dir puts each one under dst by its own name */
+static int file_op_source(UINT func, const char *src, const char *dst, bool into_dir)
+{
+    const char *base = path_basename(src);
+    if (!has_wildcard(base)) {
+        char target[PATH_MAX_LEN] = "";
+        if (func != FO_DELETE && into_dir && path_join(dst, base, target, sizeof(target)))
+            return E_NAMETOOLONG;
+        return file_op_one(func, src, func == FO_DELETE ? NULL : into_dir ? target : dst);
+    }
+    char dir[PATH_MAX_LEN];
+    path_dirname(src, dir, sizeof(dir));
+    struct vdir d;
+    int err = vfs_opendir(dir, &d);
+    if (err)
+        return err;
+    char(*names)[NAME_MAX_LEN] = NULL;
+    int count = 0, cap = 0;
+    struct vfs_dirent ent;
+    while (!err && vfs_readdir(&d, &ent) == 0) {
+        if (!wildcard_match(base, ent.name, true))
+            continue;
+        if (count == cap) {
+            cap = cap ? cap * 2 : 16;
+            void *grown = w32_alloc((size_t)cap * NAME_MAX_LEN);
+            if (!grown) {
+                err = E_NOMEM;
+                break;
+            }
+            if (names)
+                memcpy(grown, names, (size_t)count * NAME_MAX_LEN);
+            w32_free(names);
+            names = grown;
+        }
+        str_copy(names[count++], ent.name, NAME_MAX_LEN);
+    }
+    vfs_closedir(&d);
+    for (int i = 0; i < count && !err; i++) {
+        char from[PATH_MAX_LEN], to[PATH_MAX_LEN];
+        if (path_join(dir, names[i], from, sizeof(from)) ||
+            (func != FO_DELETE && path_join(dst, names[i], to, sizeof(to))))
+            err = E_NAMETOOLONG;
+        else
+            err = file_op_one(func, from, func == FO_DELETE ? NULL : to);
+    }
+    w32_free(names);
+    return err;
+}
+
+static int file_operation(UINT func, const char *from, const char *to, WORD flags)
+{
+    int sources = 0;
+    bool wild = false;
+    for (const char *s = from; *s; s += strlen(s) + 1, sources++)
+        wild |= has_wildcard(path_basename(s));
+    if (func < FO_MOVE || func > FO_RENAME || !sources || (func != FO_DELETE && (!to || !*to)))
+        return ERROR_INVALID_PARAMETER;
+    const char *t = to;
+    int err = 0;
+    for (const char *s = from; *s && !err; s += strlen(s) + 1) {
+        char src[PATH_MAX_LEN], dst[PATH_MAX_LEN] = "";
+        if (w32_path(s, src, sizeof(src)) || (func != FO_DELETE && w32_path(t, dst, sizeof(dst))))
+            return ERROR_INVALID_PARAMETER;
+        bool into_dir = false;
+        if (func == FO_COPY || func == FO_MOVE) {
+            into_dir = wild || vfs_is_dir(dst) || (sources > 1 && !(flags & FOF_MULTIDESTFILES));
+            if (into_dir && !vfs_is_dir(dst))
+                err = vfs_mkdirs(dst);
+        } else if (func == FO_DELETE && !has_wildcard(path_basename(src)) && !vfs_exists(src)) {
+            continue;
+        }
+        if (!err)
+            err = file_op_source(func, src, dst, into_dir);
+        if ((flags & FOF_MULTIDESTFILES) && func != FO_DELETE && t[strlen(t) + 1])
+            t += strlen(t) + 1;
+    }
+    if (err && w32_logging_errors())
+        klog("win32: SHFileOperation %u %s: %d", func, from, err);
+    return err ? (int)w32_error_from_vfs(err) : 0;
+}
+
+static char *narrow_list(const WCHAR *w)
+{
+    if (!w)
+        return NULL;
+    size_t n = 0;
+    while (w[n] || w[n + 1])
+        n++;
+    n += 2;
+    size_t len = w32_wide_to_cp(w, (int)n, NULL, 0, 1);
+    char *s = w32_alloc(len + 2);
+    if (s) {
+        w32_wide_to_cp(w, (int)n, s, len, 1);
+        s[len] = s[len + 1] = 0;
+    }
+    return s;
+}
+
+/* SHFILEOPSTRUCT: hwnd, wFunc, pFrom, pTo, fFlags, fAnyOperationsAborted, hNameMappings, lpszProgressTitle */
+static int WINAPI SHFileOperationA(uint32_t *op)
+{
+    int r = file_operation(op[1], (const char *)op[2], (const char *)op[3], (WORD)op[4]);
+    op[5] = r != 0;
+    op[6] = 0;
+    return r;
+}
+
+static int WINAPI SHFileOperationW(uint32_t *op)
+{
+    char *from = narrow_list((const WCHAR *)op[2]), *to = narrow_list((const WCHAR *)op[3]);
+    int r = from ? file_operation(op[1], from, to, (WORD)op[4]) : ERROR_INVALID_PARAMETER;
+    w32_free(from);
+    w32_free(to);
+    op[5] = r != 0;
+    op[6] = 0;
+    return r;
+}
+
 static const struct w32_export shell32_exports[] = {
     W32_FN(SHGetFolderPathA),        W32_FN(SHGetFolderPathW),   W32_FN(SHGetSpecialFolderPathA),
     W32_FN(SHGetSpecialFolderPathW), W32_FN(CommandLineToArgvW), W32_FN(ShellExecuteA),
@@ -476,7 +631,8 @@ static const struct w32_export shell32_exports[] = {
     W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("DragQueryFileW", w32_zero4),
     W32_AS("SHCreateAssociationRegistration", shell_notimpl2), W32_AS("SHChangeNotifyRegister", w32_zero6),
     W32_AS("SHChangeNotifyDeregister", w32_one1), W32_AS("ILCreateFromPathW", w32_zero1),
-    W32_AS("IsUserAnAdmin", w32_one0),
+    W32_AS("IsUserAnAdmin", w32_one0), W32_FN(SHFileOperationA), W32_FN(SHFileOperationW),
+    W32_AS("SHBrowseForFolderA", w32_zero1), W32_AS("SHBrowseForFolderW", w32_zero1),
 };
 
 static const char *const shell32_ordinals[681] = {

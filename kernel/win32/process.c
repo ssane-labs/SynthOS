@@ -195,6 +195,7 @@ bool w32_object_clone(struct w32_object *dst, const struct w32_object *src)
         return false;
     *dst = *src;
     dst->refs = 1;
+    dst->name_serial = 0;
     dst->delete_on_close = false;
     dst->path = src->path ? kstrdup(src->path) : NULL;
     dst->file = NULL;

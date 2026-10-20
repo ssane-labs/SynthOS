@@ -3031,6 +3031,7 @@ static const struct w32_export subclass_exports[] = {
 };
 
 static const char *const subclass_ordinals[414] = {
+    [17] = "InitCommonControls",
     [410] = "SetWindowSubclass", [411] = "GetWindowSubclass", [412] = "RemoveWindowSubclass",
     [413] = "DefSubclassProc",
 };

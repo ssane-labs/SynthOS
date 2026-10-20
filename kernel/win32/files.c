@@ -21,6 +21,7 @@
 #define ATTR_NORMAL 0x80
 #define INVALID_ATTRIBUTES 0xffffffffu
 #define INVALID_SET_FILE_POINTER 0xffffffffu
+#define MOVEFILE_DELAY_UNTIL_REBOOT 4
 
 static char *narrow(LPCWSTR w)
 {
@@ -453,6 +454,17 @@ static BOOL WINAPI DeleteFileW(LPCWSTR name)
 static BOOL move_file(const char *from, const char *to, DWORD flags)
 {
     char a[PATH_MAX_LEN], b[PATH_MAX_LEN];
+    if (!to) {
+        /* no target: delete, at the next boot on Windows; nothing here keeps a file in use, so it goes now */
+        if (!(flags & MOVEFILE_DELAY_UNTIL_REBOOT)) {
+            w32_set_error(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        int err = w32_path(from, a, sizeof(a));
+        if (!err)
+            w32_fcache_forget(a);
+        return fs_result(err ? err : vfs_unlink(a));
+    }
     int err = w32_path(from, a, sizeof(a));
     if (!err)
         err = w32_path(to, b, sizeof(b));
@@ -959,6 +971,91 @@ static DWORD WINAPI GetFullPathNameW(LPCWSTR name, DWORD size, LPWSTR buf, LPWST
     return len;
 }
 
+static bool search_in(const char *dir, const char *name, const char *ext, char *out, size_t cap)
+{
+    const char *base = strrchr(name, '\\');
+    char win[PATH_MAX_LEN], path[PATH_MAX_LEN];
+    ksnprintf(win, sizeof(win), "%s%s%s%s", dir, *dir && !str_ends(dir, "\\") ? "\\" : "", name,
+              ext && !strchr(base ? base : name, '.') ? ext : "");
+    if (w32_path(win, path, sizeof(path)) || !vfs_exists(path))
+        return false;
+    w32_path_to_win(path, out, cap);
+    return true;
+}
+
+static bool search_list(const char *list, const char *name, const char *ext, char *out, size_t cap)
+{
+    while (list && *list) {
+        const char *end = strchr(list, ';');
+        size_t n = end ? (size_t)(end - list) : strlen(list);
+        char dir[PATH_MAX_LEN];
+        str_copy(dir, list, MIN(n + 1, sizeof(dir)));
+        if (*dir && search_in(dir, name, ext, out, cap))
+            return true;
+        list = end ? end + 1 : NULL;
+    }
+    return false;
+}
+
+/* SearchPath: the given directories, else the program's directory, the current one, System32, Windows and PATH */
+static bool search_path(const char *dirs, const char *name, const char *ext, char *out, size_t cap)
+{
+    if (strchr(name, '\\') || strchr(name, '/') || strchr(name, ':'))
+        return search_in("", name, ext, out, cap);
+    if (dirs)
+        return search_list(dirs, name, ext, out, cap);
+    char dir[PATH_MAX_LEN];
+    w32_path_to_win(w32->main ? w32->main->path : w32->cwd, dir, sizeof(dir));
+    char *slash = strrchr(dir, '\\');
+    if (w32->main && slash)
+        *slash = 0;
+    if (search_in(dir, name, ext, out, cap) || search_in(".", name, ext, out, cap) ||
+        search_in("C:\\Windows\\System32", name, ext, out, cap) || search_in("C:\\Windows", name, ext, out, cap) ||
+        search_list(w32_getenv("PATH"), name, ext, out, cap))
+        return true;
+    char dll[PATH_MAX_LEN];
+    ksnprintf(dll, sizeof(dll), "%s%s", name, ext && !strchr(name, '.') ? ext : "");
+    if (!w32_is_system_dll(dll))
+        return false;
+    ksnprintf(out, cap, "C:\\Windows\\System32\\%s", dll);
+    return true;
+}
+
+static DWORD WINAPI SearchPathA(LPCSTR dirs, LPCSTR name, LPCSTR ext, DWORD size, LPSTR buf, LPSTR *file_part)
+{
+    char win[PATH_MAX_LEN];
+    if (!name || !search_path(dirs, name, ext, win, sizeof(win))) {
+        w32_set_error(ERROR_FILE_NOT_FOUND);
+        return 0;
+    }
+    DWORD n = to_ansi_buffer(win, buf, size);
+    if (file_part && buf && n < size)
+        *file_part = strrchr(buf, '\\') ? strrchr(buf, '\\') + 1 : buf;
+    return n;
+}
+
+static DWORD WINAPI SearchPathW(LPCWSTR dirs, LPCWSTR name, LPCWSTR ext, DWORD size, LPWSTR buf, LPWSTR *file_part)
+{
+    char *d = narrow(dirs), *n = narrow(name), *e = narrow(ext);
+    char win[PATH_MAX_LEN];
+    bool found = n && search_path(d, n, e, win, sizeof(win));
+    w32_free(d);
+    w32_free(n);
+    w32_free(e);
+    if (!found) {
+        w32_set_error(ERROR_FILE_NOT_FOUND);
+        return 0;
+    }
+    DWORD len = to_wide_buffer(win, buf, size);
+    if (file_part && buf && len < size) {
+        *file_part = buf;
+        for (DWORD i = 0; i < len; i++)
+            if (buf[i] == '\\')
+                *file_part = buf + i + 1;
+    }
+    return len;
+}
+
 static DWORD WINAPI GetTempPathA(DWORD size, LPSTR buf)
 {
     return to_ansi_buffer("C:\\Windows\\Temp\\", buf, size);
@@ -1324,7 +1421,8 @@ static const struct w32_export kernel32_files[] = {
     W32_FN(FindFirstFileW), W32_FN(FindFirstFileExA), W32_FN(FindFirstFileExW), W32_FN(FindNextFileA),
     W32_FN(FindNextFileW), W32_FN(FindClose), W32_FN(GetCurrentDirectoryA), W32_FN(GetCurrentDirectoryW),
     W32_FN(SetCurrentDirectoryA), W32_FN(SetCurrentDirectoryW), W32_FN(GetFullPathNameA),
-    W32_FN(GetFullPathNameW), W32_FN(GetTempPathA), W32_FN(GetTempPathW), W32_FN(GetTempFileNameA),
+    W32_FN(GetFullPathNameW), W32_FN(SearchPathA), W32_FN(SearchPathW), W32_FN(GetTempPathA), W32_FN(GetTempPathW),
+    W32_FN(GetTempFileNameA),
     W32_FN(GetTempFileNameW), W32_FN(GetWindowsDirectoryA), W32_FN(GetWindowsDirectoryW),
     W32_AS("GetSystemWindowsDirectoryA", GetWindowsDirectoryA),
     W32_AS("GetSystemWindowsDirectoryW", GetWindowsDirectoryW), W32_FN(GetSystemDirectoryA),

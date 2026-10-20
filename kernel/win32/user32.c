@@ -182,6 +182,25 @@ static int WINAPI MessageBoxExW(HANDLE wnd, LPCWSTR text, LPCWSTR caption, UINT 
     return MessageBoxW(wnd, text, caption, type);
 }
 
+/* MSGBOXPARAMS: cbSize, hwndOwner, hInstance, lpszText, lpszCaption, dwStyle, ... */
+static int WINAPI MessageBoxIndirectA(const uint32_t *p)
+{
+    return MessageBoxA((HANDLE)p[1], (LPCSTR)p[3], (LPCSTR)p[4], p[5]);
+}
+
+static int WINAPI MessageBoxIndirectW(const uint32_t *p)
+{
+    return MessageBoxW((HANDLE)p[1], (LPCWSTR)p[3], (LPCWSTR)p[4], p[5]);
+}
+
+static BOOL WINAPI ExitWindowsEx(UINT flags, DWORD reason)
+{
+    UNUSED(flags);
+    UNUSED(reason);
+    w32_set_error(ERROR_ACCESS_DENIED);
+    return FALSE;
+}
+
 static BOOL WINAPI MessageBeep(UINT type)
 {
     UNUSED(type);
@@ -310,6 +329,11 @@ static LPWSTR WINAPI CharNextW(LPCWSTR s)
     return (LPWSTR)(*s ? s + 1 : s);
 }
 
+static LPWSTR WINAPI CharPrevW(LPCWSTR start, LPCWSTR s)
+{
+    return (LPWSTR)(s > start ? s - 1 : start);
+}
+
 static BOOL WINAPI CharToOemA(LPCSTR in, LPSTR out)
 {
     WCHAR *w = w32_widen(in);
@@ -350,10 +374,11 @@ static DWORD WINAPI GetKeyboardLayout(DWORD thread)
 
 static const struct w32_export user32_exports[] = {
     W32_FN(MessageBoxA), W32_FN(MessageBoxW), W32_FN(MessageBoxExA), W32_FN(MessageBoxExW),
-    W32_AS("MessageBoxIndirectA", w32_zero1), W32_FN(MessageBeep), W32_FN(wsprintfA), W32_FN(wsprintfW),
+    W32_FN(MessageBoxIndirectA), W32_FN(MessageBoxIndirectW), W32_FN(ExitWindowsEx), W32_FN(MessageBeep),
+    W32_FN(wsprintfA), W32_FN(wsprintfW),
     W32_FN(wvsprintfA), W32_FN(wvsprintfW), W32_FN(CharUpperA), W32_FN(CharLowerA), W32_FN(CharUpperW),
     W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA),
-    W32_FN(CharNextW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
+    W32_FN(CharNextW), W32_FN(CharPrevW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
     W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA),
     W32_AS("GetKeyboardLayout", GetKeyboardLayout),
 };

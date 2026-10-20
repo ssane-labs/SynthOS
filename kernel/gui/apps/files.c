@@ -367,30 +367,6 @@ static void open_entry(struct window *w, struct files *f, struct entry *e)
         gui_open_file(path);
 }
 
-static int remove_tree(const char *path)
-{
-    if (vfs_is_dir(path)) {
-        struct vdir d;
-        if (vfs_opendir(path, &d) == 0) {
-            struct vfs_dirent ent;
-            char names[64][NAME_MAX_LEN];
-            int n = 0;
-            while (n < 64 && vfs_readdir(&d, &ent) == 0)
-                if (strcmp(ent.name, ".") && strcmp(ent.name, ".."))
-                    str_copy(names[n++], ent.name, NAME_MAX_LEN);
-            vfs_closedir(&d);
-            for (int i = 0; i < n; i++) {
-                char child[PATH_MAX_LEN];
-                path_join(path, names[i], child, sizeof(child));
-                int err = remove_tree(child);
-                if (err)
-                    return err;
-            }
-        }
-    }
-    return vfs_unlink(path);
-}
-
 static int copy_tree(const char *from, const char *to)
 {
     if (!vfs_is_dir(from))
@@ -420,7 +396,7 @@ static int move_tree(const char *from, const char *to)
 {
     int err = vfs_rename(from, to);
     if (err == E_XDEV && (err = copy_tree(from, to)) == 0)
-        err = remove_tree(from);
+        err = vfs_remove_tree(from);
     return err;
 }
 
@@ -482,7 +458,7 @@ static void do_delete(struct window *w, const char *value)
         return;
     char p[PATH_MAX_LEN];
     child_path(f, e->name, p);
-    report(remove_tree(p), "deleted");
+    report(vfs_remove_tree(p), "deleted");
     refresh(w, f);
 }
 
@@ -515,7 +491,7 @@ static void empty_trash(struct window *w, const char *value)
 {
     UNUSED(value);
     struct files *f = w->data;
-    remove_tree(TRASH);
+    vfs_remove_tree(TRASH);
     vfs_mkdirs(TRASH);
     refresh(w, f);
     chrome_changed();

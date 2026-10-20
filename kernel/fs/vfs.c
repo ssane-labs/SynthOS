@@ -570,6 +570,32 @@ int vfs_copy(const char *from, const char *to)
     return err;
 }
 
+int vfs_remove_tree(const char *path)
+{
+    struct vstat st;
+    int err = vfs_stat(path, &st);
+    if (err)
+        return err;
+    if (st.type == VN_DIR) {
+        struct vdir d;
+        struct vfs_dirent ent;
+        for (;;) {
+            if ((err = vfs_opendir(path, &d)) != 0)
+                return err;
+            int r = vfs_readdir(&d, &ent);
+            vfs_closedir(&d);
+            if (r != 0)
+                break;
+            char child[PATH_MAX_LEN];
+            if ((err = path_join(path, ent.name, child, sizeof(child))) != 0)
+                return err;
+            if ((err = vfs_remove_tree(child)) != 0)
+                return err;
+        }
+    }
+    return vfs_unlink(path);
+}
+
 int vfs_volumes(struct volume *out, int max)
 {
     int n = 0;

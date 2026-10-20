@@ -246,32 +246,6 @@ COMMAND(rmdir, "rd", "files", "rmdir dir...", "remove empty directories")
     return rc;
 }
 
-static int remove_tree(const char *path)
-{
-    struct vstat st;
-    int err = vfs_stat(path, &st);
-    if (err)
-        return err;
-    if (st.type == VN_DIR) {
-        struct vdir d;
-        struct vfs_dirent ent;
-        for (;;) {
-            if ((err = vfs_opendir(path, &d)) != 0)
-                return err;
-            int r = vfs_readdir(&d, &ent);
-            vfs_closedir(&d);
-            if (r != 0)
-                break;
-            char child[PATH_MAX_LEN];
-            if ((err = path_join(path, ent.name, child, sizeof(child))) != 0)
-                return err;
-            if ((err = remove_tree(child)) != 0)
-                return err;
-        }
-    }
-    return vfs_unlink(path);
-}
-
 COMMAND(rm, "del,erase", "files", "rm [-r] [-f] path...", "remove files (and directories with -r)")
 {
     uint64_t flags;
@@ -289,7 +263,7 @@ COMMAND(rm, "del,erase", "files", "rm [-r] [-f] path...", "remove files (and dir
         if (!err && vfs_is_dir(path) && !recursive)
             err = E_ISDIR;
         if (!err)
-            err = recursive ? remove_tree(path) : vfs_unlink(path);
+            err = recursive ? vfs_remove_tree(path) : vfs_unlink(path);
         if (err && !(force && err == E_NOENT))
             rc = sh_fs_error(sh, "rm", argv[i], err);
     }
@@ -330,7 +304,7 @@ static int transfer(struct shell *sh, int argc, char **argv, bool move)
         if (!err && move) {
             err = vfs_rename(src, target);
             if (err == E_XDEV && (err = vfs_copy(src, target)) == 0)
-                err = remove_tree(src);
+                err = vfs_remove_tree(src);
         } else if (!err) {
             err = vfs_copy(src, target);
         }

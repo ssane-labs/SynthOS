@@ -816,7 +816,10 @@ void w32_sleep(uint32_t ms)
     }
     uint64_t end = hal_ticks_ms() + ms;
     while (hal_ticks_ms() < end) {
-        if (w32->live_threads > 1)
+        /* other threads, processes and the desktop run while this one sleeps: a parent polling its child must not
+           starve it */
+        struct w32_process *other = w32_ring_next(w32);
+        if (w32->live_threads > 1 || (other && other != w32) || w32_host_thread())
             w32_block();
         else
             hal_sleep_ms((uint32_t)MIN(end - hal_ticks_ms(), (uint64_t)10));
@@ -849,49 +852,245 @@ static HANDLE new_object(enum w32_object_type type, uint32_t value, uint32_t max
     return h;
 }
 
+/* Named events, mutexes and semaphores: a kernel-wide table of names. The process that made an object finds its
+   handle again by name; another process gets an object of its own under the same name (the state is not shared). */
+struct named_object {
+    struct named_object *next;
+    uint32_t pid, serial;
+    HANDLE handle;
+    enum w32_object_type type;
+    char name[];
+};
+
+static struct named_object *named;
+static uint32_t named_serial;
+
+static uint32_t pid_of(const struct w32_process *p)
+{
+    return p->child ? p->child->pid : 0x100;
+}
+
+static struct w32_object *named_object_of(const struct named_object *n)
+{
+    struct w32_process *p = w32;
+    do {
+        if (pid_of(p) == n->pid) {
+            struct w32_object *o = w32_handle_get_in(p, n->handle);
+            return o && o->name_serial == n->serial ? o : NULL;
+        }
+        p = w32_ring_next(p);
+    } while (p && p != w32);
+    return NULL;
+}
+
+static const char *object_name(const char *name)
+{
+    if (str_starts(name, "Global\\"))
+        return name + 7;
+    if (str_starts(name, "Local\\"))
+        return name + 6;
+    if (str_starts(name, "Session\\")) {
+        const char *slash = strchr(name + 8, '\\');
+        return slash ? slash + 1 : name;
+    }
+    return name;
+}
+
+/* drops the names whose handle is gone; returns the live entry for name, the current process's own first */
+static struct named_object *named_find(const char *name)
+{
+    struct named_object *found = NULL;
+    for (struct named_object **pp = &named; *pp;) {
+        struct named_object *n = *pp;
+        if (!named_object_of(n)) {
+            *pp = n->next;
+            kfree(n);
+            continue;
+        }
+        if (!strcmp(n->name, name) && (!found || n->pid == pid_of(w32)))
+            found = n;
+        pp = &n->next;
+    }
+    return found;
+}
+
+static void named_add(const char *name, HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    struct named_object *n = o ? kmalloc(sizeof(*n) + strlen(name) + 1) : NULL;
+    if (!n)
+        return;
+    n->pid = pid_of(w32);
+    n->serial = o->name_serial = ++named_serial;
+    n->handle = h;
+    n->type = o->type;
+    memcpy(n->name, name, strlen(name) + 1);
+    n->next = named;
+    named = n;
+}
+
+/* NULL with *h set: a new object is to be made; otherwise the existing one (or a failure) */
+static bool named_open(const char *name, enum w32_object_type type, HANDLE *h)
+{
+    *h = NULL;
+    if (!name || !*name)
+        return false;
+    struct named_object *n = named_find(object_name(name));
+    if (!n)
+        return false;
+    if (n->type != type) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return true;
+    }
+    if (n->pid != pid_of(w32))
+        return false;
+    w32_handle_get(n->handle)->refs++;
+    *h = n->handle;
+    return true;
+}
+
+static HANDLE create_named(const char *name, enum w32_object_type type, uint32_t value, uint32_t max, bool manual,
+                           const void *sa, bool *existed)
+{
+    HANDLE h;
+    bool exists = name && *name && named_find(object_name(name));
+    if (existed)
+        *existed = exists;
+    if (named_open(name, type, &h)) {
+        if (h)
+            w32_set_error(ERROR_ALREADY_EXISTS);
+        return h;
+    }
+    h = w32_inheritable(new_object(type, value, max, manual), sa);
+    if (h && name && *name)
+        named_add(object_name(name), h);
+    if (h)
+        w32_set_error(exists ? ERROR_ALREADY_EXISTS : 0);
+    return h;
+}
+
+static HANDLE create_named_w(LPCWSTR name, enum w32_object_type type, uint32_t value, uint32_t max, bool manual,
+                             const void *sa, bool *existed)
+{
+    char *n = w32_narrow(name);
+    HANDLE h = create_named(n, type, value, max, manual, sa, existed);
+    w32_free(n);
+    return h;
+}
+
+static HANDLE open_named(const char *name, enum w32_object_type type, BOOL inherit)
+{
+    HANDLE h;
+    struct named_object *n = name ? named_find(object_name(name)) : NULL;
+    if (!n) {
+        w32_set_error(name ? ERROR_FILE_NOT_FOUND : ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    if (n->type != type) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return NULL;
+    }
+    if (named_open(name, type, &h))
+        return h;
+    struct w32_object *src = named_object_of(n);
+    h = new_object(type, type == WH_MUTEX ? 0 : src->value, src->max, src->manual);
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->inherit = inherit != 0;
+    if (h)
+        named_add(object_name(name), h);
+    return h;
+}
+
+static HANDLE open_named_w(LPCWSTR name, enum w32_object_type type, BOOL inherit)
+{
+    char *n = w32_narrow(name);
+    HANDLE h = open_named(n, type, inherit);
+    w32_free(n);
+    return h;
+}
+
+static void own_mutex(HANDLE h, BOOL owner, bool existed)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (o && owner && !existed) {
+        o->value = 1;
+        o->owner = w32_thread_id();
+    }
+}
+
 static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL initial, LPCSTR name)
 {
-    UNUSED(name);
-    return w32_inheritable(new_object(WH_EVENT, initial ? 1 : 0, 1, manual), sa);
+    return create_named(name, WH_EVENT, initial ? 1 : 0, 1, manual, sa, NULL);
 }
 
 static HANDLE WINAPI CreateEventW(void *sa, BOOL manual, BOOL initial, LPCWSTR name)
 {
-    UNUSED(name);
-    return CreateEventA(sa, manual, initial, NULL);
+    return create_named_w(name, WH_EVENT, initial ? 1 : 0, 1, manual, sa, NULL);
 }
 
 static HANDLE WINAPI CreateEventExW(void *sa, LPCWSTR name, DWORD flags, DWORD access)
 {
-    UNUSED(name);
     UNUSED(access);
-    return CreateEventA(sa, (flags & 1) != 0, (flags & 2) != 0, NULL);
+    return create_named_w(name, WH_EVENT, (flags & 2) != 0, 1, (flags & 1) != 0, sa, NULL);
 }
 
 static HANDLE WINAPI CreateMutexA(void *sa, BOOL owner, LPCSTR name)
 {
-    UNUSED(sa);
-    UNUSED(name);
-    HANDLE h = new_object(WH_MUTEX, owner ? 1 : 0, 0, false);
-    struct w32_object *o = w32_handle_get(h);
-    if (o && owner)
-        o->owner = w32_thread_id();
+    bool existed;
+    HANDLE h = create_named(name, WH_MUTEX, 0, 0, false, sa, &existed);
+    own_mutex(h, owner, existed);
     return h;
 }
 
 static HANDLE WINAPI CreateMutexW(void *sa, BOOL owner, LPCWSTR name)
 {
-    UNUSED(name);
-    return CreateMutexA(sa, owner, NULL);
+    bool existed;
+    HANDLE h = create_named_w(name, WH_MUTEX, 0, 0, false, sa, &existed);
+    own_mutex(h, owner, existed);
+    return h;
 }
 
-static HANDLE WINAPI OpenNamedObject(DWORD access, BOOL inherit, LPCWSTR name)
+static HANDLE WINAPI CreateMutexExW(void *sa, LPCWSTR name, DWORD flags, DWORD access)
 {
     UNUSED(access);
-    UNUSED(inherit);
-    UNUSED(name);
-    w32_set_error(ERROR_FILE_NOT_FOUND);
-    return NULL;
+    return CreateMutexW(sa, (flags & 1) != 0, name);
+}
+
+static HANDLE WINAPI OpenEventA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    UNUSED(access);
+    return open_named(name, WH_EVENT, inherit);
+}
+
+static HANDLE WINAPI OpenEventW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    UNUSED(access);
+    return open_named_w(name, WH_EVENT, inherit);
+}
+
+static HANDLE WINAPI OpenMutexA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    UNUSED(access);
+    return open_named(name, WH_MUTEX, inherit);
+}
+
+static HANDLE WINAPI OpenMutexW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    UNUSED(access);
+    return open_named_w(name, WH_MUTEX, inherit);
+}
+
+static HANDLE WINAPI OpenSemaphoreA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    UNUSED(access);
+    return open_named(name, WH_SEMAPHORE, inherit);
+}
+
+static HANDLE WINAPI OpenSemaphoreW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    UNUSED(access);
+    return open_named_w(name, WH_SEMAPHORE, inherit);
 }
 
 static DWORD WINAPI QueueUserAPC(void *fn, HANDLE thread, uintptr_t data)
@@ -905,19 +1104,27 @@ static DWORD WINAPI QueueUserAPC(void *fn, HANDLE thread, uintptr_t data)
 
 static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG initial, LONG max, LPCSTR name)
 {
-    UNUSED(sa);
-    UNUSED(name);
     if (initial < 0 || max <= 0 || initial > max) {
         w32_set_error(ERROR_INVALID_PARAMETER);
         return NULL;
     }
-    return new_object(WH_SEMAPHORE, (uint32_t)initial, (uint32_t)max, false);
+    return create_named(name, WH_SEMAPHORE, (uint32_t)initial, (uint32_t)max, false, sa, NULL);
 }
 
 static HANDLE WINAPI CreateSemaphoreW(void *sa, LONG initial, LONG max, LPCWSTR name)
 {
-    UNUSED(name);
-    return CreateSemaphoreA(sa, initial, max, NULL);
+    if (initial < 0 || max <= 0 || initial > max) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    return create_named_w(name, WH_SEMAPHORE, (uint32_t)initial, (uint32_t)max, false, sa, NULL);
+}
+
+static HANDLE WINAPI CreateSemaphoreExW(void *sa, LONG initial, LONG max, LPCWSTR name, DWORD flags, DWORD access)
+{
+    UNUSED(flags);
+    UNUSED(access);
+    return CreateSemaphoreW(sa, initial, max, name);
 }
 
 static struct w32_object *object(HANDLE h, enum w32_object_type type)
@@ -1605,9 +1812,9 @@ static const struct w32_export thread_exports[] = {
     W32_FN(SuspendThread), W32_FN(ResumeThread), W32_FN(GetCurrentThreadId), W32_FN(GetThreadId),
     W32_FN(SetThreadPriority), W32_FN(GetThreadPriority), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),
     W32_FN(CreateEventA), W32_FN(CreateEventW), W32_FN(CreateEventExW), W32_FN(CreateMutexA), W32_FN(CreateMutexW),
-    W32_AS("OpenMutexW", OpenNamedObject), W32_AS("OpenMutexA", OpenNamedObject), W32_AS("OpenEventW", OpenNamedObject),
-    W32_AS("OpenEventA", OpenNamedObject), W32_AS("OpenSemaphoreW", OpenNamedObject), W32_FN(QueueUserAPC),
-    W32_FN(CreateSemaphoreA), W32_FN(CreateSemaphoreW), W32_FN(SetEvent), W32_FN(ResetEvent), W32_FN(PulseEvent),
+    W32_FN(CreateMutexExW), W32_FN(OpenMutexA), W32_FN(OpenMutexW), W32_FN(OpenEventA), W32_FN(OpenEventW),
+    W32_FN(OpenSemaphoreA), W32_FN(OpenSemaphoreW), W32_FN(QueueUserAPC), W32_FN(CreateSemaphoreA),
+    W32_FN(CreateSemaphoreW), W32_FN(CreateSemaphoreExW), W32_FN(SetEvent), W32_FN(ResetEvent), W32_FN(PulseEvent),
     W32_FN(ReleaseMutex), W32_FN(ReleaseSemaphore), W32_FN(WaitForSingleObject), W32_FN(WaitForSingleObjectEx),
     W32_FN(WaitForMultipleObjects), W32_FN(WaitForMultipleObjectsEx), W32_FN(SignalObjectAndWait),
     W32_FN(InitializeCriticalSection), W32_FN(InitializeCriticalSectionAndSpinCount),

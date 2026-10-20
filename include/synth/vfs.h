@@ -128,6 +128,7 @@ void vfs_closedir(struct vdir *dir);
 int vfs_read_all(const char *path, char **data, size_t *size);
 int vfs_write_all(const char *path, const void *data, size_t size);
 int vfs_copy(const char *from, const char *to);
+int vfs_remove_tree(const char *path);
 
 struct volume {
     char label[48];

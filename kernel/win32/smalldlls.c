@@ -16,9 +16,87 @@ static void WINAPI InitCommonControls(void)
 {
 }
 
+/* Image lists keep their size and count; the controls that would draw them paint without images. */
+struct image_list {
+    int cx, cy, count;
+};
+
+static struct image_list *WINAPI ImageList_Create(int cx, int cy, UINT flags, int initial, int grow)
+{
+    UNUSED(flags);
+    UNUSED(initial);
+    UNUSED(grow);
+    struct image_list *il = w32_alloc(sizeof(*il));
+    if (il)
+        *il = (struct image_list){MAX(cx, 1), MAX(cy, 1), 0};
+    return il;
+}
+
+static int WINAPI ImageList_Add(struct image_list *il, HANDLE bitmap, HANDLE mask)
+{
+    UNUSED(mask);
+    if (!il)
+        return -1;
+    int(WINAPI * get_object)(HANDLE, int, void *) =
+        (int(WINAPI *)(HANDLE, int, void *))w32_builtin_lookup("gdi32.dll", "GetObjectA");
+    int32_t bm[6] = {0};
+    int n = get_object && bitmap && get_object(bitmap, sizeof(bm), bm) ? MAX(bm[1] / il->cx, 1) : 1;
+    il->count += n;
+    return il->count - n;
+}
+
+static int WINAPI ImageList_AddMasked(struct image_list *il, HANDLE bitmap, DWORD color)
+{
+    UNUSED(color);
+    return ImageList_Add(il, bitmap, NULL);
+}
+
+static int WINAPI ImageList_ReplaceIcon(struct image_list *il, int index, HANDLE icon)
+{
+    UNUSED(icon);
+    if (!il || index >= il->count)
+        return -1;
+    return index >= 0 ? index : il->count++;
+}
+
+static int WINAPI ImageList_GetImageCount(struct image_list *il)
+{
+    return il ? il->count : 0;
+}
+
+static BOOL WINAPI ImageList_Remove(struct image_list *il, int index)
+{
+    if (!il || index >= il->count)
+        return FALSE;
+    il->count = index < 0 ? 0 : il->count - 1;
+    return TRUE;
+}
+
+static BOOL WINAPI ImageList_GetIconSize(struct image_list *il, int *cx, int *cy)
+{
+    if (!il)
+        return FALSE;
+    if (cx)
+        *cx = il->cx;
+    if (cy)
+        *cy = il->cy;
+    return TRUE;
+}
+
+static BOOL WINAPI ImageList_Destroy(struct image_list *il)
+{
+    if (!il)
+        return FALSE;
+    w32_free(il);
+    return TRUE;
+}
+
 static const struct w32_export comctl32_exports[] = {
-    W32_FN(InitCommonControlsEx),
-    W32_FN(InitCommonControls),
+    W32_FN(InitCommonControlsEx),    W32_FN(InitCommonControls),       W32_FN(ImageList_Create),
+    W32_FN(ImageList_Add),           W32_FN(ImageList_AddMasked),      W32_FN(ImageList_ReplaceIcon),
+    W32_FN(ImageList_GetImageCount), W32_FN(ImageList_Remove),         W32_FN(ImageList_GetIconSize),
+    W32_FN(ImageList_Destroy),       W32_AS("ImageList_SetBkColor", w32_zero2),
+    W32_AS("ImageList_Draw", w32_one6),
 };
 
 static uint32_t WINAPI DwmIsCompositionEnabled(BOOL *enabled)

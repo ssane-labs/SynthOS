@@ -154,6 +154,7 @@ struct w32_object {
     struct w32_port *port;
     struct w32_section *section;
     struct w32_child *child;
+    uint32_t name_serial;
 };
 
 struct w32_child {
