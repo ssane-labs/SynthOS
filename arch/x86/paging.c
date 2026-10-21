@@ -485,6 +485,99 @@ static bool long_tables(struct vmm_space *s)
     return true;
 }
 
+static uint64_t pte_get(void *t, uint32_t v);
+
+static uint64_t *heap_table(uint64_t entry)
+{
+    return (uint64_t *)(uintptr_t)(KERNEL_HEAP_VIRT + (uint32_t)(entry & 0xfffff000u) - heap_phys);
+}
+
+/* Addresses from 4 GB to 128 TB exist only for 64-bit code: their tables hang below pml4 (and lpdpt[4..]) and
+   their pages are frames of low pages, which own them. */
+static void high_tables_free(struct vmm_space *s)
+{
+    for (int i = 0; i < 256; i++) {
+        if (!(s->pml4[i] & PTE_PRESENT))
+            continue;
+        uint64_t *pdpt_ = heap_table(s->pml4[i]);
+        for (int j = i ? 0 : 4; j < 512; j++) {
+            if (!(pdpt_[j] & PTE_PRESENT))
+                continue;
+            uint64_t *pd = heap_table(pdpt_[j]);
+            for (int k = 0; k < 512; k++)
+                if (pd[k] & PTE_PRESENT)
+                    kfree_pages(heap_table(pd[k]));
+            kfree_pages(pd);
+            pdpt_[j] = 0;
+        }
+        if (i)
+            kfree_pages(pdpt_);
+    }
+}
+
+static uint64_t *high_pte(uint64_t va, bool create)
+{
+    struct vmm_space *s = current_space;
+    if (!pae || va >> 47 || !(va >> 32) || !long_tables(s))
+        return NULL;
+    uint64_t *t = s->pml4;
+    for (int shift_ = 39; shift_ >= 21; shift_ -= 9) {
+        uint64_t *e = &t[va >> shift_ & 511];
+        if (!(*e & PTE_PRESENT)) {
+            uint64_t *n = create ? kmalloc_pages(4096) : NULL;
+            if (!n)
+                return NULL;
+            memset(n, 0, 4096);
+            *e = phys_of(n) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        }
+        t = heap_table(*e);
+    }
+    return &t[va >> 12 & 511];
+}
+
+static bool (*high_hook)(uint64_t address);
+
+void vmm_set_high_hook(bool (*fn)(uint64_t address))
+{
+    high_hook = fn;
+}
+
+bool vmm_high_fault(uint64_t address)
+{
+    return enabled && high_hook && high_hook(address);
+}
+
+int vmm_high_alias(uint64_t vaddr, uintptr_t low)
+{
+    void *t = tables[(uint32_t)low >> shift()];
+    uint64_t e = t ? pte_get(t, (uint32_t)low) : 0;
+    uint64_t *pte = (e & PTE_PRESENT) ? high_pte(vaddr, true) : NULL;
+    if (!pte)
+        return -1;
+    *pte = (e & 0x000ffffffffff000ull) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    return 0;
+}
+
+void vmm_high_unmap(uint64_t vaddr, uint64_t size)
+{
+    bool any = false;
+    for (uint64_t v = vaddr & ~4095ull; v < vaddr + size;) {
+        uint64_t *pte = high_pte(v, false);
+        if (!pte) {
+            v = (v + (2ull << 20)) & ~((2ull << 20) - 1);
+            continue;
+        }
+        any |= *pte != 0;
+        *pte = 0;
+        v += 4096;
+    }
+    if (any) {
+        uint32_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+    }
+}
+
 static void space_free(struct vmm_space *s)
 {
     for (int i = 0; i < 3; i++)
@@ -494,8 +587,10 @@ static void space_free(struct vmm_space *s)
         kfree_pages(s->root);
     if (s->dir)
         kfree_pages(s->dir);
-    if (s->pml4)
+    if (s->pml4) {
+        high_tables_free(s);
         kfree_pages(s->pml4);
+    }
     if (s->lpdpt)
         kfree_pages(s->lpdpt);
     kfree(s);

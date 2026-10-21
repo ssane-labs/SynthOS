@@ -316,14 +316,24 @@ void arch_set_tick_hook(void (*fn)(uint32_t eip))
     tick_hook = fn;
 }
 
+extern uint32_t long_cr2_high;
+
+uint32_t arch_fault_address_high(void)
+{
+    return arch_long_active() ? long_cr2_high : 0;
+}
+
 void x86_interrupt(struct regs *r)
 {
     if (r->vector < 32) {
         uint32_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-        if (r->vector == 14 && !(r->error & 1) && vmm_commit_fault(cr2))
+        uint32_t high = arch_fault_address_high();
+        if (r->vector == 14 && high && !(r->error & 1) && vmm_high_fault((uint64_t)high << 32 | cr2))
             return;
-        if (r->vector == 14 && (r->error & 3) == 3 && vmm_cow_fault(cr2))
+        if (r->vector == 14 && !high && !(r->error & 1) && vmm_commit_fault(cr2))
+            return;
+        if (r->vector == 14 && !high && (r->error & 3) == 3 && vmm_cow_fault(cr2))
             return;
         if (fault_handler && r->vector != 8 && r->vector != 18) {
             fault_regs = r;

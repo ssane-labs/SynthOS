@@ -426,6 +426,10 @@ cpp64 | grep rethrown
 inner 42, rethrown 42
 dll64
 dll tls main=1244 thread=1235 again=1244 flags=7
+himem64
+himem pool=1 data=1 api=1 io=1 query=1 decommit=1 placed=1 freed=1
+dwrite64
+dwrite families=1 name=1 glyphs=1 advance=1 upem=1 head=1 path=1 raster=1 same=1
 cat '/mnt/hdb/Long Name Note.txt'
 hello from fat
 mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'

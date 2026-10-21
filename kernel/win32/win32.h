@@ -331,6 +331,8 @@ void w32_trace_dump(void);
 void w32_trace_note(const char *module, const char *name);
 extern bool w32_headless;
 bool w32_vm_committed(uintptr_t address);
+uint32_t w32_vm_reserve(uint32_t size);
+void w32_vm_set_committed(uint32_t start, uint32_t size, bool on);
 uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count);
 bool w32_vm_unmap_shared(uint32_t base);
 void w32_vm_cleanup(void);

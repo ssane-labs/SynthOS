@@ -236,6 +236,23 @@ bool w32_vm_unmap_shared(uint32_t base)
     return true;
 }
 
+uint32_t w32_vm_reserve(uint32_t size)
+{
+    uint32_t base = vm() ? find_free(size, true) : 0;
+    return base && add_region(base, ALIGN_UP(size, 4096u), PAGE_READWRITE) ? base : 0;
+}
+
+void w32_vm_set_committed(uint32_t start, uint32_t size, bool on)
+{
+    struct vregion *r = region_at(start);
+    if (!r)
+        return;
+    uint32_t end = MIN(start + size, r->base + r->size);
+    mark(r, start, end, on);
+    if (!on)
+        vmm_release(start, end - start);
+}
+
 static void *WINAPI VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect)
 {
     uint32_t a = (uint32_t)addr;

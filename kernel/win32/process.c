@@ -476,8 +476,8 @@ static bool needs_quotes(const char *s)
     return false;
 }
 
-/* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: chrome.exe started as
-   a browser gets the switches that run it without them. */
+/* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: chrome.exe (and
+   Steam's CEF browser, steamwebhelper.exe) started as a browser gets the switches that run it without them. */
 static const char *const chromium_switches[] = {"--no-sandbox", "--test-type", "--in-process-gpu", "--disable-gpu",
                                                 "--disable-software-rasterizer", "--no-first-run",
                                                 "--no-default-browser-check"};
@@ -497,7 +497,9 @@ static bool has_arg(struct exec_ctx *ctx, const char *arg, size_t n)
 static int command_args(struct exec_ctx *ctx, const char **list)
 {
     int n = 0;
-    bool chrome = !str_casecmp(path_basename(ctx->path), "chrome.exe"), child = has_arg(ctx, "--type=", 7);
+    const char *exe = path_basename(ctx->path);
+    bool chrome = !str_casecmp(exe, "chrome.exe") || !str_casecmp(exe, "steamwebhelper.exe");
+    bool child = has_arg(ctx, "--type=", 7);
     if (chrome && !child)
         for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++)
             if (!has_arg(ctx, chromium_switches[i], strlen(chromium_switches[i]) + 1))

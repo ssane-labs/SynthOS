@@ -15,7 +15,10 @@ enum {
     W64F_MATH = 64,
     W64F_FILE = 128,
     W64F_SPLIT0 = 1 << 16,
+    W64F_INOUT = 1 << 19,
 };
+
+#define W64_OUT_SHIFT 20
 
 enum {
     M_D_D = 1,
@@ -50,13 +53,21 @@ struct w64_module {
 #define W64_INTDATA(n) {n, NULL, W64F_INTDATA, NULL, NULL}
 #define W64_VA(n, fmt, t) {n, NULL, W64F_VA | (fmt) << 8, NULL, t}
 #define W64_MATH(n, kind) {n, NULL, W64F_MATH | (kind) << 8, NULL, NULL}
+/* the arguments in mask point to pointer-sized results the 32-bit function writes as 4 bytes */
+#define W64_OUT(n, mask) {n, NULL, (uint32_t)(mask) << W64_OUT_SHIFT, NULL, NULL}
+#define W64_INOUT(n, mask) {n, NULL, W64F_INOUT | (uint32_t)(mask) << W64_OUT_SHIFT, NULL, NULL}
 #define W64_EXPORTS(id, dll, table)                                                                               \
     static const struct w64_module id = {dll, table, ARRAY_SIZE(table)};                                          \
     SYNTH_REGISTER(synth_win64, struct w64_module, id)
 
+void *w64_high_ptr(uint64_t v);
+uint64_t w64_high_back(uint64_t v);
+bool w64_high_fault(uint64_t address);
+void w64_mem_cleanup(void);
+
 static inline void *w64_ptr(uint64_t v)
 {
-    return (void *)(uintptr_t)v;
+    return v >> 32 ? w64_high_ptr(v) : (void *)(uintptr_t)v;
 }
 
 static inline uint64_t w64_sx(uint32_t v)

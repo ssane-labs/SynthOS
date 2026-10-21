@@ -115,7 +115,7 @@ static uint32_t narrow(uint64_t v)
     base = (uintptr_t)S->files;
     if (v >= base && v < base + sizeof(S->files))
         return S->files[(v - base) / sizeof(struct file64)].real;
-    return (uint32_t)v;
+    return U(P(v));
 }
 
 static uint64_t wrap_file(uint32_t real)
@@ -150,6 +150,8 @@ static void release_file(uint64_t v)
         S->files[(v - base) / sizeof(struct file64)].used = 0;
 }
 
+#define OUT_UNSET 0xfeedf00du
+
 static NORETURN void missing(struct w64_stub *s)
 {
     ksnprintf(w32->message, sizeof(w32->message), "%s!%s is not supported yet (64-bit)", s->module, s->name);
@@ -181,14 +183,23 @@ static uint64_t dispatch(struct w64_stub *s, uint64_t *a, const uint64_t *f)
         args[fmt + 1] = U(&a[fmt + 1]);
         count = fmt + 2;
     }
+    uint32_t outs = s->flags >> W64_OUT_SHIFT, slot[12];
+    for (int i = 0; outs && i < 12; i++)
+        if ((outs >> i & 1) && a[i]) {
+            slot[i] = s->flags & W64F_INOUT ? rd32(P(a[i])) : OUT_UNSET;
+            args[i] = U(&slot[i]);
+        }
     int saved = crt_slots64;
     if (s->flags & (W64F_VA | W64F_FMT))
         crt_slots64 = 1;
     uint64_t r = w64_call32(s->target, args, count);
     crt_slots64 = saved;
+    for (int i = 0; outs && i < 12; i++)
+        if ((outs >> i & 1) && a[i] && slot[i] != (s->flags & W64F_INOUT ? rd32(P(a[i])) : OUT_UNSET))
+            put64(P(a[i]), w64_high_back(slot[i]));
     if (s->flags & W64F_FILE)
         return wrap_file((uint32_t)r);
-    return s->flags & W64F_RET64 ? r : w64_ret((uint32_t)r);
+    return s->flags & W64F_RET64 ? r : w64_high_back(w64_ret((uint32_t)r));
 }
 
 static const struct w64_export *find_export(const char *module, const char *name)
@@ -200,7 +211,7 @@ static const struct w64_export *find_export(const char *module, const char *name
             if (strcmp(m->exports[i].name, name) == 0)
                 return &m->exports[i];
     }
-    return NULL;
+    return strcmp(module, "*") ? find_export("*", name) : NULL;
 }
 
 static struct w64_stub *new_stub(const char *module, const char *name, const struct w64_export *e, void *target)
@@ -493,6 +504,7 @@ static bool build_peb64(void)
 bool w64_setup(void)
 {
     w64_dispatch_fn = (void *)dispatch;
+    vmm_set_high_hook(w64_high_fault);
     w64_seh_setup();
     crt_slots64 = 0;
     struct w64_state *st = w32_zalloc(sizeof(*st));
@@ -547,6 +559,7 @@ void w64_tls_callbacks(uint32_t reason)
 void w64_cleanup(void)
 {
     crt_slots64 = 0;
+    w64_mem_cleanup();
 }
 
 static uint64_t h_zero(uint64_t *a, const uint64_t *f, void *t)
@@ -573,23 +586,6 @@ static uint64_t h_get_system_info(uint64_t *a, const uint64_t *f, void *t)
     put32(o + 40, 0x10000);
     put16(o + 44, 6);
     return 0;
-}
-
-static uint64_t h_virtual_query(uint64_t *a, const uint64_t *f, void *t)
-{
-    uint8_t m[28];
-    if (!(uint32_t)T32(t, (uint32_t)a[0], U(m), sizeof(m)))
-        return 0;
-    uint8_t *o = P(a[1]);
-    memset(o, 0, 48);
-    put64(o, rd32(m));
-    put64(o + 8, rd32(m + 4));
-    put32(o + 16, rd32(m + 8));
-    put64(o + 24, rd32(m + 12));
-    put32(o + 32, rd32(m + 16));
-    put32(o + 36, rd32(m + 20));
-    put32(o + 40, rd32(m + 24));
-    return 48;
 }
 
 static void startup_to64(const uint8_t *s, uint8_t *o)
@@ -721,7 +717,7 @@ static uint64_t h_wait_multiple(uint64_t *a, const uint64_t *f, void *t)
     const uint64_t *src = P(a[1]);
     for (uint32_t i = 0; i < n; i++)
         handles[i] = (uint32_t)src[i];
-    return w64_sx((uint32_t)T32(t, n, U(handles), (uint32_t)a[2], (uint32_t)a[3]));
+    return w64_sx((uint32_t)T32(t, n, U(handles), (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]));
 }
 
 static uint64_t h_duplicate_handle(uint64_t *a, const uint64_t *f, void *t)
@@ -1190,7 +1186,6 @@ static uint64_t h_bsearch(uint64_t *a, const uint64_t *f, void *t)
 static const struct w64_export kernel32_exports[] = {
     W64_FN("GetSystemInfo", h_get_system_info),
     W64_FN("GetNativeSystemInfo", h_get_system_info),
-    W64_FN("VirtualQuery", h_virtual_query),
     W64_FN("GetStartupInfoA", h_get_startup_info),
     W64_FN("GetStartupInfoW", h_get_startup_info),
     W64_FN("CreateProcessA", h_create_process),
@@ -1222,7 +1217,89 @@ static const struct w64_export kernel32_exports[] = {
 };
 W64_EXPORTS(kernel32_module, "kernel32.dll", kernel32_exports);
 
+/* one block, as LocalFree expects: 8-byte pointers, then the strings */
+static uint64_t h_argv_w(uint64_t *a, const uint64_t *f, void *t)
+{
+    int n = 0;
+    uint32_t *argv = (uint32_t *)(uintptr_t)T32(t, U(P(a[0])), U(&n));
+    if (!argv)
+        return 0;
+    size_t chars = 0;
+    for (int i = 0; i < n; i++)
+        chars += w32_wcslen((WCHAR *)(uintptr_t)argv[i]) + 1;
+    uint64_t *out = w32_alloc(sizeof(uint64_t) * (size_t)(n + 1) + chars * sizeof(WCHAR));
+    if (out) {
+        WCHAR *text = (WCHAR *)(out + n + 1);
+        for (int i = 0; i < n; i++) {
+            size_t len = w32_wcslen((WCHAR *)(uintptr_t)argv[i]) + 1;
+            memcpy(text, (WCHAR *)(uintptr_t)argv[i], len * sizeof(WCHAR));
+            out[i] = U(text);
+            text += len;
+        }
+        out[n] = 0;
+        if (a[1])
+            put32(P(a[1]), (uint32_t)n);
+    }
+    w32_free(argv);
+    return U(out);
+}
+
+/* UNICODE_STRING: lengths, then the buffer pointer at offset 8 */
+static uint64_t h_init_unicode(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint8_t *s = P(a[0]);
+    uint16_t len = (uint16_t)MIN((a[1] ? w32_wcslen(P(a[1])) : 0) * 2, 0xfffcu);
+    memset(s, 0, 16);
+    put16(s, len);
+    put16(s + 2, a[1] ? (uint16_t)(len + 2) : 0);
+    put64(s + 8, a[1]);
+    return 0;
+}
+
+static uint64_t h_free_unicode(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint8_t *s = a[0] ? P(a[0]) : NULL;
+    if (s && rd64(s + 8))
+        w32_free(P(rd64(s + 8)));
+    if (s)
+        memset(s, 0, 16);
+    return 0;
+}
+
+static uint64_t h_user_key_path(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint8_t m[8];
+    uint32_t status = (uint32_t)T32(t, U(m));
+    uint8_t *o = P(a[0]);
+    memset(o, 0, 16);
+    if (!status) {
+        memcpy(o, m, 4);
+        put64(o + 8, rd32(m + 4));
+    }
+    return status;
+}
+
+static uint64_t h_out_handle(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t h = 0;
+    uint32_t r = (uint32_t)T32(t, a[0] ? U(&h) : 0, narrow(a[1]), narrow(a[2]), narrow(a[3]), narrow(a[4]),
+                               narrow(a[5]), narrow(a[6]));
+    out64(a[0], h);
+    return r;
+}
+
+static const struct w64_export shell32_exports[] = {
+    W64_FN("CommandLineToArgvW", h_argv_w),
+};
+W64_EXPORTS(shell32_module, "shell32.dll", shell32_exports);
+
 static const struct w64_export ntdll_exports[] = {
+    W64_FN("RtlInitUnicodeString", h_init_unicode),
+    W64_FN("RtlFreeUnicodeString", h_free_unicode),
+    W64_FN("RtlFormatCurrentUserKeyPath", h_user_key_path),
+    W64_FN("NtOpenKey", h_out_handle),
+    W64_FN("NtOpenKeyEx", h_out_handle),
+    W64_FN("NtCreateKey", h_out_handle),
     W64_FN("RtlAddFunctionTable", h_one),
     W64_FN("RtlDeleteFunctionTable", h_one),
     W64_NATIVE("memcpy", w64_memcpy),

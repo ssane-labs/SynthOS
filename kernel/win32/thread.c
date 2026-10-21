@@ -419,12 +419,16 @@ void w32_yield(void)
 static uint32_t user_caller(struct w32_thread *t)
 {
     const uint32_t *frame = __builtin_frame_address(0);
-    for (int i = 0; i < 16 && frame && (uint32_t)frame >= 0xc0000000u; i++) {
+    /* a 64-bit program's frames are no 32-bit chain: stop at anything that is not a mapped, higher frame */
+    for (int i = 0; i < 16 && (uint32_t)frame >= 0xc0000000u && vmm_mapped((uintptr_t)frame) &&
+                    vmm_mapped((uintptr_t)frame + 7); i++) {
         uint32_t ret = frame[1];
         if (ret >= VMM_USER_START && ret < 0xc0000000u) {
             t->wait_sp = (uint32_t)(frame + 2);
             return ret;
         }
+        if (frame[0] <= (uint32_t)frame)
+            break;
         frame = (const uint32_t *)frame[0];
     }
     return 0;
@@ -790,6 +794,19 @@ static DWORD WINAPI GetThreadId(HANDLE h)
 static BOOL WINAPI SetThreadPriority(HANDLE h, int priority)
 {
     UNUSED(priority);
+    return thread_of(h) != NULL;
+}
+
+static BOOL WINAPI GetThreadPriorityBoost(HANDLE h, BOOL *disabled)
+{
+    if (disabled)
+        *disabled = FALSE;
+    return thread_of(h) != NULL;
+}
+
+static BOOL WINAPI SetThreadPriorityBoost(HANDLE h, BOOL disable)
+{
+    UNUSED(disable);
     return thread_of(h) != NULL;
 }
 
@@ -1810,7 +1827,8 @@ static const struct w32_export thread_exports[] = {
     W32_FN(RegisterWaitForSingleObject), W32_FN(UnregisterWaitEx), W32_FN(UnregisterWait),
     W32_FN(CreateThread), W32_FN(ExitThread), W32_FN(TerminateThread), W32_FN(GetExitCodeThread),
     W32_FN(SuspendThread), W32_FN(ResumeThread), W32_FN(GetCurrentThreadId), W32_FN(GetThreadId),
-    W32_FN(SetThreadPriority), W32_FN(GetThreadPriority), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),
+    W32_FN(SetThreadPriority), W32_FN(GetThreadPriority), W32_FN(GetThreadPriorityBoost),
+    W32_FN(SetThreadPriorityBoost), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),
     W32_FN(CreateEventA), W32_FN(CreateEventW), W32_FN(CreateEventExW), W32_FN(CreateMutexA), W32_FN(CreateMutexW),
     W32_FN(CreateMutexExW), W32_FN(OpenMutexA), W32_FN(OpenMutexW), W32_FN(OpenEventA), W32_FN(OpenEventW),
     W32_FN(OpenSemaphoreA), W32_FN(OpenSemaphoreW), W32_FN(QueueUserAPC), W32_FN(CreateSemaphoreA),

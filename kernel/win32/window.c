@@ -1836,6 +1836,12 @@ static uintptr_t WINAPI SetTimer(HANDLE h, uintptr_t id, UINT ms, void *proc)
     return id;
 }
 
+static uintptr_t WINAPI SetCoalescableTimer(HANDLE h, uintptr_t id, UINT ms, void *proc, ULONG tolerance)
+{
+    UNUSED(tolerance);
+    return SetTimer(h, id, ms, proc);
+}
+
 static BOOL WINAPI KillTimer(HANDLE h, uintptr_t id)
 {
     struct w32_window *w = h ? w32_win(h) : NULL;
@@ -3013,6 +3019,7 @@ static const struct w32_export window_exports[] = {
     W32_FN(InvalidateRect), W32_FN(InvalidateRgn), W32_FN(ValidateRect), W32_FN(GetUpdateRect), W32_FN(RedrawWindow),
     W32_AS("BeginPaint", w32_begin_paint), W32_AS("EndPaint", w32_end_paint), W32_FN(GetDC), W32_FN(GetDCEx),
     W32_AS("GetWindowDC", GetDC), W32_FN(ReleaseDC), W32_FN(SetTimer), W32_FN(KillTimer), W32_FN(GetMessageA),
+    W32_FN(SetCoalescableTimer),
     W32_AS("GetMessageW", GetMessageA), W32_FN(PeekMessageA), W32_AS("PeekMessageW", PeekMessageA),
     W32_FN(WaitMessage), W32_FN(MsgWaitForMultipleObjects), W32_FN(TranslateMessage), W32_AS("DispatchMessageA", w32_dispatch),
     W32_AS("DispatchMessageW", w32_dispatch),

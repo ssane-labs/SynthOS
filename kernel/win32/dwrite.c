@@ -3,7 +3,7 @@
 #include <synth/string.h>
 #include <synth/vfs.h>
 
-#include "win32.h"
+#include "win64.h"
 
 #define S_OK 0u
 #define E_NOTIMPL 0x80004001u
@@ -474,6 +474,7 @@ struct obj {
     const uint8_t *iid, *iid2;
     int index;
     void *extra;
+    void *proxy;
 };
 
 static uint32_t WINAPI query_interface(struct obj *self, const uint8_t *iid, void **out)
@@ -499,6 +500,7 @@ static uint32_t WINAPI release(struct obj *self)
     LONG n = __atomic_sub_fetch(&self->refs, 1, __ATOMIC_RELAXED);
     if (n == 0) {
         w32_free(self->extra);
+        w32_free(self->proxy);
         w32_free(self);
     }
     return (uint32_t)n;
@@ -508,7 +510,7 @@ static struct obj *com_new(const void *const *vtbl, const uint8_t *iid, const ui
 {
     struct obj *o = w32_zalloc(sizeof(*o));
     if (o)
-        *o = (struct obj){vtbl, 1, iid, iid2, index, NULL};
+        *o = (struct obj){vtbl, 1, iid, iid2, index, NULL, NULL};
     return o;
 }
 
@@ -746,7 +748,7 @@ static const void *const loader_vtbl[] = {
      trap_loader_7, trap_loader_8, trap_loader_9, trap_loader_10,
 };
 
-static struct obj local_loader = {loader_vtbl, 1 << 30, iid_local_loader, iid_loader, 0, NULL};
+static struct obj local_loader = {loader_vtbl, 1 << 30, iid_local_loader, iid_loader, 0, NULL, NULL};
 
 static uint32_t WINAPI file_key(struct obj *f, const void **key, UINT *size)
 {
@@ -1435,3 +1437,403 @@ static const struct w32_export dwrite_exports[] = {
 };
 
 W32_EXPORTS(dwrite_module, "dwrite.dll", dwrite_exports);
+
+/* 64-bit programs get a proxy per object: its first quadword is a vtable of 64-bit stubs that translate the
+   arguments for the methods above (one letter each: i integer, p pointer, f float, q 64-bit integer, o/O returned
+   object/pointer, N our object, L/R the program's collection/file loader, A array of files, F returned files,
+   g glyph run). Objects of the program get 32-bit wrappers that call them back in 64-bit mode. */
+
+struct method64 {
+    const void *fn;
+    const char *spec;
+};
+
+struct proxy {
+    uint64_t vtbl;
+    uint64_t inner;
+};
+
+#define QI_AR_RL {query_interface, "po"}, {add_ref, ""}, {release, ""}
+#define TRAPS64 {NULL, NULL}, {NULL, NULL}, {NULL, NULL}, {NULL, NULL}
+
+static const struct method64 strings_m64[] = {
+    QI_AR_RL, {strings_count, ""}, {strings_find, "ppp"}, {strings_locale_length, "ip"}, {strings_locale, "ipi"},
+    {strings_length, "ip"}, {strings_get, "ipi"}, TRAPS64,
+};
+
+static const struct method64 fstream_m64[] = {
+    QI_AR_RL, {fstream_read, "OqqO"}, {fstream_release_fragment, "i"}, {fstream_size, "p"}, {fstream_time, "p"},
+    TRAPS64,
+};
+
+static const struct method64 loader_m64[] = {
+    QI_AR_RL, {loader_stream, "pio"}, {loader_path_length, "pip"}, {loader_path, "pipi"}, {loader_time, "pip"},
+    TRAPS64,
+};
+
+static const struct method64 file_m64[] = {
+    QI_AR_RL, {file_key, "Op"}, {file_loader, "o"}, {file_analyze, "pppp"}, TRAPS64,
+};
+
+static const struct method64 face_m64[] = {
+    QI_AR_RL, {face_type, ""}, {face_files, "pF"}, {zero1, ""}, {zero1, ""}, {zero1, ""}, {face_metrics, "p"},
+    {face_glyph_count, ""}, {face_design_metrics, "pipi"}, {face_indices, "pip"}, {face_table, "iOpOp"},
+    {face_release_table, "i"}, {face_outline, NULL}, {face_rendering_mode, "ffiip"}, {face_gdi_metrics, "ffpp"},
+    {face_gdi_glyph_metrics, "ffpipipi"}, TRAPS64,
+};
+
+static const struct method64 font_m64[] = {
+    QI_AR_RL, {font_family, "o"}, {font_weight, ""}, {font_stretch, ""}, {font_style, ""}, {font_symbol, ""},
+    {font_face_names, "o"}, {font_info_strings, "iop"}, {zero1, ""}, {font_metrics, "p"}, {font_has_char, "ip"},
+    {font_create_face, "o"}, TRAPS64,
+};
+
+static const struct method64 family_m64[] = {
+    QI_AR_RL, {family_collection, "o"}, {family_font_count, ""}, {family_font, "io"}, {family_names, "o"},
+    {family_match, "iiio"}, {family_matching_list, "iiio"}, TRAPS64,
+};
+
+static const struct method64 collection_m64[] = {
+    QI_AR_RL, {collection_count, ""}, {collection_family, "io"}, {collection_find, "ppp"},
+    {collection_from_face, "No"}, TRAPS64,
+};
+
+static const struct method64 factory_m64[] = {
+    QI_AR_RL,
+    {system_collection, "oi"},
+    {custom_collection, "Lpio"},
+    {ok2, "i"},
+    {ok2, "i"},
+    {font_file_reference, "ppo"},
+    {custom_file_reference, "piRo"},
+    {create_font_face, "iiAiio"},
+    {none2, "o"},
+    {none3, "io"},
+    {none7, "iiiiio"},
+    {ok2, "i"},
+    {ok2, "i"},
+    {none9, "iiiiiiio"},
+    {none2, "o"},
+    {none2, "o"},
+    {none7, "iiiiio"},
+    {none10, "iiiiiiiio"},
+    {none3, "io"},
+    {none2, "o"},
+    {none5, "iiio"},
+    {glyph_run_analysis, "gfpiiffo"},
+    TRAPS64,
+};
+
+static const struct method64 analysis_m64[] = {
+    {query_interface, "po"}, {add_ref, ""}, {analysis_release, ""}, {analysis_bounds, "ip"},
+    {analysis_texture, "ippi"}, {analysis_blend, "ippp"}, TRAPS64,
+};
+
+static const struct {
+    const void *const *vtbl;
+    const struct method64 *methods;
+    int count;
+    const char *name;
+} kinds64[] = {
+    {strings_vtbl, strings_m64, ARRAY_SIZE(strings_m64), "strings"},
+    {fstream_vtbl, fstream_m64, ARRAY_SIZE(fstream_m64), "stream"},
+    {loader_vtbl, loader_m64, ARRAY_SIZE(loader_m64), "loader"},
+    {file_vtbl, file_m64, ARRAY_SIZE(file_m64), "file"},
+    {face_vtbl, face_m64, ARRAY_SIZE(face_m64), "face"},
+    {font_vtbl, font_m64, ARRAY_SIZE(font_m64), "font"},
+    {family_vtbl, family_m64, ARRAY_SIZE(family_m64), "family"},
+    {collection_vtbl, collection_m64, ARRAY_SIZE(collection_m64), "collection"},
+    {factory_vtbl, factory_m64, ARRAY_SIZE(factory_m64), "factory"},
+    {analysis_vtbl, analysis_m64, ARRAY_SIZE(analysis_m64), "analysis"},
+};
+
+static W32_STATE uint64_t *vt64[ARRAY_SIZE(kinds64)];
+static W32_STATE struct proxy *local_proxy;
+
+static uint64_t h_method(uint64_t *a, const uint64_t *f, void *t);
+
+static uint64_t vtable64(int kind)
+{
+    if (!vt64[kind] && (vt64[kind] = w32_alloc(sizeof(uint64_t) * (size_t)kinds64[kind].count)))
+        for (int i = 0; i < kinds64[kind].count; i++)
+            vt64[kind][i] = (uintptr_t)w64_target_stub(h_method, (void *)&kinds64[kind].methods[i]);
+    return (uintptr_t)vt64[kind];
+}
+
+static uint64_t wrap64(struct obj *o)
+{
+    if (!o)
+        return 0;
+    struct proxy **slot = o == &local_loader ? &local_proxy : (struct proxy **)&o->proxy;
+    if (!*slot) {
+        int kind = 0;
+        while (kind < (int)ARRAY_SIZE(kinds64) - 1 && kinds64[kind].vtbl != o->vtbl)
+            kind++;
+        uint64_t vtbl = vtable64(kind);
+        if (!vtbl || !(*slot = w32_alloc(sizeof(struct proxy))))
+            return 0;
+        **slot = (struct proxy){vtbl, (uintptr_t)o};
+    }
+    return (uintptr_t)*slot;
+}
+
+static struct obj *unwrap64(uint64_t v)
+{
+    const struct proxy *p = v && !(v >> 32) ? (const struct proxy *)(uintptr_t)v : NULL;
+    for (size_t k = 0; p && k < ARRAY_SIZE(kinds64); k++)
+        if (vt64[k] && p->vtbl == (uintptr_t)vt64[k])
+            return (struct obj *)(uintptr_t)p->inner;
+    return NULL;
+}
+
+/* the program's own objects, called through 32-bit vtables */
+struct rev {
+    const void *const *vtbl;
+    uint64_t target, context;
+};
+
+static uint64_t rev_call(struct rev *r, int slot, int argc, uint64_t *args)
+{
+    args[0] = r->target;
+    uint64_t vtbl;
+    memcpy(&vtbl, w64_ptr(r->target), 8);
+    uint64_t fn;
+    memcpy(&fn, (uint8_t *)w64_ptr(vtbl) + slot * 8, 8);
+    return w64_call(fn, argc, args);
+}
+
+static void *rev_new(uint64_t target, const void *const *vtbl);
+
+static uint32_t WINAPI rev_query(struct rev *r, const uint8_t *iid, void **out)
+{
+    UNUSED(r);
+    UNUSED(iid);
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+
+static uint32_t WINAPI rev_add_ref(struct rev *r)
+{
+    uint64_t args[1];
+    return (uint32_t)rev_call(r, 1, 1, args);
+}
+
+static uint32_t WINAPI rev_release(struct rev *r)
+{
+    uint64_t args[1];
+    uint32_t n = (uint32_t)rev_call(r, 2, 1, args);
+    w32_free(r);
+    return n;
+}
+
+static const void *const rev_file_vtbl[];
+static const void *const rev_file_loader_vtbl[];
+static const void *const rev_stream_vtbl[];
+static const void *const rev_enum_vtbl[];
+
+static void *ours_or_rev(uint64_t v, const void *const *vtbl)
+{
+    struct obj *o = unwrap64(v);
+    return o ? (void *)o : v ? rev_new(v, vtbl) : NULL;
+}
+
+static uint32_t WINAPI rev_enum_from_key(struct rev *r, struct obj *factory, const void *key, UINT size, void **out)
+{
+    uint64_t made = 0, args[5] = {0, wrap64(factory), (uintptr_t)key, size, (uintptr_t)&made};
+    uint32_t hr = (uint32_t)rev_call(r, 3, 5, args);
+    *out = made ? rev_new(made, rev_enum_vtbl) : NULL;
+    return hr;
+}
+
+static uint32_t WINAPI rev_move_next(struct rev *r, BOOL *more)
+{
+    uint64_t args[2] = {0, (uintptr_t)more};
+    return (uint32_t)rev_call(r, 3, 2, args);
+}
+
+static uint32_t WINAPI rev_current_file(struct rev *r, void **out)
+{
+    uint64_t file = 0, args[2] = {0, (uintptr_t)&file};
+    uint32_t hr = (uint32_t)rev_call(r, 4, 2, args);
+    *out = ours_or_rev(file, rev_file_vtbl);
+    return hr;
+}
+
+static uint32_t WINAPI rev_file_key(struct rev *r, const void **key, UINT *size)
+{
+    uint64_t k = 0, args[3] = {0, (uintptr_t)&k, (uintptr_t)size};
+    uint32_t hr = (uint32_t)rev_call(r, 3, 3, args);
+    *key = w64_ptr(k);
+    return hr;
+}
+
+static uint32_t WINAPI rev_file_loader(struct rev *r, void **out)
+{
+    uint64_t loader = 0, args[2] = {0, (uintptr_t)&loader};
+    uint32_t hr = (uint32_t)rev_call(r, 4, 2, args);
+    *out = ours_or_rev(loader, rev_file_loader_vtbl);
+    return hr;
+}
+
+static uint32_t WINAPI rev_stream_from_key(struct rev *r, const void *key, UINT size, void **out)
+{
+    uint64_t stream = 0, args[4] = {0, (uintptr_t)key, size, (uintptr_t)&stream};
+    uint32_t hr = (uint32_t)rev_call(r, 3, 4, args);
+    *out = ours_or_rev(stream, rev_stream_vtbl);
+    return hr;
+}
+
+static uint32_t WINAPI rev_read(struct rev *r, const void **start, uint64_t offset, uint64_t size, void **context)
+{
+    uint64_t at = 0, args[5] = {0, (uintptr_t)&at, offset, size, (uintptr_t)&r->context};
+    uint32_t hr = (uint32_t)rev_call(r, 3, 5, args);
+    *start = w64_ptr(at);
+    *context = r;
+    return hr;
+}
+
+static void WINAPI rev_release_fragment(struct rev *r, void *context)
+{
+    UNUSED(context);
+    uint64_t args[2] = {0, r->context};
+    rev_call(r, 4, 2, args);
+}
+
+static uint32_t WINAPI rev_size(struct rev *r, uint64_t *size)
+{
+    uint64_t args[2] = {0, (uintptr_t)size};
+    return (uint32_t)rev_call(r, 5, 2, args);
+}
+
+static const void *const rev_loader_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_enum_from_key};
+static const void *const rev_enum_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_move_next, rev_current_file};
+static const void *const rev_file_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_file_key, rev_file_loader};
+static const void *const rev_file_loader_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_stream_from_key};
+static const void *const rev_stream_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_read, rev_release_fragment,
+                                              rev_size};
+
+static void *rev_new(uint64_t target, const void *const *vtbl)
+{
+    struct rev *r = w32_zalloc(sizeof(*r));
+    if (r)
+        *r = (struct rev){vtbl, target, 0};
+    return r;
+}
+
+static uint64_t h_method(uint64_t *a, const uint64_t *f, void *t)
+{
+    const struct method64 *m = t;
+    const struct proxy *self = w64_ptr(a[0]);
+    for (size_t k = 0; !m->fn && k < ARRAY_SIZE(kinds64); k++)
+        if (m >= kinds64[k].methods && m < kinds64[k].methods + kinds64[k].count)
+            missing_method(kinds64[k].name, (int)(m - kinds64[k].methods));
+    if (!m->spec)
+        return E_NOTIMPL;
+    uint32_t args[20], out[12] = {0}, files[8] = {0};
+    void *made[4] = {NULL};
+    struct glyph_run run;
+    int n = 0, nmade = 0;
+    args[n++] = (uint32_t)self->inner;
+    for (int i = 1; m->spec[i - 1] && i < 12; i++) {
+        uint8_t *p = a[i] ? w64_ptr(a[i]) : NULL;
+        switch (m->spec[i - 1]) {
+        case 'i':
+            args[n++] = (uint32_t)a[i];
+            break;
+        case 'f':
+            args[n++] = (uint32_t)(i < 4 ? f[i] : a[i]);
+            break;
+        case 'q':
+            args[n++] = (uint32_t)a[i];
+            args[n++] = (uint32_t)(a[i] >> 32);
+            break;
+        case 'o':
+        case 'O':
+            args[n++] = p ? (uint32_t)(uintptr_t)&out[i] : 0;
+            break;
+        case 'F':
+            args[n++] = p ? (uint32_t)(uintptr_t)files : 0;
+            break;
+        case 'N':
+            args[n++] = (uint32_t)(uintptr_t)unwrap64(a[i]);
+            break;
+        case 'L':
+        case 'R': {
+            struct obj *o = unwrap64(a[i]);
+            const void *const *vtbl = m->spec[i - 1] == 'L' ? rev_loader_vtbl : rev_file_loader_vtbl;
+            void *r = o || !a[i] ? NULL : rev_new(a[i], vtbl);
+            if (r)
+                made[nmade++] = r;
+            args[n++] = (uint32_t)(uintptr_t)(o ? (void *)o : r);
+            break;
+        }
+        case 'A': {
+            uint32_t count = MIN((uint32_t)a[i - 1], 8u);
+            for (uint32_t k = 0; p && k < count; k++) {
+                uint64_t v;
+                memcpy(&v, p + k * 8, 8);
+                files[k] = (uint32_t)(uintptr_t)ours_or_rev(v, rev_file_vtbl);
+                if (files[k] && !unwrap64(v) && nmade < 4)
+                    made[nmade++] = (void *)(uintptr_t)files[k];
+            }
+            args[n++] = p ? (uint32_t)(uintptr_t)files : 0;
+            break;
+        }
+        case 'g': {
+            uint64_t face, glyphs, advances, offsets;
+            memcpy(&face, p, 8);
+            memcpy(&glyphs, p + 16, 8);
+            memcpy(&advances, p + 24, 8);
+            memcpy(&offsets, p + 32, 8);
+            run = (struct glyph_run){unwrap64(face), 0, 0, w64_ptr(glyphs), w64_ptr(advances), w64_ptr(offsets),
+                                     0, 0};
+            memcpy(&run.em, p + 8, 4);
+            memcpy(&run.count, p + 12, 4);
+            memcpy(&run.sideways, p + 40, 4);
+            memcpy(&run.bidi, p + 44, 4);
+            args[n++] = (uint32_t)(uintptr_t)&run;
+            break;
+        }
+        default:
+            args[n++] = (uint32_t)(uintptr_t)p;
+        }
+    }
+    uint32_t r = (uint32_t)w64_call32((void *)m->fn, args, n);
+    for (int i = 1; m->spec[i - 1] && i < 12; i++) {
+        uint8_t *p = a[i] ? w64_ptr(a[i]) : NULL;
+        uint64_t v;
+        if (!p)
+            continue;
+        if (m->spec[i - 1] == 'o' || m->spec[i - 1] == 'O') {
+            v = m->spec[i - 1] == 'o' ? wrap64((struct obj *)(uintptr_t)out[i]) : out[i];
+            memcpy(p, &v, 8);
+        } else if (m->spec[i - 1] == 'F') {
+            uint32_t count = MIN(*(const UINT *)w64_ptr(a[i - 1]), 8u);
+            for (uint32_t k = 0; k < count; k++) {
+                v = wrap64((struct obj *)(uintptr_t)files[k]);
+                memcpy(p + k * 8, &v, 8);
+            }
+        }
+    }
+    for (int k = 0; k < nmade; k++)
+        w32_free(made[k]);
+    return r;
+}
+
+static uint64_t h_create_factory(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    uint32_t made = 0;
+    uint32_t hr = DWriteCreateFactory((int)a[0], w64_ptr(a[1]), (void **)&made);
+    uint64_t v = wrap64((struct obj *)(uintptr_t)made);
+    if (a[2])
+        memcpy(w64_ptr(a[2]), &v, 8);
+    return hr;
+}
+
+static const struct w64_export dwrite64_exports[] = {
+    W64_FN("DWriteCreateFactory", h_create_factory),
+};
+
+W64_EXPORTS(dwrite64_module, "dwrite.dll", dwrite64_exports);

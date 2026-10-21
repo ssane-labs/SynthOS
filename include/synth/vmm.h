@@ -39,6 +39,10 @@ bool vmm_cow_fault(uintptr_t address);
 void vmm_set_commit_hook(bool (*fn)(uintptr_t address));
 void vmm_set_map_hook(bool (*fn)(uintptr_t address));
 int vmm_commit_range(uintptr_t start, size_t size);
+bool vmm_high_fault(uint64_t address);
+void vmm_set_high_hook(bool (*fn)(uint64_t address));
+int vmm_high_alias(uint64_t vaddr, uintptr_t low);
+void vmm_high_unmap(uint64_t vaddr, uint64_t size);
 
 void *kmalloc_pages(size_t size);
 void *kmalloc_pages_uninit(size_t size);

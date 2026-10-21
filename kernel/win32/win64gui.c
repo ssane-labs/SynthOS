@@ -43,13 +43,13 @@ static void put64(void *p, uint64_t v)
 
 static uint32_t WINAPI bridge4(struct thunk *t, uint32_t h, uint32_t msg, uint32_t wp, uint32_t lp)
 {
-    uint64_t args[4] = {h, msg, wp, lp};
+    uint64_t args[4] = {h, msg, w64_high_back(wp), w64_high_back(lp)};
     uint8_t cs[88];
     if ((msg == WM_CREATE || msg == WM_NCCREATE) && lp) {
         const uint32_t *src = P(lp);
         memset(cs, 0, sizeof(cs));
         for (int i = 0; i < 4; i++)
-            put64(cs + i * 8, src[i]);
+            put64(cs + i * 8, w64_high_back(src[i]));
         memcpy(cs + 32, src + 4, 20);
         put64(cs + 56, src[9]);
         put64(cs + 64, src[10]);
@@ -117,12 +117,12 @@ static uint32_t lparam32(uint64_t msg, uint64_t lp)
 {
     if (((uint32_t)msg == WM_CREATE || (uint32_t)msg == WM_NCCREATE) && lp && rd32(P(lp + 80)) == CS_MAGIC)
         return rd32(P(lp + 84));
-    return (uint32_t)lp;
+    return U(P(lp));
 }
 
 static uint64_t h_proc32(uint64_t *a, const uint64_t *f, void *t)
 {
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], lparam32(a[1], a[3])));
+    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], U(P(a[2])), lparam32(a[1], a[3])));
 }
 
 static void class_to32(const uint8_t *c, uint32_t *o, uint32_t style)
@@ -172,8 +172,8 @@ static void msg_to64(const uint32_t *m, uint8_t *o)
     memset(o, 0, 48);
     put64(o, m[0]);
     put32(o + 8, m[1]);
-    put64(o + 16, m[2]);
-    put64(o + 24, m[3]);
+    put64(o + 16, w64_high_back(m[2]));
+    put64(o + 24, w64_high_back(m[3]));
     put32(o + 32, m[4]);
     memcpy(o + 36, m + 5, 8);
 }
@@ -182,8 +182,8 @@ static void msg_to32(const uint8_t *o, uint32_t *m)
 {
     m[0] = (uint32_t)rd64(o);
     m[1] = rd32(o + 8);
-    m[2] = (uint32_t)rd64(o + 16);
-    m[3] = (uint32_t)rd64(o + 24);
+    m[2] = U(P(rd64(o + 16)));
+    m[3] = U(P(rd64(o + 24)));
     m[4] = rd32(o + 32);
     memcpy(m + 5, o + 36, 8);
 }
@@ -240,32 +240,32 @@ static uint64_t h_end_paint(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_get_long(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1]);
-    return (int32_t)a[1] == GWLP_WNDPROC ? to64(r) : w64_ret(r);
+    return (int32_t)a[1] == GWLP_WNDPROC ? to64(r) : w64_high_back(w64_ret(r));
 }
 
 static uint64_t h_set_long(uint64_t *a, const uint64_t *f, void *t)
 {
     bool proc = (int32_t)a[1] == GWLP_WNDPROC;
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], proc ? to32(a[2], 4) : (uint32_t)a[2]);
-    return proc ? to64(r) : w64_ret(r);
+    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], proc ? to32(a[2], 4) : U(P(a[2])));
+    return proc ? to64(r) : w64_high_back(w64_ret(r));
 }
 
 static uint64_t h_call_window_proc(uint64_t *a, const uint64_t *f, void *t)
 {
     void *target;
     if (is_stub_for(a[0], h_proc32, &target))
-        return w64_ret((uint32_t)T32(target, (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], lparam32(a[2], a[4])));
+        return w64_ret((uint32_t)T32(target, (uint32_t)a[1], (uint32_t)a[2], U(P(a[3])), lparam32(a[2], a[4])));
     for (struct thunk *th = w32->w64_thunks; th; th = th->next)
         if (U(th) == a[0])
             a[0] = th->fn;
     if (a[0] >> 32 == 0 && !w64_is_code64(a[0]))
-        return w64_ret((uint32_t)T32(P(a[0]), (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], lparam32(a[2], a[4])));
+        return w64_ret((uint32_t)T32(P(a[0]), (uint32_t)a[1], (uint32_t)a[2], U(P(a[3])), lparam32(a[2], a[4])));
     return w64_call(a[0], 4, a + 1);
 }
 
 static uint64_t h_def_proc(uint64_t *a, const uint64_t *f, void *t)
 {
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], lparam32(a[1], a[3])));
+    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], U(P(a[2])), lparam32(a[1], a[3])));
 }
 
 static uint64_t h_dialog(uint64_t *a, const uint64_t *f, void *t)
@@ -281,6 +281,11 @@ static uint64_t h_set_timer(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_enum_windows(uint64_t *a, const uint64_t *f, void *t)
 {
     return (uint32_t)T32(t, to32(a[0], 2), (uint32_t)a[1]);
+}
+
+static uint64_t h_enum_monitors(uint64_t *a, const uint64_t *f, void *t)
+{
+    return (uint32_t)T32(t, (uint32_t)a[0], U(P(a[1])), to32(a[2], 4), U(P(a[3])));
 }
 
 static uint64_t h_enum_children(uint64_t *a, const uint64_t *f, void *t)
@@ -370,11 +375,20 @@ static const struct w64_export user32_exports[] = {
     W64_FN("DefFrameProcA", h_def_proc),
     W64_FN("DefMDIChildProcA", h_def_proc),
     W64_FN("SetTimer", h_set_timer),
+    W64_FN("SetCoalescableTimer", h_set_timer),
     W64_FN("EnumWindows", h_enum_windows),
     W64_FN("EnumChildWindows", h_enum_children),
+    W64_FN("EnumDisplayMonitors", h_enum_monitors),
     W64_FN("MsgWaitForMultipleObjects", h_msg_wait),
 };
 W64_EXPORTS(user32_module, "user32.dll", user32_exports);
+
+/* arrays of handles: 8 bytes each */
+static const struct w64_export wait_exports[] = {
+    W64_FN("MsgWaitForMultipleObjectsEx", h_msg_wait),
+    W64_FN("WSAWaitForMultipleEvents", h_msg_wait),
+};
+W64_EXPORTS(wait_module, "*", wait_exports);
 
 static const struct w64_export gdi32_exports[] = {
     W64_FN("CreateDIBSection", h_dib_section),
