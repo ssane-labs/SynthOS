@@ -1,4 +1,5 @@
 #include <synth/fmt.h>
+#include <synth/log.h>
 #include <synth/heap.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
@@ -84,6 +85,12 @@ static uint64_t rd64(const void *p)
     uint64_t v;
     memcpy(&v, p, 8);
     return v;
+}
+
+/* a pointer field of a 64-bit structure, as the 32-bit code reaches it */
+static uint32_t rdp(const void *p)
+{
+    return U(P(rd64(p)));
 }
 
 static void put16(void *p, uint16_t v)
@@ -611,12 +618,12 @@ static void startup_to32(const uint8_t *o, uint8_t *s)
     memset(s, 0, 68);
     put32(s, 68);
     for (int i = 0; i < 3; i++)
-        put32(s + 4 + i * 4, (uint32_t)rd64(o + 8 + i * 8));
+        put32(s + 4 + i * 4, rdp(o + 8 + i * 8));
     memcpy(s + 16, o + 32, 32);
     memcpy(s + 48, o + 64, 4);
-    put32(s + 52, (uint32_t)rd64(o + 72));
+    put32(s + 52, rdp(o + 72));
     for (int i = 0; i < 3; i++)
-        put32(s + 56 + i * 4, (uint32_t)rd64(o + 80 + i * 8));
+        put32(s + 56 + i * 4, rdp(o + 80 + i * 8));
 }
 
 static uint64_t h_get_startup_info(uint64_t *a, const uint64_t *f, void *t)

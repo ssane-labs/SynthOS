@@ -55,6 +55,7 @@ struct wsock {
     uintptr_t key;
     HANDLE event;
     long mask, reported;
+    bool v6;
 };
 
 #define STATUS_PENDING 0x103u
@@ -182,6 +183,53 @@ static uint32_t to_host(uint32_t be)
     return net_htonl(be);
 }
 
+/* IPv6 sockets run over the IPv4 stack: ::1, :: and ::ffff:a.b.c.d stand for their IPv4 addresses */
+#define AF_INET6 23
+#define SOCKADDR_IN6 28
+
+static void fill_addr6(uint8_t *out, int *len, uint32_t ip, uint16_t port)
+{
+    if (len && *len < SOCKADDR_IN6) {
+        *len = SOCKADDR_IN6;
+        return;
+    }
+    memset(out, 0, SOCKADDR_IN6);
+    uint16_t family = AF_INET6, be_port = net_htons(port);
+    uint32_t be = net_htonl(ip);
+    memcpy(out, &family, 2);
+    memcpy(out + 2, &be_port, 2);
+    if (ip == 0x7f000001u) {
+        out[23] = 1;
+    } else if (ip) {
+        out[18] = out[19] = 0xff;
+        memcpy(out + 20, &be, 4);
+    }
+    if (len)
+        *len = SOCKADDR_IN6;
+}
+
+static const struct sockaddr_in *v4_addr(const void *addr, int len, struct sockaddr_in *tmp)
+{
+    const uint8_t *a = addr;
+    uint16_t family;
+    if (!a || len < 2 || (memcpy(&family, a, 2), family != AF_INET6))
+        return addr;
+    static const uint8_t zero[10];
+    const uint8_t *ip = a + 8;
+    if (len < SOCKADDR_IN6 || memcmp(ip, zero, 10))
+        return NULL;
+    memset(tmp, 0, sizeof(*tmp));
+    tmp->family = AF_INET;
+    memcpy(&tmp->port, a + 2, 2);
+    if (ip[10] == 0xff && ip[11] == 0xff)
+        memcpy(&tmp->addr, ip + 12, 4);
+    else if (!ip[10] && !ip[11] && !ip[12] && !ip[13] && !ip[14] && ip[15] <= 1)
+        tmp->addr = ip[15] ? net_htonl(0x7f000001u) : 0;
+    else
+        return NULL;
+    return tmp;
+}
+
 static void fill_addr(struct sockaddr_in *out, int *len, uint32_t ip, uint16_t port)
 {
     if (!out)
@@ -196,6 +244,14 @@ static void fill_addr(struct sockaddr_in *out, int *len, uint32_t ip, uint16_t p
     out->addr = net_htonl(ip);
     if (len)
         *len = sizeof(*out);
+}
+
+static void sock_addr(const struct wsock *w, struct sockaddr_in *out, int *len, uint32_t ip, uint16_t port)
+{
+    if (out && w->v6)
+        fill_addr6((uint8_t *)out, len, ip, port);
+    else
+        fill_addr(out, len, ip, port);
 }
 
 static int WINAPI WSAStartup(WORD version, uint8_t *data)
@@ -236,7 +292,7 @@ static void WINAPI WSASetLastError(int e)
 static UINT WINAPI socket(int family, int type, int protocol)
 {
     UNUSED(protocol);
-    if (family != AF_INET) {
+    if (family != AF_INET && family != AF_INET6) {
         w32_set_error(WSAEAFNOSUPPORT);
         return INVALID_SOCKET;
     }
@@ -249,7 +305,7 @@ static UINT WINAPI socket(int family, int type, int protocol)
         fail(id);
         return INVALID_SOCKET;
     }
-    socks[id] = (struct wsock){true, false, id, type, 0, 0, NULL, 0, NULL, 0, 0};
+    socks[id] = (struct wsock){true, false, id, type, 0, 0, NULL, 0, NULL, 0, 0, family == AF_INET6};
     return handle_of(id);
 }
 
@@ -274,8 +330,11 @@ static int WINAPI closesocket(UINT s)
 static int WINAPI bind(UINT s, const struct sockaddr_in *addr, int len)
 {
     struct wsock *w = sock_of(s);
+    struct sockaddr_in tmp;
     if (!w)
         return SOCKET_ERROR;
+    if ((addr = v4_addr(addr, len, &tmp)) == &tmp)
+        len = sizeof(tmp);
     if (!addr || len < (int)sizeof(*addr) || addr->family != AF_INET)
         return fail(E_INVAL);
     int err = net_bind(w->id, to_host(addr->addr), net_htons(addr->port));
@@ -306,8 +365,9 @@ static UINT WINAPI accept(UINT s, struct sockaddr_in *addr, int *len)
         uint16_t port;
         int c = net_accept(w->id, &ip, &port);
         if (c >= 0) {
-            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0, NULL, 0, 0};
-            fill_addr(addr, len, ip, port);
+            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0, NULL, 0, 0,
+                                      w->v6};
+            sock_addr(w, addr, len, ip, port);
             return handle_of(c);
         }
         if (c != E_AGAIN || w->nonblocking) {
@@ -321,8 +381,15 @@ static UINT WINAPI accept(UINT s, struct sockaddr_in *addr, int *len)
 static int WINAPI connect(UINT s, const struct sockaddr_in *addr, int len)
 {
     struct wsock *w = sock_of(s);
+    struct sockaddr_in tmp;
     if (!w)
         return SOCKET_ERROR;
+    if (addr && len >= 2 && !(addr = v4_addr(addr, len, &tmp))) {
+        w32_set_error(10051);
+        return SOCKET_ERROR;
+    }
+    if (addr == &tmp)
+        len = sizeof(tmp);
     if (!addr || len < (int)sizeof(*addr) || addr->family != AF_INET)
         return fail(E_INVAL);
     int err = net_connect_start(w->id, to_host(addr->addr), net_htons(addr->port));
@@ -399,7 +466,10 @@ static int WINAPI sendto(UINT s, const char *buf, int len, int flags, const stru
         return SOCKET_ERROR;
     if (w->type == SOCK_STREAM || !to)
         return send(s, buf, len, flags);
-    if (tolen < (int)sizeof(*to))
+    struct sockaddr_in tmp;
+    if ((to = v4_addr(to, tolen, &tmp)) == &tmp)
+        tolen = sizeof(tmp);
+    if (!to || tolen < (int)sizeof(*to))
         return fail(E_INVAL);
     long n = net_sendto(w->id, buf, (size_t)MAX(len, 0), to_host(to->addr), net_htons(to->port));
     return n < 0 ? fail((int)n) : (int)n;
@@ -417,7 +487,7 @@ static int WINAPI recvfrom(UINT s, char *buf, int len, int flags, struct sockadd
         uint16_t port = 0;
         long n = net_recvfrom(w->id, buf, (size_t)MAX(len, 0), &ip, &port);
         if (n >= 0) {
-            fill_addr(from, fromlen, ip, port);
+            sock_addr(w, from, fromlen, ip, port);
             return (int)n;
         }
         if (n != E_AGAIN || w->nonblocking)
@@ -513,7 +583,7 @@ static int WINAPI getsockname(UINT s, struct sockaddr_in *addr, int *len)
     int err = net_local(w->id, &ip, &port);
     if (err)
         return fail(err);
-    fill_addr(addr, len, ip, port);
+    sock_addr(w, addr, len, ip, port);
     return 0;
 }
 
@@ -527,7 +597,7 @@ static int WINAPI getpeername(UINT s, struct sockaddr_in *addr, int *len)
     int err = net_peer(w->id, &ip, &port);
     if (err)
         return fail(err);
-    fill_addr(addr, len, ip, port);
+    sock_addr(w, addr, len, ip, port);
     return 0;
 }
 
@@ -792,6 +862,23 @@ static char *WINAPI inet_ntoa(uint32_t be)
 static int WINAPI inet_pton(int family, const char *s, void *out)
 {
     uint32_t ip;
+    if (family == AF_INET6) {
+        uint8_t *o = out;
+        memset(o, 0, 16);
+        if (!strcmp(s, "::"))
+            return 1;
+        if (!strcmp(s, "::1")) {
+            o[15] = 1;
+            return 1;
+        }
+        if (!str_ncasecmp(s, "::ffff:", 7) && net_parse_ip(s + 7, &ip)) {
+            uint32_t be = net_htonl(ip);
+            o[10] = o[11] = 0xff;
+            memcpy(o + 12, &be, 4);
+            return 1;
+        }
+        return 0;
+    }
     if (family != AF_INET) {
         w32_set_error(WSAEAFNOSUPPORT);
         return -1;
@@ -805,6 +892,22 @@ static int WINAPI inet_pton(int family, const char *s, void *out)
 
 static const char *WINAPI inet_ntop(int family, const void *addr, char *out, SIZE_T cap)
 {
+    if (family == AF_INET6) {
+        const uint8_t *a = addr;
+        static const uint8_t zero[15];
+        char v4[16];
+        if (!memcmp(a, zero, 15))
+            str_copy(out, a[15] == 1 ? "::1" : "::", cap);
+        else if (!memcmp(a, zero, 10) && a[10] == 0xff && a[11] == 0xff) {
+            uint32_t be;
+            memcpy(&be, a + 12, 4);
+            net_format_ip(net_htonl(be), v4, sizeof(v4));
+            ksnprintf(out, cap, "::ffff:%s", v4);
+        } else {
+            ksnprintf(out, cap, "%x:%x::", (unsigned)(a[0] << 8 | a[1]), (unsigned)(a[2] << 8 | a[3]));
+        }
+        return out;
+    }
     if (family != AF_INET) {
         w32_set_error(WSAEAFNOSUPPORT);
         return NULL;
@@ -983,7 +1086,7 @@ static long recv_now(struct wsock *w, char *buf, ULONG len, struct sockaddr_in *
     uint16_t port;
     long n = net_recvfrom(w->id, buf, len, &ip, &port);
     if (n >= 0)
-        fill_addr(from, fromlen, ip, port);
+        sock_addr(w, from, fromlen, ip, port);
     return n;
 }
 
@@ -1296,6 +1399,13 @@ static int WINAPI getnameinfo(const struct sockaddr_in *sa, int salen, char *hos
 {
     UNUSED(salen);
     UNUSED(flags);
+    if (sa && sa->family == AF_INET6) {
+        if (host && hostlen)
+            inet_ntop(AF_INET6, (const uint8_t *)sa + 8, host, hostlen);
+        if (serv && servlen)
+            ksnprintf(serv, servlen, "%u", (unsigned)net_htons(sa->port));
+        return 0;
+    }
     if (!sa || sa->family != 2)
         return WSAEAFNOSUPPORT;
     if (host && hostlen && !inet_ntop(2, &sa->addr, host, hostlen))

@@ -518,7 +518,6 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_AS("Module32FirstW", w32_fail2),
     W32_AS("Module32NextW", w32_fail2),
     W32_AS("CreateRemoteThreadEx", w32_fail8),
-    W32_AS("OpenFileMappingA", w32_fail3),
     W32_FN(PowerCreateRequest),
     W32_AS("PowerSetRequest", w32_one2),
     W32_AS("PowerClearRequest", w32_one2),

@@ -10,6 +10,8 @@
 #define GWLP_WNDPROC (-4)
 #define CS_MAGIC 0x32335343u
 
+#define ENUM4 0x104
+
 struct thunk {
     uint8_t code[16];
     uint64_t fn;
@@ -29,6 +31,12 @@ static uint64_t rd64(const void *p)
     uint64_t v;
     memcpy(&v, p, 8);
     return v;
+}
+
+/* a pointer field of a 64-bit structure, as the 32-bit code reaches it */
+static uint32_t rdp(const void *p)
+{
+    return U(P(rd64(p)));
 }
 
 static void put32(void *p, uint32_t v)
@@ -63,8 +71,21 @@ static uint32_t WINAPI bridge4(struct thunk *t, uint32_t h, uint32_t msg, uint32
 
 static uint32_t WINAPI bridge2(struct thunk *t, uint32_t a, uint32_t b)
 {
-    uint64_t args[2] = {a, b};
+    uint64_t args[2] = {a, w64_high_back(b)};
     return (uint32_t)w64_call(t->fn, 2, args);
+}
+
+static uint32_t WINAPI bridge1(struct thunk *t, uint32_t a)
+{
+    uint64_t args[1] = {a};
+    return (uint32_t)w64_call(t->fn, 1, args);
+}
+
+/* enumeration callbacks: four plain arguments, the last one the caller's own value */
+static uint32_t WINAPI bridge_enum4(struct thunk *t, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+{
+    uint64_t args[4] = {a, b, c, w64_high_back(d)};
+    return (uint32_t)w64_call(t->fn, 4, args);
 }
 
 static bool is_stub_for(uint64_t addr, w64_handler fn, void **target);
@@ -83,7 +104,8 @@ static uint32_t to32(uint64_t fn, int argc)
     struct thunk *t = w32_zalloc(sizeof(*t));
     if (!t)
         return 0;
-    uint32_t self = U(t), entry = U(argc == 2 ? (void *)bridge2 : (void *)bridge4);
+    uint32_t self = U(t), entry = U(argc == 1 ? (void *)bridge1 : argc == 2 ? (void *)bridge2
+                                    : argc == ENUM4 ? (void *)bridge_enum4 : (void *)bridge4);
     int32_t rel = (int32_t)(entry - (self + 12));
     t->code[0] = 0x59;
     t->code[1] = 0x68;
@@ -131,7 +153,7 @@ static void class_to32(const uint8_t *c, uint32_t *o, uint32_t style)
     o[1] = to32(rd64(c + 8), 4);
     memcpy(o + 2, c + 16, 8);
     for (int i = 0; i < 6; i++)
-        o[4 + i] = (uint32_t)rd64(c + 24 + i * 8);
+        o[4 + i] = rdp(c + 24 + i * 8);
 }
 
 static uint64_t h_register_class(uint64_t *a, const uint64_t *f, void *t)
@@ -147,7 +169,7 @@ static uint64_t h_register_class_ex(uint64_t *a, const uint64_t *f, void *t)
     uint32_t wc[12];
     wc[0] = 48;
     class_to32(c, wc + 1, rd32(c + 4));
-    wc[11] = (uint32_t)rd64(c + 72);
+    wc[11] = rdp(c + 72);
     return T32(t, U(wc)) & 0xffff;
 }
 
@@ -180,7 +202,7 @@ static void msg_to64(const uint32_t *m, uint8_t *o)
 
 static void msg_to32(const uint8_t *o, uint32_t *m)
 {
-    m[0] = (uint32_t)rd64(o);
+    m[0] = rdp(o);
     m[1] = rd32(o + 8);
     m[2] = U(P(rd64(o + 16)));
     m[3] = U(P(rd64(o + 24)));
@@ -232,7 +254,7 @@ static uint64_t h_end_paint(uint64_t *a, const uint64_t *f, void *t)
 {
     uint8_t ps[64];
     const uint8_t *o = P(a[1]);
-    put32(ps, (uint32_t)rd64(o));
+    put32(ps, rdp(o));
     memcpy(ps + 4, o + 8, 60);
     return (uint32_t)T32(t, U(P(a[0])), U(ps));
 }
@@ -283,6 +305,26 @@ static uint64_t h_enum_windows(uint64_t *a, const uint64_t *f, void *t)
     return (uint32_t)T32(t, to32(a[0], 2), U(P(a[1])));
 }
 
+static uint64_t h_enum_resources(uint64_t *a, const uint64_t *f, void *t)
+{
+    return (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), to32(a[2], ENUM4), U(P(a[3])));
+}
+
+static uint64_t h_enum_fonts(uint64_t *a, const uint64_t *f, void *t)
+{
+    return (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), to32(a[2], ENUM4), U(P(a[3])), (uint32_t)a[4]);
+}
+
+static uint64_t h_enum_locales(uint64_t *a, const uint64_t *f, void *t)
+{
+    return (uint32_t)T32(t, to32(a[0], 1), (uint32_t)a[1]);
+}
+
+static uint64_t h_enum_thread_windows(uint64_t *a, const uint64_t *f, void *t)
+{
+    return (uint32_t)T32(t, (uint32_t)a[0], to32(a[1], 2), U(P(a[2])));
+}
+
 static uint64_t h_enum_monitors(uint64_t *a, const uint64_t *f, void *t)
 {
     return (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), to32(a[2], 4), U(P(a[3])));
@@ -297,7 +339,7 @@ static uint64_t h_msg_wait(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t n = (uint32_t)MIN(a[0], 64u), handles[64];
     for (uint32_t i = 0; i < n; i++)
-        handles[i] = (uint32_t)rd64(P(a[1] + i * 8));
+        handles[i] = rdp(P(a[1] + i * 8));
     return w64_ret((uint32_t)T32(t, n, U(handles), U(P(a[2])), U(P(a[3])), U(P(a[4]))));
 }
 
@@ -389,6 +431,17 @@ static const struct w64_export wait_exports[] = {
     W64_FN("WSAWaitForMultipleEvents", h_msg_wait),
 };
 W64_EXPORTS(wait_module, "*", wait_exports);
+
+static const struct w64_export enum_exports[] = {
+    W64_FN("EnumResourceNamesW", h_enum_resources),
+    W64_FN("EnumResourceNamesA", h_enum_resources),
+    W64_FN("EnumFontFamiliesExA", h_enum_fonts),
+    W64_FN("EnumFontFamiliesExW", h_enum_fonts),
+    W64_FN("EnumSystemLocalesA", h_enum_locales),
+    W64_FN("EnumSystemLocalesW", h_enum_locales),
+    W64_FN("EnumThreadWindows", h_enum_thread_windows),
+};
+W64_EXPORTS(enum_module, "*", enum_exports);
 
 static const struct w64_export gdi32_exports[] = {
     W64_FN("CreateDIBSection", h_dib_section),

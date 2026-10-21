@@ -27,6 +27,12 @@ static uint64_t rd64(const void *p)
     return v;
 }
 
+/* a pointer field of a 64-bit structure, as the 32-bit code reaches it */
+static uint32_t rdp(const void *p)
+{
+    return U(P(rd64(p)));
+}
+
 static void put32(void *p, uint32_t v)
 {
     memcpy(p, &v, 4);
@@ -112,7 +118,7 @@ static void fdset_in(uint64_t p, uint32_t *buf)
     uint32_t n = MIN(rd32(P(p)), 64u);
     buf[0] = n;
     for (uint32_t i = 0; i < n; i++)
-        buf[1 + i] = (uint32_t)rd64(P(p + 8 + i * 8));
+        buf[1 + i] = rdp(P(p + 8 + i * 8));
 }
 
 static void fdset_out(uint64_t p, const uint32_t *buf)
@@ -186,7 +192,7 @@ static uint64_t h_poll(uint64_t *a, const uint64_t *f, void *t)
     uint32_t fds[POLL_MAX * 2];
     uint8_t *src = P(a[0]);
     for (uint32_t i = 0; i < n; i++) {
-        fds[i * 2] = (uint32_t)rd64(src + i * 16);
+        fds[i * 2] = rdp(src + i * 16);
         memcpy(&fds[i * 2 + 1], src + i * 16 + 8, 4);
     }
     uint32_t r = (uint32_t)T32(t, U(fds), n, U(P(a[2])));
@@ -223,7 +229,7 @@ static uint64_t h_wsa_buffers(uint64_t *a, const uint64_t *f, void *t)
     const uint8_t *src = P(a[1]);
     for (uint32_t i = 0; i < n; i++) {
         bufs[i * 2] = rd32(src + i * 16);
-        bufs[i * 2 + 1] = (uint32_t)rd64(src + i * 16 + 8);
+        bufs[i * 2 + 1] = rdp(src + i * 16 + 8);
     }
     uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(bufs), n, U(P(a[3])), U(P(a[4])), U(P(a[5])),
                                U(P(a[6])), U(P(a[7])), U(P(a[8])));

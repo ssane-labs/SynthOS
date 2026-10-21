@@ -37,10 +37,56 @@ void w32_section_retain(struct w32_section *s)
     s->refs++;
 }
 
+/* named sections are shared by every process that creates or opens the name, until the last handle goes */
+struct named_section {
+    struct named_section *next;
+    struct w32_section *section;
+    char name[];
+};
+
+static struct named_section *named_sections;
+
+static const char *section_name(const char *name)
+{
+    if (str_starts(name, "Global\\"))
+        return name + 7;
+    if (str_starts(name, "Local\\"))
+        return name + 6;
+    return name;
+}
+
+static struct w32_section *section_find(const char *name)
+{
+    for (struct named_section *n = named_sections; n; n = n->next)
+        if (!strcmp(n->name, section_name(name)))
+            return n->section;
+    return NULL;
+}
+
+static void section_name_add(const char *name, struct w32_section *s)
+{
+    name = section_name(name);
+    struct named_section *n = kmalloc(sizeof(*n) + strlen(name) + 1);
+    if (!n)
+        return;
+    n->section = s;
+    memcpy(n->name, name, strlen(name) + 1);
+    n->next = named_sections;
+    named_sections = n;
+}
+
 void w32_section_release(struct w32_section *s)
 {
     if (--s->refs > 0)
         return;
+    for (struct named_section **pp = &named_sections; *pp;)
+        if ((*pp)->section == s) {
+            struct named_section *n = *pp;
+            *pp = n->next;
+            kfree(n);
+        } else {
+            pp = &(*pp)->next;
+        }
     kfree(s->path);
     for (uint32_t i = 0; s->pages && i < s->page_count; i++)
         kfree_pages(s->pages[i]);
@@ -111,18 +157,65 @@ static HANDLE create_mapping(HANDLE file, DWORD protect, DWORD size_hi, DWORD si
     return h;
 }
 
+static HANDLE section_handle(struct w32_section *s)
+{
+    HANDLE h = w32_handle_new(WH_SECTION);
+    struct w32_object *o = w32_handle_get(h);
+    if (!o)
+        return NULL;
+    w32_section_retain(s);
+    o->section = s;
+    return h;
+}
+
 static HANDLE WINAPI CreateFileMappingA(HANDLE file, void *sa, DWORD protect, DWORD size_hi, DWORD size_lo,
                                         LPCSTR name)
 {
-    UNUSED(name);
-    return w32_inheritable(create_mapping(file, protect, size_hi, size_lo), sa);
+    struct w32_section *existing = name && *name ? section_find(name) : NULL;
+    if (existing) {
+        HANDLE h = section_handle(existing);
+        w32_set_error(ERROR_ALREADY_EXISTS);
+        return w32_inheritable(h, sa);
+    }
+    HANDLE h = w32_inheritable(create_mapping(file, protect, size_hi, size_lo), sa);
+    struct w32_object *o = w32_handle_get(h);
+    if (o && name && *name) {
+        section_name_add(name, o->section);
+        w32_set_error(0);
+    }
+    return h;
 }
 
 static HANDLE WINAPI CreateFileMappingW(HANDLE file, void *sa, DWORD protect, DWORD size_hi, DWORD size_lo,
                                         LPCWSTR name)
 {
-    UNUSED(name);
-    return w32_inheritable(create_mapping(file, protect, size_hi, size_lo), sa);
+    char *n = w32_narrow(name);
+    HANDLE h = CreateFileMappingA(file, sa, protect, size_hi, size_lo, n);
+    w32_free(n);
+    return h;
+}
+
+static HANDLE WINAPI OpenFileMappingA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    UNUSED(access);
+    struct w32_section *s = name ? section_find(name) : NULL;
+    if (!s) {
+        w32_set_error(ERROR_FILE_NOT_FOUND);
+        return NULL;
+    }
+    HANDLE h = section_handle(s);
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->inherit = inherit != 0;
+    return h;
+}
+
+static HANDLE WINAPI OpenFileMappingW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    char *n = w32_narrow(name);
+    HANDLE h = OpenFileMappingA(access, inherit, n);
+    w32_free(n);
+    return h;
 }
 
 static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T bytes)
@@ -295,7 +388,8 @@ static const struct w32_export mapping_ntdll[] = {
 };
 
 static const struct w32_export mapping_exports[] = {
-    W32_FN(CreateFileMappingA), W32_FN(CreateFileMappingW), W32_FN(MapViewOfFile),
+    W32_FN(CreateFileMappingA), W32_FN(CreateFileMappingW), W32_FN(OpenFileMappingA), W32_FN(OpenFileMappingW),
+    W32_FN(MapViewOfFile),
     W32_FN(MapViewOfFileEx),    W32_FN(UnmapViewOfFile),    W32_FN(FlushViewOfFile),
 };
 
