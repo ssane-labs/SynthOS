@@ -311,6 +311,7 @@ static const struct w32_export ntapi_kernel32[] = {
     W32_FN(WriteProcessMemory),
     W32_AS("RtlCaptureStackBackTrace", zero_frames),
     W32_FN(CreateJobObjectW),
+    W32_AS("CreateJobObjectA", CreateJobObjectW),
     W32_AS("SetInformationJobObject", w32_one4),
     W32_AS("AssignProcessToJobObject", w32_one2),
     W32_AS("TerminateJobObject", w32_one2),

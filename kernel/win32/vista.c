@@ -616,7 +616,7 @@ static BOOL WINAPI GetOverlappedResult(HANDLE h, uint32_t *ov, DWORD *bytes, BOO
         return FALSE;
     }
     if (bytes)
-        *bytes = ov[1];
+        *bytes = w32_ov_bytes(ov);
     if (ov[0]) {
         w32_set_error(ov[0] == 0xc0000120u ? 995 : 64);
         return FALSE;

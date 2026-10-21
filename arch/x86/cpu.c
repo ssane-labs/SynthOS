@@ -316,7 +316,12 @@ void arch_set_tick_hook(void (*fn)(uint32_t eip))
     tick_hook = fn;
 }
 
-extern uint32_t long_cr2_high;
+extern uint32_t long_cr2_high, long_rip_high;
+
+uint32_t arch_fault_rip_high(void)
+{
+    return arch_long_active() ? long_rip_high : 0;
+}
 
 uint32_t arch_fault_address_high(void)
 {

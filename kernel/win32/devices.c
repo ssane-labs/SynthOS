@@ -390,6 +390,100 @@ static const struct w32_export ndfapi_exports[] = {
     W32_AS("NdfExecuteDiagnosis", w32_notimpl2),
 };
 
+/* what the Steam client probes: no services, event logs, mixers, TCP tables or device nodes */
+STUB(CancelSynchronousIo, 1, 0, ERROR_NOT_FOUND)
+STUB(SetSystemPowerState, 2, 0, 5u)
+STUB(StartServiceW, 3, 0, 1058u)
+STUB(ControlService, 3, 0, 1062u)
+STUB(OpenEventLogA, 2, 0, 5u)
+STUB(ReadEventLogW, 7, 0, 38u)
+STUB(mixer3, 3, 6, 0)
+STUB(mixer1, 1, 6, 0)
+STUB(wave_message, 4, 6, 0)
+STUB(GetExtendedTcpTable, 6, 50, 0)
+STUB(GetIfEntry2, 1, 2, 0)
+STUB(ConvertInterfaceGuidToLuid, 2, 87, 0)
+STUB(CompleteAuthToken, 2, 0x80090302u, 0)
+STUB(WSASendMsg, 6, 0xffffffffu, 10045u)
+STUB(VariantChangeType, 4, 0x80020005u, 0)
+STUB(SetupDiGetDeviceInstanceIdA, 5, 0, ERROR_NO_SUCH_DEVINST)
+STUB(CM_Get_DevNode_Status, 4, 0xd, 0)
+
+static BOOL WINAPI SetupDiClassGuidsFromNameA(const char *name, void *guids, DWORD size, DWORD *required)
+{
+    UNUSED(name);
+    UNUSED(guids);
+    UNUSED(size);
+    if (required)
+        *required = 0;
+    return TRUE;
+}
+
+static const struct w32_export probe_setupapi[] = {
+    W32_FN(SetupDiClassGuidsFromNameA),
+    W32_AS("SetupDiGetDeviceRegistryPropertyA", SetupDiGetDeviceRegistryPropertyW),
+    W32_FN(SetupDiGetDeviceInstanceIdA),
+    W32_AS("CM_Locate_DevNodeA", CM_Locate_DevNodeW),
+    W32_AS("CM_Locate_DevNodeW", CM_Locate_DevNodeW),
+    W32_FN(CM_Get_DevNode_Status),
+};
+
+static const struct w32_export probe_kernel32[] = {
+    W32_FN(CancelSynchronousIo),
+    W32_FN(SetSystemPowerState),
+};
+
+static const struct w32_export probe_advapi32[] = {
+    W32_FN(StartServiceW),
+    W32_AS("StartServiceA", StartServiceW),
+    W32_FN(ControlService),
+    W32_FN(OpenEventLogA),
+    W32_AS("OpenEventLogW", OpenEventLogA),
+    W32_AS("CloseEventLog", w32_one1),
+    W32_FN(ReadEventLogW),
+    W32_AS("RegDeleteTreeA", w32_zero2),
+    W32_AS("RegDeleteTreeW", w32_zero2),
+};
+
+static const struct w32_export probe_winmm[] = {
+    W32_AS("mixerSetControlDetails", mixer3),
+    W32_AS("mixerGetControlDetailsA", mixer3),
+    W32_AS("mixerGetLineControlsA", mixer3),
+    W32_AS("mixerGetID", mixer3),
+    W32_AS("mixerGetLineInfoA", mixer3),
+    W32_AS("mixerGetDevCapsA", mixer3),
+    W32_AS("mixerClose", mixer1),
+    W32_AS("waveInClose", mixer1),
+    W32_AS("waveInMessage", wave_message),
+    W32_AS("waveOutMessage", wave_message),
+};
+
+static const struct w32_export probe_iphlpapi[] = {
+    W32_FN(GetExtendedTcpTable),
+    W32_FN(GetIfEntry2),
+    W32_FN(ConvertInterfaceGuidToLuid),
+};
+
+static const struct w32_export probe_secur32[] = {
+    W32_FN(CompleteAuthToken),
+};
+
+static const struct w32_export probe_ws2_32[] = {
+    W32_FN(WSASendMsg),
+};
+
+static const struct w32_export probe_oleaut32[] = {
+    W32_FN(VariantChangeType),
+};
+
+W32_EXPORTS(probe_setupapi_module, "setupapi.dll", probe_setupapi);
+W32_EXPORTS(probe_kernel32_module, "kernel32.dll", probe_kernel32);
+W32_EXPORTS(probe_advapi32_module, "advapi32.dll", probe_advapi32);
+W32_EXPORTS(probe_winmm_module, "winmm.dll", probe_winmm);
+W32_EXPORTS(probe_iphlpapi_module, "iphlpapi.dll", probe_iphlpapi);
+W32_EXPORTS(probe_secur32_module, "secur32.dll", probe_secur32);
+W32_EXPORTS(probe_ws2_32_module, "ws2_32.dll", probe_ws2_32);
+W32_EXPORTS(probe_oleaut32_module, "oleaut32.dll", probe_oleaut32);
 W32_EXPORTS(setupapi_module, "setupapi.dll", setupapi_exports);
 W32_EXPORTS(hid_module, "hid.dll", hid_exports);
 W32_EXPORTS(cfgmgr32_module, "cfgmgr32.dll", cfgmgr32_exports);

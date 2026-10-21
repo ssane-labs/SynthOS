@@ -222,6 +222,16 @@ static DWORD WINAPI K32GetModuleBaseNameA(HANDLE process, HANDLE module, LPSTR o
     return (DWORD)str_copy(out, base, size);
 }
 
+static DWORD WINAPI GetProcessImageFileNameW(HANDLE process, LPWSTR out, DWORD size)
+{
+    return K32GetModuleFileNameExW(process, NULL, out, size);
+}
+
+static DWORD WINAPI GetProcessImageFileNameA(HANDLE process, LPSTR out, DWORD size)
+{
+    return K32GetModuleFileNameExA(process, NULL, out, size);
+}
+
 static BOOL WINAPI QueryFullProcessImageNameW(HANDLE process, DWORD flags, LPWSTR out, DWORD *size)
 {
     UNUSED(flags);
@@ -500,6 +510,10 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_FN(K32GetModuleBaseNameA),
     W32_AS("GetModuleBaseNameA", K32GetModuleBaseNameA),
     W32_FN(QueryFullProcessImageNameW),
+    W32_FN(GetProcessImageFileNameW),
+    W32_FN(GetProcessImageFileNameA),
+    W32_AS("K32GetProcessImageFileNameW", GetProcessImageFileNameW),
+    W32_AS("K32GetProcessImageFileNameA", GetProcessImageFileNameA),
     W32_FN(QueryFullProcessImageNameA),
     W32_AS("Module32FirstW", w32_fail2),
     W32_AS("Module32NextW", w32_fail2),

@@ -169,6 +169,9 @@ void w32_object_release(struct w32_object *o)
     o->child = NULL;
     kfree(o->port);
     o->port = NULL;
+    if (o->sync && --o->sync->refs == 0)
+        kfree(o->sync);
+    o->sync = NULL;
     o->due = 0;
     o->type = WH_FREE;
     o->file = NULL;
@@ -188,11 +191,19 @@ bool w32_handle_close(HANDLE h)
     return true;
 }
 
-bool w32_object_clone(struct w32_object *dst, const struct w32_object *src)
+bool w32_object_clone(struct w32_object *dst, struct w32_object *src)
 {
     if (src->type == WH_FIND || src->type == WH_PORT || src->type == WH_THREAD || src->type == WH_FREE ||
         src->type <= WH_STDERR)
         return false;
+    bool sync = src->type == WH_EVENT || src->type == WH_MUTEX || src->type == WH_SEMAPHORE;
+    if (sync && !src->sync) {
+        if (!(src->sync = kzalloc(sizeof(*src->sync))))
+            return false;
+        *src->sync = (struct w32_sync){1, src->value, src->owner};
+    }
+    if (sync)
+        src->sync->refs++;
     *dst = *src;
     dst->refs = 1;
     dst->name_serial = 0;
@@ -230,7 +241,7 @@ struct w32_inherit *w32_inherit_collect(const HANDLE *list, int count)
         return NULL;
     for (int i = 3; i < W32_MAX_HANDLES && in->count < n; i++) {
         HANDLE h = (HANDLE)(uintptr_t)(HANDLE_BASE + (uintptr_t)i * 4);
-        const struct w32_object *o = &w32->handles[i];
+        struct w32_object *o = &w32->handles[i];
         bool wanted = list ? false : o->inherit;
         for (int k = 0; list && k < count; k++)
             wanted |= list[k] == h;
@@ -268,7 +279,7 @@ static void install_inherited(struct w32_inherit *in)
     w32_inherit_free(in);
 }
 
-HANDLE w32_handle_put(struct w32_process *p, const struct w32_object *o)
+HANDLE w32_handle_put(struct w32_process *p, struct w32_object *o)
 {
     for (int i = 3; i < W32_MAX_HANDLES; i++)
         if (p->handles[i].type == WH_FREE) {
@@ -426,11 +437,12 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
     for (struct w32_image *img = w32->images; img; img = img->next)
         if (!img->builtin && eip >= img->base && eip - img->base < img->size)
             ksnprintf(where, sizeof(where), " (%s+0x%x)", img->name, eip - img->base);
+    uint64_t pc = (uint64_t)arch_fault_rip_high() << 32 | eip, at = (uint64_t)arch_fault_address_high() << 32 | address;
     if (vector == 14)
-        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08x%s (address 0x%08x)", fault_name(vector),
-                  eip, where, address);
+        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08llx%s (address 0x%08llx)", fault_name(vector),
+                  pc, where, at);
     else
-        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08x%s", fault_name(vector), eip, where);
+        ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08llx%s", fault_name(vector), pc, where);
     uint32_t code = vector == 0 ? 0xc0000094u : vector == 6 ? 0xc000001du : vector == 3 ? 0x80000003u
                   : vector == 16 || vector == 19 ? 0xc0000090u : STATUS_ACCESS_VIOLATION;
     w32->exiting = true;
@@ -728,6 +740,20 @@ static bool build_teb_peb(void)
 
 
 static bool image_win64;
+static int long_users;
+
+static bool file_is_pe64(const char *path)
+{
+    struct file *f;
+    if (vfs_open(path, VFS_READ, &f) != 0)
+        return false;
+    uint8_t *head = kmalloc(4096);
+    long n = head ? vfs_read(f, head, 4096) : -1;
+    vfs_close(f);
+    bool pe64 = n > 0 && w32_is_pe64(head, (size_t)n);
+    kfree(head);
+    return pe64;
+}
 
 static void cleanup(void)
 {
@@ -798,11 +824,12 @@ static int run(struct exec_ctx *ctx)
             return 1;
         }
         w64_set_image(main->base);
-        entered_long = !arch_long_active();
+        entered_long = true;
         if (!arch_long_enter()) {
             ksnprintf(w32->message, sizeof(w32->message), "cannot switch the processor to 64-bit mode");
             return 1;
         }
+        long_users++;
     }
 
     arch_set_fault_handler(on_fault);
@@ -825,7 +852,8 @@ static int run(struct exec_ctx *ctx)
     }
     if (w32->win64)
         w64_cleanup();
-    if (entered_long)
+    /* 64-bit processes run side by side: long mode ends with the last of them */
+    if (entered_long && --long_users == 0)
         arch_long_leave();
     if (w32->threads)
         arch_w32_set_teb((uint32_t)w32->threads->teb);
@@ -1265,7 +1293,7 @@ static void child_entry(void)
 {
     struct w32_process *p = w32;
     arch_set_irq_depth(0);
-    image_win64 = false;
+    image_win64 = file_is_pe64(p->spawn_ctx->path);
     int rc = run(p->spawn_ctx);
     bool started = w32->main != NULL;
     if (w32->message[0])

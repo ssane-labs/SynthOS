@@ -430,6 +430,8 @@ himem64
 himem pool=1 data=1 api=1 io=1 query=1 decommit=1 placed=1 freed=1
 dwrite64
 dwrite families=1 name=1 glyphs=1 advance=1 upem=1 head=1 path=1 raster=1 same=1
+spawn64
+spawn64 child=5 dll32=0/193 overlapped=1 3 678
 cat '/mnt/hdb/Long Name Note.txt'
 hello from fat
 mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'

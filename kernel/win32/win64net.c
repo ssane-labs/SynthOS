@@ -195,6 +195,28 @@ static uint64_t h_poll(uint64_t *a, const uint64_t *f, void *t)
     return w64_sx(r);
 }
 
+/* functions handed out by WSAIoctl (ConnectEx, AcceptEx...) are 32-bit: 64-bit callers get a stub for each */
+static uint64_t h_ext_fn(uint64_t *a, const uint64_t *f, void *t)
+{
+    return w64_sx((uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2])), U(P(a[3])), U(P(a[4])), U(P(a[5])),
+                                U(P(a[6])), U(P(a[7]))));
+}
+
+static uint64_t h_wsa_ioctl(uint64_t *a, const uint64_t *f, void *t)
+{
+    bool ext = (uint32_t)a[1] == 0xc8000006u && a[4] && (uint32_t)a[5] >= 8;
+    uint32_t fn = 0;
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), (uint32_t)a[1], U(P(a[2])), (uint32_t)a[3], ext ? U(&fn) : U(P(a[4])),
+                               ext ? 4 : (uint32_t)a[5], U(P(a[6])), U(P(a[7])), U(P(a[8])));
+    if (ext && !r) {
+        uint64_t stub = fn ? U(w64_target_stub(h_ext_fn, (void *)(uintptr_t)fn)) : 0;
+        memcpy(P(a[4]), &stub, 8);
+        if (a[6])
+            put32(P(a[6]), 8);
+    }
+    return w64_sx(r);
+}
+
 static uint64_t h_wsa_buffers(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t n = (uint32_t)MIN(a[2], (uint64_t)BUF_MAX), bufs[BUF_MAX * 2];
@@ -221,6 +243,7 @@ static const struct w64_export ws2_exports[] = {
     W64_FN("getservbyname", h_getservby),
     W64_FN("getservbyport", h_getservby),
     W64_FN("WSAPoll", h_poll),
+    W64_FN("WSAIoctl", h_wsa_ioctl),
     W64_FN("WSASend", h_wsa_buffers),
     W64_FN("WSARecv", h_wsa_buffers),
     W64_FN("WSASendTo", h_wsa_buffers),

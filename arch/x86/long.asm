@@ -29,6 +29,7 @@ global w64_unwind_ex
 global w64_raise_hook
 global w64_unwind_hook
 global long_cr2_high
+global long_rip_high
 
 section .text
 
@@ -284,6 +285,8 @@ isr64_common:
     shr rax, 32
     mov [long_cr2_high], eax
     mov rbx, rsp
+    mov eax, [rbx + 140]
+    mov [long_rip_high], eax
     cmp qword [rbx + 144], CODE64
     jne .no_save
     sub rsp, 512
@@ -621,6 +624,8 @@ align 4
 w64_dispatch_fn:
     dd 0
 long_cr2_high:
+    dd 0
+long_rip_high:
     dd 0
 align 8
 w64_raise_hook:

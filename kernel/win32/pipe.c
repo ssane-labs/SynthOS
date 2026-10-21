@@ -439,15 +439,14 @@ static struct pending_io *pending;
 void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32_t bytes, bool sync)
 {
     w32_signal();
-    ov[0] = status;
-    ov[1] = bytes;
-    HANDLE event = (HANDLE)(uintptr_t)(ov[4] & ~1u);
+    w32_ov_set(ov, status, bytes);
+    HANDLE event = (HANDLE)(uintptr_t)(w32_ov_event(ov) & ~1u);
     if (event) {
         BOOL(WINAPI * set)(HANDLE) = (BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("kernel32.dll", "SetEvent");
         if (set)
             set(event);
     }
-    if (o && o->io_port && !(ov[4] & 1) && !(sync && o->skip_port))
+    if (o && o->io_port && !(w32_ov_event(ov) & 1) && !(sync && o->skip_port))
         w32_port_post(o->io_port, bytes, o->io_key, ov);
 }
 
@@ -471,8 +470,7 @@ static void pending_add(HANDLE h, struct w32_pipe *pipe, uint8_t *buf, DWORD n, 
     while (*tail)
         tail = &(*tail)->next;
     *tail = p;
-    ov[0] = STATUS_PENDING;
-    ov[1] = 0;
+    w32_ov_set(ov, STATUS_PENDING, 0);
 }
 
 void w32_io_poll(void)
@@ -564,8 +562,7 @@ int w32_pipe_overlapped(HANDLE h, struct w32_object *o, void *buf, DWORD n, DWOR
         struct w32_pipe *p = o->value == 2 ? o->pipe_out : o->value == 1 ? o->pipe : NULL;
         long put = p ? w32_pipe_write(p, buf, n) : E_PIPE;
         if (put < 0) {
-            ov[0] = STATUS_PIPE_BROKEN;
-            ov[1] = 0;
+            w32_ov_set(ov, STATUS_PIPE_BROKEN, 0);
             return ERROR_BROKEN_PIPE;
         }
         if (done)

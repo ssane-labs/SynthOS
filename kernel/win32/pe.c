@@ -865,7 +865,8 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         return NULL;
     }
     struct pe_info pe;
-    if (!parse_headers(data, head_size, &pe)) {
+    /* as on Windows, a 64-bit process cannot load a 32-bit DLL or the other way round */
+    if (!parse_headers(data, head_size, &pe) || ((pe.characteristics & 0x2000) && pe.pe64 != w32->win64)) {
         kfree(data);
         vfs_close(f);
         *error = 193;

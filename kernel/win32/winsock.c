@@ -626,8 +626,8 @@ void w32_sock_poll(void)
         w32->net_seen = net_activity();
     for (int i = 0; i < NET_MAX_SOCKETS; i++) {
         struct w32_object *o = socks[i].used && socks[i].event ? w32_handle_get(socks[i].event) : NULL;
-        if (o && o->type == WH_EVENT && !o->value && sock_events(&socks[i])) {
-            o->value = 1;
+        if (o && o->type == WH_EVENT && !*w32_sync_value(o) && sock_events(&socks[i])) {
+            *w32_sync_value(o) = 1;
             w32_signal();
         }
     }
@@ -647,7 +647,7 @@ static BOOL WINAPI WSASetEvent(HANDLE h)
     struct w32_object *o = w32_handle_get(h);
     if (!o || o->type != WH_EVENT)
         return FALSE;
-    o->value = 1;
+    *w32_sync_value(o) = 1;
     return TRUE;
 }
 
@@ -656,7 +656,7 @@ static BOOL WINAPI WSAResetEvent(HANDLE h)
     struct w32_object *o = w32_handle_get(h);
     if (!o || o->type != WH_EVENT)
         return FALSE;
-    o->value = 0;
+    *w32_sync_value(o) = 0;
     return TRUE;
 }
 
@@ -719,7 +719,7 @@ static DWORD WINAPI WSAWaitForMultipleEvents(DWORD count, const HANDLE *events, 
         DWORD set = 0, first = WAIT_TIMEOUT;
         for (DWORD i = 0; i < count; i++) {
             struct w32_object *o = w32_handle_get(events[i]);
-            if (o && o->type == WH_EVENT && o->value) {
+            if (o && o->type == WH_EVENT && *w32_sync_value(o)) {
                 set++;
                 if (first == WAIT_TIMEOUT)
                     first = i;
@@ -964,14 +964,14 @@ struct wsabuf {
 
 static void complete(UINT s, uint32_t *ov, DWORD bytes, uint32_t status)
 {
-    ov[0] = status;
-    ov[1] = bytes;
-    struct w32_object *event = ov[4] & ~1u ? w32_handle_get((HANDLE)(uintptr_t)(ov[4] & ~1u)) : NULL;
+    w32_ov_set(ov, status, bytes);
+    uint32_t ev = w32_ov_event(ov);
+    struct w32_object *event = ev & ~1u ? w32_handle_get((HANDLE)(uintptr_t)(ev & ~1u)) : NULL;
     if (event && event->type == WH_EVENT)
-        event->value = 1;
+        *w32_sync_value(event) = 1;
     w32_signal();
     struct wsock *w = s >= SOCKET_BASE && s < SOCKET_BASE + NET_MAX_SOCKETS ? &socks[s - SOCKET_BASE] : NULL;
-    if (w && w->port && !(ov[4] & 1))
+    if (w && w->port && !(ev & 1))
         w32_port_post(w->port, bytes, w->key, ov);
 }
 
@@ -1003,7 +1003,7 @@ static int overlapped_recv(UINT s, struct wsock *w, char *buf, ULONG len, DWORD 
         if (!pending[i].used) {
             pending[i] = (struct pending){true, s, buf, len, ov, from, fromlen};
             w32->net_watch = true;
-            ov[0] = STATUS_PENDING;
+            w32_ov_set(ov, STATUS_PENDING, 0);
             w32_set_error(WSA_IO_PENDING);
             return SOCKET_ERROR;
         }

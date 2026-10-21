@@ -1142,15 +1142,13 @@ bool w32_is_pe64(const uint8_t *file, size_t size);
 
 static bool async_target(const char *path)
 {
-    if (w32->win64)
-        return false;
     struct file *f;
     if (vfs_open(path, VFS_READ, &f) != 0)
         return false;
     uint8_t *head = kmalloc(4096);
     long n = head ? vfs_read(f, head, 4096) : -1;
     vfs_close(f);
-    bool ok = n >= 64 && head[0] == 'M' && head[1] == 'Z' && !w32_is_pe64(head, (size_t)n);
+    bool ok = n >= 64 && head[0] == 'M' && head[1] == 'Z';
     kfree(head);
     return ok;
 }

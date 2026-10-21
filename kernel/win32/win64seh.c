@@ -273,7 +273,9 @@ static uint64_t dispatch(uint64_t *a, const uint64_t *f, void *t)
         }
     }
     uint32_t code = rd32(rec);
-    if (code == STATUS_GCC_THROW || w32->exiting)
+    /* thread names and debug output are meant for a debugger; without one they go nowhere */
+    if (code == STATUS_GCC_THROW || code == 0x406d1388u || code == 0x40010006u || code == 0x4001000au ||
+        w32->exiting)
         return 0;
     fail("crashed: unhandled exception", code);
 }

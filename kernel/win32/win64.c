@@ -289,8 +289,13 @@ bool w64_stub_info(uint64_t addr, w64_handler fn, void **target)
 
 bool w64_is_code64(uint64_t addr)
 {
+    if (addr >> 32)
+        return true;
     for (struct w32_image *img = w32->images; img; img = img->next)
         if (img->pe64 && !img->builtin && addr >= img->base && addr < (uint64_t)img->base + img->size)
+            return true;
+    for (struct w64_stub *s = w32->w64 ? S->stubs : NULL; s; s = s->next)
+        if (U(s) == addr)
             return true;
     return false;
 }

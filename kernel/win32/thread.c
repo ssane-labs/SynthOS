@@ -177,12 +177,23 @@ void w32_signal_local(void)
 
 #define SAFETY_NET_MS 250
 
-static bool object_ready(const struct w32_object *o, uint32_t tid)
+/* mutex owners are told apart across processes too */
+static uint32_t owner_id(const struct w32_process *p, uint32_t tid)
+{
+    return (p && p->child ? p->child->pid : 0) << 16 | (tid & 0xffffu);
+}
+
+static uint32_t my_owner_id(void)
+{
+    return owner_id(w32, w32_thread_id());
+}
+
+static bool object_ready(struct w32_object *o, const struct w32_thread *t)
 {
     switch (o->type) {
     case WH_EVENT:
-    case WH_SEMAPHORE: return o->value > 0;
-    case WH_MUTEX: return !o->value || o->owner == tid;
+    case WH_SEMAPHORE: return *w32_sync_value(o) > 0;
+    case WH_MUTEX: return !*w32_sync_value(o) || *w32_sync_owner(o) == owner_id(t->proc, t->id);
     case WH_THREAD: return o->thread->done;
     case WH_PROCESS: return !o->child || o->child->done;
     case WH_TIMER: return o->due && hal_ticks_ms() >= o->due;
@@ -207,7 +218,7 @@ static bool wait_over(const struct w32_thread *t)
     case W32_WAIT_TIME: return false;
     case W32_WAIT_OBJECTS:
         for (int i = 0; i < w->count; i++)
-            if (object_ready(w->objects[i], t->id) != w->all)
+            if (object_ready(w->objects[i], t) != w->all)
                 return !w->all;
         return w->all;
     case W32_WAIT_WORD:
@@ -221,7 +232,7 @@ static bool wait_over(const struct w32_thread *t)
             (w->ready && w->ready(w->arg)))
             return true;
         for (int i = 0; i < w->count; i++)
-            if (object_ready(w->objects[i], t->id))
+            if (object_ready(w->objects[i], t))
                 return true;
         return t->seen != signal_gen && hal_ticks_ms() - w->since >= SAFETY_NET_MS;
     default: return t->seen != signal_gen || t->proc->signal_gen != t->seen_local;
@@ -397,6 +408,8 @@ NORETURN void w32_leave_forever(void)
     w32->teb64 = next->teb64;
     if (next->teb)
         arch_w32_set_teb((uint32_t)next->teb);
+    if (next->teb64)
+        arch_w64_set_teb((uint32_t)next->teb64);
     arch_load_teb_selector();
     static uint32_t dead_esp;
     arch_switch(&dead_esp, next->esp);
@@ -870,7 +883,7 @@ static HANDLE new_object(enum w32_object_type type, uint32_t value, uint32_t max
 }
 
 /* Named events, mutexes and semaphores: a kernel-wide table of names. The process that made an object finds its
-   handle again by name; another process gets an object of its own under the same name (the state is not shared). */
+   handle again by name; another process gets a handle of its own to the same object, whose state they share. */
 struct named_object {
     struct named_object *next;
     uint32_t pid, serial;
@@ -959,8 +972,13 @@ static bool named_open(const char *name, enum w32_object_type type, HANDLE *h)
         w32_set_error(ERROR_INVALID_HANDLE);
         return true;
     }
-    if (n->pid != pid_of(w32))
-        return false;
+    if (n->pid != pid_of(w32)) {
+        struct w32_object *src = named_object_of(n);
+        if (!src || !(*h = w32_handle_put(w32, src)))
+            return false;
+        named_add(n->name, *h);
+        return true;
+    }
     w32_handle_get(n->handle)->refs++;
     *h = n->handle;
     return true;
@@ -1010,7 +1028,7 @@ static HANDLE open_named(const char *name, enum w32_object_type type, BOOL inher
     if (named_open(name, type, &h))
         return h;
     struct w32_object *src = named_object_of(n);
-    h = new_object(type, type == WH_MUTEX ? 0 : src->value, src->max, src->manual);
+    h = w32_handle_put(w32, src);
     struct w32_object *o = w32_handle_get(h);
     if (o)
         o->inherit = inherit != 0;
@@ -1031,8 +1049,8 @@ static void own_mutex(HANDLE h, BOOL owner, bool existed)
 {
     struct w32_object *o = w32_handle_get(h);
     if (o && owner && !existed) {
-        o->value = 1;
-        o->owner = w32_thread_id();
+        *w32_sync_value(o) = 1;
+        *w32_sync_owner(o) = my_owner_id();
     }
 }
 
@@ -1158,7 +1176,7 @@ static BOOL WINAPI SetEvent(HANDLE h)
 {
     struct w32_object *o = object(h, WH_EVENT);
     if (o)
-        o->value = 1;
+        *w32_sync_value(o) = 1;
     w32_signal();
     return o != NULL;
 }
@@ -1167,7 +1185,7 @@ static BOOL WINAPI ResetEvent(HANDLE h)
 {
     struct w32_object *o = object(h, WH_EVENT);
     if (o)
-        o->value = 0;
+        *w32_sync_value(o) = 0;
     return o != NULL;
 }
 
@@ -1175,10 +1193,10 @@ static BOOL WINAPI PulseEvent(HANDLE h)
 {
     struct w32_object *o = object(h, WH_EVENT);
     if (o) {
-        o->value = 1;
+        *w32_sync_value(o) = 1;
         w32_signal();
         w32_yield();
-        o->value = 0;
+        *w32_sync_value(o) = 0;
     }
     return o != NULL;
 }
@@ -1188,12 +1206,12 @@ static BOOL WINAPI ReleaseMutex(HANDLE h)
     struct w32_object *o = object(h, WH_MUTEX);
     if (!o)
         return FALSE;
-    if (o->owner != w32_thread_id() || !o->value) {
+    if (*w32_sync_owner(o) != my_owner_id() || !*w32_sync_value(o)) {
         w32_set_error(ERROR_NOT_OWNER);
         return FALSE;
     }
-    if (--o->value == 0)
-        o->owner = 0;
+    if (--*w32_sync_value(o) == 0)
+        *w32_sync_owner(o) = 0;
     w32_signal();
     return TRUE;
 }
@@ -1203,13 +1221,14 @@ static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG count, LONG *previous)
     struct w32_object *o = object(h, WH_SEMAPHORE);
     if (!o)
         return FALSE;
-    if (count <= 0 || o->value + (uint32_t)count > o->max) {
+    uint32_t *value = w32_sync_value(o);
+    if (count <= 0 || *value + (uint32_t)count > o->max) {
         w32_set_error(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
     if (previous)
-        *previous = (LONG)o->value;
-    o->value += (uint32_t)count;
+        *previous = (LONG)*value;
+    *value += (uint32_t)count;
     w32_signal();
     return TRUE;
 }
@@ -1222,8 +1241,8 @@ static bool signaled(HANDLE h, struct w32_object *o)
         return true;
     switch (o->type) {
     case WH_EVENT:
-    case WH_SEMAPHORE: return o->value > 0;
-    case WH_MUTEX: return !o->value || o->owner == w32_thread_id();
+    case WH_SEMAPHORE: return *w32_sync_value(o) > 0;
+    case WH_MUTEX: return !*w32_sync_value(o) || *w32_sync_owner(o) == my_owner_id();
     case WH_THREAD: return o->thread->done;
     case WH_PROCESS: return !o->child || o->child->done;
     case WH_TIMER: return o->due && hal_ticks_ms() >= o->due;
@@ -1236,14 +1255,14 @@ static void acquire(struct w32_object *o)
     if (!o)
         return;
     if (o->type == WH_EVENT && !o->manual)
-        o->value = 0;
+        *w32_sync_value(o) = 0;
     else if (o->type == WH_TIMER && !o->manual)
         o->due = 0;
     else if (o->type == WH_SEMAPHORE)
-        o->value--;
+        --*w32_sync_value(o);
     else if (o->type == WH_MUTEX) {
-        o->owner = w32_thread_id();
-        o->value++;
+        *w32_sync_owner(o) = my_owner_id();
+        ++*w32_sync_value(o);
     }
 }
 
@@ -1325,7 +1344,7 @@ static DWORD WINAPI SignalObjectAndWait(HANDLE signal, HANDLE wait, DWORD ms, BO
     UNUSED(alertable);
     struct w32_object *o = w32_handle_get(signal);
     if (o && o->type == WH_EVENT)
-        o->value = 1;
+        *w32_sync_value(o) = 1;
     else if (o && o->type == WH_MUTEX)
         ReleaseMutex(signal);
     else if (o && o->type == WH_SEMAPHORE)
@@ -1389,7 +1408,7 @@ void w32_wait_process(uint64_t deadline, bool net, bool (*ready)(const void *), 
                  : w->ready && w->ready(w->arg) ? 3 : 4;
     if (reason == 4)
         for (int i = 0; i < w->count; i++)
-            if (object_ready(w->objects[i], t->id))
+            if (object_ready(w->objects[i], t))
                 reason = 5;
     if (reason == 4 && w32->io_gen != w32->io_seen)
         reason = 6;

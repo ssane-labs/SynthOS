@@ -268,7 +268,7 @@ static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, void *ove
         return e == 0;
     }
     if (ov && o && o->type == WH_FILE)
-        vfs_seek(o->file, (long)ov[2], VFS_SEEK_SET);
+        vfs_seek(o->file, (long)w32_ov_offset(ov), VFS_SEEK_SET);
     long got = w32_handle_read(h, buf, n);
     if (got < 0) {
         w32_set_error(got == E_BADF ? ERROR_INVALID_HANDLE : w32_error_from_vfs((int)got));
@@ -278,8 +278,7 @@ static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, void *ove
         *read = (DWORD)got;
     if (ov) {
         if (!got && n && o && o->type == WH_FILE) {
-            ov[0] = 0xc0000011u;
-            ov[1] = 0;
+            w32_ov_set(ov, 0xc0000011u, 0);
             w32_set_error(38);
             return FALSE;
         }
@@ -301,7 +300,7 @@ static BOOL WINAPI WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written,
         return e == 0;
     }
     if (ov && o && o->type == WH_FILE && !o->append)
-        vfs_seek(o->file, (long)ov[2], VFS_SEEK_SET);
+        vfs_seek(o->file, (long)w32_ov_offset(ov), VFS_SEEK_SET);
     long put = w32_handle_write(h, buf, n);
     if (put < 0) {
         w32_set_error(put == E_BADF ? ERROR_INVALID_HANDLE : w32_error_from_vfs((int)put));

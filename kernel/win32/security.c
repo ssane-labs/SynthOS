@@ -727,6 +727,77 @@ static DWORD WINAPI RegisterTraceGuidsW(void *request, void *context, const void
     return 0;
 }
 
+/* event tracing sessions: none can be started, so there is none to stop, query or read */
+#define ERROR_WMI_INSTANCE_NOT_FOUND 4201
+
+static ULONG WINAPI StartTraceW(uint64_t *handle, const void *name, void *props)
+{
+    UNUSED(name);
+    UNUSED(props);
+    if (handle)
+        *handle = 0;
+    return ERROR_ACCESS_DENIED;
+}
+
+static ULONG WINAPI StopTraceW(uint64_t handle, const void *name, void *props)
+{
+    UNUSED(handle);
+    UNUSED(name);
+    UNUSED(props);
+    return ERROR_WMI_INSTANCE_NOT_FOUND;
+}
+
+static ULONG WINAPI ControlTraceW(uint64_t handle, const void *name, void *props, ULONG code)
+{
+    UNUSED(code);
+    return StopTraceW(handle, name, props);
+}
+
+static ULONG WINAPI QueryAllTracesW(void **props, ULONG count, ULONG *sessions)
+{
+    UNUSED(props);
+    UNUSED(count);
+    if (sessions)
+        *sessions = 0;
+    return 0;
+}
+
+static ULONG WINAPI EnableTraceEx2(uint64_t handle, const void *guid, ULONG control, uint8_t level, uint64_t any,
+                                   uint64_t all, ULONG timeout, void *params)
+{
+    UNUSED(handle);
+    UNUSED(guid);
+    UNUSED(control);
+    UNUSED(level);
+    UNUSED(any);
+    UNUSED(all);
+    UNUSED(timeout);
+    UNUSED(params);
+    return ERROR_INVALID_HANDLE;
+}
+
+static uint64_t WINAPI OpenTraceW(void *logfile)
+{
+    UNUSED(logfile);
+    w32_set_error(ERROR_ACCESS_DENIED);
+    return ~0ull;
+}
+
+static ULONG WINAPI ProcessTrace(uint64_t *handles, ULONG count, void *start, void *end)
+{
+    UNUSED(handles);
+    UNUSED(count);
+    UNUSED(start);
+    UNUSED(end);
+    return ERROR_INVALID_HANDLE;
+}
+
+static ULONG WINAPI CloseTrace(uint64_t handle)
+{
+    UNUSED(handle);
+    return ERROR_INVALID_HANDLE;
+}
+
 static uint64_t WINAPI GetTraceLoggerHandle(void *buffer)
 {
     UNUSED(buffer);
@@ -804,6 +875,21 @@ static const struct w32_export security_exports[] = {
     W32_AS("EventEnabled", w32_zero3),
     W32_AS("EventProviderEnabled", w32_zero5),
     W32_FN(RegisterTraceGuidsW),
+    W32_FN(StartTraceW),
+    W32_AS("StartTraceA", StartTraceW),
+    W32_FN(StopTraceW),
+    W32_AS("StopTraceA", StopTraceW),
+    W32_FN(ControlTraceW),
+    W32_AS("ControlTraceA", ControlTraceW),
+    W32_AS("FlushTraceW", StopTraceW),
+    W32_AS("FlushTraceA", StopTraceW),
+    W32_FN(QueryAllTracesW),
+    W32_AS("QueryAllTracesA", QueryAllTracesW),
+    W32_FN(EnableTraceEx2),
+    W32_FN(OpenTraceW),
+    W32_AS("OpenTraceA", OpenTraceW),
+    W32_FN(ProcessTrace),
+    W32_FN(CloseTrace),
     W32_AS("UnregisterTraceGuids", w32_zero2),
     W32_AS("TraceEvent", w32_zero3),
     W32_AS("GetTraceEnableFlags", w32_zero2),

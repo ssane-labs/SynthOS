@@ -21,6 +21,7 @@ void arch_w32_set_teb(uint32_t base);
 void arch_set_fault_handler(arch_fault_fn fn);
 void arch_fault_registers(uint32_t out[8]);
 uint32_t arch_fault_address_high(void);
+uint32_t arch_fault_rip_high(void);
 void arch_set_tick_hook(void (*fn)(uint32_t eip));
 bool arch_has_sse(void);
 void arch_switch(uint32_t *save_esp, uint32_t new_esp);

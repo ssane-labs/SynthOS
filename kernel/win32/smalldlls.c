@@ -287,6 +287,15 @@ static const struct w32_export dxcore_exports[] = {
     W32_FN(DXCoreCreateAdapterFactory),
 };
 
+/* imagehlp: Authenticode certificates in executables; programs only look, and find none */
+static const struct w32_export imagehlp_exports[] = {
+    W32_AS("ImageAddCertificate", w32_zero3),
+    W32_AS("ImageRemoveCertificate", w32_zero2),
+    W32_AS("ImageEnumerateCertificates", w32_zero5),
+    W32_AS("ImageGetCertificateData", w32_zero4),
+    W32_AS("ImageGetCertificateHeader", w32_zero3),
+};
+
 static const char *const d3d12_ordinals[102] = {[101] = "D3D12CreateDevice"};
 
 W32_EXPORTS(comctl32_module, "comctl32.dll", comctl32_exports);
@@ -298,3 +307,4 @@ W32_EXPORTS(d3d11_module, "d3d11.dll", d3d11_exports);
 W32_EXPORTS(d3d12_module, "d3d12.dll", d3d12_exports, .ordinals = d3d12_ordinals,
             .ordinal_count = ARRAY_SIZE(d3d12_ordinals));
 W32_EXPORTS(dxcore_module, "dxcore.dll", dxcore_exports);
+W32_EXPORTS(imagehlp_module, "imagehlp.dll", imagehlp_exports);

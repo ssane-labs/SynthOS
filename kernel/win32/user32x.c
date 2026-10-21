@@ -362,6 +362,46 @@ static BOOL WINAPI EnumDisplaySettingsW(const WCHAR *name, DWORD mode, uint8_t *
     return EnumDisplaySettingsExW(name, mode, dm, 0);
 }
 
+/* ANSI DEVMODE: the device and form names are 32 chars instead of 32 WCHARs */
+static BOOL WINAPI EnumDisplaySettingsA(const char *name, DWORD mode, uint8_t *dm)
+{
+    uint8_t w[220];
+    memset(w, 0, sizeof(w));
+    uint16_t size = 220;
+    memcpy(w + 68, &size, 2);
+    if (!dm || !EnumDisplaySettingsExW(NULL, mode, w, 0))
+        return FALSE;
+    UNUSED(name);
+    memset(dm, 0, 156);
+    memcpy(dm + 32, w + 64, 38);
+    memcpy(dm + 102, w + 166, 54);
+    size = 156;
+    memcpy(dm + 36, &size, 2);
+    return TRUE;
+}
+
+static BOOL WINAPI EnumDisplayDevicesA(const char *device, DWORD index, uint8_t *dd, DWORD flags)
+{
+    static const WCHAR monitor[] = {'x', 0};
+    uint8_t w[840];
+    DWORD cb = sizeof(w);
+    memcpy(w, &cb, 4);
+    if (!dd || !EnumDisplayDevicesW(device ? monitor : NULL, index, w, flags))
+        return FALSE;
+    memcpy(&cb, dd, 4);
+    if (cb < 424)
+        return FALSE;
+    memset(dd + 4, 0, cb - 4);
+    static const struct {
+        uint16_t from, to, chars;
+    } parts[] = {{4, 4, 32}, {68, 36, 128}, {328, 168, 128}, {584, 296, 128}};
+    for (size_t i = 0; i < ARRAY_SIZE(parts); i++)
+        for (uint16_t k = 0; k < parts[i].chars; k++)
+            dd[parts[i].to + k] = (uint8_t)((const WCHAR *)(w + parts[i].from))[k];
+    memcpy(dd + 164, w + 324, 4);
+    return TRUE;
+}
+
 static LONG WINAPI display_config_unsupported(void)
 {
     return 50;
@@ -472,6 +512,18 @@ static UINT WINAPI MapVirtualKeyExW(UINT code, UINT type, HANDLE layout)
 {
     UNUSED(layout);
     return MapVirtualKeyW(code, type);
+}
+
+static short WINAPI VkKeyScanExA(char ch, HANDLE layout)
+{
+    UNUSED(layout);
+    if (ch >= 'a' && ch <= 'z')
+        return (short)(ch - 'a' + 'A');
+    if ((ch >= 'A' && ch <= 'Z'))
+        return (short)(0x100 | ch);
+    if (ch >= '0' && ch <= '9')
+        return ch;
+    return ch == ' ' ? 0x20 : -1;
 }
 
 static BOOL WINAPI GetLastInputInfo(uint32_t *info)
@@ -891,6 +943,12 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("SetKeyboardState", w32_one1),
     W32_FN(MapVirtualKeyW),
     W32_FN(MapVirtualKeyExW),
+    W32_AS("MapVirtualKeyExA", MapVirtualKeyExW),
+    W32_FN(VkKeyScanExA),
+    W32_AS("keybd_event", w32_zero4),
+    W32_AS("IsProcessDPIAware", w32_one0),
+    W32_FN(EnumDisplaySettingsA),
+    W32_FN(EnumDisplayDevicesA),
     W32_AS("ToUnicodeEx", w32_zero7),
     W32_FN(GetLastInputInfo),
     W32_FN(GetCaretBlinkTime),

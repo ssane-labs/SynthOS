@@ -157,7 +157,24 @@ struct w32_object {
     struct w32_section *section;
     struct w32_child *child;
     uint32_t name_serial;
+    struct w32_sync *sync;
 };
+
+/* the state of an event, mutex or semaphore once a handle to it is in more than one process */
+struct w32_sync {
+    int refs;
+    uint32_t value, owner;
+};
+
+static inline uint32_t *w32_sync_value(struct w32_object *o)
+{
+    return o->sync ? &o->sync->value : &o->value;
+}
+
+static inline uint32_t *w32_sync_owner(struct w32_object *o)
+{
+    return o->sync ? &o->sync->owner : &o->owner;
+}
 
 struct w32_child {
     int refs;
@@ -331,6 +348,35 @@ void w32_trace_dump(void);
 void w32_trace_note(const char *module, const char *name);
 extern bool w32_headless;
 bool w32_vm_committed(uintptr_t address);
+
+/* OVERLAPPED: Internal, InternalHigh, Offset, OffsetHigh, hEvent; in 64-bit programs the first two and the event are
+   8 bytes wide */
+static inline void w32_ov_set(uint32_t *ov, uint32_t status, uint32_t bytes)
+{
+    ov[0] = status;
+    if (w32->win64) {
+        ov[1] = 0;
+        ov[2] = bytes;
+        ov[3] = 0;
+    } else {
+        ov[1] = bytes;
+    }
+}
+
+static inline uint32_t w32_ov_bytes(const uint32_t *ov)
+{
+    return w32->win64 ? ov[2] : ov[1];
+}
+
+static inline uint32_t w32_ov_offset(const uint32_t *ov)
+{
+    return w32->win64 ? ov[4] : ov[2];
+}
+
+static inline uint32_t w32_ov_event(const uint32_t *ov)
+{
+    return w32->win64 ? ov[6] : ov[4];
+}
 uint32_t w32_vm_reserve(uint32_t size);
 void w32_vm_set_committed(uint32_t start, uint32_t size, bool on);
 uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count);
@@ -347,7 +393,7 @@ void w32_pipe_release(struct w32_object *o);
 bool w32_pipe_clone(struct w32_object *o);
 void w32_section_retain(struct w32_section *s);
 void w32_object_release(struct w32_object *o);
-bool w32_object_clone(struct w32_object *dst, const struct w32_object *src);
+bool w32_object_clone(struct w32_object *dst, struct w32_object *src);
 
 struct w32_inherit {
     int count;
@@ -359,7 +405,7 @@ struct w32_inherit {
 
 struct w32_inherit *w32_inherit_collect(const HANDLE *list, int count);
 void w32_inherit_free(struct w32_inherit *in);
-HANDLE w32_handle_put(struct w32_process *p, const struct w32_object *o);
+HANDLE w32_handle_put(struct w32_process *p, struct w32_object *o);
 const HANDLE *w32_attribute_handles(const void *attributes, int *count);
 HANDLE w32_inheritable(HANDLE h, const void *sa);
 struct w32_object *w32_handle_get_in(struct w32_process *p, HANDLE h);
