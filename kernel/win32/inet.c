@@ -506,7 +506,20 @@ static BOOL WINAPI InternetCheckConnectionA(LPCSTR url, DWORD flags, DWORD reser
     return TRUE;
 }
 
+struct url_components;
+static BOOL WINAPI WinHttpCrackUrl(const WCHAR *url, DWORD len, DWORD flags, struct url_components *uc);
+
+/* the same URL_COMPONENTS as WinHTTP; only the scheme numbers differ (INTERNET_SCHEME_HTTP 3, HTTPS 4) */
+static BOOL WINAPI InternetCrackUrlW(const WCHAR *url, DWORD len, DWORD flags, uint32_t *uc)
+{
+    if (!WinHttpCrackUrl(url, len, flags, (struct url_components *)uc))
+        return FALSE;
+    uc[3] = uc[3] == 2 ? 4 : 3;
+    return TRUE;
+}
+
 static const struct w32_export wininet_exports[] = {
+    W32_FN(InternetCrackUrlW),
     W32_AS("GetUrlCacheEntryInfoExW", w32_fail7),
     W32_FN(InternetOpenA), W32_FN(InternetOpenW), W32_FN(InternetConnectA), W32_FN(InternetConnectW),
     W32_FN(HttpOpenRequestA), W32_FN(HttpOpenRequestW), W32_FN(HttpSendRequestA), W32_FN(HttpSendRequestW),

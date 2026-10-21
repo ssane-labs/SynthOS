@@ -159,6 +159,8 @@ HANDLE w32_create_file(const char *name, DWORD access, DWORD disposition)
     }
     if (dir)
         flags = VFS_READ;
+    if (exists && (flags & VFS_WRITE))
+        w32_image_detach(path);
     struct file *f;
     int err = vfs_open(path, flags, &f);
     if (err && w32_logging_errors())
@@ -540,6 +542,29 @@ static BOOL WINAPI CopyFileW(LPCWSTR from, LPCWSTR to, BOOL fail)
     w32_free(a);
     w32_free(b);
     return ok;
+}
+
+/* the progress routine is not called: the copy is one step */
+static BOOL WINAPI CopyFileExW(LPCWSTR from, LPCWSTR to, void *progress, void *data, BOOL *cancel, DWORD flags)
+{
+    UNUSED(progress);
+    UNUSED(data);
+    if (cancel && *cancel) {
+        w32_set_error(1235);
+        return FALSE;
+    }
+    return CopyFileW(from, to, (flags & 1) != 0);
+}
+
+static BOOL WINAPI CopyFileExA(LPCSTR from, LPCSTR to, void *progress, void *data, BOOL *cancel, DWORD flags)
+{
+    UNUSED(progress);
+    UNUSED(data);
+    if (cancel && *cancel) {
+        w32_set_error(1235);
+        return FALSE;
+    }
+    return copy_file(from, to, (flags & 1) != 0);
 }
 
 static BOOL make_dir(const char *name)
@@ -1414,6 +1439,7 @@ static const struct w32_export kernel32_files[] = {
     W32_FN(SetFilePointerEx), W32_FN(GetFileSize), W32_FN(GetFileSizeEx), W32_FN(GetFileType),
     W32_FN(SetEndOfFile), W32_FN(FlushFileBuffers), W32_FN(DeleteFileA), W32_FN(DeleteFileW), W32_FN(MoveFileA),
     W32_FN(MoveFileW), W32_FN(MoveFileExA), W32_FN(MoveFileExW), W32_FN(CopyFileA), W32_FN(CopyFileW),
+    W32_FN(CopyFileExA), W32_FN(CopyFileExW),
     W32_FN(CreateDirectoryA), W32_FN(CreateDirectoryW), W32_FN(RemoveDirectoryA), W32_FN(RemoveDirectoryW),
     W32_FN(GetFileAttributesA), W32_FN(GetFileAttributesW), W32_FN(GetFileAttributesExA),
     W32_FN(GetFileAttributesExW), W32_FN(SetFileAttributesA), W32_FN(SetFileAttributesW),

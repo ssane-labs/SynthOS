@@ -615,8 +615,11 @@ static void build_environment(struct exec_ctx *ctx)
               "USERNAME=%s\n"
               "USERPROFILE=C:\\Users\\%s\n"
               "windir=C:\\Windows\n"
-              "SYNTHOS=%s\n",
-              user, host, user, user, user, user, SYNTH_VERSION);
+              "SYNTHOS=%s\n%s",
+              user, host, user, user, user, user, SYNTH_VERSION,
+              w32_wow64() ? "PROCESSOR_ARCHITEW6432=AMD64\nProgramFiles(x86)=C:\\Program Files (x86)\n"
+                            "ProgramW6432=C:\\Program Files\n"
+                          : "");
     size_t cap = strlen(defaults) + 2;
     for (size_t i = 0; i < sh->vars.count; i++)
         cap += strlen(sh->vars.items[i].key) + strlen(sh->vars.items[i].value) + 2;
@@ -774,6 +777,9 @@ static int run(struct exec_ctx *ctx)
     if (!w32->stack || !build_teb_peb() || !w32_threads_start() || (w32->win64 && !w64_setup()))
         return E_NOMEM;
 
+    /* the loader reads the pages of cached images it maps, so they have to come in from the start */
+    vmm_set_commit_hook(w32_vm_committed);
+    vmm_set_map_hook(w32_vm_fault);
     int error = 0;
     struct w32_image *main = w32_load_main(ctx->path, &error);
     if (!main) {
@@ -799,8 +805,6 @@ static int run(struct exec_ctx *ctx)
 
     arch_set_fault_handler(on_fault);
     arch_set_tick_hook(on_tick);
-    vmm_set_commit_hook(w32_vm_committed);
-    vmm_set_map_hook(w32_vm_fault);
     if (w32_init_modules() == 0 && !w32->exiting) {
         if (w32->win64)
             w64_setup_tls(main);
@@ -1507,6 +1511,34 @@ static int set_errors(struct shell *sh, const char *value)
 static const struct setting s_errors = {"w32errors", "on|off", "log every Windows API call that fails, with its name",
                                         get_errors, set_errors};
 SETTING(s_errors);
+
+/* config w32wow64 on: on a processor with 64-bit mode, 32-bit programs see 64-bit Windows (WOW64), as they would on
+   a 64-bit PC; SynthOS runs the 64-bit programs they install or start. Steam needs it since 2026. */
+static bool wow64_on = true;
+
+bool w32_wow64(void)
+{
+    return wow64_on && arch_long_supported() && !(w32 && w32->win64);
+}
+
+static void get_wow64(char *buf, size_t cap)
+{
+    str_copy(buf, wow64_on ? "on" : "off", cap);
+}
+
+static int set_wow64(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    wow64_on = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_wow64 = {"w32wow64", "on|off",
+                                       "32-bit Windows programs see 64-bit Windows (WOW64) when the processor has it",
+                                       get_wow64, set_wow64};
+SETTING(s_wow64);
 
 bool w32_headless;
 

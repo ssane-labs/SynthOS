@@ -340,10 +340,33 @@ static void WINAPI GetSystemInfo(uint8_t *info)
     memcpy(info + 32, &(WORD){6}, 2);
 }
 
+static void WINAPI GetNativeSystemInfo(uint8_t *info)
+{
+    GetSystemInfo(info);
+    if (w32_wow64()) {
+        memcpy(info, &(WORD){9}, 2);
+        memcpy(info + 24, &(DWORD){8664}, 4);
+    }
+}
+
 static BOOL WINAPI IsWow64Process(HANDLE h, BOOL *wow)
 {
     UNUSED(h);
-    *wow = FALSE;
+    *wow = w32_wow64();
+    return TRUE;
+}
+
+/* 32-bit and 64-bit programs see the same System32 here, so there is nothing to redirect */
+static BOOL WINAPI Wow64DisableWow64FsRedirection(void **old)
+{
+    if (old)
+        *old = NULL;
+    return TRUE;
+}
+
+static BYTE WINAPI Wow64EnableWow64FsRedirection(BYTE enable)
+{
+    UNUSED(enable);
     return TRUE;
 }
 
@@ -1554,7 +1577,9 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(LoadLibraryExW), W32_FN(FreeLibrary), W32_FN(GetProcAddress), W32_FN(GetCommandLineA),
     W32_FN(GetCommandLineW), W32_FN(GetStartupInfoA), W32_FN(GetStartupInfoW), W32_FN(GetVersion),
     W32_FN(GetVersionExA), W32_FN(GetVersionExW), W32_FN(IsProcessorFeaturePresent), W32_FN(GetSystemInfo),
-    W32_AS("GetNativeSystemInfo", GetSystemInfo), W32_FN(IsWow64Process), W32_FN(IsProcessInJob), W32_FN(SetUnhandledExceptionFilter),
+    W32_FN(GetNativeSystemInfo), W32_FN(IsWow64Process),
+    W32_FN(Wow64DisableWow64FsRedirection), W32_AS("Wow64RevertWow64FsRedirection", w32_one1),
+    W32_FN(Wow64EnableWow64FsRedirection), W32_FN(IsProcessInJob), W32_FN(SetUnhandledExceptionFilter),
     W32_FN(UnhandledExceptionFilter), W32_FN(RaiseException), W32_FN(RtlUnwind), W32_FN(RtlCaptureContext),
     W32_FN(GetProcessId), W32_FN(InterlockedPushEntrySList), W32_FN(InterlockedPopEntrySList),
     W32_FN(InterlockedFlushSList), W32_FN(QueryDepthSList), W32_FN(RtlPcToFileHeader), W32_FN(IsDebuggerPresent),

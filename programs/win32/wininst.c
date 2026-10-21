@@ -114,6 +114,32 @@ static void poll_test(const char *self)
     CloseHandle(pi.hProcess);
 }
 
+/* Steam's bootstrapper only installs the 64-bit client where Windows says it is 64-bit */
+static void wow64_test(void)
+{
+    BOOL wow = FALSE;
+    IsWow64Process(GetCurrentProcess(), &wow);
+    SYSTEM_INFO native;
+    GetNativeSystemInfo(&native);
+    BOOL(WINAPI * is_wow2)(HANDLE, USHORT *, USHORT *) =
+        (BOOL(WINAPI *)(HANDLE, USHORT *, USHORT *))GetProcAddress(GetModuleHandleA("kernel32.dll"), "IsWow64Process2");
+    USHORT machine = 0xffff, host = 0;
+    if (is_wow2)
+        is_wow2(GetCurrentProcess(), &machine, &host);
+    char arch[16] = "";
+    GetEnvironmentVariableA("PROCESSOR_ARCHITEW6432", arch, sizeof(arch));
+    FILE *f = fopen("C:\\Temp\\wi\\a.txt", "w");
+    fputs("copy", f);
+    fclose(f);
+    BOOL copied = CopyFileExW(L"C:\\Temp\\wi\\a.txt", L"C:\\Temp\\wi\\b.txt", NULL, NULL, NULL, 0);
+    BOOL again = CopyFileExW(L"C:\\Temp\\wi\\a.txt", L"C:\\Temp\\wi\\b.txt", NULL, NULL, NULL,
+                             COPY_FILE_FAIL_IF_EXISTS);
+    printf("wow64=%d native=%u machine=%x host=%x env=%s copyex=%d/%d\n", wow, native.wProcessorArchitecture, machine,
+           host, arch, copied, again);
+    DeleteFileA("C:\\Temp\\wi\\a.txt");
+    DeleteFileA("C:\\Temp\\wi\\b.txt");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "child")) {
@@ -127,6 +153,7 @@ int main(int argc, char **argv)
     search_test();
     fileop_test();
     poll_test(argv[0]);
+    wow64_test();
     DeleteFileA("C:\\Temp\\wi\\setup.ini");
     RemoveDirectoryA("C:\\Temp\\wi");
     return 0;

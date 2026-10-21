@@ -401,6 +401,8 @@ void *w32_fcache_page(struct file_cache *c, uint32_t index);
 void w32_fcache_write(const char *path, uint32_t offset, const void *data, uint32_t len);
 void w32_fcache_truncate(const char *path, uint32_t size);
 void w32_fcache_forget(const char *path);
+void w32_image_detach(const char *path);
+bool w32_wow64(void);
 uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count);
 bool w32_vm_fault(uintptr_t address);
 bool w32_image_fault(uint32_t address);

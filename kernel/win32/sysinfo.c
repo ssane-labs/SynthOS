@@ -196,6 +196,32 @@ static DWORD WINAPI K32GetModuleFileNameExA(HANDLE process, HANDLE module, LPSTR
     return fn ? fn(module, out, size) : 0;
 }
 
+static DWORD WINAPI K32GetModuleBaseNameW(HANDLE process, HANDLE module, LPWSTR out, DWORD size)
+{
+    WCHAR full[PATH_MAX_LEN];
+    DWORD n = K32GetModuleFileNameExW(process, module, full, PATH_MAX_LEN);
+    if (!n || !out || !size)
+        return 0;
+    DWORD start = n;
+    while (start && full[start - 1] != '\\' && full[start - 1] != '/')
+        start--;
+    DWORD len = MIN(n - start, size - 1);
+    memcpy(out, full + start, len * sizeof(WCHAR));
+    out[len] = 0;
+    return len;
+}
+
+static DWORD WINAPI K32GetModuleBaseNameA(HANDLE process, HANDLE module, LPSTR out, DWORD size)
+{
+    char full[PATH_MAX_LEN];
+    DWORD n = K32GetModuleFileNameExA(process, module, full, PATH_MAX_LEN);
+    if (!n || !out || !size)
+        return 0;
+    const char *base = strrchr(full, '\\');
+    base = base ? base + 1 : full;
+    return (DWORD)str_copy(out, base, size);
+}
+
 static BOOL WINAPI QueryFullProcessImageNameW(HANDLE process, DWORD flags, LPWSTR out, DWORD *size)
 {
     UNUSED(flags);
@@ -396,9 +422,10 @@ static DWORD WINAPI NtQuerySystemInformation(int cls, void *buf, ULONG len, ULON
 static BOOL WINAPI IsWow64Process2(HANDLE process, uint16_t *machine, uint16_t *native)
 {
     UNUSED(process);
-    *machine = 0;
+    bool wow = w32_wow64();
+    *machine = wow ? 0x14c : 0;
     if (native)
-        *native = 0x14c;
+        *native = wow ? 0x8664 : 0x14c;
     return TRUE;
 }
 
@@ -468,6 +495,10 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_AS("GetModuleFileNameExW", K32GetModuleFileNameExW),
     W32_FN(K32GetModuleFileNameExA),
     W32_AS("GetModuleFileNameExA", K32GetModuleFileNameExA),
+    W32_FN(K32GetModuleBaseNameW),
+    W32_AS("GetModuleBaseNameW", K32GetModuleBaseNameW),
+    W32_FN(K32GetModuleBaseNameA),
+    W32_AS("GetModuleBaseNameA", K32GetModuleBaseNameA),
     W32_FN(QueryFullProcessImageNameW),
     W32_FN(QueryFullProcessImageNameA),
     W32_AS("Module32FirstW", w32_fail2),

@@ -288,6 +288,10 @@ wininst | grep fileop
 fileop copy=0 copied=1 delete=0 gone=1 reboot-delete=1
 wininst | grep poll
 poll child exit=7 done=1
+wininst | grep wow
+wow64=1 native=9 machine=14c host=8664 env=AMD64 copyex=1/0
+config w32wow64 off; wininst | grep wow; config w32wow64 on
+wow64=0 native=0 machine=0 host=14c env= copyex=1/0
 wintest chain | grep root
 root chain elements=1 errors=0 policy=0
 wintest chain | grep self

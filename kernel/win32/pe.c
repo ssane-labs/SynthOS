@@ -786,6 +786,31 @@ static void cache_map(struct image_cache *c)
             vmm_map_pages(c->base + i * 4096u, &c->pages[i], 1, true);
 }
 
+/* The file of a loaded image is about to be replaced, deleted or rewritten. Windows lets a running program's file be
+   renamed and replaced (updaters do), and the program keeps its old code: read in what is still missing now, while
+   the file has it. A cache nobody uses just goes. */
+void w32_image_detach(const char *path)
+{
+    for (struct image_cache *c = image_caches, *next; c; c = next) {
+        next = c->next;
+        if (strcmp(c->path, path) != 0 || !c->file)
+            continue;
+        cache_unlink(c);
+        if (!c->users) {
+            cache_free(c);
+            continue;
+        }
+        for (uint32_t i = 0; i < c->size / 4096u; i++)
+            if (!c->pages[i])
+                cache_page(c, i);
+        vfs_close(c->file);
+        c->file = NULL;
+        c->path[0] = 0;
+        c->next = image_caches;
+        image_caches = c;
+    }
+}
+
 bool w32_image_fault(uint32_t address)
 {
     for (struct w32_image *img = w32 ? w32->images : NULL; img; img = img->next) {

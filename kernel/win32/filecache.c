@@ -123,6 +123,7 @@ void w32_fcache_truncate(const char *path, uint32_t size)
 
 void w32_fcache_forget(const char *path)
 {
+    w32_image_detach(path);
     for (struct file_cache *c = caches; c; c = c->next)
         if (!strcmp(c->path, path))
             c->stale = true;
