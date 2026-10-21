@@ -48,7 +48,7 @@ static void widen_list(uint32_t list, uint64_t *out, int cap)
 static uint64_t h_wsa_startup(uint64_t *a, const uint64_t *f, void *t)
 {
     uint8_t d[400];
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], U(d));
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(d));
     if (a[1]) {
         uint8_t *o = P(a[1]);
         memset(o, 0, 408);
@@ -87,7 +87,7 @@ static uint64_t addrinfo64(uint32_t list)
 static uint64_t h_getaddrinfo(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t res = 0;
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], U(&res));
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2])), U(&res));
     if (a[3])
         put64(P(a[3]), r == 0 ? addrinfo64(res) : 0);
     return w64_sx(r);
@@ -128,8 +128,8 @@ static uint64_t h_select(uint64_t *a, const uint64_t *f, void *t)
     for (int i = 0; i < 3; i++)
         if (a[1 + i])
             fdset_in(a[1 + i], sets[i]);
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], a[1] ? U(sets[0]) : 0, a[2] ? U(sets[1]) : 0,
-                               a[3] ? U(sets[2]) : 0, (uint32_t)a[4]);
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), a[1] ? U(sets[0]) : 0, a[2] ? U(sets[1]) : 0,
+                               a[3] ? U(sets[2]) : 0, U(P(a[4])));
     for (int i = 0; i < 3; i++)
         if (a[1 + i])
             fdset_out(a[1 + i], sets[i]);
@@ -162,12 +162,12 @@ static uint64_t hostent64(uint32_t h)
 
 static uint64_t h_gethostby(uint64_t *a, const uint64_t *f, void *t)
 {
-    return hostent64((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2]));
+    return hostent64((uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2]))));
 }
 
 static uint64_t h_getservby(uint64_t *a, const uint64_t *f, void *t)
 {
-    uint32_t s = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1]);
+    uint32_t s = (uint32_t)T32(t, U(P(a[0])), U(P(a[1])));
     if (!s)
         return 0;
     const uint32_t *src = P(s);
@@ -189,7 +189,7 @@ static uint64_t h_poll(uint64_t *a, const uint64_t *f, void *t)
         fds[i * 2] = (uint32_t)rd64(src + i * 16);
         memcpy(&fds[i * 2 + 1], src + i * 16 + 8, 4);
     }
-    uint32_t r = (uint32_t)T32(t, U(fds), n, (uint32_t)a[2]);
+    uint32_t r = (uint32_t)T32(t, U(fds), n, U(P(a[2])));
     for (uint32_t i = 0; i < n; i++)
         memcpy(src + i * 16 + 10, (uint8_t *)&fds[i * 2 + 1] + 2, 2);
     return w64_sx(r);
@@ -203,8 +203,8 @@ static uint64_t h_wsa_buffers(uint64_t *a, const uint64_t *f, void *t)
         bufs[i * 2] = rd32(src + i * 16);
         bufs[i * 2 + 1] = (uint32_t)rd64(src + i * 16 + 8);
     }
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], U(bufs), n, (uint32_t)a[3], (uint32_t)a[4], (uint32_t)a[5],
-                               (uint32_t)a[6], (uint32_t)a[7], (uint32_t)a[8]);
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(bufs), n, U(P(a[3])), U(P(a[4])), U(P(a[5])),
+                               U(P(a[6])), U(P(a[7])), U(P(a[8])));
     return w64_sx(r);
 }
 

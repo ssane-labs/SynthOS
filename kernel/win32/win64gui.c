@@ -122,7 +122,7 @@ static uint32_t lparam32(uint64_t msg, uint64_t lp)
 
 static uint64_t h_proc32(uint64_t *a, const uint64_t *f, void *t)
 {
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], U(P(a[2])), lparam32(a[1], a[3])));
+    return w64_ret((uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2])), lparam32(a[1], a[3])));
 }
 
 static void class_to32(const uint8_t *c, uint32_t *o, uint32_t style)
@@ -154,7 +154,7 @@ static uint64_t h_register_class_ex(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_class_info_ex(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t wc[12] = {48};
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], U(wc));
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(wc));
     if (r) {
         uint8_t *o = P(a[2]);
         put32(o, 80);
@@ -191,7 +191,7 @@ static void msg_to32(const uint8_t *o, uint32_t *m)
 static uint64_t h_get_message(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t m[7] = {0};
-    uint32_t r = (uint32_t)T32(t, U(m), (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]);
+    uint32_t r = (uint32_t)T32(t, U(m), U(P(a[1])), U(P(a[2])), U(P(a[3])), U(P(a[4])));
     msg_to64(m, P(a[0]));
     return w64_sx(r);
 }
@@ -207,20 +207,20 @@ static uint64_t h_msg_in1(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t m[7];
     msg_to32(P(a[1]), m);
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], U(m)));
+    return w64_ret((uint32_t)T32(t, U(P(a[0])), U(m)));
 }
 
 static uint64_t h_msg_in2(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t m[7];
     msg_to32(P(a[2]), m);
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], U(m)));
+    return w64_ret((uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(m)));
 }
 
 static uint64_t h_begin_paint(uint64_t *a, const uint64_t *f, void *t)
 {
     uint8_t ps[64];
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], U(ps));
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(ps));
     uint8_t *o = P(a[1]);
     memset(o, 0, 72);
     put64(o, rd32(ps));
@@ -234,19 +234,19 @@ static uint64_t h_end_paint(uint64_t *a, const uint64_t *f, void *t)
     const uint8_t *o = P(a[1]);
     put32(ps, (uint32_t)rd64(o));
     memcpy(ps + 4, o + 8, 60);
-    return (uint32_t)T32(t, (uint32_t)a[0], U(ps));
+    return (uint32_t)T32(t, U(P(a[0])), U(ps));
 }
 
 static uint64_t h_get_long(uint64_t *a, const uint64_t *f, void *t)
 {
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1]);
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(P(a[1])));
     return (int32_t)a[1] == GWLP_WNDPROC ? to64(r) : w64_high_back(w64_ret(r));
 }
 
 static uint64_t h_set_long(uint64_t *a, const uint64_t *f, void *t)
 {
     bool proc = (int32_t)a[1] == GWLP_WNDPROC;
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], proc ? to32(a[2], 4) : U(P(a[2])));
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), proc ? to32(a[2], 4) : U(P(a[2])));
     return proc ? to64(r) : w64_high_back(w64_ret(r));
 }
 
@@ -254,43 +254,43 @@ static uint64_t h_call_window_proc(uint64_t *a, const uint64_t *f, void *t)
 {
     void *target;
     if (is_stub_for(a[0], h_proc32, &target))
-        return w64_ret((uint32_t)T32(target, (uint32_t)a[1], (uint32_t)a[2], U(P(a[3])), lparam32(a[2], a[4])));
+        return w64_ret((uint32_t)T32(target, U(P(a[1])), U(P(a[2])), U(P(a[3])), lparam32(a[2], a[4])));
     for (struct thunk *th = w32->w64_thunks; th; th = th->next)
         if (U(th) == a[0])
             a[0] = th->fn;
     if (a[0] >> 32 == 0 && !w64_is_code64(a[0]))
-        return w64_ret((uint32_t)T32(P(a[0]), (uint32_t)a[1], (uint32_t)a[2], U(P(a[3])), lparam32(a[2], a[4])));
+        return w64_ret((uint32_t)T32(P(a[0]), U(P(a[1])), U(P(a[2])), U(P(a[3])), lparam32(a[2], a[4])));
     return w64_call(a[0], 4, a + 1);
 }
 
 static uint64_t h_def_proc(uint64_t *a, const uint64_t *f, void *t)
 {
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], U(P(a[2])), lparam32(a[1], a[3])));
+    return w64_ret((uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2])), lparam32(a[1], a[3])));
 }
 
 static uint64_t h_dialog(uint64_t *a, const uint64_t *f, void *t)
 {
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], to32(a[3], 4), (uint32_t)a[4]));
+    return w64_ret((uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2])), to32(a[3], 4), U(P(a[4]))));
 }
 
 static uint64_t h_set_timer(uint64_t *a, const uint64_t *f, void *t)
 {
-    return w64_ret((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], to32(a[3], 4)));
+    return w64_ret((uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2])), to32(a[3], 4)));
 }
 
 static uint64_t h_enum_windows(uint64_t *a, const uint64_t *f, void *t)
 {
-    return (uint32_t)T32(t, to32(a[0], 2), (uint32_t)a[1]);
+    return (uint32_t)T32(t, to32(a[0], 2), U(P(a[1])));
 }
 
 static uint64_t h_enum_monitors(uint64_t *a, const uint64_t *f, void *t)
 {
-    return (uint32_t)T32(t, (uint32_t)a[0], U(P(a[1])), to32(a[2], 4), U(P(a[3])));
+    return (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), to32(a[2], 4), U(P(a[3])));
 }
 
 static uint64_t h_enum_children(uint64_t *a, const uint64_t *f, void *t)
 {
-    return (uint32_t)T32(t, (uint32_t)a[0], to32(a[1], 2), (uint32_t)a[2]);
+    return (uint32_t)T32(t, U(P(a[0])), to32(a[1], 2), U(P(a[2])));
 }
 
 static uint64_t h_msg_wait(uint64_t *a, const uint64_t *f, void *t)
@@ -298,14 +298,14 @@ static uint64_t h_msg_wait(uint64_t *a, const uint64_t *f, void *t)
     uint32_t n = (uint32_t)MIN(a[0], 64u), handles[64];
     for (uint32_t i = 0; i < n; i++)
         handles[i] = (uint32_t)rd64(P(a[1] + i * 8));
-    return w64_ret((uint32_t)T32(t, n, U(handles), (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]));
+    return w64_ret((uint32_t)T32(t, n, U(handles), U(P(a[2])), U(P(a[3])), U(P(a[4]))));
 }
 
 static uint64_t h_dib_section(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t bits = 0;
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], a[3] ? U(&bits) : 0,
-                               (uint32_t)a[4], (uint32_t)a[5]);
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(P(a[2])), a[3] ? U(&bits) : 0,
+                               U(P(a[4])), U(P(a[5])));
     if (a[3])
         put64(P(a[3]), bits);
     return w64_ret(r);
@@ -315,7 +315,7 @@ static uint64_t h_get_object(uint64_t *a, const uint64_t *f, void *t)
 {
     uint8_t buf[128];
     uint32_t size = (uint32_t)MIN(a[1], (uint64_t)sizeof(buf));
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], a[2] ? size : 0, a[2] ? U(buf) : 0);
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), a[2] ? size : 0, a[2] ? U(buf) : 0);
     if (r == 24 && (!a[2] || a[1] >= 32)) {
         if (a[2]) {
             uint8_t *o = P(a[2]);

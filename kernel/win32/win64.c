@@ -627,8 +627,8 @@ static uint64_t h_create_process(uint64_t *a, const uint64_t *f, void *t)
     uint8_t si[68], pi[16] = {0};
     if (a[8])
         startup_to32(P(a[8]), si);
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4],
-                               (uint32_t)a[5], (uint32_t)a[6], (uint32_t)a[7], a[8] ? U(si) : 0, U(pi));
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), narrow(a[2]), narrow(a[3]), narrow(a[4]),
+                               narrow(a[5]), narrow(a[6]), narrow(a[7]), a[8] ? U(si) : 0, U(pi));
     if (r && a[9]) {
         uint8_t *o = P(a[9]);
         put64(o, rd32(pi));
@@ -658,7 +658,7 @@ static uint64_t h_get_proc_address(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_module_handle_ex(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t h = 0;
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], U(&h));
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), U(&h));
     out64(a[2], h);
     return r;
 }
@@ -717,14 +717,14 @@ static uint64_t h_wait_multiple(uint64_t *a, const uint64_t *f, void *t)
     const uint64_t *src = P(a[1]);
     for (uint32_t i = 0; i < n; i++)
         handles[i] = (uint32_t)src[i];
-    return w64_sx((uint32_t)T32(t, n, U(handles), (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]));
+    return w64_sx((uint32_t)T32(t, n, U(handles), narrow(a[2]), narrow(a[3]), narrow(a[4])));
 }
 
 static uint64_t h_duplicate_handle(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t h = 0;
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], a[3] ? U(&h) : 0,
-                               (uint32_t)a[4], (uint32_t)a[5], (uint32_t)a[6]);
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), narrow(a[2]), a[3] ? U(&h) : 0,
+                               narrow(a[4]), narrow(a[5]), narrow(a[6]));
     out64(a[3], h);
     return r;
 }
@@ -733,8 +733,8 @@ static uint64_t h_format_message(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t flags = (uint32_t)a[0] & ~0x2000u, buf = 0;
     bool alloc = flags & 0x100;
-    uint32_t r = (uint32_t)T32(t, flags | 0x200, (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3],
-                               alloc ? U(&buf) : (uint32_t)a[4], (uint32_t)a[5], 0);
+    uint32_t r = (uint32_t)T32(t, flags | 0x200, narrow(a[1]), narrow(a[2]), narrow(a[3]),
+                               alloc ? U(&buf) : narrow(a[4]), narrow(a[5]), 0);
     if (alloc)
         out64(a[4], buf);
     return r;
@@ -743,8 +743,8 @@ static uint64_t h_format_message(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_full_path(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t part = 0;
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], a[3] ? U(&part) : 0);
-    out64(a[3], part);
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), narrow(a[2]), a[3] ? U(&part) : 0);
+    out64(a[3], w64_high_back(part));
     return r;
 }
 
@@ -768,7 +768,7 @@ static uint64_t h_fls_alloc(uint64_t *a, const uint64_t *f, void *t)
 
 static uint64_t h_set_file_pointer_ex(uint64_t *a, const uint64_t *f, void *t)
 {
-    return (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)(a[1] >> 32), (uint32_t)a[2], (uint32_t)a[3]);
+    return (uint32_t)T32(t, narrow(a[0]), (uint32_t)a[1], (uint32_t)(a[1] >> 32), narrow(a[2]), narrow(a[3]));
 }
 
 static uint64_t h_c_specific_handler(uint64_t *a, const uint64_t *f, void *t)
@@ -779,7 +779,7 @@ static uint64_t h_c_specific_handler(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_getmainargs(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t argc, argv, env;
-    T32(t, U(&argc), U(&argv), U(&env), (uint32_t)a[3], (uint32_t)a[4]);
+    T32(t, U(&argc), U(&argv), U(&env), narrow(a[3]), narrow(a[4]));
     put32(P(a[0]), (uint32_t)w32->argc);
     out64(a[1], S->argv);
     out64(a[2], S->environ);
@@ -789,7 +789,7 @@ static uint64_t h_getmainargs(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_wgetmainargs(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t argc, argv, env;
-    T32(t, U(&argc), U(&argv), U(&env), (uint32_t)a[3], (uint32_t)a[4]);
+    T32(t, U(&argc), U(&argv), U(&env), narrow(a[3]), narrow(a[4]));
     put32(P(a[0]), (uint32_t)w32->argc);
     out64(a[1], S->wargv);
     out64(a[2], S->wenviron);
@@ -864,7 +864,7 @@ static uint64_t h_get_wpgmptr(uint64_t *a, const uint64_t *f, void *t)
 
 static uint64_t h_putenv(uint64_t *a, const uint64_t *f, void *t)
 {
-    uint64_t r = w64_sx((uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1]));
+    uint64_t r = w64_sx((uint32_t)T32(t, narrow(a[0]), narrow(a[1])));
     refresh_environ();
     return r;
 }
@@ -886,7 +886,7 @@ static uint64_t h_fcloseall(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_fopen_s(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t file = 0;
-    uint32_t r = (uint32_t)T32(t, U(&file), (uint32_t)a[1], (uint32_t)a[2]);
+    uint32_t r = (uint32_t)T32(t, U(&file), narrow(a[1]), narrow(a[2]));
     out64(a[0], wrap_file(file));
     return r;
 }
@@ -943,7 +943,7 @@ static uint64_t h_atexit(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_exit(uint64_t *a, const uint64_t *f, void *t)
 {
     run_onexit();
-    T32(t, (uint32_t)a[0]);
+    T32(t, narrow(a[0]));
     return 0;
 }
 
@@ -1036,16 +1036,16 @@ static uint64_t h_localeconv(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_strto(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t end = 0;
-    uint64_t r = T32(t, (uint32_t)a[0], a[1] ? U(&end) : 0, (uint32_t)a[2]);
-    out64(a[1], end);
+    uint64_t r = T32(t, narrow(a[0]), a[1] ? U(&end) : 0, narrow(a[2]));
+    out64(a[1], w64_high_back(end));
     return w64_sx((uint32_t)r);
 }
 
 static uint64_t h_strto64(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t end = 0;
-    uint64_t r = T32(t, (uint32_t)a[0], a[1] ? U(&end) : 0, (uint32_t)a[2]);
-    out64(a[1], end);
+    uint64_t r = T32(t, narrow(a[0]), a[1] ? U(&end) : 0, narrow(a[2]));
+    out64(a[1], w64_high_back(end));
     return r;
 }
 
@@ -1071,23 +1071,23 @@ static uint64_t h_atof(uint64_t *a, const uint64_t *f, void *t)
 
 static uint64_t h_i64to(uint64_t *a, const uint64_t *f, void *t)
 {
-    return T32(t, (uint32_t)a[0], (uint32_t)(a[0] >> 32), (uint32_t)a[1], (uint32_t)a[2]);
+    return T32(t, (uint32_t)a[0], (uint32_t)(a[0] >> 32), narrow(a[1]), narrow(a[2]));
 }
 
 static uint64_t h_lseek64(uint64_t *a, const uint64_t *f, void *t)
 {
-    return T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)(a[1] >> 32), (uint32_t)a[2]);
+    return T32(t, narrow(a[0]), (uint32_t)a[1], (uint32_t)(a[1] >> 32), narrow(a[2]));
 }
 
 static uint64_t h_fseek64(uint64_t *a, const uint64_t *f, void *t)
 {
-    return w64_sx((uint32_t)T32(t, narrow(a[0]), (uint32_t)a[1], (uint32_t)(a[1] >> 32), (uint32_t)a[2]));
+    return w64_sx((uint32_t)T32(t, narrow(a[0]), (uint32_t)a[1], (uint32_t)(a[1] >> 32), narrow(a[2])));
 }
 
 static uint64_t h_stat64i32(uint64_t *a, const uint64_t *f, void *t)
 {
     uint8_t st[56];
-    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], U(st));
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), U(st));
     if (r == 0) {
         uint8_t *o = P(a[1]);
         memset(o, 0, 48);
