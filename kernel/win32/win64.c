@@ -54,8 +54,11 @@ struct w64_state {
     uint64_t signals[SIGNALS];
     uint64_t filter;
     struct lconv64 lconv;
-    uint64_t tls_start, tls_end, tls_index, tls_callbacks;
-    uint32_t tls_zero;
+    struct tls64_module {
+        uint64_t start, end, callbacks, base;
+        uint32_t zero;
+    } tls[TLS_SLOTS];
+    int tls_count;
     uint64_t image_base;
 };
 
@@ -155,6 +158,8 @@ static NORETURN void missing(struct w64_stub *s)
 
 static uint64_t dispatch(struct w64_stub *s, uint64_t *a, const uint64_t *f)
 {
+    if (w32->current)
+        w32->current->recent[w32->current->recent_pos++ % 8] = s->name;
     if (s->fn)
         return s->fn(a, f, s->target);
     if (!s->target)
@@ -360,18 +365,80 @@ static void put_ustr(uint8_t *at, const WCHAR *s)
     put64(at + 8, U(s));
 }
 
+/* Implicit TLS: every module with a TLS directory gets an index, and each thread a copy of its template in the
+   ThreadLocalStoragePointer array (TEB+0x58), DLLs loaded later included, as since Windows Vista. */
+static uint64_t *tls_slots(uint8_t *teb)
+{
+    uint64_t slots = rd64(teb + 0x58);
+    if (slots)
+        return P(slots);
+    uint64_t *fresh = w32_zalloc(sizeof(uint64_t) * TLS_SLOTS);
+    if (fresh)
+        put64(teb + 0x58, U(fresh));
+    return fresh;
+}
+
+static void tls_fill(uint8_t *teb, int index)
+{
+    const struct tls64_module *m = &S->tls[index];
+    uint32_t size = (uint32_t)(m->end - m->start);
+    uint64_t *slots = tls_slots(teb);
+    uint8_t *block = w32_zalloc(size + m->zero + 16);
+    if (!slots || !block)
+        return;
+    if (size)
+        memcpy(block, P(m->start), size);
+    slots[index] = U(block);
+}
+
 static void tls_block(uint8_t *teb)
 {
-    if (!S->tls_start && !S->tls_zero)
+    for (int i = 0; i < S->tls_count; i++)
+        tls_fill(teb, i);
+}
+
+static int tls_add(struct w32_image *img)
+{
+    const uint8_t *mem = (const uint8_t *)img->base;
+    uint32_t opt = rd32(mem + 0x3c) + 24;
+    uint32_t rva = rd32(mem + opt + 112 + 9 * 8);
+    if (!rva || S->tls_count >= TLS_SLOTS)
+        return -1;
+    const uint8_t *dir = mem + rva;
+    int index = S->tls_count++;
+    S->tls[index] = (struct tls64_module){rd64(dir), rd64(dir + 8), rd64(dir + 24), img->base, rd32(dir + 32)};
+    if (rd64(dir + 16))
+        put32(P(rd64(dir + 16)), (uint32_t)index);
+    return index;
+}
+
+static void tls_run(const struct tls64_module *m, uint32_t reason)
+{
+    for (const uint64_t *cb = m->callbacks ? P(m->callbacks) : NULL; cb && *cb && !w32->exiting; cb++) {
+        uint64_t args[3] = {m->base, reason, 0};
+        w64_call(*cb, 3, args);
+    }
+}
+
+void w64_tls_register(struct w32_image *img)
+{
+    if (!w32->w64)
         return;
-    uint32_t size = (uint32_t)(S->tls_end - S->tls_start);
-    uint8_t *block = w32_zalloc(size + S->tls_zero + 16);
-    uint64_t *slots = w32_zalloc(sizeof(uint64_t) * TLS_SLOTS);
-    if (!block || !slots)
+    int index = tls_add(img);
+    if (index < 0)
         return;
-    memcpy(block, P(S->tls_start), size);
-    slots[0] = U(block);
-    put64(teb + 0x58, U(slots));
+    struct w32_thread *t = w32->threads;
+    do {
+        if (t && t->teb64)
+            tls_fill(t->teb64, index);
+    } while (t && (t = t->next) != w32->threads);
+}
+
+void w64_tls_attach(uint32_t base)
+{
+    for (int i = 0; w32->w64 && i < S->tls_count; i++)
+        if (S->tls[i].base == base)
+            tls_run(&S->tls[i], 1);
 }
 
 uint8_t *w64_make_teb(uint32_t stack, uint32_t size, uint32_t tid)
@@ -466,33 +533,15 @@ void w64_set_image(uint32_t base)
 
 void w64_setup_tls(struct w32_image *img)
 {
-    const uint8_t *mem = (const uint8_t *)img->base;
-    uint32_t opt = rd32(mem + 0x3c) + 24;
-    uint32_t rva = rd32(mem + opt + 112 + 9 * 8);
-    if (!rva)
-        return;
-    const uint8_t *dir = mem + rva;
-    S->tls_start = rd64(dir);
-    S->tls_end = rd64(dir + 8);
-    S->tls_index = rd64(dir + 16);
-    S->tls_callbacks = rd64(dir + 24);
-    S->tls_zero = rd32(dir + 32);
-    if (S->tls_index)
-        put32(P(S->tls_index), 0);
-    tls_block(w32->teb64);
-    w64_tls_callbacks(1);
+    w64_tls_register(img);
+    w64_tls_attach(img->base);
 }
 
+/* thread attach (2) and detach (3) go to every module */
 void w64_tls_callbacks(uint32_t reason)
 {
-    if (!w32->w64 || !S->tls_callbacks)
-        return;
-    for (const uint64_t *cb = P(S->tls_callbacks); *cb; cb++) {
-        uint64_t args[3] = {S->image_base, reason, 0};
-        w64_call(*cb, 3, args);
-        if (w32->exiting)
-            return;
-    }
+    for (int i = 0; w32->w64 && i < S->tls_count && !w32->exiting; i++)
+        tls_run(&S->tls[i], reason);
 }
 
 void w64_cleanup(void)

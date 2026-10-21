@@ -7,6 +7,7 @@
 #include <synth/winpath.h>
 
 #include "win32.h"
+#include "win64.h"
 
 #define DIR_EXPORT 0
 #define DIR_IMPORT 1
@@ -957,6 +958,8 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     }
     if (!pe.pe64)
         w32_tls_register(img);
+    else if (img->dll)
+        w64_tls_register(img);
     if (img->dll && init_count < (int)ARRAY_SIZE(init_order))
         init_order[init_count++] = img;
     else if (img->dll)
@@ -1078,6 +1081,8 @@ int w32_init_modules_from(int mark)
         img->initialized = true;
         if (!img->pe64)
             w32_tls_callbacks(img->base, 1);
+        else
+            w64_tls_attach(img->base);
         if (!img->entry || w32->exiting)
             continue;
         if (w32_trace)
@@ -1086,7 +1091,7 @@ int w32_init_modules_from(int mark)
         init_depth++;
         if (img->pe64) {
             uint64_t args[3] = {img->base, 1, 0};
-            ok = (uint32_t)arch_w64_call(img->entry, 3, args);
+            ok = (uint32_t)w64_call(img->entry, 3, args);
         } else {
             uint32_t args[3] = {img->base, 1, 0};
             ok = w32_call((void *)img->entry, 3, args);

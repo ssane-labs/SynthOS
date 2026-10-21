@@ -424,6 +424,8 @@ cpp64 | grep map
 caught 500, map: apple=1 fig=2 pear=1
 cpp64 | grep rethrown
 inner 42, rethrown 42
+dll64
+dll tls main=1244 thread=1235 again=1244 flags=7
 cat '/mnt/hdb/Long Name Note.txt'
 hello from fat
 mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'

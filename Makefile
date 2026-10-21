@@ -243,6 +243,19 @@ else
 	@cp programs/win64/prebuilt/$(@F) $@
 endif
 
+$(BUILD)/rootfs/apps/dll64.exe: $(BUILD)/rootfs/apps/tls64.dll
+
+$(BUILD)/rootfs/apps/tls64.dll: programs/win64/dll/tls64.c
+	@mkdir -p $(@D)
+ifneq ($(W64CC),)
+	@echo "  W64CC   $<"
+	@$(W64CC) -O2 -s -shared -o $@ $<
+	@mkdir -p programs/win64/prebuilt && cp $@ programs/win64/prebuilt/
+else
+	@echo "  COPY    programs/win64/prebuilt/$(@F)"
+	@cp programs/win64/prebuilt/$(@F) $@
+endif
+
 $(BUILD)/rootfs/apps/%.exe: programs/win64/%.c
 	@mkdir -p $(@D)
 ifneq ($(W64CC),)

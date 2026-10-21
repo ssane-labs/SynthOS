@@ -479,6 +479,8 @@ bool w64_setup(void);
 void w64_set_image(uint32_t base);
 void w64_setup_tls(struct w32_image *img);
 void w64_tls_callbacks(uint32_t reason);
+void w64_tls_register(struct w32_image *img);
+void w64_tls_attach(uint32_t base);
 uint8_t *w64_make_teb(uint32_t stack, uint32_t size, uint32_t tid);
 uint32_t w64_run_main(uint32_t entry);
 void w64_cleanup(void);
