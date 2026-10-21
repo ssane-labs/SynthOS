@@ -121,6 +121,26 @@ int main(int argc, char **argv)
     }
     end("FindFirstFile x 50", files, "entries");
 
+    /* an installer unpacking into one folder: every name is looked up without case before it is made */
+    char folder[MAX_PATH];
+    snprintf(folder, sizeof(folder), "%s\\winbench.dir", dir);
+    CreateDirectoryA(folder, NULL);
+    begin();
+    for (int i = 0; i < 1000; i++) {
+        char name[MAX_PATH];
+        snprintf(name, sizeof(name), "%s\\Package_File_%04d.Dat", folder, i);
+        HANDLE fh = CreateFileA(name, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+        if (fh != INVALID_HANDLE_VALUE)
+            CloseHandle(fh);
+    }
+    end("create 1000 files", 1000, "files");
+    for (int i = 0; i < 1000; i++) {
+        char name[MAX_PATH];
+        snprintf(name, sizeof(name), "%s\\package_file_%04d.dat", folder, i);
+        DeleteFileA(name);
+    }
+    RemoveDirectoryA(folder);
+
     fprintf(report, "total %lu ms (check %ld %lu %lu)\n", (unsigned long)total_ms, got & 1, (unsigned long)(sum & 1),
             (unsigned long)(acc & 0));
     return 0;

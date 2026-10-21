@@ -33,6 +33,11 @@ bool vfs_find_nocase(const char *dir, const char *name, char *out, size_t cap)
     struct vdir d;
     if (vfs_opendir(dir, &d) != 0)
         return false;
+    if (d.vn->ops->lookup_nocase) {
+        bool hit = d.vn->ops->lookup_nocase(d.vn, name, out, cap) == 0;
+        vfs_closedir(&d);
+        return hit;
+    }
     struct vfs_dirent ent;
     bool found = false;
     while (vfs_readdir(&d, &ent) == 0) {

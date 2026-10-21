@@ -1419,9 +1419,11 @@ static BOOL WINAPI RemoveWindowSubclass(HANDLE h, SUBCLASSPROC proc, uintptr_t i
     return FALSE;
 }
 
+/* for the built-in classes: text arrives the way the window takes it, wide once a W procedure subclassed it */
 LRESULT WINAPI w32_def_window_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
-    return def_proc(h, msg, wp, lp, false);
+    struct w32_window *w = w32_win(h);
+    return def_proc(h, msg, wp, lp, w && w->unicode);
 }
 
 static LRESULT send_converted(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, bool unicode)

@@ -15,7 +15,7 @@
 #define SFS_NAME_MAX 255
 #define SFS_PART 58
 #define SFS_ROOT 1
-#define SFS_CACHE 128
+#define SFS_CACHE 512
 #define SFS_WAYS 4
 
 enum {
@@ -82,6 +82,8 @@ struct sfs_node {
     struct vnode vn;
     struct sfs *fs;
     uint32_t ino;
+    uint32_t rd_index, rd_slot, rd_size;
+    bool rd_valid;
 };
 
 static const struct vnode_ops sfs_ops;
@@ -602,32 +604,103 @@ static int entry_name(struct sfs *fs, uint32_t dir, struct sfs_inode *in, uint32
     return 0;
 }
 
-static int dir_find(struct sfs *fs, uint32_t dir, const char *name, uint32_t *slot, struct sfs_dirent *out)
+#define DIRENTS_PER_BLOCK (BLOCK_SIZE / sizeof(struct sfs_dirent))
+
+/* the directory's slots a block at a time from the cache; fn returns true to stop */
+static int dir_walk(struct sfs *fs, uint32_t dir, struct sfs_inode *in,
+                    bool (*fn)(struct sfs *fs, uint32_t dir, struct sfs_inode *in, uint32_t slot,
+                               const struct sfs_dirent *ent, void *ctx),
+                    void *ctx)
+{
+    uint32_t count = in->size / sizeof(struct sfs_dirent);
+    struct sfs_dirent block[DIRENTS_PER_BLOCK];
+    for (uint32_t index = 0; index * DIRENTS_PER_BLOCK < count; index++) {
+        uint32_t blk;
+        bool dirty = false;
+        int err = bmap(fs, in, index, false, &blk, &dirty);
+        if (err)
+            return err;
+        if (!blk)
+            memset(block, 0, sizeof(block));
+        else if ((err = bread(fs, blk, block)) != 0)
+            return err;
+        for (uint32_t j = 0; j < DIRENTS_PER_BLOCK && index * DIRENTS_PER_BLOCK + j < count; j++)
+            if (fn(fs, dir, in, index * DIRENTS_PER_BLOCK + j, &block[j], ctx))
+                return 0;
+    }
+    return E_NOENT;
+}
+
+struct scan {
+    const char *name;
+    size_t len;
+    bool nocase, found;
+    uint32_t slot;
+    struct sfs_dirent ent;
+    char full[SFS_NAME_MAX + 1];
+};
+
+static bool scan_one(struct sfs *fs, uint32_t dir, struct sfs_inode *in, uint32_t slot, const struct sfs_dirent *ent,
+                     void *ctx)
+{
+    struct scan *sc = ctx;
+    size_t head = MIN(sc->len, (size_t)SFS_PART);
+    if (!ent->ino || ent->len != sc->len)
+        return false;
+    if (sc->nocase ? str_ncasecmp(ent->name, sc->name, head) != 0 : memcmp(ent->name, sc->name, head) != 0)
+        return false;
+    if (entry_name(fs, dir, in, slot, ent, sc->full) != 0)
+        return false;
+    if (sc->len > SFS_PART && (sc->nocase ? str_casecmp(sc->full, sc->name) : strcmp(sc->full, sc->name)) != 0)
+        return false;
+    sc->found = true;
+    sc->slot = slot;
+    sc->ent = *ent;
+    return true;
+}
+
+/* one pass over the slots; without case the name found is copied to real */
+static int dir_scan(struct sfs *fs, uint32_t dir, const char *name, bool nocase, uint32_t *slot,
+                    struct sfs_dirent *out, char *real)
 {
     struct sfs_inode in;
     int err = iget(fs, dir, &in);
     if (err)
         return err;
-    struct sfs_dirent ent;
-    size_t len = strlen(name);
-    uint32_t count = in.size / sizeof(ent);
-    for (uint32_t i = 0; i < count; i++) {
-        if ((err = entry_read(fs, dir, &in, i, &ent)) != 0)
-            return err;
-        if (!ent.ino || ent.len != len || memcmp(ent.name, name, MIN(len, (size_t)SFS_PART)) != 0)
-            continue;
-        if (len > SFS_PART) {
-            char full[SFS_NAME_MAX + 1];
-            if (entry_name(fs, dir, &in, i, &ent, full) != 0 || strcmp(full, name) != 0)
-                continue;
-        }
-        if (slot)
-            *slot = i;
-        if (out)
-            *out = ent;
-        return 0;
-    }
-    return E_NOENT;
+    struct scan sc = {.name = name, .len = strlen(name), .nocase = nocase};
+    err = dir_walk(fs, dir, &in, scan_one, &sc);
+    if (!sc.found)
+        return err && err != E_NOENT ? err : E_NOENT;
+    if (slot)
+        *slot = sc.slot;
+    if (out)
+        *out = sc.ent;
+    if (real)
+        memcpy(real, sc.full, sc.len + 1);
+    return 0;
+}
+
+static int dir_find(struct sfs *fs, uint32_t dir, const char *name, uint32_t *slot, struct sfs_dirent *out)
+{
+    return dir_scan(fs, dir, name, false, slot, out, NULL);
+}
+
+struct free_run {
+    uint32_t need, run, slot;
+};
+
+static bool free_one(struct sfs *fs, uint32_t dir, struct sfs_inode *in, uint32_t slot, const struct sfs_dirent *ent,
+                     void *ctx)
+{
+    UNUSED(fs);
+    UNUSED(dir);
+    UNUSED(in);
+    struct free_run *fr = ctx;
+    fr->run = !ent->ino && ent->type != SFS_CONT ? fr->run + 1 : 0;
+    if (fr->run < fr->need)
+        return false;
+    fr->slot = slot + 1 - fr->need;
+    return true;
 }
 
 static int dir_add(struct sfs *fs, uint32_t dir, const char *name, uint32_t ino, uint8_t type)
@@ -637,16 +710,11 @@ static int dir_add(struct sfs *fs, uint32_t dir, const char *name, uint32_t ino,
     if (err)
         return err;
     size_t len = strlen(name);
-    uint32_t need = name_slots(len), count = in.size / sizeof(struct sfs_dirent), slot = count, run = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        struct sfs_dirent ent;
-        bool free = entry_read(fs, dir, &in, i, &ent) == 0 && !ent.ino && ent.type != SFS_CONT;
-        run = free ? run + 1 : 0;
-        if (run == need) {
-            slot = i + 1 - need;
-            break;
-        }
-    }
+    struct free_run fr = {.need = name_slots(len)};
+    uint32_t need = fr.need, slot = in.size / sizeof(struct sfs_dirent);
+    dir_walk(fs, dir, &in, free_one, &fr);
+    if (fr.run == need)
+        slot = fr.slot;
     struct sfs_dirent ents[5];
     memset(ents, 0, sizeof(ents));
     ents[0].ino = ino;
@@ -784,20 +852,41 @@ static int s_readdir(struct vnode *dir, uint32_t index, struct vfs_dirent *out)
     if (err)
         return err;
     struct sfs_dirent ent;
-    uint32_t seen = 0;
-    for (uint32_t i = 0; i < in.size / sizeof(ent); i++) {
+    uint32_t seen = 0, start = 0;
+    /* reading in order goes on from the last entry instead of counting from the first again */
+    if (d->rd_valid && index == d->rd_index + 1 && in.size == d->rd_size) {
+        seen = index;
+        start = d->rd_slot + 1;
+    }
+    for (uint32_t i = start; i < in.size / sizeof(ent); i++) {
         if (entry_read(d->fs, d->ino, &in, i, &ent) != 0)
             return E_IO;
         if (!ent.ino || seen++ != index)
             continue;
         if ((err = entry_name(d->fs, d->ino, &in, i, &ent, out->name)) != 0)
             return err;
+        d->rd_valid = true;
+        d->rd_index = index;
+        d->rd_slot = i;
+        d->rd_size = in.size;
         out->type = ent.type == SFS_DIR ? VN_DIR : VN_FILE;
         struct sfs_inode child;
         out->size = iget(d->fs, ent.ino, &child) == 0 ? child.size : 0;
         return 0;
     }
     return E_NOENT;
+}
+
+static int s_lookup_nocase(struct vnode *dir, const char *name, char *real, size_t cap)
+{
+    struct sfs_node *d = node(dir);
+    char found[SFS_NAME_MAX + 1];
+    if (strlen(name) > SFS_NAME_MAX)
+        return E_NAMETOOLONG;
+    int err = dir_scan(d->fs, d->ino, name, true, NULL, NULL, found);
+    if (!err)
+        str_copy(real, found, cap);
+    return err;
 }
 
 static long s_read(struct vnode *vn, uint32_t off, void *buf, size_t n)
@@ -866,6 +955,7 @@ static const struct vnode_ops sfs_ops = {
     .unlink = s_unlink,
     .rename = s_rename,
     .readdir = s_readdir,
+    .lookup_nocase = s_lookup_nocase,
     .read = s_read,
     .write = s_write,
     .truncate = s_truncate,

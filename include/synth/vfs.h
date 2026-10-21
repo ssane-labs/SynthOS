@@ -48,6 +48,7 @@ struct vnode_ops {
     int (*unlink)(struct vnode *dir, const char *name);
     int (*rename)(struct vnode *odir, const char *oname, struct vnode *ndir, const char *nname);
     int (*readdir)(struct vnode *dir, uint32_t index, struct vfs_dirent *out);
+    int (*lookup_nocase)(struct vnode *dir, const char *name, char *real, size_t cap);
     long (*read)(struct vnode *vn, uint32_t off, void *buf, size_t n);
     long (*write)(struct vnode *vn, uint32_t off, const void *buf, size_t n);
     int (*truncate)(struct vnode *vn, uint32_t size);
