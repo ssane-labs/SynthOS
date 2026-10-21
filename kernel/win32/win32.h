@@ -114,10 +114,12 @@ enum w32_object_type {
     WH_JOB,
 };
 
+/* The folder's names as they were at FindFirstFile: deleting while enumerating skips nothing. */
 struct w32_find {
     char dir[PATH_MAX_LEN];
     char pattern[NAME_MAX_LEN];
-    uint32_t index;
+    uint32_t index, count;
+    char **names;
 };
 
 struct w32_find_entry {
@@ -402,6 +404,7 @@ void w32_fcache_write(const char *path, uint32_t offset, const void *data, uint3
 void w32_fcache_truncate(const char *path, uint32_t size);
 void w32_fcache_forget(const char *path);
 void w32_image_detach(const char *path);
+void w32_find_free(struct w32_find *f);
 bool w32_wow64(void);
 uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count);
 bool w32_vm_fault(uintptr_t address);
@@ -482,6 +485,8 @@ void w64_cleanup(void);
 struct w32_image *w32_load(const char *name, const char *search_dir, int *error);
 void *w32_get_proc(struct w32_image *image, const char *name, uint32_t ordinal);
 int w32_init_modules(void);
+int w32_init_mark(void);
+int w32_init_modules_from(int mark);
 void w32_unload_all(void);
 
 NORETURN void w32_exit(uint32_t code);

@@ -156,7 +156,7 @@ void w32_object_release(struct w32_object *o)
     }
     o->delete_on_close = false;
     if (o->find)
-        kfree(o->find);
+        w32_find_free(o->find);
     kfree(o->path);
     o->path = NULL;
     if (o->type == WH_PIPE)

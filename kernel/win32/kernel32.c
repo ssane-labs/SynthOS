@@ -192,6 +192,7 @@ static HMODULE load_library(const char *name)
     int err = 0;
     char dir[PATH_MAX_LEN];
     path_dirname(w32->main->path, dir, sizeof(dir));
+    int mark = w32_init_mark();
     struct w32_image *img = w32_load(name, dir, &err);
     if (!img) {
         klog("win32: LoadLibrary(%s) failed with %d%s%s", name, err, w32->message[0] ? ": " : "", w32->message);
@@ -199,7 +200,7 @@ static HMODULE load_library(const char *name)
         w32_set_error((DWORD)err);
         return NULL;
     }
-    if (w32_init_modules() != 0) {
+    if (w32_init_modules_from(mark) != 0) {
         w32_set_error(1114);
         return NULL;
     }

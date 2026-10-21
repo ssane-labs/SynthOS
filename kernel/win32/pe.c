@@ -31,8 +31,9 @@ struct pe_info {
     uint32_t dir_count;
 };
 
-static W32_STATE struct w32_image *init_order[64];
+static W32_STATE struct w32_image *init_order[128];
 static W32_STATE int init_count;
+static W32_STATE int init_depth;
 
 static uint32_t rd32(const uint8_t *p)
 {
@@ -958,6 +959,8 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
         w32_tls_register(img);
     if (img->dll && init_count < (int)ARRAY_SIZE(init_order))
         init_order[init_count++] = img;
+    else if (img->dll)
+        klog("win32: too many DLLs at once, %s is not initialized", img->name);
     else if (!img->dll)
         img->initialized = true;
     return img;
@@ -1058,9 +1061,17 @@ void *w32_get_proc(struct w32_image *image, const char *name, uint32_t ordinal)
     return export_lookup(image, name, ordinal, 0);
 }
 
-int w32_init_modules(void)
+/* inside a DllMain only what the new load brings in is started; otherwise everything still waiting */
+int w32_init_mark(void)
 {
-    for (int i = 0; i < init_count; i++) {
+    return init_depth ? init_count : 0;
+}
+
+/* Runs the DllMains of the DLLs loaded since mark. A DllMain that loads a library only starts the libraries that load
+   brought in: the rest of the outer batch waits, as on Windows, so a DLL never runs before its dependencies are done. */
+int w32_init_modules_from(int mark)
+{
+    for (int i = mark; i < init_count; i++) {
         struct w32_image *img = init_order[i];
         if (img->initialized)
             continue;
@@ -1069,7 +1080,10 @@ int w32_init_modules(void)
             w32_tls_callbacks(img->base, 1);
         if (!img->entry || w32->exiting)
             continue;
+        if (w32_trace)
+            klog("win32: DllMain %s", img->name);
         uint32_t ok;
+        init_depth++;
         if (img->pe64) {
             uint64_t args[3] = {img->base, 1, 0};
             ok = (uint32_t)arch_w64_call(img->entry, 3, args);
@@ -1077,15 +1091,22 @@ int w32_init_modules(void)
             uint32_t args[3] = {img->base, 1, 0};
             ok = w32_call((void *)img->entry, 3, args);
         }
+        init_depth--;
         if (w32->exiting)
             return -1;
         if (!ok) {
             ksnprintf(w32->message, sizeof(w32->message), "%s failed to initialize", img->name);
+            init_count = mark;
             return -1;
         }
     }
-    init_count = 0;
+    init_count = mark;
     return 0;
+}
+
+int w32_init_modules(void)
+{
+    return w32_init_modules_from(0);
 }
 
 void w32_unload_all(void)

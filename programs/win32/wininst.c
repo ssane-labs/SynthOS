@@ -91,6 +91,32 @@ static void fileop_test(void)
     printf("fileop copy=%d copied=%d delete=%d gone=%d reboot-delete=%d\n", copy, copied, del, gone, later);
 }
 
+/* installers clean up by deleting each file the enumeration returns */
+static void enum_delete_test(void)
+{
+    CreateDirectoryA("C:\\Temp\\wi\\del", NULL);
+    for (int i = 0; i < 12; i++) {
+        char name[MAX_PATH];
+        snprintf(name, sizeof(name), "C:\\Temp\\wi\\del\\f%02d.tmp", i);
+        FILE *f = fopen(name, "w");
+        fclose(f);
+    }
+    WIN32_FIND_DATAA fd;
+    int seen = 0;
+    HANDLE h = FindFirstFileA("C:\\Temp\\wi\\del\\*", &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.cFileName[0] == '.')
+                continue;
+            char name[MAX_PATH];
+            snprintf(name, sizeof(name), "C:\\Temp\\wi\\del\\%s", fd.cFileName);
+            seen += DeleteFileA(name) != 0;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    printf("enumdelete seen=%d removed=%d\n", seen, RemoveDirectoryA("C:\\Temp\\wi\\del"));
+}
+
 /* nsExec waits for a program like this: one thread, Sleep between looks at the child */
 static void poll_test(const char *self)
 {
@@ -154,6 +180,7 @@ int main(int argc, char **argv)
     fileop_test();
     poll_test(argv[0]);
     wow64_test();
+    enum_delete_test();
     DeleteFileA("C:\\Temp\\wi\\setup.ini");
     RemoveDirectoryA("C:\\Temp\\wi");
     return 0;

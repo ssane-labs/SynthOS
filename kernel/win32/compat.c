@@ -1,5 +1,6 @@
 #include <synth/error.h>
 #include <synth/heap.h>
+#include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -107,8 +108,10 @@ static BOOL rename_open(struct w32_object *o, const uint8_t *info, DWORD size)
     char target[PATH_MAX_LEN];
     int err = win ? w32_path(win, target, sizeof(target)) : E_NOMEM;
     w32_free(win);
-    if (err)
+    if (err) {
+        w32_set_error(ERROR_PATH_NOT_FOUND);
         return FALSE;
+    }
     if (vfs_exists(target)) {
         if (!(flags & 1)) {
             w32_set_error(ERROR_ALREADY_EXISTS);
@@ -118,8 +121,10 @@ static BOOL rename_open(struct w32_object *o, const uint8_t *info, DWORD size)
     }
     w32_fcache_forget(o->path);
     w32_fcache_forget(target);
-    if (vfs_rename(o->path, target) != 0) {
-        w32_set_error(ERROR_ACCESS_DENIED);
+    if ((err = vfs_rename(o->path, target)) != 0) {
+        if (w32_logging_errors())
+            klog("win32: rename %s -> %s: %d", o->path, target, err);
+        w32_set_error(w32_error_from_vfs(err));
         return FALSE;
     }
     kfree(o->path);

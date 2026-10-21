@@ -732,6 +732,39 @@ static BOOL WINAPI SetFileTime(HANDLE h, const void *c, const void *a, const voi
     return file_object(h) != NULL;
 }
 
+void w32_find_free(struct w32_find *f)
+{
+    for (uint32_t i = 0; i < f->count; i++)
+        kfree(f->names[i]);
+    kfree(f->names);
+    kfree(f);
+}
+
+static bool find_snapshot(struct w32_find *f)
+{
+    struct vdir d;
+    if (vfs_opendir(f->dir, &d) != 0)
+        return false;
+    struct vfs_dirent ent;
+    uint32_t cap = 0;
+    bool ok = true;
+    while (ok && vfs_readdir(&d, &ent) == 0) {
+        if (f->count == cap) {
+            cap = cap ? cap * 2 : 32;
+            char **grown = krealloc(f->names, cap * sizeof(*grown));
+            if (!grown) {
+                ok = false;
+                break;
+            }
+            f->names = grown;
+        }
+        ok = (f->names[f->count] = kstrdup(ent.name)) != NULL;
+        f->count += ok;
+    }
+    vfs_closedir(&d);
+    return ok;
+}
+
 static bool find_step(struct w32_find *f, struct w32_find_entry *out)
 {
     bool root = strcmp(f->dir, "/") == 0;
@@ -743,22 +776,16 @@ static bool find_step(struct w32_find *f, struct w32_find_entry *out)
             out->size = 0;
             out->mtime = 0;
         } else {
-            struct vdir d;
-            if (vfs_opendir(f->dir, &d) != 0)
+            uint32_t at = root ? i : i - 2;
+            if (at >= f->count)
                 return false;
-            d.index = root ? i : i - 2;
-            struct vfs_dirent ent;
-            int err = vfs_readdir(&d, &ent);
-            vfs_closedir(&d);
-            if (err)
-                return false;
-            str_copy(out->name, ent.name, sizeof(out->name));
-            out->type = ent.type;
-            out->size = ent.size;
             char full[PATH_MAX_LEN];
             struct vstat st = {0};
-            if (path_join(f->dir, ent.name, full, sizeof(full)) == 0)
-                vfs_stat(full, &st);
+            if (path_join(f->dir, f->names[at], full, sizeof(full)) != 0 || vfs_stat(full, &st) != 0)
+                continue;
+            str_copy(out->name, f->names[at], sizeof(out->name));
+            out->type = st.type == VN_DIR ? VN_DIR : VN_FILE;
+            out->size = st.size;
             out->mtime = st.mtime;
         }
         if (strcmp(f->pattern, "*") == 0 || strcmp(f->pattern, "*.*") == 0 ||
@@ -822,15 +849,15 @@ HANDLE w32_find_first(const char *spec, struct w32_find_entry *e)
         return INVALID_HANDLE_VALUE;
     }
     str_copy(f->pattern, *pattern ? pattern : "*", sizeof(f->pattern));
-    if (!find_step(f, e)) {
-        kfree(f);
+    if (!find_snapshot(f) || !find_step(f, e)) {
+        w32_find_free(f);
         w32_set_error(ERROR_FILE_NOT_FOUND);
         return INVALID_HANDLE_VALUE;
     }
     HANDLE h = w32_handle_new(WH_FIND);
     struct w32_object *o = w32_handle_get(h);
     if (!o) {
-        kfree(f);
+        w32_find_free(f);
         return INVALID_HANDLE_VALUE;
     }
     o->find = f;
