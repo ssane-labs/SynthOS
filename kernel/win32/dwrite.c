@@ -1217,27 +1217,6 @@ static uint32_t WINAPI system_collection(void *self, void **out, BOOL check)
     return give(out, new_collection());
 }
 
-static uint32_t WINAPI font_file_reference(void *self, const WCHAR *path, const void *time, void **out)
-{
-    UNUSED(self);
-    UNUSED(time);
-    char *p = w32_narrow(path);
-    char unix_path[PATH_MAX_LEN];
-    int found = -1;
-    if (p && w32_path(p, unix_path, sizeof(unix_path)) == 0) {
-        scan_fonts();
-        for (int i = 0; i < face_count && found < 0; i++)
-            if (!str_casecmp(faces[i].path, unix_path))
-                found = i;
-    }
-    w32_free(p);
-    if (found < 0) {
-        *out = NULL;
-        return 0x80070002u;
-    }
-    return give(out, com_new(file_vtbl, iid_file, NULL, found));
-}
-
 static uint32_t WINAPI create_font_face(void *self, int type, UINT count, struct obj **files, UINT index, int sim,
                                         void **out)
 {
@@ -1281,6 +1260,50 @@ static int memory_face(const uint8_t *data, uint32_t size)
         family_first[family_count++] = face_count;
     }
     return face_count++;
+}
+
+static bool same_win_path(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = *a == '/' ? '\\' : *a, y = *b == '/' ? '\\' : *b;
+        if (x != y && !((x | 0x20) == (y | 0x20) && (x | 0x20) >= 'a' && (x | 0x20) <= 'z'))
+            return false;
+    }
+    return *a == *b;
+}
+
+/* A font file by path: one of the system fonts, or any other file (a browser's own fonts) read in once. */
+static uint32_t WINAPI font_file_reference(void *self, const WCHAR *path, const void *time, void **out)
+{
+    UNUSED(self);
+    UNUSED(time);
+    char *p = w32_narrow(path);
+    char win[PATH_MAX_LEN], unix_path[PATH_MAX_LEN];
+    int found = -1;
+    scan_fonts();
+    for (int i = 0; p && i < face_count && found < 0; i++) {
+        if (!faces[i].path[0])
+            continue;
+        w32_path_to_win(faces[i].path, win, sizeof(win));
+        if (same_win_path(win, p))
+            found = i;
+    }
+    if (found < 0 && p && w32_path(p, unix_path, sizeof(unix_path)) == 0) {
+        char *data = NULL;
+        size_t size = 0;
+        if (vfs_read_all(unix_path, &data, &size) == 0) {
+            found = memory_face((const uint8_t *)data, (uint32_t)size);
+            if (found >= 0 && !faces[found].path[0])
+                str_copy(faces[found].path, unix_path, sizeof(faces[found].path));
+            kfree(data);
+        }
+    }
+    w32_free(p);
+    if (found < 0) {
+        *out = NULL;
+        return 0x80070002u;
+    }
+    return give(out, com_new(file_vtbl, iid_file, NULL, found));
 }
 
 typedef uint32_t(WINAPI *stream_from_key_fn)(void *, const void *, UINT, void **);

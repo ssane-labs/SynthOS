@@ -119,6 +119,16 @@ static bool range_free(uint32_t base, uint32_t size)
     return vmm_range_free(base, size);
 }
 
+/* reserved regions have no page tables yet: images must not be placed over them either */
+bool w32_vm_overlaps(uint32_t base, uint32_t size)
+{
+    struct w32_vm *v = w32 ? w32->vm : NULL;
+    for (int i = 0; v && i < v->count; i++)
+        if (base < v->regions[i].base + v->regions[i].size && v->regions[i].base < base + size)
+            return true;
+    return false;
+}
+
 static uint32_t find_free(uint32_t size, bool top_down)
 {
     size = ALIGN_UP(size, GRANULARITY);

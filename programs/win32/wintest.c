@@ -65,6 +65,12 @@ static void gecko_test(void)
     OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token);
     BOOL ok = GetTokenInformation(token, TokenOwner, owner, sizeof(owner), &need);
     printf("owner ok=%d valid=%d\n", ok, ok && IsValidSid(*(PSID *)owner));
+
+    /* a DLL never lands on memory a program only reserved (an allocator's arena) */
+    void *arena = VirtualAlloc((void *)0x6e7c0000, 0x100000, MEM_RESERVE, PAGE_READWRITE);
+    HMODULE dll = LoadLibraryA("greet.dll");
+    printf("dll over reserved=%s\n",
+           !arena || !dll ? "skipped" : (char *)dll >= (char *)arena && (char *)dll < (char *)arena + 0x100000 ? "yes" : "no");
 }
 
 static void compat(void)

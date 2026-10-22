@@ -114,6 +114,12 @@ enum w32_object_type {
     WH_JOB,
 };
 
+enum w32_engine {
+    W32_ENGINE_NONE,
+    W32_ENGINE_CHROMIUM,
+    W32_ENGINE_GECKO,
+};
+
 /* The folder's names as they were at FindFirstFile: deleting while enumerating skips nothing. */
 struct w32_find {
     char dir[PATH_MAX_LEN];
@@ -269,6 +275,7 @@ struct w32_process {
     uint32_t signal_gen, kick_gen, io_gen, io_seen, net_seen;
     bool net_watch;
     char tag[20];
+    enum w32_engine engine;
     struct vmm_space *space;
     struct heap heap;
     void *arena;
@@ -349,6 +356,7 @@ void w32_trace_dump(void);
 void w32_trace_note(const char *module, const char *name);
 extern bool w32_headless;
 bool w32_vm_committed(uintptr_t address);
+bool w32_vm_overlaps(uint32_t base, uint32_t size);
 
 /* OVERLAPPED: Internal, InternalHigh, Offset, OffsetHigh, hEvent; in 64-bit programs the first two and the event are
    8 bytes wide */
@@ -524,6 +532,10 @@ void *w64_lookup(const char *module, const char *symbol, uint32_t ordinal, bool 
 void *w32_builtin_lookup(const char *module, const char *symbol);
 bool w32_is_system_dll(const char *name);
 const char *w32_builtin_ordinal_name(const char *module, uint32_t ordinal);
+
+
+enum w32_engine w32_browser_engine(const char *path);
+const char *w32_engine_environment(enum w32_engine e);
 bool w64_setup(void);
 void w64_set_image(uint32_t base);
 void w64_setup_tls(struct w32_image *img);

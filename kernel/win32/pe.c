@@ -915,7 +915,7 @@ static bool image_space_free(uint32_t base, uint32_t size)
     for (struct w32_image *img = w32->images; img; img = img->next)
         if (!img->builtin && base < img->base + img->size && img->base < base + size)
             return false;
-    return vmm_range_free(base, size);
+    return !w32_vm_overlaps(base, size) && vmm_range_free(base, size);
 }
 
 static struct w32_image *load_file(const char *path, const char *name, int *error)

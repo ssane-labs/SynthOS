@@ -248,12 +248,18 @@ wintest compat | grep lstrcmpW
 lstrcmpW null=1,1,1
 wintest compat | grep section
 section read-only=ok write-dup=denied write-view=denied
-wintest gecko
+wintest gecko | grep snwprintf
 snwprintf exact=4 over=-1
+wintest gecko | grep cpusets
 cpusets len=32 first=0 got=1 size=32
+wintest gecko | grep view
 view taken=refused err=487 free=same
+wintest gecko | grep object
 object status=0 type=Event
+wintest gecko | grep owner
 owner ok=1 valid=1
+wintest gecko | grep reserved
+dll over reserved=no
 wintest compat | grep power
 power=ok oleacc=ok
 wintest compat | grep mapped

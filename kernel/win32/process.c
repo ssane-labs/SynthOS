@@ -501,8 +501,9 @@ static bool needs_quotes(const char *s)
     return false;
 }
 
-/* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: chrome.exe (and
-   Steam's CEF browser, steamwebhelper.exe) started as a browser gets the switches that run it without them. */
+/* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: a Chromium-family
+   browser (and Steam's CEF browser, steamwebhelper.exe) started as a browser gets the switches that run it without
+   them. */
 static const char *const chromium_switches[] = {"--no-sandbox", "--test-type", "--in-process-gpu", "--disable-gpu",
                                                 "--disable-software-rasterizer", "--no-first-run",
                                                 "--no-default-browser-check"};
@@ -523,7 +524,8 @@ static int command_args(struct exec_ctx *ctx, const char **list)
 {
     int n = 0;
     const char *exe = path_basename(ctx->path);
-    bool chrome = !str_casecmp(exe, "chrome.exe") || !str_casecmp(exe, "steamwebhelper.exe");
+    UNUSED(exe);
+    bool chrome = w32->engine == W32_ENGINE_CHROMIUM;
     bool child = has_arg(ctx, "--type=", 7);
     if (chrome && !child)
         for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++)
@@ -583,7 +585,17 @@ static void build_command_line(struct exec_ctx *ctx)
         w32->wargv[i] = w32_widen(w32->argv[i]);
 }
 
-static void inherit_environment(const char *src)
+static bool env_has(const char *block, const char *line)
+{
+    size_t key = (size_t)(strchr(line, '=') - line) + 1;
+    for (const char *p = block; *p; p += strlen(p) + 1)
+        if (!strncmp(p, line, key))
+            return true;
+    return false;
+}
+
+/* extra: "NAME=value\n" lines the engine needs, added unless the parent already set them */
+static void inherit_environment(const char *src, const char *extra)
 {
     size_t len = 0;
     int count = 0;
@@ -591,8 +603,19 @@ static void inherit_environment(const char *src)
         len += strlen(src + len) + 1;
         count++;
     }
-    char *block = w32_zalloc(len + 2);
+    char *block = w32_zalloc(len + strlen(extra) + 2);
     memcpy(block, src, len);
+    for (const char *p = extra; *p;) {
+        const char *nl = strchr(p, '\n');
+        char line[96];
+        str_copy(line, p, MIN((size_t)(nl - p) + 1, sizeof(line)));
+        if (!env_has(block, line)) {
+            memcpy(block + len, line, strlen(line) + 1);
+            len += strlen(line) + 1;
+            count++;
+        }
+        p = nl + 1;
+    }
     w32->env_block = block;
     w32->environ = w32_zalloc(sizeof(char *) * (size_t)(count + 1));
     w32->wenviron = w32_zalloc(sizeof(WCHAR *) * (size_t)(count + 1));
@@ -609,14 +632,15 @@ static void inherit_environment(const char *src)
 
 static void build_environment(struct exec_ctx *ctx)
 {
+    const char *extra = w32_engine_environment(w32->engine);
     if (ctx->env && ctx->env[0]) {
-        inherit_environment(ctx->env);
+        inherit_environment(ctx->env, extra);
         return;
     }
     struct shell *sh = ctx->sh;
     const char *user = sh_get(sh, "USER") ? sh_get(sh, "USER") : "root";
     const char *host = sh_get(sh, "HOSTNAME") ? sh_get(sh, "HOSTNAME") : "synth";
-    char defaults[1024];
+    char defaults[1536];
     ksnprintf(defaults, sizeof(defaults),
               "ALLUSERSPROFILE=C:\\ProgramData\n"
               "APPDATA=C:\\Users\\%s\\AppData\\Roaming\n"
@@ -642,11 +666,12 @@ static void build_environment(struct exec_ctx *ctx)
               "USERNAME=%s\n"
               "USERPROFILE=C:\\Users\\%s\n"
               "windir=C:\\Windows\n"
-              "SYNTHOS=%s\n%s",
+              "SYNTHOS=%s\n%s%s",
               user, host, user, user, user, user, SYNTH_VERSION,
               w32_wow64() ? "PROCESSOR_ARCHITEW6432=AMD64\nProgramFiles(x86)=C:\\Program Files (x86)\n"
                             "ProgramW6432=C:\\Program Files\n"
-                          : "");
+                          : "",
+              extra);
     size_t cap = strlen(defaults) + 2;
     for (size_t i = 0; i < sh->vars.count; i++)
         cap += strlen(sh->vars.items[i].key) + strlen(sh->vars.items[i].value) + 2;
@@ -813,6 +838,7 @@ static int run(struct exec_ctx *ctx)
     }
     install_inherited(ctx->handles);
     ctx->handles = NULL;
+    w32->engine = w32_browser_engine(ctx->path);
     build_command_line(ctx);
     build_environment(ctx);
     if (!w32->stack || !build_teb_peb() || !w32_threads_start() || (w32->win64 && !w64_setup()))

@@ -168,6 +168,15 @@ SynthOS 1.0 «Mirage» — рабочая система:
   плюс хранилищем Windows `ROOT` (корни Mozilla и сертификаты из `/home/certs` после `certs reload`); шрифты для DirectWrite — встроенный
   `C:\Windows\Fonts\DejaVuSans.ttf` (латиница и кириллица, `tools/mksysfont.sh`) и любые TrueType-файлы,
   скопированные в `/home/fonts`;
+* **любой браузер семейства Chromium или Firefox**: движок узнаётся не по имени программы, а по файлам рядом
+  с ней — `xul.dll` значит Gecko (Firefox, LibreWolf, Waterfox, Floorp, Zen, Tor/Mullvad Browser),
+  `chrome.dll`, `*_elf.dll`, `*_proxy.exe` или `libcef.dll` — Chromium (Chrome, Edge, Brave, Vivaldi, Opera,
+  Яндекс Браузер, ИИ-браузеры вроде Perplexity Comet, Thorium, ungoogled-chromium). Chromium-браузеры получают
+  те же ключи, что Chrome; для Gecko система сама задаёт `MOZ_DISABLE_*_SANDBOX=1` (песочнице Gecko нужны
+  ограниченные токены, которых в SynthOS нет). **Firefox** (32-битный) запускается с процессом-лаунчером,
+  отдельными контент-процессами и общим кэшем стилей; в режиме `firefox.exe --headless --screenshot
+  C:\Users\<имя>\s.png file:///C:/путь/страница.html` сохраняет снимок страницы. Свои шрифты браузера
+  (например, `TwemojiMozilla.ttf`) DirectWrite открывает по пути;
 * **Steam**: официальный `SteamSetup.exe` (установщик NSIS) ставит Steam в `C:\Program Files\Steam`
   (тихо — `SteamSetup.exe /S`, или обычным окном); `steam.exe` открывает окно обновления, по HTTPS
   (своя проверка цепочки сертификатов Windows — `CertGetCertificateChain`) скачивает клиент с
@@ -645,9 +654,10 @@ DOS переносятся без изменений (эмулятор DOS тр�
 
 1. **Многозадачность:** процессы с вытеснением, фоновые задачи (`cmd &`), `ps`/`kill`; сейчас рабочий
    стол кооперативный; долгие загрузки (обои, Chrome) сами подкачивают события стола, чтобы он не замирал.
-2. **Chrome дальше:** песочница Chrome требует ограниченных токенов и внедрения в чужие процессы — этого в
-   SynthOS нет, поэтому система сама запускает его с `--no-sandbox` (и без GPU-процесса); обновления
-   Chrome — повторной установкой.
+2. **Браузеры дальше:** песочницы Chrome и Firefox требуют ограниченных токенов и внедрения в чужие
+   процессы — этого в SynthOS нет, поэтому система сама запускает Chromium-браузеры с `--no-sandbox` (и без
+   GPU-процесса), а Gecko — с `MOZ_DISABLE_*_SANDBOX`; обновления — повторной установкой. Дальше: окно Firefox
+   на рабочем столе, каталог установщиков браузеров в `pkg`, выбор любого установленного браузера по умолчанию.
 3. **Windows дальше:** DirectX/OpenGL, COM, реестр с данными, сервисы; драйверы `.sys` не
    поддерживаются (вместо них — свои драйверы в `arch/`).
 4. **Звук дальше:** HDA, MP3/OGG, `PlaySound`/`waveOut` для Windows-программ; видео H.264.
