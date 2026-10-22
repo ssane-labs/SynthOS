@@ -120,9 +120,13 @@ struct x86_bootinfo {
     uint32_t fb_pitch;
     uint32_t fb_bpp;
     uint8_t fb_shift[4];
+    uint32_t system_lba;
+    uint32_t system_sectors;
+    uint32_t id[2];
 };
 
 #define BOOT_UEFI 0x1u
+#define BOOT_SYSTEM 0x2u
 
 struct e820_entry {
     uint64_t base;

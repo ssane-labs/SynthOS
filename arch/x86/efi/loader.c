@@ -1,5 +1,6 @@
 /* SynthOS UEFI loader: loads \SYNTHOS\KERNEL.BIN from the boot volume, picks a framebuffer,
- * converts the memory map, exits boot services and enters the 32-bit kernel at 1 MiB. */
+ * converts the memory map, exits boot services and enters the 32-bit kernel at 1 MiB.
+ * On an installed system it also adds itself to the firmware boot menu once and offers the other systems. */
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -26,6 +27,21 @@ struct table_header {
 struct text_output {
     void *reset;
     status(EFIAPI *output_string)(struct text_output *self, const char16 *s);
+    void *test_string, *query_mode, *set_mode;
+    status(EFIAPI *set_attribute)(struct text_output *self, uintn attr);
+    status(EFIAPI *clear_screen)(struct text_output *self);
+    status(EFIAPI *set_cursor_position)(struct text_output *self, uintn col, uintn row);
+    status(EFIAPI *enable_cursor)(struct text_output *self, u8 on);
+};
+
+struct input_key {
+    u16 scan;
+    char16 unicode;
+};
+
+struct text_input {
+    void *reset;
+    status(EFIAPI *read_key_stroke)(struct text_input *self, struct input_key *key);
 };
 
 struct memory_descriptor {
@@ -50,23 +66,40 @@ struct boot_services {
     void *install_protocol, *reinstall_protocol, *uninstall_protocol;
     status(EFIAPI *handle_protocol)(void *handle, const struct guid *guid, void **out);
     void *reserved, *register_notify, *locate_handle, *locate_device_path, *install_config;
-    void *load_image, *start_image, *exit, *unload_image;
+    status(EFIAPI *load_image)(u8 boot_policy, void *parent, void *path, void *source, uintn size, void **out);
+    status(EFIAPI *start_image)(void *image, uintn *exit_size, char16 **exit_data);
+    void *exit, *unload_image;
     status(EFIAPI *exit_boot_services)(void *image, uintn key);
-    void *get_next_count, *stall;
+    void *get_next_count;
+    status(EFIAPI *stall)(uintn microseconds);
     status(EFIAPI *set_watchdog_timer)(uintn timeout, u64 code, uintn size, const char16 *data);
     void *connect, *disconnect, *open_protocol, *close_protocol, *open_info, *protocols_per_handle;
-    void *locate_handle_buffer;
+    status(EFIAPI *locate_handle_buffer)(u32 search, const struct guid *guid, void *key, uintn *count,
+                                         void ***handles);
     status(EFIAPI *locate_protocol)(const struct guid *guid, void *registration, void **out);
+};
+
+struct runtime_services {
+    struct table_header hdr;
+    void *get_time, *set_time, *get_wakeup_time, *set_wakeup_time, *set_virtual_address_map, *convert_pointer;
+    status(EFIAPI *get_variable)(const char16 *name, const struct guid *vendor, u32 *attrs, uintn *size, void *data);
+    void *get_next_variable_name;
+    status(EFIAPI *set_variable)(const char16 *name, const struct guid *vendor, u32 attrs, uintn size,
+                                 const void *data);
+    void *get_next_high_count;
+    void(EFIAPI *reset_system)(u32 type, status code, uintn size, void *data);
 };
 
 struct system_table {
     struct table_header hdr;
     char16 *vendor;
     u32 revision;
-    void *con_in_handle, *con_in, *con_out_handle;
+    void *con_in_handle;
+    struct text_input *con_in;
+    void *con_out_handle;
     struct text_output *con_out;
     void *stderr_handle, *stderr;
-    void *runtime;
+    struct runtime_services *runtime;
     struct boot_services *boot;
 };
 
@@ -74,6 +107,7 @@ struct loaded_image {
     u32 revision;
     void *parent, *system_table;
     void *device;
+    void *file_path;
 };
 
 struct file {
@@ -82,6 +116,11 @@ struct file {
     status(EFIAPI *close)(struct file *self);
     void *remove;
     status(EFIAPI *read)(struct file *self, uintn *size, void *buf);
+    status(EFIAPI *write)(struct file *self, uintn *size, const void *buf);
+    void *get_position;
+    status(EFIAPI *set_position)(struct file *self, u64 position);
+    void *get_info, *set_info;
+    status(EFIAPI *flush)(struct file *self);
 };
 
 struct simple_fs {
@@ -114,6 +153,8 @@ struct bootinfo {
     u32 magic, drive, mmap_addr, mmap_count, kernel_sectors, kernel_lba, flags;
     u32 fb_addr, fb_width, fb_height, fb_pitch, fb_bpp;
     u8 fb_shift[4];
+    u32 system_lba, system_sectors;
+    u8 id[8];
 };
 
 struct e820 {
@@ -128,6 +169,15 @@ struct e820 {
 #define KERNEL_LBA 17
 #define MMAP_MAX 160
 #define BOOT_UEFI 1
+#define BOOT_SYSTEM 2
+#define BY_PROTOCOL 2
+#define NOT_FOUND 0x800000000000000eull
+#define VAR_ATTRS 7
+#define FILE_READ 1
+#define FILE_WRITE 2
+#define SCAN_UP 1
+#define SCAN_DOWN 2
+#define SCAN_ESC 0x17
 #define ALLOCATE_MAX_ADDRESS 1
 #define ALLOCATE_ADDRESS 2
 #define LOADER_CODE 1
@@ -135,6 +185,8 @@ struct e820 {
 
 static const struct guid loaded_image_guid = {0x5b1b31a1, 0x9562, 0x11d2, {0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
 static const struct guid simple_fs_guid = {0x964e5b22, 0x6459, 0x11d2, {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
+static const struct guid device_path_guid = {0x09576e91, 0x6d3f, 0x11d2, {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
+static const struct guid global_guid = {0x8be4df61, 0x93ca, 0x11d2, {0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c}};
 static const struct guid gop_guid = {0x9042a9de, 0x23dc, 0x4a38, {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a}};
 
 extern const u8 trampoline_start[], trampoline_end[];
@@ -215,8 +267,10 @@ static int bits(u32 mask)
 static void setup_framebuffer(struct bootinfo *bi)
 {
     struct gop *gop;
-    if (ERROR(bs->locate_protocol(&gop_guid, 0, (void **)&gop)) || !gop->mode)
+    if (ERROR(bs->locate_protocol(&gop_guid, 0, (void **)&gop)) || !gop->mode) {
+        say("SynthOS: no graphics output, using the serial console\n");
         return;
+    }
     u32 best = gop->mode->mode;
     u64 best_score = 0;
     for (u32 m = 0; m < gop->mode->max_mode; m++) {
@@ -262,15 +316,20 @@ static void setup_framebuffer(struct bootinfo *bi)
     }
 }
 
-static u8 *load_kernel(void *image, uintn *size)
+static struct file *open_root(void *device)
 {
-    struct loaded_image *li;
     struct simple_fs *fs;
-    struct file *root, *file;
+    struct file *root;
+    if (!device || ERROR(bs->handle_protocol(device, &simple_fs_guid, (void **)&fs)) || ERROR(fs->open_volume(fs, &root)))
+        return 0;
+    return root;
+}
+
+static u8 *load_kernel(struct file *root, uintn *size)
+{
+    struct file *file;
     static const char16 path[] = u"\\SYNTHOS\\KERNEL.BIN";
-    if (ERROR(bs->handle_protocol(image, &loaded_image_guid, (void **)&li)) ||
-        ERROR(bs->handle_protocol(li->device, &simple_fs_guid, (void **)&fs)) || ERROR(fs->open_volume(fs, &root)) ||
-        ERROR(root->open(root, &file, path, 1, 0)))
+    if (!root || ERROR(root->open(root, &file, path, FILE_READ, 0)))
         return 0;
     uintn cap = KERNEL_LIMIT - KERNEL_ADDR;
     u8 *buf;
@@ -286,6 +345,389 @@ static u8 *load_kernel(void *image, uintn *size)
     file->close(file);
     *size = total;
     return buf;
+}
+
+/* \SYNTHOS\SYSTEM.CFG exists on the EFI partition of an installed system: where the system area starts, its id,
+   whether the loader still has to add itself to the firmware boot menu, and how long the boot menu waits. */
+struct config {
+    int present, reg, timeout;
+    u64 system, sectors;
+    u8 id[8];
+    uintn reg_offset;
+};
+
+static int hex(char c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+static int key_is(const char *line, const char *key)
+{
+    while (*key)
+        if (*line++ != *key++)
+            return 0;
+    return *line == '=';
+}
+
+static int read_config(struct file *root, struct config *cfg)
+{
+    static const char16 path[] = u"\\SYNTHOS\\SYSTEM.CFG";
+    struct file *file;
+    fill(cfg, 0, sizeof(*cfg));
+    cfg->timeout = 3;
+    if (!root || ERROR(root->open(root, &file, path, FILE_READ, 0)))
+        return 0;
+    char text[1024];
+    uintn size = sizeof(text) - 1;
+    if (ERROR(file->read(file, &size, text)))
+        size = 0;
+    file->close(file);
+    text[size] = 0;
+    for (uintn i = 0; i < size;) {
+        const char *line = text + i;
+        uintn len = 0;
+        while (i + len < size && text[i + len] != '\n')
+            len++;
+        const char *v = line;
+        while (*v && *v != '=' && *v != '\n')
+            v++;
+        if (*v == '=')
+            v++;
+        u64 n = 0;
+        for (const char *p = v; *p >= '0' && *p <= '9'; p++)
+            n = n * 10 + (u64)(*p - '0');
+        if (key_is(line, "system"))
+            cfg->system = n;
+        else if (key_is(line, "sectors"))
+            cfg->sectors = n;
+        else if (key_is(line, "timeout"))
+            cfg->timeout = (int)n;
+        else if (key_is(line, "register")) {
+            cfg->reg = n != 0;
+            cfg->reg_offset = (uintn)(v - text);
+        } else if (key_is(line, "id"))
+            for (int k = 0; k < 8 && hex(v[2 * k]) >= 0 && hex(v[2 * k + 1]) >= 0; k++)
+                cfg->id[k] = (u8)(hex(v[2 * k]) << 4 | hex(v[2 * k + 1]));
+        i += len + 1;
+    }
+    cfg->present = 1;
+    return 1;
+}
+
+static void clear_register(struct file *root, struct config *cfg)
+{
+    static const char16 path[] = u"\\SYNTHOS\\SYSTEM.CFG";
+    struct file *file;
+    if (ERROR(root->open(root, &file, path, FILE_READ | FILE_WRITE, 0)))
+        return;
+    uintn one = 1;
+    if (!ERROR(file->set_position(file, cfg->reg_offset)))
+        file->write(file, &one, "0");
+    file->flush(file);
+    file->close(file);
+    cfg->reg = 0;
+}
+
+static uintn path_size(const u8 *p)
+{
+    uintn n = 0;
+    for (;;) {
+        uintn len = p[n + 2] | p[n + 3] << 8;
+        if (p[n] == 0x7f && p[n + 1] == 0xff)
+            return n;
+        if (len < 4)
+            return n;
+        n += len;
+    }
+}
+
+static uintn str16_len(const char16 *s)
+{
+    uintn n = 0;
+    while (s[n])
+        n++;
+    return n;
+}
+
+/* The device path of a file: the volume's path, a file node, the end node. */
+static u8 *file_path(void *device, const char16 *name, uintn *out_size)
+{
+    u8 *dev;
+    if (ERROR(bs->handle_protocol(device, &device_path_guid, (void **)&dev)))
+        return 0;
+    uintn head = path_size(dev), node = 4 + (str16_len(name) + 1) * 2, size = head + node + 4;
+    u8 *p;
+    if (ERROR(bs->allocate_pool(LOADER_DATA, size, (void **)&p)))
+        return 0;
+    copy(p, dev, head);
+    u8 *f = p + head;
+    f[0] = 4;
+    f[1] = 4;
+    f[2] = (u8)node;
+    f[3] = (u8)(node >> 8);
+    copy(f + 4, name, node - 4);
+    u8 *end = f + node;
+    end[0] = 0x7f;
+    end[1] = 0xff;
+    end[2] = 4;
+    end[3] = 0;
+    *out_size = size;
+    return p;
+}
+
+static void boot_name(char16 *out, u16 number)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    static const char16 prefix[] = u"Boot";
+    for (int i = 0; i < 4; i++)
+        out[i] = prefix[i];
+    for (int i = 0; i < 4; i++)
+        out[4 + i] = (char16)digits[(number >> (12 - 4 * i)) & 15];
+    out[8] = 0;
+}
+
+static int same(const void *a, const void *b, uintn n)
+{
+    const u8 *x = a, *y = b;
+    while (n--)
+        if (*x++ != *y++)
+            return 0;
+    return 1;
+}
+
+static u8 option[1024];
+
+/* The short form of a path starts at the partition node: the firmware finds the partition by its GUID on whatever
+   port the disk sits. */
+static uintn disk_node(const u8 *p, uintn len)
+{
+    for (uintn n = 0; n + 4 <= len;) {
+        uintn l = p[n + 2] | p[n + 3] << 8;
+        if (p[n] == 4 && p[n + 1] == 1)
+            return n;
+        if (l < 4 || (p[n] == 0x7f && p[n + 1] == 0xff))
+            break;
+        n += l;
+    }
+    return len;
+}
+
+/* Adds "SynthOS" to the firmware boot menu (a Boot#### variable) and puts it first in BootOrder. */
+static int register_boot(const u8 *path, uintn path_len)
+{
+    static const char16 desc[] = u"SynthOS";
+    uintn skip = disk_node(path, path_len);
+    if (skip < path_len) {
+        path += skip;
+        path_len -= skip;
+    }
+    uintn desc_size = sizeof(desc), size = 6 + desc_size + path_len;
+    if (size > sizeof(option))
+        return 0;
+    fill(option, 0, sizeof(option));
+    option[0] = 1;
+    option[4] = (u8)path_len;
+    option[5] = (u8)(path_len >> 8);
+    copy(option + 6, desc, desc_size);
+    copy(option + 6 + desc_size, path, path_len);
+    u16 order[128];
+    uintn order_size = sizeof(order);
+    u32 attrs;
+    if (ERROR(st->runtime->get_variable(u"BootOrder", &global_guid, &attrs, &order_size, order)))
+        order_size = 0;
+    uintn count = order_size / 2;
+    int number = -1, free_number = -1;
+    for (u32 n = 0; n < 0x1000 && number < 0; n++) {
+        char16 name[9];
+        static u8 data[1024];
+        uintn data_size = sizeof(data);
+        boot_name(name, (u16)n);
+        status r = st->runtime->get_variable(name, &global_guid, &attrs, &data_size, data);
+        if (r == NOT_FOUND) {
+            if (free_number < 0)
+                free_number = (int)n;
+            if (n > 0x100 && free_number >= 0)
+                break;
+            continue;
+        }
+        if (!ERROR(r) && data_size > 6 + desc_size && same(data + 6, desc, desc_size))
+            number = (int)n;
+    }
+    if (number < 0)
+        number = free_number;
+    if (number < 0)
+        return 0;
+    char16 name[9];
+    boot_name(name, (u16)number);
+    if (ERROR(st->runtime->set_variable(name, &global_guid, VAR_ATTRS, size, option)))
+        return 0;
+    u16 next[129];
+    uintn k = 0;
+    next[k++] = (u16)number;
+    for (uintn i = 0; i < count && k < 129; i++)
+        if (order[i] != number)
+            next[k++] = order[i];
+    return !ERROR(st->runtime->set_variable(u"BootOrder", &global_guid, VAR_ATTRS, k * 2, next));
+}
+
+static int register_self(void *image)
+{
+    struct loaded_image *li;
+    if (ERROR(bs->handle_protocol(image, &loaded_image_guid, (void **)&li)) || !li->file_path)
+        return 0;
+    u8 *dev;
+    if (ERROR(bs->handle_protocol(li->device, &device_path_guid, (void **)&dev)))
+        return 0;
+    uintn head = path_size(dev), tail = path_size(li->file_path) + 4;
+    u8 *p;
+    if (ERROR(bs->allocate_pool(LOADER_DATA, head + tail, (void **)&p)))
+        return 0;
+    copy(p, dev, head);
+    copy(p + head, li->file_path, tail);
+    return register_boot(p, head + tail);
+}
+
+/* The boot stick finds a fresh installation by its SYSTEM.CFG, registers its loader and starts it right away. */
+static void start_new_installation(void *image, void *own_device)
+{
+    void **handles;
+    uintn count;
+    if (ERROR(bs->locate_handle_buffer(BY_PROTOCOL, &simple_fs_guid, 0, &count, &handles)))
+        return;
+    for (uintn i = 0; i < count; i++) {
+        if (handles[i] == own_device)
+            continue;
+        struct file *root = open_root(handles[i]);
+        struct config cfg;
+        if (!root || !read_config(root, &cfg) || !cfg.reg)
+            continue;
+        uintn size;
+        u8 *path = file_path(handles[i], u"\\EFI\\BOOT\\BOOTX64.EFI", &size);
+        if (!path)
+            continue;
+        say("SynthOS: found the new installation, adding it to the boot menu\n");
+        if (register_boot(path, size))
+            clear_register(root, &cfg);
+        void *child;
+        if (!ERROR(bs->load_image(0, image, path, 0, 0, &child)))
+            bs->start_image(child, 0, 0);
+        say("SynthOS: the installed system did not start, starting from this disk\n");
+        return;
+    }
+}
+
+/* Other systems are the firmware's own boot entries on disks; one is started by the firmware itself (BootNext and
+   a restart), exactly as it would start without SynthOS. */
+struct entry {
+    u16 number;
+    char16 name[40];
+};
+
+static int has_disk_node(const u8 *p, uintn len)
+{
+    return disk_node(p, len) < len;
+}
+
+static int other_systems(struct entry *out, int max)
+{
+    u16 order[128];
+    uintn order_size = sizeof(order);
+    u32 attrs;
+    if (ERROR(st->runtime->get_variable(u"BootOrder", &global_guid, &attrs, &order_size, order)))
+        return 0;
+    int n = 0;
+    for (uintn i = 0; i < order_size / 2 && n < max; i++) {
+        char16 name[9];
+        static u8 data[1024];
+        uintn size = sizeof(data);
+        boot_name(name, order[i]);
+        if (ERROR(st->runtime->get_variable(name, &global_guid, &attrs, &size, data)) || size < 8 || !(data[0] & 1))
+            continue;
+        const char16 *desc = (const char16 *)(data + 6);
+        uintn len = 0;
+        while (6 + 2 * (len + 1) <= size && desc[len])
+            len++;
+        uintn path_len = data[4] | data[5] << 8, path_at = 6 + 2 * (len + 1);
+        if (path_at + path_len > size || !has_disk_node(data + path_at, path_len) || same(desc, u"SynthOS", 14))
+            continue;
+        out[n].number = order[i];
+        uintn k = 0;
+        for (; k < len && k < 39; k++)
+            out[n].name[k] = desc[k];
+        out[n].name[k] = 0;
+        n++;
+    }
+    return n;
+}
+
+static void say16(const char16 *s)
+{
+    st->con_out->output_string(st->con_out, s);
+}
+
+static void draw_menu(struct entry *list, int n, int chosen, int seconds)
+{
+    st->con_out->clear_screen(st->con_out);
+    say("\n  SynthOS boot menu\n\n");
+    for (int i = 0; i <= n; i++) {
+        st->con_out->set_attribute(st->con_out, i == chosen ? 0x70 : 0x07);
+        say(i == chosen ? "  > " : "    ");
+        if (i == 0)
+            say("SynthOS");
+        else
+            say16(list[i - 1].name);
+        say("  \n");
+        st->con_out->set_attribute(st->con_out, 0x07);
+    }
+    say("\n  Up and Down (or a number) choose, Enter starts.");
+    if (seconds >= 0) {
+        char line[48] = "  SynthOS starts in 0 s.  ";
+        line[20] = (char)('0' + (seconds > 9 ? 9 : seconds));
+        say(line);
+    }
+    say("\n");
+}
+
+static void boot_menu(int timeout)
+{
+    struct entry list[8];
+    int n = other_systems(list, 8);
+    if (!n || timeout <= 0 || !st->con_in)
+        return;
+    int chosen = 0, ticks = timeout * 10;
+    draw_menu(list, n, chosen, timeout);
+    for (;;) {
+        struct input_key key;
+        if (ERROR(st->con_in->read_key_stroke(st->con_in, &key))) {
+            bs->stall(100000);
+            if (ticks > 0 && --ticks % 10 == 0)
+                draw_menu(list, n, chosen, ticks / 10);
+            if (ticks == 0)
+                break;
+            continue;
+        }
+        ticks = -1;
+        if (key.scan == SCAN_UP && chosen > 0)
+            chosen--;
+        else if (key.scan == SCAN_DOWN && chosen < n)
+            chosen++;
+        else if (key.unicode == '\r' || key.unicode == '\n')
+            break;
+        else if (key.unicode >= '1' && key.unicode <= '1' + n) {
+            chosen = key.unicode - '1';
+            break;
+        }
+        else if (key.scan == SCAN_ESC)
+            chosen = 0;
+        draw_menu(list, n, chosen, -1);
+    }
+    st->con_out->clear_screen(st->con_out);
+    if (chosen == 0)
+        return;
+    u16 number = list[chosen - 1].number;
+    if (!ERROR(st->runtime->set_variable(u"BootNext", &global_guid, VAR_ATTRS, 2, &number)))
+        st->runtime->reset_system(0, 0, 0, 0);
+    say("SynthOS: could not start the other system\n");
 }
 
 static u32 e820_type(u32 efi_type)
@@ -352,10 +794,23 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     struct e820 *e820 = (struct e820 *)(page + 0x1000);
     copy(trampoline, trampoline_start, (uintn)(trampoline_end - trampoline_start));
 
+    struct loaded_image *li;
+    if (ERROR(bs->handle_protocol(image, &loaded_image_guid, (void **)&li)))
+        return fail("no loaded image");
+    struct file *root = open_root(li->device);
+    struct config cfg;
+    if (read_config(root, &cfg)) {
+        if (cfg.reg && register_self(image))
+            clear_register(root, &cfg);
+        boot_menu(cfg.timeout);
+    } else {
+        start_new_installation(image, li->device);
+    }
+
     u64 kernel_addr = KERNEL_ADDR;
     bs->allocate_pages(ALLOCATE_ADDRESS, LOADER_DATA, (KERNEL_LIMIT - KERNEL_ADDR) / 4096, &kernel_addr);
     uintn kernel_size = 0;
-    u8 *kernel = load_kernel(image, &kernel_size);
+    u8 *kernel = load_kernel(root, &kernel_size);
     if (!kernel || kernel_size < 512 || *(u32 *)(kernel + 8) != KERNEL_MAGIC)
         return fail("\\SYNTHOS\\KERNEL.BIN is missing or damaged");
 
@@ -363,7 +818,10 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     bi->magic = BOOT_MAGIC;
     bi->kernel_sectors = *(u32 *)(kernel + 12);
     bi->kernel_lba = KERNEL_LBA;
-    bi->flags = BOOT_UEFI;
+    bi->flags = BOOT_UEFI | BOOT_SYSTEM;
+    bi->system_lba = (u32)cfg.system;
+    bi->system_sectors = (u32)cfg.sectors;
+    copy(bi->id, cfg.id, 8);
     bi->mmap_addr = (u32)(uintn)e820;
     setup_framebuffer(bi);
 

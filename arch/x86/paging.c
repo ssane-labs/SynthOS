@@ -24,7 +24,7 @@ static uint64_t pdirs[4][512] __attribute__((aligned(4096)));
 static void *tables[2048];
 static uint32_t heap_phys;
 static uint32_t heap_bytes;
-static uint32_t early_tables[4][1024] __attribute__((aligned(4096)));
+static uint32_t early_tables[12][1024] __attribute__((aligned(4096)));
 static int early_used;
 
 struct region {

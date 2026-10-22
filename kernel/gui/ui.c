@@ -1,3 +1,4 @@
+#include <synth/codepage.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
 #include <synth/string.h>
@@ -328,37 +329,65 @@ int ui_key(struct ui *ui)
     return ui->e->key;
 }
 
+static int text_back(const char *s, int i)
+{
+    while (i > 0 && ((uint8_t)s[--i] & 0xc0) == 0x80)
+        ;
+    return i;
+}
+
+static int text_next(const char *s, int i, int len)
+{
+    while (i < len && ((uint8_t)s[++i] & 0xc0) == 0x80)
+        ;
+    return MIN(i, len);
+}
+
+static void text_insert(struct ui_text *t, const char *p, int n)
+{
+    if (t->len + n >= (int)sizeof(t->buf))
+        return;
+    memmove(t->buf + t->cursor + n, t->buf + t->cursor, (size_t)(t->len - t->cursor + 1));
+    memcpy(t->buf + t->cursor, p, (size_t)n);
+    t->cursor += n;
+    t->len += n;
+}
+
 bool ui_text_edit(struct ui_text *t, int key)
 {
     int base = KEY_BASE(key);
-    if (base == KEY_LEFT && t->cursor > 0)
-        t->cursor--;
+    if (KEY_IS_TEXT(key)) {
+        char enc[4];
+        text_insert(t, enc, (int)utf8_encode((uint32_t)KEY_TEXT_CP(key), enc));
+    } else if (base == KEY_LEFT && t->cursor > 0)
+        t->cursor = text_back(t->buf, t->cursor);
     else if (base == KEY_RIGHT && t->cursor < t->len)
-        t->cursor++;
+        t->cursor = text_next(t->buf, t->cursor, t->len);
     else if (base == KEY_HOME)
         t->cursor = 0;
     else if (base == KEY_END)
         t->cursor = t->len;
     else if (key == KEY_BACKSPACE && t->cursor > 0) {
-        memmove(t->buf + t->cursor - 1, t->buf + t->cursor, (size_t)(t->len - t->cursor + 1));
-        t->cursor--;
-        t->len--;
+        int from = text_back(t->buf, t->cursor);
+        memmove(t->buf + from, t->buf + t->cursor, (size_t)(t->len - t->cursor + 1));
+        t->len -= t->cursor - from;
+        t->cursor = from;
     } else if (base == KEY_DELETE && t->cursor < t->len) {
-        memmove(t->buf + t->cursor, t->buf + t->cursor + 1, (size_t)(t->len - t->cursor));
-        t->len--;
+        int to = text_next(t->buf, t->cursor, t->len);
+        memmove(t->buf + t->cursor, t->buf + to, (size_t)(t->len - to + 1));
+        t->len -= to - t->cursor;
     } else if (key == KEY_CTRL('u')) {
         t->buf[0] = 0;
         t->len = t->cursor = 0;
     } else if (key == KEY_CTRL('v')) {
-        for (const char *p = gui_clipboard(); *p && *p != '\n' && t->len < (int)sizeof(t->buf) - 1; p++) {
-            memmove(t->buf + t->cursor + 1, t->buf + t->cursor, (size_t)(t->len - t->cursor + 1));
-            t->buf[t->cursor++] = *p;
-            t->len++;
-        }
-    } else if (key >= 0x20 && key < 0x100 && key != 0x7f && t->len < (int)sizeof(t->buf) - 1) {
-        memmove(t->buf + t->cursor + 1, t->buf + t->cursor, (size_t)(t->len - t->cursor + 1));
-        t->buf[t->cursor++] = (char)key;
-        t->len++;
+        const char *clip = gui_clipboard();
+        int n = 0;
+        while (clip[n] && clip[n] != '\n')
+            n++;
+        text_insert(t, clip, MIN(n, (int)sizeof(t->buf) - 1 - t->len));
+    } else if (key >= 0x20 && key < 0x100 && key != 0x7f) {
+        char enc[4];
+        text_insert(t, enc, (int)utf8_encode((uint32_t)key, enc));
     } else {
         return false;
     }
@@ -373,12 +402,14 @@ static void shown_text(const struct ui_text *t, char *out, size_t cap, int *care
         return;
     }
     size_t n = 0;
-    for (int i = 0; i < t->len && n + 4 < cap; i++) {
+    *caret_chars = 0;
+    for (int i = 0; i < t->len && n + 4 < cap; i = text_next(t->buf, i, t->len)) {
+        if (i < t->cursor)
+            *caret_chars += 3;
         memcpy(out + n, "•", 3);
         n += 3;
     }
     out[n] = 0;
-    *caret_chars = t->cursor * 3;
 }
 
 static void focus_ring(struct canvas *c, struct rect r, int radius)
@@ -402,8 +433,8 @@ static bool text_field(struct ui *ui, struct rect r, struct ui_text *t, const ch
         ui->st->focus = id;
         int x = ui->e->x - r.x - inset + t->scroll;
         t->cursor = 0;
-        while (t->cursor < t->len && gfx_text_width_n(f, t->buf, (size_t)t->cursor + 1) <= x)
-            t->cursor++;
+        while (t->cursor < t->len && gfx_text_width_n(f, t->buf, (size_t)text_next(t->buf, t->cursor, t->len)) <= x)
+            t->cursor = text_next(t->buf, t->cursor, t->len);
     }
     if (ui->st->focus == id) {
         int key = ui_key(ui);

@@ -1,6 +1,7 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/keys.h>
 #include <synth/net.h>
 #include <synth/string.h>
 #include <synth/time.h>
@@ -15,6 +16,7 @@ enum pill_part {
     PART_WIFI,
     PART_VOLUME,
     PART_CONTROL,
+    PART_LANG,
     PART_CLOCK,
     PART_COUNT,
 };
@@ -83,12 +85,15 @@ static void layout(void)
         clock_text(clock, sizeof(clock));
         int g = CLAMP(pill_grow.pos, -100, 1124);
         int cw = gfx_text_width(&font_bold, clock) + 22;
-        int w = 4 * PILL_ICON + cw + 10 + g * 8 / 1024;
+        int lw = keymap_multi() ? gfx_text_width(&font_bold, keymap_label()) + 14 : 0;
+        int w = 4 * PILL_ICON + lw + cw + 10 + g * 8 / 1024;
         int h = PILL_H + g * 4 / 1024;
         pill = (struct rect){s.x + s.w - w - 12, s.y + 12 - dy - g * 2 / 1024, w, h};
         int x = pill.x + 5;
         for (int i = 0; i < PART_CONTROL + 1; i++, x += PILL_ICON)
             part_r[i] = (struct rect){x, pill.y, PILL_ICON, pill.h};
+        part_r[PART_LANG] = (struct rect){x, pill.y, lw, pill.h};
+        x += lw;
         part_r[PART_CLOCK] = (struct rect){x, pill.y, cw, pill.h};
         zone_pill = rect_inset(pill, -30);
         glass_set_frame(&pill_glass, pill);
@@ -126,8 +131,10 @@ static void paint_pill(struct canvas *c)
     glass_look_for(&look, GLASS_PANEL, pill.h / 2);
     glass_draw(c, &pill_glass, &look);
     gfx_round_frame(c, pill, pill.h / 2, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
-    for (int i = 0; i < PART_CLOCK; i++)
+    for (int i = 0; i < PART_LANG; i++)
         paint_part_icon(c, i, part_r[i]);
+    if (part_r[PART_LANG].w)
+        gfx_text_box(c, part_r[PART_LANG], &font_bold, keymap_label(), ink(), ALIGN_CENTER);
     char clock[16];
     clock_text(clock, sizeof(clock));
     if (part_hover == PART_CLOCK)
@@ -176,6 +183,10 @@ static void open_part(int part)
     case PART_SEARCH: spotlight_toggle(); break;
     case PART_CLOCK: calendar_toggle(s.x + s.w - 12, status_bottom() + 8); break;
     case PART_WIFI: gui_app_launch(gui_app_find("System Settings"), "network"); break;
+    case PART_LANG:
+        keymap_next();
+        chrome_changed();
+        break;
     default: control_center_toggle(s.x + s.w - 12); break;
     }
 }

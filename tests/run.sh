@@ -460,6 +460,16 @@ autostart remove 1; autostart remove 1; autostart list
 nothing starts at login
 install
 no disk to install on
+part hdb
+whole disk
+install hdb --whole --yes
+The disk is too small
+part hda | grep EFI
+EFI system
+config keyboard us,ru; config keyboard
+us,ru
+config keyboard us,xx
+invalid value
 fetch | grep Mirage
 SynthOS 1.0 "Mirage"
 music list

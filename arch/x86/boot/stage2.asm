@@ -69,6 +69,16 @@ stage2:
     mov [BOOTINFO_ADDR + 16], eax
     mov dword [BOOTINFO_ADDR + 20], KERNEL_LBA
     mov dword [BOOTINFO_ADDR + 24], 0
+    mov dword [BOOTINFO_ADDR + 52], 0
+    mov dword [BOOTINFO_ADDR + 56], 0
+    cmp dword [0x7c00 + INSTALL_RECORD], 'SYID'
+    jne .no_record
+    mov eax, [0x7c00 + INSTALL_RECORD + 4]
+    mov [BOOTINFO_ADDR + 60], eax
+    mov eax, [0x7c00 + INSTALL_RECORD + 8]
+    mov [BOOTINFO_ADDR + 64], eax
+    or dword [BOOTINFO_ADDR + 24], BOOT_SYSTEM
+.no_record:
 
     cli
     lgdt [gdt_desc]

@@ -199,7 +199,7 @@ static void event(struct window *w, struct gui_event *e)
     } else if (e->type == EV_KEY && e->key == KEY_COMMAND(3)) {
         gui_app_launch(gui_app_find("System Settings"), "terminal");
     } else if (e->type == EV_KEY) {
-        input_inject(e->key);
+        input_inject(keymap_plain(e->key));
     } else if (e->type == EV_RESIZE) {
         int cols, rows;
         grid_for(w, &cols, &rows);

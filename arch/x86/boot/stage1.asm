@@ -116,6 +116,12 @@ heads:      dw 0
 lba:        dw 0
 msg_disk:   db "SynthOS: cannot read boot disk", 0
 
+; install record: magic, 64-bit id of this installation (0 for the image itself), flags (bit 0: installed)
+times INSTALL_RECORD - ($ - $$) db 0
+    db "SYID"
+    dd 0, 0
+    dd 0
+
 times 446 - ($ - $$) db 0
 
 partition_table:

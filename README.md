@@ -43,16 +43,19 @@ Windows — 32- и 64-битных, консольных и оконных**. Н
 
 ```sh
 make              # собрать загрузочный образ build/vga/synthos.img (BIOS + UEFI)
+make usb          # образ для флешки build/synthos-usb.img (Rufus в режиме DD, balenaEtcher, dd)
 make run          # запустить в QEMU как ПК с BIOS (с сетевой картой)
 make run-uefi     # запустить в QEMU как ПК с UEFI
-make test         # вариант с консолью на COM-порту + 136 автотестов
+make test         # вариант с консолью на COM-порту + 250 автотестов
 make test-hw      # BIOS/UEFI × IDE/AHCI/NVMe/USB и i486
 make test-crypto  # криптография против эталонных векторов
 ```
 
-Запуск на реальном ПК: записать `build/vga/synthos.img` на флешку побайтно
-(`dd if=build/vga/synthos.img of=/dev/sdX bs=1M` или Rufus в режиме DD) и загрузиться с неё —
-подходит и UEFI (с выключенным Secure Boot), и Legacy BIOS/CSM.
+Запуск на реальном ПК: `make usb`, записать `build/synthos-usb.img` на флешку побайтно
+(Rufus в режиме DD, balenaEtcher или `dd`) и загрузиться с неё — подходит и UEFI (с выключенным
+Secure Boot), и Legacy BIOS/CSM. С флешки можно работать сразу или установить систему на диск:
+рядом с Windows в свободное место, вместо ненужного раздела или на весь диск, с меню выбора системы
+при включении и мастером первого запуска — пошагово в **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 Подробная инструкция по установке инструментов, сборке, запуску и развитию проекта —
 в **[INSTRUCTIONS.md](INSTRUCTIONS.md)**. Устройство системы — в

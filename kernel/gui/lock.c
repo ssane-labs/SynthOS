@@ -38,19 +38,19 @@ static int weekday(int y, int m, int d)
 
 bool gui_locked(void)
 {
-    return lock_win != NULL;
+    return lock_win != NULL || gui_setup_active();
 }
 
-static void make_backdrop(struct lockscreen *l)
+void gui_blurred_wallpaper(struct canvas *out)
 {
     const struct canvas *wp = desktop_wallpaper(0);
     if (!wp || !wp->px)
         return;
     int w = MAX(8, wp->w / 12), h = MAX(8, wp->h / 12);
-    if (!canvas_alloc(&l->backdrop, w, h))
+    if (!canvas_alloc(out, w, h))
         return;
-    l->backdrop.clip = (struct rect){0, 0, w, h};
-    gfx_scale(&l->backdrop, (struct rect){0, 0, w, h}, wp, 255);
+    out->clip = (struct rect){0, 0, w, h};
+    gfx_scale(out, (struct rect){0, 0, w, h}, wp, 255);
     for (int pass = 0; pass < 2; pass++)
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
@@ -58,13 +58,13 @@ static void make_backdrop(struct lockscreen *l)
                 for (int dy = -1; dy <= 1; dy++)
                     for (int dx = -1; dx <= 1; dx++) {
                         int sx = CLAMP(x + dx, 0, w - 1), sy = CLAMP(y + dy, 0, h - 1);
-                        uint32_t p = l->backdrop.px[sy * w + sx];
+                        uint32_t p = out->px[sy * w + sx];
                         r += p >> 16 & 0xff;
                         g += p >> 8 & 0xff;
                         b += p & 0xff;
                         n++;
                     }
-                l->backdrop.px[y * w + x] = 0xff000000u | (r / n) << 16 | (g / n) << 8 | (b / n);
+                out->px[y * w + x] = 0xff000000u | (r / n) << 16 | (g / n) << 8 | (b / n);
             }
 }
 
@@ -284,7 +284,7 @@ static void show(bool login)
         if (users_get(i) == me)
             l->user = i;
     l->choosing = login && users_count() > 1;
-    make_backdrop(l);
+    gui_blurred_wallpaper(&l->backdrop);
     struct rect s = wm_screen_rect(0);
     lock_win = wm_popup(s.x, s.y, s.w, s.h, &ops, l, NULL);
     if (!lock_win) {

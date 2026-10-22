@@ -439,6 +439,11 @@ bool w32_key_info(int key, WORD *vk, WORD *scan, WCHAR *ch, DWORD *state)
         {KEY_F7, 0x76, 0x41},     {KEY_F8, 0x77, 0x42},     {KEY_F9, 0x78, 0x43},     {KEY_F10, 0x79, 0x44},
         {KEY_F11, 0x7a, 0x85},    {KEY_F12, 0x7b, 0x86},
     };
+    if (KEY_IS_TEXT(key)) {
+        bool ok = w32_key_info(KEY_TEXT_PHYS(key), vk, scan, ch, state);
+        *ch = (WCHAR)KEY_TEXT_CP(key);
+        return ok;
+    }
     int base = KEY_BASE(key);
     *state = (key & KEY_MOD_SHIFT ? 0x10 : 0) | (key & KEY_MOD_CTRL ? 0x8 : 0) | (key & KEY_MOD_ALT ? 0x2 : 0);
     *ch = 0;

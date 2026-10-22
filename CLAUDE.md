@@ -7,7 +7,9 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
 - `make` — build `build/vga/synthos.img` (own bootloader + kernel + ramdisk)
 - `make test` — serial-console build, boots in QEMU, runs `tests/run.sh` (must stay at 0 failures; starts local
   HTTPS/cookie servers when `openssl`/`python3` exist)
-- `make test-hw` — same image on BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI and i486 (needs `ovmf`), ~3 min
+- `make test-hw` — same image on BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI and i486 (needs `ovmf`), then installs next to a
+  GPT "Windows" partition (UEFI, boot-entry registration) and over a whole disk (BIOS), ~4 min
+- `make usb` — compact USB-stick image `build/synthos-usb.img` (docs/INSTALL.md is the user guide)
 - `make test-crypto` — kernel crypto built for the host, checked against Python `cryptography`
 - `make run-uefi` — boot with OVMF firmware (framebuffer console)
 - `make run` / `make run-serial` — boot in QEMU (x86_64, 256 MB, e1000 user networking)

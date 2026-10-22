@@ -1006,6 +1006,12 @@ static void cmd_key(int key)
 
 static void handle_key(int key)
 {
+    if (key == (' ' | KEY_MOD_SUPER) && keymap_multi()) {
+        keymap_next();
+        chrome_changed();
+        return;
+    }
+    key = keymap_translate(key);
     int base = KEY_BASE(key);
     if (gui_locked()) {
         struct window *lock = wm_top_popup();
@@ -1185,7 +1191,9 @@ int gui_run(struct shell *sh)
     }
     input_set_pump(pump);
     last_input = hal_ticks_ms();
-    if (!user_logged_in()) {
+    if (gui_setup_needed()) {
+        gui_setup();
+    } else if (!user_logged_in()) {
         gui_login();
     } else {
         autostart_pending = true;

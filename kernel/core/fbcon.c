@@ -7,7 +7,7 @@
 
 static struct framebuffer fb;
 static struct display display;
-static struct cell *shown;
+static struct cell shown[CONFIG_MAX_COLS * CONFIG_MAX_ROWS];
 static uint32_t colors[16];
 static int scale = 1;
 static int cursor_x = -1, cursor_y = -1;
@@ -120,10 +120,6 @@ struct display *fbcon_create(const struct framebuffer *info)
 {
     fb = *info;
     if (!fb.base || (fb.bpp != 32 && fb.bpp != 24 && fb.bpp != 16))
-        return NULL;
-    if (!shown)
-        shown = kmalloc(sizeof(struct cell) * CONFIG_MAX_COLS * CONFIG_MAX_ROWS);
-    if (!shown)
         return NULL;
     scale = fb.width >= 1600 && fb.height >= 1000 ? 2 : 1;
     display = (struct display){

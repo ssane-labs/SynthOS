@@ -1,6 +1,7 @@
 #  SynthOS build
 #
 #  make            build the bootable disk image (build/synthos.img)
+#  make usb        the image for a USB stick (build/synthos-usb.img)
 #  make run        boot it in QEMU
 #  make test       build a serial-console image and run the automated tests
 #  make clean      remove build output
@@ -71,7 +72,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs
+.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs usb
 all: $(IMAGE)
 
 ESP_LBA     := 8192
@@ -324,9 +325,17 @@ test-hw:
 	@tests/hw.sh $(BUILD)/serial/synthos.img
 
 OVMF ?= $(firstword $(wildcard /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/edk2/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd))
+OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd))
+UEFI_FW = $(if $(OVMF),-bios $(OVMF),-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	-drive if=pflash,format=raw,file=$(BUILD)/uefi-vars.fd)
 
 run-uefi: $(IMAGE)
-	qemu-system-x86_64 -bios $(OVMF) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_SOUND) $(QEMU_FLAGS)
+	@[ -n "$(OVMF)" ] || [ -f $(BUILD)/uefi-vars.fd ] || cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/uefi-vars.fd
+	qemu-system-x86_64 $(UEFI_FW) -drive format=raw,file=$(IMAGE) -m 256 $(QEMU_SOUND) $(QEMU_FLAGS)
+
+# the image to write to a USB stick (Rufus in DD mode, balenaEtcher or dd); the data partition grows to the stick
+usb: $(IMAGE)
+	@python3 -I tools/mkusb.py $(IMAGE) $(BUILD)/synthos-usb.img
 
 clean:
 	rm -rf $(BUILD)

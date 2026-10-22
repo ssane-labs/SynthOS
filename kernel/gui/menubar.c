@@ -25,6 +25,7 @@ enum title_kind {
 
 enum status_part {
     S_CONTROL,
+    S_LANG,
     S_SEARCH,
     S_CLOCK,
     S_COUNT,
@@ -87,6 +88,9 @@ static void layout(void)
     right -= w;
     status[S_SEARCH] = (struct rect){right - 32, bar.y, 32, MENUBAR_HEIGHT};
     right -= 32;
+    w = keymap_multi() ? gfx_text_width(&font_sans, keymap_label()) + 14 : 0;
+    status[S_LANG] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
+    right -= w;
     status[S_CONTROL] = (struct rect){right - 32, bar.y, 32, MENUBAR_HEIGHT};
 }
 
@@ -149,6 +153,9 @@ void menubar_paint(struct canvas *c, int screen)
     gfx_text_box(c, clock_r, &font_sans, clock, ink, ALIGN_CENTER);
     gfx_symbol(c, status[S_SEARCH].x + dx + 8, bar.y + 4, SYM_SEARCH, 16, ink);
     gfx_symbol(c, status[S_CONTROL].x + dx + 8, bar.y + 4, SYM_CONTROL, 16, ink);
+    if (status[S_LANG].w)
+        gfx_text_box(c, (struct rect){status[S_LANG].x + dx, bar.y, status[S_LANG].w, MENUBAR_HEIGHT}, &font_sans,
+                     keymap_label(), ink, ALIGN_CENTER);
 }
 
 static const struct menu_item logo_items[] = {
@@ -432,7 +439,11 @@ void chrome_mouse(int x, int y, unsigned button, bool down, int clicks)
     int dx = s.x + s.w - (main.x + main.w);
     if (rect_contains((struct rect){status[S_SEARCH].x + dx, s.y, status[S_SEARCH].w, MENUBAR_HEIGHT}, x, y))
         spotlight_toggle();
-    else if (rect_contains((struct rect){status[S_CONTROL].x + dx, s.y, status[S_CONTROL].w, MENUBAR_HEIGHT}, x, y))
+    else if (status[S_LANG].w &&
+             rect_contains((struct rect){status[S_LANG].x + dx, s.y, status[S_LANG].w, MENUBAR_HEIGHT}, x, y)) {
+        keymap_next();
+        chrome_changed();
+    } else if (rect_contains((struct rect){status[S_CONTROL].x + dx, s.y, status[S_CONTROL].w, MENUBAR_HEIGHT}, x, y))
         control_center_toggle(status[S_CONTROL].x + dx + status[S_CONTROL].w);
     damage_bars();
 }

@@ -132,26 +132,64 @@ static struct display *framebuffer_display(void)
 }
 #endif
 
-static bool is_boot_disk(struct blockdev *dev)
+#define RECORD 416
+#define RECORD_INSTALLED 1u
+
+static struct blockdev *boot_disk, *system_area;
+static bool installed;
+
+/* The system area starts with a copy of the image's boot sector: the "SynthOS:" marker in the loader code and an
+   install record with the id the loaders pass on, so the right copy is found when several disks carry one. */
+static bool is_system_area(struct blockdev *dev, uint32_t base)
 {
     static uint8_t sector[512];
-    if (block_read(dev, 0, 1, sector) != 0 || sector[510] != 0x55 || sector[511] != 0xaa)
+    if (base >= dev->sectors || block_read(dev, base, 1, sector) != 0 || sector[510] != 0x55 || sector[511] != 0xaa)
         return false;
     bool marker = false;
-    for (int i = 0; i + 8 <= 446 && !marker; i++)
+    for (int i = 0; i + 8 <= RECORD && !marker; i++)
         marker = memcmp(sector + i, "SynthOS:", 8) == 0;
-    if (!marker || block_read(dev, bootinfo->kernel_lba, 1, sector) != 0)
+    if (!marker)
+        return false;
+    bool record = memcmp(sector + RECORD, "SYID", 4) == 0;
+    if ((bootinfo->flags & BOOT_SYSTEM) && (!record || memcmp(sector + RECORD + 4, bootinfo->id, 8)))
+        return false;
+    uint32_t flags = 0;
+    if (record)
+        memcpy(&flags, sector + RECORD + 12, 4);
+    if (block_read(dev, base + bootinfo->kernel_lba, 1, sector) != 0)
         return false;
     uint32_t magic;
     memcpy(&magic, sector + 8, 4);
-    return magic == KERNEL_MAGIC;
+    if (magic != KERNEL_MAGIC)
+        return false;
+    installed = flags & RECORD_INSTALLED;
+    return true;
 }
 
-static struct blockdev *boot_disk;
+/* Without an id from the loader the copy that was not installed (the boot stick) wins over installed ones. */
+static bool is_boot_disk_candidate(struct blockdev *dev, uint32_t base, int pass)
+{
+    return is_system_area(dev, base) && (pass || (bootinfo->flags & BOOT_SYSTEM) || !installed);
+}
 
 struct blockdev *hal_boot_disk(void)
 {
     return boot_disk;
+}
+
+struct blockdev *hal_system_area(void)
+{
+    return system_area;
+}
+
+bool hal_uefi(void)
+{
+    return (bootinfo->flags & BOOT_UEFI) != 0;
+}
+
+bool hal_installed(void)
+{
+    return installed;
 }
 
 uint32_t hal_system_sectors(void)
@@ -169,23 +207,37 @@ static uint32_t bundle_sectors(struct blockdev *dev)
     return n < dev->sectors - DISK_DATA_LBA ? n : 0;
 }
 
+uint32_t hal_bundle_sectors(void)
+{
+    return system_area ? bundle_sectors(system_area) : 0;
+}
+
 static bool attach_boot_disk(void)
 {
-    for (struct blockdev *dev = block_list(); dev; dev = dev->next) {
-        if (dev->parent || !bootinfo->kernel_lba || !is_boot_disk(dev))
-            continue;
-        boot_disk = dev;
-        if (bootinfo->kernel_lba + bootinfo->kernel_sectors > DISK_DATA_LBA) {
-            klog("disk: kernel image overlaps the data area, persistence disabled");
+    uint32_t base = bootinfo->flags & BOOT_SYSTEM ? bootinfo->system_lba : 0;
+    for (int pass = 0; pass < 2; pass++)
+        for (struct blockdev *dev = block_list(); dev; dev = dev->next) {
+            if (dev->parent || !bootinfo->kernel_lba || !is_boot_disk_candidate(dev, base, pass))
+                continue;
+            boot_disk = system_area = dev;
+            if (base) {
+                uint32_t n = bootinfo->system_sectors ? bootinfo->system_sectors : dev->sectors - base;
+                if (!(system_area = block_add_partition(dev, "system0", base, n)))
+                    return true;
+            }
+            if (bootinfo->kernel_lba + bootinfo->kernel_sectors > DISK_DATA_LBA) {
+                klog("disk: kernel image overlaps the data area, persistence disabled");
+                return true;
+            }
+            struct blockdev *area = system_area;
+            uint32_t data = DISK_DATA_LBA + bundle_sectors(area);
+            if (data > DISK_DATA_LBA)
+                block_add_partition(area, "bundle0", DISK_DATA_LBA, data - DISK_DATA_LBA);
+            if (area->sectors > data + 256)
+                block_add_partition(area, "data0", data, area->sectors - data);
+            klog("disk: system on %s at sector %u%s", dev->name, (unsigned)base, installed ? " (installed)" : "");
             return true;
         }
-        uint32_t data = DISK_DATA_LBA + bundle_sectors(dev);
-        if (data > DISK_DATA_LBA)
-            block_add_partition(dev, "bundle0", DISK_DATA_LBA, data - DISK_DATA_LBA);
-        if (dev->sectors > data + 256)
-            block_add_partition(dev, "data0", data, dev->sectors - data);
-        return true;
-    }
     return false;
 }
 

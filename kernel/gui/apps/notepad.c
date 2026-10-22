@@ -1,3 +1,4 @@
+#include <synth/codepage.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
@@ -404,9 +405,9 @@ static void key(struct window *w, struct notepad *n, int k)
         insert(n, buf, indent + 1);
     } else if (base == KEY_TAB) {
         insert(n, "    ", 4);
-    } else if (k >= 0x20 && k < 0x100 && k != 0x7f) {
-        char c = (char)k;
-        insert(n, &c, 1);
+    } else if (KEY_IS_TEXT(k) || (k >= 0x20 && k < 0x100 && k != 0x7f)) {
+        char enc[4];
+        insert(n, enc, utf8_encode(KEY_IS_TEXT(k) ? (uint32_t)KEY_TEXT_CP(k) : (uint32_t)k, enc));
     } else {
         return;
     }

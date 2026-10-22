@@ -302,6 +302,10 @@ void terminal_retitle(void);
 
 void gui_lock(void);
 void gui_login(void);
+void gui_blurred_wallpaper(struct canvas *out);
+bool gui_setup_needed(void);
+bool gui_setup_active(void);
+void gui_setup(void);
 bool gui_locked(void);
 void gui_session_login(const char *name);
 const struct canvas *desktop_wallpaper(int screen);

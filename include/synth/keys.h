@@ -1,6 +1,8 @@
 #ifndef SYNTH_KEYS_H
 #define SYNTH_KEYS_H
 
+#include <synth/types.h>
+
 #define KEY_CTRL(c) ((c) & 0x1f)
 
 enum key_code {
@@ -43,6 +45,23 @@ enum key_code {
 #define KEY_MOD_MASK 0xf000
 #define KEY_COMMAND(n) (0x10800 + (n))
 #define KEY_BASE(k) ((k) & 0x0fff)
+
+/* A character from a keyboard layout: the code point (below U+1000) and the US key that was pressed. */
+#define KEY_TEXT 0x1000000
+#define KEY_TEXT_CHAR(cp, phys) (KEY_TEXT | (phys) << 16 | (cp))
+#define KEY_IS_TEXT(k) (((k) & KEY_TEXT) != 0)
+#define KEY_TEXT_CP(k) ((k) & 0xfff)
+#define KEY_TEXT_PHYS(k) (((k) >> 16) & 0x7f)
+
+int keymap_translate(int key);
+int keymap_plain(int key);
+void keymap_next(void);
+bool keymap_multi(void);
+const char *keymap_label(void);
+int keymap_count(void);
+const char *keymap_layout_name(int index, const char **title);
+bool keymap_enabled(int index);
+int keymap_set_enabled(const char *list);
 
 const char *key_name(int key, char *buf, int cap);
 

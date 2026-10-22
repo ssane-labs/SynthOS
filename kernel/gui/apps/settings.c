@@ -16,6 +16,8 @@
 #include <synth/users.h>
 #include <synth/vfs.h>
 
+#include <synth/keys.h>
+
 #include "../internal.h"
 
 /* System Settings: a sidebar of panes and, on the right, groups of rows - a label (and a line of explanation) on the
@@ -1339,6 +1341,26 @@ static void pane_keyboard(struct page *p)
         apply("keydelay", buf);
     }
     end(p, NULL);
+    section(p, "Input Sources");
+    char list[64] = "";
+    bool changed = false;
+    for (int i = 0; i < keymap_count(); i++) {
+        const char *title, *name = keymap_layout_name(i, &title);
+        bool on = keymap_enabled(i);
+        if (i && toggle(p, title, NULL, &on))
+            changed = true;
+        if (on || !i) {
+            if (list[0])
+                str_append(list, ",", sizeof(list));
+            str_append(list, name, sizeof(list));
+        }
+    }
+    if (changed) {
+        apply("keyboard", list);
+        chrome_changed();
+    }
+    end(p, "English (US) is always on. With more than one layout, Super+Space or the letters in the status bar switch "
+           "between them.");
     section(p, "Text Input");
     static const char *const sets[] = {"437 Western", "866 Cyrillic"};
     static const char *const set_values[] = {"437", "866"};
@@ -1347,7 +1369,8 @@ static void pane_keyboard(struct page *p)
     end(p, NULL);
     section(p, "Keyboard Shortcuts");
     static const char *const keys[][2] = {
-        {"Search and open apps", "Super+Space"}, {"Switch windows", "Super+Tab"},  {"Close the window", "Super+W"},
+        {"Search and open apps", "Ctrl+Space"},  {"Switch the keyboard layout", "Super+Space"},
+        {"Switch windows", "Super+Tab"},  {"Close the window", "Super+W"},
         {"Minimize the window", "Super+M"},       {"Quit the app", "Super+Q"},      {"Lock the screen", "Super+L"},
         {"Open System Settings", "Super+,"},      {"Copy, paste", "Ctrl+C, Ctrl+V"},
     };
