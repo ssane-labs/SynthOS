@@ -251,38 +251,52 @@ static BOOL WINAPI OpenThreadToken(HANDLE thread, DWORD access, BOOL self, HANDL
     return FALSE;
 }
 
+/* What a program may ask about its own token: the user, its groups, owner and primary group, and fixed answers for
+   the rest (a primary, elevated, medium-integrity token without privileges in session 1). */
 static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWORD len, DWORD *ret)
 {
+    static const struct sid medium_label = {1, 1, {0, 0, 0, 0, 0, 16}, {0x2000}};
     struct w32_object *o = w32_handle_get(token);
     if (!o || o->type != WH_TOKEN) {
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
-    DWORD need;
+    const struct sid *sid = NULL;
+    DWORD head, need;
     switch (cls) {
-    case 1: need = 8 + sid_size(&user_sid); break;
-    case 2: need = 4 + 8 + sid_size(&admins_sid); break;
+    case 1: sid = &user_sid, head = 8; break;
+    case 2: sid = &admins_sid, head = 12; break;
+    case 4:
+    case 5: sid = &user_sid, head = 4; break;
+    case 25: sid = &medium_label, head = 8; break;
+    case 10: head = 56; break;
+    case 3:
+    case 6:
+    case 8:
+    case 12:
     case 18:
-    case 20: need = 4; break;
+    case 20:
+    case 29: head = 4; break;
     default: w32_set_error(ERROR_INVALID_PARAMETER); return FALSE;
     }
+    need = head + (sid ? sid_size(sid) : 0);
     if (ret)
         *ret = need;
     if (!buf || len < need) {
         w32_set_error(ERROR_INSUFFICIENT_BUFFER);
         return FALSE;
     }
+    memset(buf, 0, need);
     uint32_t *w = (uint32_t *)buf;
-    if (cls == 1) {
-        w[0] = (uint32_t)(uintptr_t)(buf + 8);
-        w[1] = 0;
-        memcpy(buf + 8, &user_sid, sid_size(&user_sid));
-    } else if (cls == 2) {
-        w[0] = 1;
-        w[1] = (uint32_t)(uintptr_t)(buf + 12);
-        w[2] = 7;
-        memcpy(buf + 12, &admins_sid, sid_size(&admins_sid));
-    } else {
+    if (sid) {
+        memcpy(buf + head, sid, sid_size(sid));
+        /* TOKEN_GROUPS starts with the count, the others with the SID pointer */
+        w[cls == 2] = (uint32_t)(uintptr_t)(buf + head);
+        if (cls == 2)
+            w[0] = 1, w[2] = 7;
+        else if (cls == 25)
+            w[1] = 0x20;
+    } else if (cls == 8 || cls == 12 || cls == 18 || cls == 20) {
         w[0] = 1;
     }
     return TRUE;

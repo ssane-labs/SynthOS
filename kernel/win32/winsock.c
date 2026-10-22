@@ -365,7 +365,7 @@ static UINT WINAPI accept(UINT s, struct sockaddr_in *addr, int *len)
         uint16_t port;
         int c = net_accept(w->id, &ip, &port);
         if (c >= 0) {
-            socks[c] = (struct wsock){true, false, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0, NULL, 0, 0,
+            socks[c] = (struct wsock){true, w->nonblocking, c, SOCK_STREAM, w->recv_timeout, w->send_timeout, NULL, 0, NULL, 0, 0,
                                       w->v6};
             sock_addr(w, addr, len, ip, port);
             return handle_of(c);
@@ -1726,8 +1726,22 @@ static const char *const winsock_ordinals[] = {
 
 W32_EXPORTS(winsock_module, "ws2_32.dll", winsock_exports, .attach = winsock_attach, .ordinals = winsock_ordinals,
             .ordinal_count = ARRAY_SIZE(winsock_ordinals));
-W32_EXPORTS(wsock32_module, "wsock32.dll", winsock_exports, .attach = winsock_attach, .ordinals = winsock_ordinals,
-            .ordinal_count = ARRAY_SIZE(winsock_ordinals));
+/* Winsock 1 numbers inet_addr, inet_ntoa and ioctlsocket 10, 11, 12 */
+static const char *const wsock32_ordinals[] = {
+    [1] = "accept",          [2] = "bind",           [3] = "closesocket",    [4] = "connect",
+    [5] = "getpeername",     [6] = "getsockname",    [7] = "getsockopt",     [8] = "htonl",
+    [9] = "htons",           [10] = "inet_addr",     [11] = "inet_ntoa",     [12] = "ioctlsocket",
+    [13] = "listen",         [14] = "ntohl",         [15] = "ntohs",         [16] = "recv",
+    [17] = "recvfrom",       [18] = "select",        [19] = "send",          [20] = "sendto",
+    [21] = "setsockopt",     [22] = "shutdown",      [23] = "socket",        [51] = "gethostbyaddr",
+    [52] = "gethostbyname",  [53] = "getprotobyname", [54] = "getprotobynumber", [55] = "getservbyname",
+    [56] = "getservbyport", [57] = "gethostname",   [111] = "WSAGetLastError",
+    [112] = "WSASetLastError", [115] = "WSAStartup", [116] = "WSACleanup",   [151] = "__WSAFDIsSet",
+    [1141] = "AcceptEx", [1142] = "GetAcceptExSockaddrs",
+};
+
+W32_EXPORTS(wsock32_module, "wsock32.dll", winsock_exports, .attach = winsock_attach, .ordinals = wsock32_ordinals,
+            .ordinal_count = ARRAY_SIZE(wsock32_ordinals));
 
 static const struct w32_export mswsock_exports[] = {
     W32_FN(AcceptEx),

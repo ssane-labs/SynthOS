@@ -201,6 +201,7 @@ struct w32_wait {
     const void *arg;
     uint32_t seen_net, seen_kick, site;
     uint64_t since;
+    const volatile void *on;
 };
 
 struct w32_thread {
@@ -379,7 +380,7 @@ static inline uint32_t w32_ov_event(const uint32_t *ov)
 }
 uint32_t w32_vm_reserve(uint32_t size);
 void w32_vm_set_committed(uint32_t start, uint32_t size, bool on);
-uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count);
+uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count, uint32_t at);
 bool w32_vm_unmap_shared(uint32_t base);
 void w32_vm_cleanup(void);
 NORETURN void w32_leave_forever(void);
@@ -454,7 +455,7 @@ void w32_fcache_forget(const char *path);
 void w32_image_detach(const char *path);
 void w32_find_free(struct w32_find *f);
 bool w32_wow64(void);
-uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count);
+uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count, uint32_t at);
 bool w32_vm_fault(uintptr_t address);
 bool w32_image_fault(uint32_t address);
 

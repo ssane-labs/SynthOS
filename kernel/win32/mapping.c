@@ -11,6 +11,7 @@
 #define PAGE_EXECUTE_READWRITE 0x40u
 #define FILE_MAP_WRITE 0x0002u
 #define FILE_MAP_COPY 0x0001u
+#define ERROR_INVALID_ADDRESS 487
 
 struct w32_section {
     int refs;
@@ -218,7 +219,7 @@ static HANDLE WINAPI OpenFileMappingW(DWORD access, BOOL inherit, LPCWSTR name)
     return h;
 }
 
-static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T bytes)
+static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T bytes, uint32_t at)
 {
     struct w32_object *o = w32_handle_get(h);
     if (!o || o->type != WH_SECTION || !o->section || off_hi || off_lo > o->section->size) {
@@ -249,9 +250,9 @@ static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T
     }
     if (s->pages) {
         uint32_t first = off_lo / 4096u, count = (off_lo % 4096u + length + 4095u) / 4096u;
-        uint32_t base = w32_vm_map_shared(s->pages + first, count);
+        uint32_t base = w32_vm_map_shared(s->pages + first, count, at);
         if (!base) {
-            w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+            w32_set_error(at ? ERROR_INVALID_ADDRESS : ERROR_NOT_ENOUGH_MEMORY);
             return NULL;
         }
         *v = (struct view){(uint8_t *)(uintptr_t)base + off_lo % 4096u, off_lo, length, false, false, true, s};
@@ -262,15 +263,19 @@ static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T
     if (copy || !(access & FILE_MAP_WRITE)) {
         uint32_t first = off_lo / 4096u, count = (off_lo % 4096u + length + 4095u) / 4096u;
         struct file_cache *c = w32_fcache_get(s->path, (first + count) * 4096u);
-        uint32_t base = c ? w32_vm_map_file(c, first, count) : 0;
+        uint32_t base = c ? w32_vm_map_file(c, first, count, at) : 0;
         if (!base) {
             w32_fcache_put(c);
-            w32_set_error(c ? ERROR_NOT_ENOUGH_MEMORY : ERROR_FILE_NOT_FOUND);
+            w32_set_error(!c ? ERROR_FILE_NOT_FOUND : at ? ERROR_INVALID_ADDRESS : ERROR_NOT_ENOUGH_MEMORY);
             return NULL;
         }
         *v = (struct view){(uint8_t *)(uintptr_t)base + off_lo % 4096u, off_lo, length, false, false, true, s};
         s->refs++;
         return v->base;
+    }
+    if (at) {
+        w32_set_error(ERROR_INVALID_ADDRESS);
+        return NULL;
     }
     uint8_t *mem = w32_alloc(MAX(length, 1u));
     if (!mem) {
@@ -298,18 +303,18 @@ static void *map_view(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T
 
 void *w32_map_section(HANDLE h, uint32_t offset, uint32_t bytes)
 {
-    return map_view(h, FILE_MAP_WRITE, 0, offset, bytes);
+    return map_view(h, FILE_MAP_WRITE, 0, offset, bytes, 0);
 }
 
 static void *WINAPI MapViewOfFile(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T bytes)
 {
-    return map_view(h, access, off_hi, off_lo, bytes);
+    return map_view(h, access, off_hi, off_lo, bytes, 0);
 }
 
+/* a view at the address asked for, or none: shared pointers in it are only valid there */
 static void *WINAPI MapViewOfFileEx(HANDLE h, DWORD access, DWORD off_hi, DWORD off_lo, SIZE_T bytes, void *base)
 {
-    UNUSED(base);
-    return map_view(h, access, off_hi, off_lo, bytes);
+    return map_view(h, access, off_hi, off_lo, bytes, (uint32_t)(uintptr_t)base);
 }
 
 static struct view *find_view(const void *p)

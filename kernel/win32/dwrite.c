@@ -34,6 +34,8 @@ static const uint8_t iid_local_loader[16] =
 static const uint8_t iid_stream[16] = GUID(0x6d4865fe, 0x0ab8, 0x4d91, 0x8f, 0x62, 0x5d, 0xd6, 0xbe, 0x34, 0xa3, 0xe0);
 static const uint8_t iid_analysis[16] = GUID(0x7d97dbf7, 0xe085, 0x42d4, 0x81, 0xe3, 0x6a, 0x88, 0x3b, 0xde, 0xd1, 0x18);
 static const uint8_t iid_strings[16] = GUID(0x08256209, 0x099a, 0x4b34, 0xb8, 0x6d, 0xc2, 0x2b, 0x11, 0x0e, 0x77, 0x71);
+static const uint8_t iid_gdi_interop[16] =
+    GUID(0x1edd9491, 0x9853, 0x4299, 0x89, 0x8f, 0x64, 0x32, 0x98, 0x3b, 0x6f, 0x3a);
 
 struct face {
     char path[PATH_MAX_LEN];
@@ -1124,6 +1126,87 @@ static struct obj *new_collection(void)
     return com_new(collection_vtbl, iid_collection, NULL, 0);
 }
 
+/* IDWriteGdiInterop: fonts by LOGFONT and back */
+
+#define DWRITE_E_NOFONT 0x88985002u
+
+struct logfont {
+    LONG height, width, escapement, orientation, weight;
+    uint8_t italic, underline, strike_out, charset, out_precision, clip_precision, quality, pitch_and_family;
+    WCHAR face[32];
+};
+
+static int find_family(const WCHAR *name)
+{
+    char n[64];
+    size_t k = 0;
+    for (; name[k] && k < sizeof(n) - 1; k++)
+        n[k] = name[k] < 0x80 ? (char)name[k] : '?';
+    n[k] = 0;
+    for (int i = 0; i < family_count; i++)
+        if (!str_casecmp(faces[family_first[i]].family, n))
+            return i;
+    return alias_family(n);
+}
+
+static uint32_t WINAPI gdi_from_logfont(void *self, const struct logfont *lf, void **out)
+{
+    UNUSED(self);
+    scan_fonts();
+    int family = lf ? find_family(lf->face) : -1;
+    if (family < 0) {
+        *out = NULL;
+        return DWRITE_E_NOFONT;
+    }
+    struct obj f = {family_vtbl, 1, iid_family, iid_list, family, NULL, NULL};
+    return family_match(&f, lf->weight ? (int)lf->weight : 400, 5, lf->italic ? 2 : 0, out);
+}
+
+static void to_logfont(int face, struct logfont *lf)
+{
+    memset(lf, 0, sizeof(*lf));
+    lf->weight = faces[face].weight;
+    lf->italic = faces[face].font_style != 0;
+    lf->charset = 1;
+    lf->out_precision = 7;
+    for (size_t i = 0; i < ARRAY_SIZE(lf->face) - 1 && faces[face].family[i]; i++)
+        lf->face[i] = (uint8_t)faces[face].family[i];
+}
+
+static uint32_t WINAPI gdi_font_logfont(void *self, struct obj *font, struct logfont *lf, BOOL *system)
+{
+    UNUSED(self);
+    if (!font || !lf)
+        return E_INVALIDARG;
+    to_logfont(font->index, lf);
+    if (system)
+        *system = TRUE;
+    return S_OK;
+}
+
+static uint32_t WINAPI gdi_face_logfont(void *self, struct obj *face, struct logfont *lf)
+{
+    return gdi_font_logfont(self, face, lf, NULL);
+}
+
+TRAPS(gdi, 8, 9, 10, 11)
+
+static const void *const gdi_vtbl[] = {
+    query_interface, add_ref,  release,
+    gdi_from_logfont,       /* CreateFontFromLOGFONT */
+    gdi_font_logfont,       /* ConvertFontToLOGFONT */
+    gdi_face_logfont,       /* ConvertFontFaceToLOGFONT */
+    none3,                  /* CreateFontFaceFromHdc */
+    none5,                  /* CreateBitmapRenderTarget */
+    trap_gdi_8, trap_gdi_9, trap_gdi_10, trap_gdi_11,
+};
+
+static uint32_t WINAPI gdi_interop(void *self, void **out)
+{
+    UNUSED(self);
+    return give(out, com_new(gdi_vtbl, iid_gdi_interop, NULL, 0));
+}
+
 /* IDWriteFactory */
 
 static uint32_t WINAPI system_collection(void *self, void **out, BOOL check)
@@ -1410,7 +1493,7 @@ static const void *const factory_vtbl[] = {
     ok2,                    /* UnregisterFontFileLoader */
     none9,                  /* CreateTextFormat */
     none2,                  /* CreateTypography */
-    none2,                  /* GetGdiInterop */
+    gdi_interop,            /* GetGdiInterop */
     none7,                  /* CreateTextLayout */
     none10,                 /* CreateGdiCompatibleTextLayout */
     none3,                  /* CreateEllipsisTrimmingSign */
@@ -1514,7 +1597,7 @@ static const struct method64 factory_m64[] = {
     {ok2, "i"},
     {none9, "iiiiiiio"},
     {none2, "o"},
-    {none2, "o"},
+    {gdi_interop, "o"},
     {none7, "iiiiio"},
     {none10, "iiiiiiiio"},
     {none3, "io"},
@@ -1522,6 +1605,11 @@ static const struct method64 factory_m64[] = {
     {none5, "iiio"},
     {glyph_run_analysis, "gfpiiffo"},
     TRAPS64,
+};
+
+static const struct method64 gdi_m64[] = {
+    QI_AR_RL, {gdi_from_logfont, "po"}, {gdi_font_logfont, "Npp"}, {gdi_face_logfont, "Np"}, {none3, "io"},
+    {none5, "iiio"}, TRAPS64,
 };
 
 static const struct method64 analysis_m64[] = {
@@ -1545,6 +1633,7 @@ static const struct {
     {collection_vtbl, collection_m64, ARRAY_SIZE(collection_m64), "collection"},
     {factory_vtbl, factory_m64, ARRAY_SIZE(factory_m64), "factory"},
     {analysis_vtbl, analysis_m64, ARRAY_SIZE(analysis_m64), "analysis"},
+    {gdi_vtbl, gdi_m64, ARRAY_SIZE(gdi_m64), "gdi interop"},
 };
 
 static W32_STATE uint64_t *vt64[ARRAY_SIZE(kinds64)];

@@ -143,7 +143,65 @@ static const struct w32_module_def *builtin_find(const char *name)
     return NULL;
 }
 
-static void *builtin_lookup(const char *module, const char *symbol)
+/* Functions Windows exports from more than one DLL under the same contract: ntdll's Rtl names of kernel32
+   functions, the C runtime's memory functions in ntdll. */
+static const char *const forwards[][4] = {
+    {"ntdll.dll", "RtlAllocateHeap", "kernel32.dll", "HeapAlloc"},
+    {"ntdll.dll", "RtlFreeHeap", "kernel32.dll", "HeapFree"},
+    {"ntdll.dll", "RtlReAllocateHeap", "kernel32.dll", "HeapReAlloc"},
+    {"ntdll.dll", "RtlSizeHeap", "kernel32.dll", "HeapSize"},
+    {"ntdll.dll", "RtlAcquireSRWLockExclusive", "kernel32.dll", "AcquireSRWLockExclusive"},
+    {"ntdll.dll", "RtlAcquireSRWLockShared", "kernel32.dll", "AcquireSRWLockShared"},
+    {"ntdll.dll", "RtlReleaseSRWLockExclusive", "kernel32.dll", "ReleaseSRWLockExclusive"},
+    {"ntdll.dll", "RtlReleaseSRWLockShared", "kernel32.dll", "ReleaseSRWLockShared"},
+    {"ntdll.dll", "RtlTryAcquireSRWLockExclusive", "kernel32.dll", "TryAcquireSRWLockExclusive"},
+    {"ntdll.dll", "RtlTryAcquireSRWLockShared", "kernel32.dll", "TryAcquireSRWLockShared"},
+    {"ntdll.dll", "RtlInitializeSRWLock", "kernel32.dll", "InitializeSRWLock"},
+    {"ntdll.dll", "RtlWakeAllConditionVariable", "kernel32.dll", "WakeAllConditionVariable"},
+    {"ntdll.dll", "RtlWakeConditionVariable", "kernel32.dll", "WakeConditionVariable"},
+    {"ntdll.dll", "RtlInitializeConditionVariable", "kernel32.dll", "InitializeConditionVariable"},
+    {"ntdll.dll", "RtlGetLastWin32Error", "kernel32.dll", "GetLastError"},
+    {"ntdll.dll", "RtlSetLastWin32Error", "kernel32.dll", "SetLastError"},
+    {"ntdll.dll", "RtlRestoreLastWin32Error", "kernel32.dll", "SetLastError"},
+    {"ntdll.dll", "RtlQueryPerformanceCounter", "kernel32.dll", "QueryPerformanceCounter"},
+    {"ntdll.dll", "RtlQueryPerformanceFrequency", "kernel32.dll", "QueryPerformanceFrequency"},
+    {"ntdll.dll", "RtlEnterCriticalSection", "kernel32.dll", "EnterCriticalSection"},
+    {"ntdll.dll", "RtlLeaveCriticalSection", "kernel32.dll", "LeaveCriticalSection"},
+    {"ntdll.dll", "RtlInitializeCriticalSection", "kernel32.dll", "InitializeCriticalSection"},
+    {"ntdll.dll", "RtlDeleteCriticalSection", "kernel32.dll", "DeleteCriticalSection"},
+    {"ntdll.dll", "RtlCaptureContext", "kernel32.dll", "RtlCaptureContext"},
+    {"ntdll.dll", "RtlCaptureStackBackTrace", "kernel32.dll", "RtlCaptureStackBackTrace"},
+    {"ntdll.dll", "RtlUnwind", "kernel32.dll", "RtlUnwind"},
+    {"ntdll.dll", "VerSetConditionMask", "kernel32.dll", "VerSetConditionMask"},
+    {"ntdll.dll", "RtlMoveMemory", "kernel32.dll", "RtlMoveMemory"},
+    {"ntdll.dll", "RtlZeroMemory", "kernel32.dll", "RtlZeroMemory"},
+    {"ntdll.dll", "RtlFillMemory", "kernel32.dll", "RtlFillMemory"},
+    {"ntdll.dll", "memcpy", "msvcrt.dll", "memcpy"},
+    {"ntdll.dll", "memmove", "msvcrt.dll", "memmove"},
+    {"ntdll.dll", "memset", "msvcrt.dll", "memset"},
+    {"ntdll.dll", "memcmp", "msvcrt.dll", "memcmp"},
+    {"ntdll.dll", "strlen", "msvcrt.dll", "strlen"},
+    {"ntdll.dll", "wcslen", "msvcrt.dll", "wcslen"},
+    {"ntdll.dll", "_wcsicmp", "msvcrt.dll", "_wcsicmp"},
+    {"ntdll.dll", "_stricmp", "msvcrt.dll", "_stricmp"},
+    {"ntdll.dll", "strchr", "msvcrt.dll", "strchr"},
+    {"ntdll.dll", "wcschr", "msvcrt.dll", "wcschr"},
+    {"ntdll.dll", "_snprintf", "msvcrt.dll", "_snprintf"},
+    {"ntdll.dll", "_snwprintf", "msvcrt.dll", "_snwprintf"},
+    {"ntdll.dll", "sprintf", "msvcrt.dll", "sprintf"},
+    {"ntdll.dll", "swprintf", "msvcrt.dll", "swprintf"},
+    {"ntdll.dll", "qsort", "msvcrt.dll", "qsort"},
+    {"ntdll.dll", "_aulldiv", "msvcrt.dll", "_aulldiv"},
+    {"ntdll.dll", "_alldiv", "msvcrt.dll", "_alldiv"},
+    {"ntdll.dll", "_aullrem", "msvcrt.dll", "_aullrem"},
+    {"ntdll.dll", "_allrem", "msvcrt.dll", "_allrem"},
+    {"ntdll.dll", "_allmul", "msvcrt.dll", "_allmul"},
+    {"ntdll.dll", "_allshl", "msvcrt.dll", "_allshl"},
+    {"ntdll.dll", "_allshr", "msvcrt.dll", "_allshr"},
+    {"ntdll.dll", "_aullshr", "msvcrt.dll", "_aullshr"},
+};
+
+static void *builtin_find_export(const char *module, const char *symbol)
 {
     SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def) {
         if (strcmp(def->name, module) != 0)
@@ -153,6 +211,22 @@ static void *builtin_lookup(const char *module, const char *symbol)
                 return def->exports[i].address;
     }
     return NULL;
+}
+
+static void *builtin_lookup(const char *module, const char *symbol)
+{
+    void *fn = builtin_find_export(module, symbol);
+    if (fn)
+        return fn;
+    for (size_t i = 0; i < ARRAY_SIZE(forwards); i++)
+        if (!strcmp(forwards[i][0], module) && !strcmp(forwards[i][1], symbol))
+            return builtin_find_export(forwards[i][2], forwards[i][3]);
+    if (!strcmp(module, "msvcrt.dll") && str_starts(symbol, "_o_"))
+        return builtin_find_export(module, symbol + 3);
+    /* api-ms-win-core-* sets are kernelbase, which also carries the registry, tokens and version resources */
+    if (!strcmp(module, "kernel32.dll") && !(fn = builtin_find_export("advapi32.dll", symbol)))
+        fn = builtin_find_export("version.dll", symbol);
+    return fn;
 }
 
 static void *builtin_ordinal(const char *module, uint32_t ordinal)
@@ -322,7 +396,7 @@ static void *export_lookup(struct w32_image *img, const char *name, uint32_t ord
 
 bool w32_trace;
 
-#define TRACE_RING 96
+#define TRACE_RING 160
 
 static char (*trace_ring)[48];
 static unsigned trace_pos;
@@ -406,9 +480,10 @@ static void *resolve(struct w32_image *dll, const char *module, const char *symb
     if (pe64 != dll->pe64 && !dll->builtin)
         return pe64 ? w64_stub(module, symbol, ordinal) : missing_stub(module, symbol ? symbol : "?");
     if (dll->builtin) {
+        const char *name = symbol ? symbol : w32_builtin_ordinal_name(dll->name, ordinal);
         fn = symbol ? builtin_lookup(dll->name, symbol) : builtin_ordinal(dll->name, ordinal);
-        if (fn && symbol)
-            return relay(fn, dll->name, symbol);
+        if (fn && name)
+            return relay(fn, dll->name, name);
     } else {
         fn = export_lookup(dll, symbol, ordinal, 0);
     }
@@ -1008,8 +1083,37 @@ static bool find_on_disk(const char *name, const char *search_dir, char *out)
     return find_in_assemblies(name, search_dir, out);
 }
 
+/* The C++ runtime a program brings (vcruntime140.dll) is used as it is: its exception handling runs on our SEH. */
+static bool own_cxx_runtime(const char *norm, const char *search_dir, char *path)
+{
+    if (!str_starts(norm, "vcruntime") || !find_on_disk(norm, search_dir, path))
+        return false;
+    struct file *f;
+    uint8_t head[512];
+    if (vfs_open(path, VFS_READ, &f) != 0)
+        return false;
+    long n = vfs_read(f, head, sizeof(head));
+    vfs_close(f);
+    uint32_t pe;
+    if (n < 0x40)
+        return false;
+    memcpy(&pe, head + 0x3c, 4);
+    return pe + 6 <= (uint32_t)n && head[pe + 4] == 0x4c && head[pe + 5] == 0x01;
+}
+
 struct w32_image *w32_load(const char *name, const char *search_dir, int *error)
 {
+    char own[64], own_path[PATH_MAX_LEN];
+    normalize(name, own, sizeof(own));
+    if (str_starts(own, "vcruntime")) {
+        for (struct w32_image *i = w32->images; i; i = i->next)
+            if (!str_casecmp(i->name, own)) {
+                i->refs++;
+                return i;
+            }
+        if (own_cxx_runtime(own, search_dir, own_path))
+            return load_file(own_path, own, error);
+    }
     struct w32_image *img = w32_find_module(name);
     if (img) {
         img->refs++;

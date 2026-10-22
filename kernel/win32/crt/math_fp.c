@@ -694,6 +694,119 @@ extern char crt_ftol[], crt_ci_sin[], crt_ci_cos[], crt_ci_tan[], crt_ci_sqrt[],
     crt_ci_log10[], crt_ci_asin[], crt_ci_acos[], crt_ci_atan[], crt_ci_sinh[], crt_ci_cosh[], crt_ci_tanh[],
     crt_ci_pow[], crt_ci_fmod[], crt_ci_atan2[];
 
+static float m_roundf(float x) { return (float)m_round(x); }
+static float m_truncf(float x) { return (float)m_trunc(x); }
+static float m_nearbyintf(float x) { return (float)m_rint(x); }
+static long m_lrint(double x) { return (long)m_rint(x); }
+static long m_lrintf(float x) { return (long)m_rint(x); }
+static long m_lroundf(float x) { return (long)m_round(x); }
+static long long m_llround(double x) { return (long long)m_round(x); }
+static long long m_llrint(double x) { return (long long)m_rint(x); }
+static float m_hypotf(float x, float y) { return (float)m_hypot(x, y); }
+static float m_cbrtf(float x) { return (float)m_cbrt(x); }
+static float m_exp2f(float x) { return (float)m_exp2(x); }
+static float m_log2f(float x) { return (float)m_log2(x); }
+static float m_log1pf(float x) { return (float)m_log1p(x); }
+static float m_expm1f(float x) { return (float)m_expm1(x); }
+static float m_asinhf(float x) { return (float)m_asinh(x); }
+static float m_acoshf(float x) { return (float)m_acosh(x); }
+static float m_atanhf(float x) { return (float)m_atanh(x); }
+static float m_sinhf(float x) { return (float)m_sinh(x); }
+static float m_coshf(float x) { return (float)m_cosh(x); }
+static float m_tanhf(float x) { return (float)m_tanh(x); }
+static float m_asinf(float x) { return (float)m_asin(x); }
+static float m_acosf(float x) { return (float)m_acos(x); }
+static float m_fmaf(float x, float y, float z) { return (float)((double)x * y + z); }
+static float m_scalbnf(float x, int n) { return (float)m_ldexp(x, n); }
+static double m_scalbn(double x, int n) { return m_ldexp(x, n); }
+static float m_nextafterf(float x, float y)
+{
+    if (x != x || y != y)
+        return x + y;
+    if (x == y)
+        return y;
+    union {
+        float f;
+        uint32_t u;
+    } v = {x};
+    if (x == 0.0f)
+        v.u = 1 | (y < 0 ? 0x80000000u : 0);
+    else if ((x < y) == (x > 0))
+        v.u++;
+    else
+        v.u--;
+    return v.f;
+}
+static double m_nexttoward(double x, long double y) { return m_nextafter(x, (double)y); }
+static double m_remainder(double x, double y)
+{
+    long double r;
+    __asm__("1: fprem1\n\tfnstsw %%ax\n\ttestb $4, %%ah\n\tjnz 1b" : "=t"(r) : "0"((long double)x), "u"((long double)y) : "ax");
+    return (double)r;
+}
+static float m_remainderf(float x, float y) { return (float)m_remainder(x, y); }
+static double m_nan(const char *tag) { UNUSED(tag); return __builtin_nan(""); }
+static float m_nanf(const char *tag) { UNUSED(tag); return __builtin_nanf(""); }
+static int m_dsign(double x)
+{
+    union {
+        double d;
+        uint64_t u;
+    } v = {x};
+    return (int)(v.u >> 63);
+}
+static int m_fdsign(float x)
+{
+    union {
+        float f;
+        uint32_t u;
+    } v = {x};
+    return (int)(v.u >> 31);
+}
+static int m_fegetround(void)
+{
+    uint16_t cw;
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    static const int modes[4] = {0, 0x100, 0x200, 0x300};
+    return modes[(cw >> 10) & 3];
+}
+
+static float m_copysignf(float x, float y) { return (float)m_copysign(x, y); }
+static float m_erff(float x) { return (float)m_erf(x); }
+static double m_fmax(double x, double y) { return x != x ? y : y != y ? x : x > y ? x : y; }
+static double m_fmin(double x, double y) { return x != x ? y : y != y ? x : x < y ? x : y; }
+static float m_fmaxf(float x, float y) { return (float)m_fmax(x, y); }
+static float m_fminf(float x, float y) { return (float)m_fmin(x, y); }
+static int m_ilogb(double x) { return x == 0 ? -0x7fffffff - 1 : (int)m_logb(x); }
+static int m_ilogbf(float x) { return m_ilogb(x); }
+static long long m_llrintf(float x) { return (long long)m_rint(x); }
+static long long m_llroundl(long double x) { return (long long)m_round((double)x); }
+static int m_ldsign(long double x) { return m_dsign((double)x); }
+static short m_ldclass(long double x) { return m_dclass((double)x); }
+static short m_fdtest(float *x) { return m_fdclass(*x); }
+static short m_ldtest(long double *x) { return m_dclass((double)*x); }
+
+/* lgamma by the Lanczos series and the reflection formula */
+static double m_lgamma(double x)
+{
+    static const double g[9] = {0.99999999999980993,  676.5203681218851,     -1259.1392167224028,
+                                771.32342877765313,   -176.61502916214059,   12.507343278686905,
+                                -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7};
+    if (x < 0.5)
+        return m_log(3.14159265358979323846 / m_fabs(m_sin(3.14159265358979323846 * x))) - m_lgamma(1 - x);
+    x -= 1;
+    double a = g[0], t = x + 7.5;
+    for (int i = 1; i < 9; i++)
+        a += g[i] / (x + i);
+    return 0.91893853320467274178 + (x + 0.5) * m_log(t) - t + m_log(a);
+}
+static float m_lgammaf(float x) { return (float)m_lgamma(x); }
+static long double m_lgammal(long double x) { return m_lgamma((double)x); }
+static float m_wcstof(const WCHAR *s, WCHAR **end)
+{
+    return (float)((double (*)(const WCHAR *, WCHAR **))w32_builtin_lookup("msvcrt.dll", "wcstod"))(s, end);
+}
+
 static double huge_val = __builtin_inf();
 
 static const struct w32_export math_exports[] = {
@@ -723,6 +836,23 @@ static const struct w32_export math_exports[] = {
     W32_AS("asinh", m_asinh), W32_AS("acosh", m_acosh), W32_AS("atanh", m_atanh), W32_AS("erf", m_erf),
     W32_AS("erfc", m_erfc), W32_AS("fma", m_fma), W32_AS("_dclass", m_dclass), W32_AS("_fdclass", m_fdclass),
     W32_AS("_dtest", m_dclass), W32_AS("_except1", m_except1),
+    W32_AS("roundf", m_roundf), W32_AS("truncf", m_truncf), W32_AS("nearbyintf", m_nearbyintf),
+    W32_AS("rintf", m_nearbyintf), W32_AS("lrint", m_lrint), W32_AS("lrintf", m_lrintf), W32_AS("lroundf", m_lroundf),
+    W32_AS("llround", m_llround), W32_AS("llrint", m_llrint), W32_AS("_hypotf", m_hypotf), W32_AS("hypotf", m_hypotf),
+    W32_AS("cbrtf", m_cbrtf), W32_AS("exp2f", m_exp2f), W32_AS("log2f", m_log2f), W32_AS("log1pf", m_log1pf),
+    W32_AS("expm1f", m_expm1f), W32_AS("asinhf", m_asinhf), W32_AS("acoshf", m_acoshf), W32_AS("atanhf", m_atanhf),
+    W32_AS("sinhf", m_sinhf), W32_AS("coshf", m_coshf), W32_AS("tanhf", m_tanhf), W32_AS("asinf", m_asinf),
+    W32_AS("acosf", m_acosf), W32_AS("fmaf", m_fmaf), W32_AS("scalbnf", m_scalbnf), W32_AS("scalbn", m_scalbn),
+    W32_AS("ldexpf", m_scalbnf), W32_AS("nextafterf", m_nextafterf), W32_AS("nexttoward", m_nexttoward),
+    W32_AS("remainder", m_remainder), W32_AS("remainderf", m_remainderf), W32_AS("nan", m_nan),
+    W32_AS("nanf", m_nanf), W32_AS("_dsign", m_dsign), W32_AS("_fdsign", m_fdsign),
+    W32_AS("fegetround", m_fegetround),
+    W32_AS("copysignf", m_copysignf), W32_AS("_copysignf", m_copysignf),
+    W32_AS("erff", m_erff), W32_AS("fmax", m_fmax), W32_AS("fmin", m_fmin), W32_AS("fmaxf", m_fmaxf),
+    W32_AS("fminf", m_fminf), W32_AS("ilogb", m_ilogb), W32_AS("ilogbf", m_ilogbf), W32_AS("llrintf", m_llrintf),
+    W32_AS("llroundl", m_llroundl), W32_AS("_ldsign", m_ldsign), W32_AS("_ldclass", m_ldclass),
+    W32_AS("_fdtest", m_fdtest), W32_AS("_ldtest", m_ldtest), W32_AS("lgamma", m_lgamma),
+    W32_AS("lgammaf", m_lgammaf), W32_AS("lgammal", m_lgammal), W32_AS("wcstof", m_wcstof),
     W32_AS("_libm_sse2_sin_precise", crt_sse2_sin), W32_AS("_libm_sse2_cos_precise", crt_sse2_cos),
     W32_AS("_libm_sse2_tan_precise", crt_sse2_tan), W32_AS("_libm_sse2_sqrt_precise", crt_sse2_sqrt),
     W32_AS("_libm_sse2_exp_precise", crt_sse2_exp), W32_AS("_libm_sse2_log_precise", crt_sse2_log),

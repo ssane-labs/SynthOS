@@ -182,9 +182,19 @@ void w32_vm_cleanup(void)
     w32->vm = NULL;
 }
 
-uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count)
+/* at: the address the program asked for (0: anywhere) */
+static uint32_t place(uint32_t size, uint32_t at)
 {
-    uint32_t size = count * 4096u, base = vm() ? find_free(size, false) : 0;
+    if (!vm())
+        return 0;
+    if (!at)
+        return find_free(size, false);
+    return !(at % GRANULARITY) && range_free(at, ALIGN_UP(size, GRANULARITY)) ? at : 0;
+}
+
+uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count, uint32_t at)
+{
+    uint32_t size = count * 4096u, base = place(size, at);
     struct vregion *r = base ? add_region(base, size, PAGE_READWRITE) : NULL;
     if (!r)
         return 0;
@@ -199,9 +209,9 @@ uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count)
     return base;
 }
 
-uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count)
+uint32_t w32_vm_map_file(struct file_cache *c, uint32_t first_page, uint32_t count, uint32_t at)
 {
-    uint32_t size = count * 4096u, base = vm() ? find_free(size, false) : 0;
+    uint32_t size = count * 4096u, base = place(size, at);
     struct vregion *r = base ? add_region(base, size, 0x08u) : NULL;
     if (!r)
         return 0;
@@ -447,6 +457,16 @@ static SIZE_T WINAPI VirtualQuery(const void *addr, struct mbi *info, SIZE_T len
     uint32_t a = (uint32_t)addr & ~4095u;
     memset(info, 0, sizeof(*info));
     info->base = a;
+    /* thread stacks live in kernel memory; programs find a stack's bottom as its allocation base */
+    struct w32_thread *t = w32->threads;
+    if (t && a >= 0xc0000000u)
+        do {
+            uint32_t lo = (uint32_t)t->stack, hi = lo + t->stack_size;
+            if (!t->done && a >= lo && a < hi) {
+                *info = (struct mbi){a, lo, PAGE_READWRITE, hi - a, MEM_COMMIT, PAGE_READWRITE, MEM_PRIVATE};
+                return sizeof(*info);
+            }
+        } while ((t = t->next) != w32->threads);
     struct vregion *r = region_at(a);
     if (r) {
         bool on = page_committed(r, a);

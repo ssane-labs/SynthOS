@@ -398,6 +398,8 @@ void w32_run_atexit(void)
 
 void w32_exit(uint32_t code)
 {
+    if (code && !w32->exiting)
+        w32_trace_dump();
     w32->exiting = true;
     w32->exit_code = code;
     if (w32->jump.active)
@@ -419,6 +421,8 @@ static const char *fault_name(int vector)
     }
 }
 
+static void where(struct w32_process *p, uint32_t a, char *out, size_t cap);
+
 static void on_fault(int vector, uint32_t eip, uint32_t address)
 {
     if (!w32 || !w32->jump.active)
@@ -429,14 +433,23 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
     klog("win32: fault %d in %s thread %u at %08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x",
          vector, w32->parent ? "child" : "main", w32->current ? w32->current->id : 0, eip, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
     uint32_t fp = r[6];
-    for (int i = 0; i < 12 && fp >= VMM_USER_START && (fp >= 0xc0000000u ? fp < 0xfff00000u : vmm_mapped(fp + 4)); i++) {
-        klog("win32:   called from %08x", ((uint32_t *)fp)[1]);
+    for (int i = 0; i < 16 && fp >= VMM_USER_START && (fp >= 0xc0000000u ? fp < 0xfff00000u : vmm_mapped(fp + 4)); i++) {
+        char at[96];
+        where(w32, ((uint32_t *)fp)[1], at, sizeof(at));
+        klog("win32:   called from %s", at);
         fp = ((uint32_t *)fp)[0];
     }
     char where[96] = "";
     for (struct w32_image *img = w32->images; img; img = img->next)
         if (!img->builtin && eip >= img->base && eip - img->base < img->size)
             ksnprintf(where, sizeof(where), " (%s+0x%x)", img->name, eip - img->base);
+    /* a jump to nowhere left no frame chain: the return addresses still on the stack tell where it came from */
+    for (uint32_t sp = r[7] - 16, i = 0; i < 24 && (sp >= 0xc0000000u ? sp < 0xfff00000u : vmm_mapped(sp)); i++, sp += 4) {
+        uint32_t v = *(uint32_t *)sp;
+        for (struct w32_image *img = w32->images; img; img = img->next)
+            if (!img->builtin && v >= img->base && v - img->base < img->size)
+                klog("win32:   stack %08x: %s+0x%x", sp, img->name, v - img->base);
+    }
     uint64_t pc = (uint64_t)arch_fault_rip_high() << 32 | eip, at = (uint64_t)arch_fault_address_high() << 32 | address;
     if (vector == 14)
         ksnprintf(w32->message, sizeof(w32->message), "crashed: %s at 0x%08llx%s (address 0x%08llx)", fault_name(vector),
@@ -998,8 +1011,12 @@ void w32_dump_status(void)
         if (t)
             do {
                 where(p, t->wait_caller, at, sizeof(at));
-                ksnprintf(line, sizeof(line), "  tid %u %s%s from %s\n", t->id,
-                          t->done ? "done" : t->waiting ? "waiting" : "running", t->suspended ? " suspended" : "", at);
+                char on[40] = "";
+                if (t->wait.on && !t->done)
+                    ksnprintf(on, sizeof(on), " on %p", (const void *)t->wait.on);
+                ksnprintf(line, sizeof(line), "  tid %u %s%s from %s%s\n", t->id,
+                          t->done ? "done" : t->waiting ? "waiting" : "running", t->suspended ? " suspended" : "", at,
+                          on);
                 dump_line(line);
                 if (!t->waiting && t->user_eip) {
                     where(p, t->user_eip, at, sizeof(at));
@@ -1007,7 +1024,7 @@ void w32_dump_status(void)
                     dump_line(line);
                 }
                 uint32_t trail[16];
-                int n = t->waiting ? call_trail(p, t, trail, 16) : 0;
+                int n = !t->done ? call_trail(p, t, trail, 16) : 0;
                 for (int k = 0; k < n; k++) {
                     where(p, trail[k], at, sizeof(at));
                     ksnprintf(line, sizeof(line), "      <- %s\n", at);

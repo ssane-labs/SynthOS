@@ -719,7 +719,7 @@ static int vswn(WCHAR *buf, size_t cap, const WCHAR *fmt, va_list ap, bool c99)
         buf[n] = 0;
     else if (c99 && cap)
         buf[cap - 1] = 0;
-    if ((size_t)n >= cap)
+    if ((size_t)n > cap || ((size_t)n == cap && c99))
         return -1;
     return n;
 }

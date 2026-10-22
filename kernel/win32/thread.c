@@ -59,6 +59,11 @@ bool w32_threads_start(void)
         w32->threads = w32->current = t;
         w32->live_threads = 1;
     }
+    /* a child's boot thread runs the program on the process stack too */
+    if (!t->stack) {
+        t->stack = w32->stack;
+        t->stack_size = w32->stack_size;
+    }
     t->id = 0x104;
     t->teb = w32->teb;
     t->proc = w32;
@@ -432,9 +437,9 @@ void w32_yield(void)
 static uint32_t user_caller(struct w32_thread *t)
 {
     const uint32_t *frame = __builtin_frame_address(0);
-    /* a 64-bit program's frames are no 32-bit chain: stop at anything that is not a mapped, higher frame */
-    for (int i = 0; i < 16 && (uint32_t)frame >= 0xc0000000u && vmm_mapped((uintptr_t)frame) &&
-                    vmm_mapped((uintptr_t)frame + 7); i++) {
+    /* a 64-bit program's frames are no 32-bit chain: stop at anything that leaves the thread's stack */
+    uint32_t lo = (uint32_t)t->stack, hi = lo + t->stack_size;
+    for (int i = 0; i < 16 && (uint32_t)frame >= lo && (uint32_t)frame + 8 <= hi; i++) {
         uint32_t ret = frame[1];
         if (ret >= VMM_USER_START && ret < 0xc0000000u) {
             t->wait_sp = (uint32_t)(frame + 2);
@@ -1633,8 +1638,10 @@ static BOOL WINAPI InitOnceComplete(uint32_t *once, DWORD flags, void *context)
 static BOOL WINAPI WaitOnAddress(volatile void *addr, const void *compare, SIZE_T size, DWORD ms)
 {
     uint64_t deadline = ms == INFINITE ? 0 : hal_ticks_ms() + ms;
+    w32->current->wait.on = addr;
     while (!memcmp((const void *)addr, compare, size)) {
         if (ms == 0 || (ms != INFINITE && hal_ticks_ms() >= deadline)) {
+            w32->current->wait.on = NULL;
             w32_set_error(ERROR_TIMEOUT);
             return FALSE;
         }
@@ -1643,6 +1650,7 @@ static BOOL WINAPI WaitOnAddress(volatile void *addr, const void *compare, SIZE_
         else
             w32_block();
     }
+    w32->current->wait.on = NULL;
     return TRUE;
 }
 

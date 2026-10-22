@@ -23,6 +23,50 @@ static void CALLBACK on_wait(void *ctx, BOOLEAN timed_out)
     InterlockedIncrement(timed_out ? &wait_timeouts : &wait_hits);
 }
 
+/* What Firefox needs: Microsoft's _snwprintf when the text exactly fills the buffer, CPU sets, a view only at the
+   address asked for, object type names and the token's owner */
+static void gecko_test(void)
+{
+    wchar_t buf[4];
+    int n = _snwprintf(buf, 4, L"%X", 0xabcd);
+    int over = _snwprintf(buf, 4, L"%X", 0xabcde);
+    printf("snwprintf exact=%d over=%d\n", n, over);
+
+    typedef BOOL(WINAPI * cpuset_fn)(void *, ULONG, ULONG *, HANDLE, ULONG);
+    cpuset_fn cpusets = (cpuset_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetSystemCpuSetInformation");
+    ULONG len = 0xdead;
+    unsigned char sets[64];
+    BOOL first = cpusets(NULL, 0, &len, NULL, 0);
+    BOOL got = cpusets(sets, sizeof(sets), &len, NULL, 0);
+    printf("cpusets len=%lu first=%d got=%d size=%u\n", len, first, got, sets[0]);
+
+    HANDLE sec = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 65536, NULL);
+    void *any = MapViewOfFile(sec, FILE_MAP_WRITE, 0, 0, 0);
+    void *same = MapViewOfFileEx(sec, FILE_MAP_WRITE, 0, 0, 0, any);
+    DWORD err = GetLastError();
+    UnmapViewOfFile(any);
+    void *again = MapViewOfFileEx(sec, FILE_MAP_WRITE, 0, 0, 0, any);
+    printf("view taken=%s err=%lu free=%s\n", same ? "mapped" : "refused", err, again == any ? "same" : "other");
+
+    typedef LONG(WINAPI * query_fn)(HANDLE, int, void *, ULONG, ULONG *);
+    query_fn query = (query_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryObject");
+    struct {
+        USHORT length, max;
+        wchar_t *text;
+        unsigned char rest[256];
+    } info;
+    HANDLE ev = CreateEventA(NULL, FALSE, FALSE, NULL);
+    LONG st = query(ev, 2, &info, sizeof(info), NULL);
+    printf("object status=%ld type=%.*ls\n", st, info.length / 2, info.text);
+
+    HANDLE token;
+    DWORD need = 0;
+    unsigned char owner[128];
+    OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token);
+    BOOL ok = GetTokenInformation(token, TokenOwner, owner, sizeof(owner), &need);
+    printf("owner ok=%d valid=%d\n", ok, ok && IsValidSid(*(PSID *)owner));
+}
+
 static void compat(void)
 {
     LOGFONTW lf = {0};
@@ -566,6 +610,8 @@ int main(int argc, char **argv)
         printf("system returned %d\n", rc);
     } else if (!strcmp(mode, "compat")) {
         compat();
+    } else if (!strcmp(mode, "gecko")) {
+        gecko_test();
     } else if (!strcmp(mode, "shortcut")) {
         shortcut_test();
     } else if (!strcmp(mode, "chain")) {

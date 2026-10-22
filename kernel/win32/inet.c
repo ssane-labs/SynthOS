@@ -472,10 +472,44 @@ static BOOL WINAPI InternetSetOptionA(HANDLE h, DWORD option, void *buf, DWORD l
     return TRUE;
 }
 
+struct conn_option {
+    DWORD option;
+    union {
+        DWORD value;
+        void *text;
+        uint64_t time;
+    };
+};
+
+struct conn_option_list {
+    DWORD size;
+    void *connection;
+    DWORD count, error;
+    struct conn_option *options;
+};
+
+/* INTERNET_OPTION_PER_CONNECTION_OPTION: a direct connection, no proxy, no autoconfiguration */
+static BOOL query_connection(struct conn_option_list *list)
+{
+    if (!list || list->size < sizeof(*list) || (list->count && !list->options)) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    for (DWORD i = 0; i < list->count; i++) {
+        struct conn_option *o = &list->options[i];
+        o->time = 0;
+        if (o->option == 1 || o->option == 10)
+            o->value = 1;
+    }
+    list->error = 0;
+    return TRUE;
+}
+
 static BOOL WINAPI InternetQueryOptionA(HANDLE h, DWORD option, void *buf, DWORD *len)
 {
     UNUSED(h);
-    UNUSED(option);
+    if (option == 75)
+        return query_connection(buf);
     if (buf && len && *len >= 4) {
         memset(buf, 0, 4);
         *len = 4;
