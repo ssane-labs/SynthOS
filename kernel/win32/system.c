@@ -12,111 +12,6 @@
 #define FAKE_KEY ((HANDLE)(uintptr_t)0x5e600000)
 #define CSIDL_FLAG_CREATE 0x8000
 
-static LONG WINAPI RegOpenKeyExA(HANDLE key, LPCSTR sub, DWORD opts, DWORD sam, HANDLE *out)
-{
-    UNUSED(key);
-    UNUSED(sub);
-    UNUSED(opts);
-    UNUSED(sam);
-    if (out)
-        *out = NULL;
-    return ERROR_FILE_NOT_FOUND;
-}
-
-static LONG WINAPI RegOpenKeyA(HANDLE key, LPCSTR sub, HANDLE *out)
-{
-    return RegOpenKeyExA(key, sub, 0, 0, out);
-}
-
-static LONG WINAPI RegCreateKeyExA(HANDLE key, LPCSTR sub, DWORD reserved, LPSTR cls, DWORD opts, DWORD sam,
-                                   void *sa, HANDLE *out, DWORD *disposition)
-{
-    UNUSED(key);
-    UNUSED(sub);
-    UNUSED(reserved);
-    UNUSED(cls);
-    UNUSED(opts);
-    UNUSED(sam);
-    UNUSED(sa);
-    *out = FAKE_KEY;
-    if (disposition)
-        *disposition = 1;
-    return ERROR_SUCCESS;
-}
-
-static LONG WINAPI RegCreateKeyA(HANDLE key, LPCSTR sub, HANDLE *out)
-{
-    return RegCreateKeyExA(key, sub, 0, NULL, 0, 0, NULL, out, NULL);
-}
-
-static LONG WINAPI RegQueryValueExA(HANDLE key, LPCSTR name, DWORD *reserved, DWORD *type, BYTE *data, DWORD *size)
-{
-    UNUSED(key);
-    UNUSED(name);
-    UNUSED(reserved);
-    UNUSED(type);
-    UNUSED(data);
-    UNUSED(size);
-    return ERROR_FILE_NOT_FOUND;
-}
-
-static LONG WINAPI RegGetValueA(HANDLE key, LPCSTR sub, LPCSTR value, DWORD flags, DWORD *type, void *data,
-                                DWORD *size)
-{
-    UNUSED(key);
-    UNUSED(sub);
-    UNUSED(value);
-    UNUSED(flags);
-    UNUSED(type);
-    UNUSED(data);
-    UNUSED(size);
-    return ERROR_FILE_NOT_FOUND;
-}
-
-static LONG WINAPI RegEnumKeyExA(HANDLE key, DWORD index, LPSTR name, DWORD *len, DWORD *reserved, LPSTR cls,
-                                 DWORD *cls_len, void *time)
-{
-    UNUSED(key);
-    UNUSED(index);
-    UNUSED(name);
-    UNUSED(len);
-    UNUSED(reserved);
-    UNUSED(cls);
-    UNUSED(cls_len);
-    UNUSED(time);
-    return ERROR_NO_MORE_ITEMS;
-}
-
-static LONG WINAPI RegEnumKeyW(HANDLE key, DWORD index, LPWSTR name, DWORD len)
-{
-    UNUSED(key);
-    UNUSED(index);
-    UNUSED(name);
-    UNUSED(len);
-    return ERROR_NO_MORE_ITEMS;
-}
-
-static LONG WINAPI RegQueryInfoKeyA(HANDLE key, LPSTR cls, DWORD *cls_len, DWORD *reserved, DWORD *subkeys,
-                                    DWORD *max_sub, DWORD *max_cls, DWORD *values, DWORD *max_name, DWORD *max_value,
-                                    DWORD *sec, void *time)
-{
-    UNUSED(key);
-    UNUSED(cls);
-    UNUSED(cls_len);
-    UNUSED(reserved);
-    UNUSED(max_sub);
-    UNUSED(max_cls);
-    UNUSED(max_name);
-    UNUSED(max_value);
-    UNUSED(sec);
-    UNUSED(time);
-    if (subkeys)
-        *subkeys = 0;
-    if (values)
-        *values = 0;
-    return ERROR_SUCCESS;
-}
-
 static BOOL WINAPI GetUserNameA(LPSTR buf, DWORD *size)
 {
     const char *user = w32_getenv("USERNAME");
@@ -172,20 +67,9 @@ static BOOL WINAPI CryptAcquireContextA(HANDLE *out, LPCSTR container, LPCSTR pr
 }
 
 static const struct w32_export advapi32_exports[] = {
-    W32_FN(RegOpenKeyExA), W32_AS("RegOpenKeyExW", RegOpenKeyExA), W32_FN(RegOpenKeyA),
-    W32_AS("RegOpenKeyW", RegOpenKeyA), W32_FN(RegCreateKeyExA), W32_AS("RegCreateKeyExW", RegCreateKeyExA),
-    W32_FN(RegCreateKeyA), W32_AS("RegCreateKeyW", RegCreateKeyA), W32_FN(RegQueryValueExA),
-    W32_AS("RegQueryValueExW", RegQueryValueExA), W32_FN(RegGetValueA), W32_AS("RegGetValueW", RegGetValueA),
-    W32_AS("RegSetValueExA", w32_zero6), W32_AS("RegSetValueExW", w32_zero6), W32_AS("RegCloseKey", w32_zero1),
-    W32_AS("RegFlushKey", w32_zero1), W32_AS("RegDeleteKeyA", w32_zero2), W32_AS("RegDeleteKeyW", w32_zero2),
-    W32_AS("RegDeleteValueA", w32_zero2), W32_AS("RegDeleteValueW", w32_zero2), W32_FN(RegEnumKeyExA),
-    W32_AS("RegEnumKeyA", RegEnumKeyW), W32_FN(RegEnumKeyW),
-    W32_AS("RegEnumKeyExW", RegEnumKeyExA), W32_AS("RegEnumValueA", RegEnumKeyExA),
-    W32_AS("RegEnumValueW", RegEnumKeyExA), W32_FN(RegQueryInfoKeyA), W32_AS("RegQueryInfoKeyW", RegQueryInfoKeyA),
     W32_FN(GetUserNameA), W32_FN(GetUserNameW), W32_AS("SystemFunction036", RtlGenRandom),
     W32_FN(CryptAcquireContextA), W32_AS("CryptAcquireContextW", CryptAcquireContextA), W32_FN(CryptGenRandom),
     W32_AS("CryptReleaseContext", w32_one2),
-
     W32_AS("LookupPrivilegeValueA", w32_zero3), W32_AS("LookupPrivilegeValueW", w32_zero3),
     W32_AS("AdjustTokenPrivileges", w32_zero6), W32_AS("RegisterEventSourceA", w32_zero2),
     W32_AS("RegisterEventSourceW", w32_zero2), W32_AS("DeregisterEventSource", w32_one1),

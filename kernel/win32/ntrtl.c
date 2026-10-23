@@ -261,8 +261,27 @@ static const char *type_name(HANDLE h)
 }
 
 /* ObjectTypeInformation names the kind of object; names of objects themselves are not kept */
+/* ObjectBasicInformation: what the handle may do (programs check that a file they pass on is read-only) */
+static DWORD basic_info(HANDLE h, uint32_t *buf, ULONG len, ULONG *ret)
+{
+    if (ret)
+        *ret = 56;
+    if (!buf || len < 56)
+        return 0xc0000004u;
+    struct w32_object *o = h == (HANDLE)(intptr_t)-1 || h == (HANDLE)(intptr_t)-2 ? NULL : w32_handle_get(h);
+    if (!o && h != (HANDLE)(intptr_t)-1 && h != (HANDLE)(intptr_t)-2)
+        return 0xc0000008u;
+    memset(buf, 0, 56);
+    buf[1] = o && o->access ? o->access : o && (o->type == WH_FILE || o->type == WH_PIPE) ? 0x12019fu : 0x1f0fffu;
+    buf[2] = 1;
+    buf[3] = 1;
+    return 0;
+}
+
 static DWORD WINAPI NtQueryObject(HANDLE h, ULONG cls, void *buf, ULONG len, ULONG *ret)
 {
+    if (cls == 0)
+        return basic_info(h, buf, len, ret);
     if (cls != 2)
         return 0xc00000bbu;
     const char *name = type_name(h);

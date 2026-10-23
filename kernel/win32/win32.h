@@ -164,6 +164,7 @@ struct w32_object {
     struct w32_child *child;
     uint32_t name_serial;
     struct w32_sync *sync;
+    struct reg_key *key;
 };
 
 /* the state of an event, mutex or semaphore once a handle to it is in more than one process */
@@ -535,6 +536,14 @@ const char *w32_builtin_ordinal_name(const char *module, uint32_t ordinal);
 
 
 enum w32_engine w32_browser_engine(const char *path);
+
+struct reg_key;
+void w32_reg_key_ref(struct reg_key *k);
+void w32_reg_key_unref(struct reg_key *k);
+void w32_registry_flush(void);
+bool w32_reg_read(const char *path, const char *name, char *out, size_t cap);
+bool w32_reg_write(const char *path, const char *name, const char *text);
+int w32_reg_subkeys(const char *path, void (*fn)(const char *name, void *ctx), void *ctx);
 const char *w32_engine_environment(enum w32_engine e);
 bool w64_setup(void);
 void w64_set_image(uint32_t base);

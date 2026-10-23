@@ -1395,11 +1395,6 @@ static LONG WINAPI reg_not_found3(uint32_t a, uint32_t b, uint32_t c)
     return reg_not_found5(a, b, c, 0, 0);
 }
 
-static LONG WINAPI reg_not_found4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
-{
-    return reg_not_found5(a, b, c, d, 0);
-}
-
 static BOOL WINAPI report_event(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g,
                                 uint32_t h, uint32_t i)
 {
@@ -1419,7 +1414,6 @@ static const struct w32_export advapi_extra_exports[] = {
     W32_FN(ConvertStringSecurityDescriptorToSecurityDescriptorW),
     W32_AS("ConvertStringSecurityDescriptorToSecurityDescriptorA", ConvertStringSecurityDescriptorToSecurityDescriptorW),
     W32_AS("RegConnectRegistryW", reg_not_found3),
-    W32_AS("RegDeleteKeyExW", reg_not_found4),
     W32_AS("RegLoadKeyW", reg_not_found3),
     W32_AS("RegSaveKeyW", reg_not_found3),
     W32_AS("ReportEventW", report_event),

@@ -54,58 +54,6 @@ static DWORD WINAPI NtClose(HANDLE h)
     return w32_handle_close(h) ? STATUS_SUCCESS : STATUS_INVALID_HANDLE;
 }
 
-static DWORD WINAPI NtOpenKeyEx(HANDLE *out, DWORD access, void *attributes, DWORD options)
-{
-    UNUSED(access);
-    UNUSED(attributes);
-    UNUSED(options);
-    if (out)
-        *out = NULL;
-    return STATUS_OBJECT_NAME_NOT_FOUND;
-}
-
-static DWORD WINAPI NtOpenKey(HANDLE *out, DWORD access, void *attributes)
-{
-    return NtOpenKeyEx(out, access, attributes, 0);
-}
-
-static DWORD WINAPI NtCreateKey(HANDLE *out, DWORD access, void *attributes, DWORD index, void *cls, DWORD options,
-                                DWORD *disposition)
-{
-    UNUSED(access);
-    UNUSED(attributes);
-    UNUSED(index);
-    UNUSED(cls);
-    UNUSED(options);
-    *out = w32_handle_new(WH_KEY);
-    if (disposition)
-        *disposition = 1;
-    return *out ? STATUS_SUCCESS : STATUS_NO_MEMORY;
-}
-
-static DWORD WINAPI NtQueryValueKey(HANDLE key, void *name, int cls, void *info, DWORD len, DWORD *result)
-{
-    UNUSED(key);
-    UNUSED(name);
-    UNUSED(cls);
-    UNUSED(info);
-    UNUSED(len);
-    if (result)
-        *result = 0;
-    return STATUS_OBJECT_NAME_NOT_FOUND;
-}
-
-static DWORD WINAPI NtSetValueKey(HANDLE key, void *name, DWORD index, DWORD type, const void *data, DWORD size)
-{
-    UNUSED(key);
-    UNUSED(name);
-    UNUSED(index);
-    UNUSED(type);
-    UNUSED(data);
-    UNUSED(size);
-    return STATUS_SUCCESS;
-}
-
 static DWORD WINAPI NtQueryInformationProcess(HANDLE process, int cls, void *info, DWORD len, DWORD *result)
 {
     struct w32_object *o = process == W32_PSEUDO_PROCESS ? NULL : w32_handle_get(process);
@@ -289,12 +237,6 @@ static const struct w32_export ntapi_ntdll[] = {
     W32_FN(RtlFormatCurrentUserKeyPath),
     W32_FN(RtlGetLastNtStatus),
     W32_FN(NtClose),
-    W32_FN(NtOpenKeyEx),
-    W32_FN(NtOpenKey),
-    W32_FN(NtCreateKey),
-    W32_FN(NtQueryValueKey),
-    W32_FN(NtSetValueKey),
-    W32_AS("NtDeleteKey", w32_zero1),
     W32_FN(NtQueryInformationProcess),
     W32_AS("RtlCaptureStackBackTrace", zero_frames),
 };

@@ -58,6 +58,13 @@ static void gecko_test(void)
     HANDLE ev = CreateEventA(NULL, FALSE, FALSE, NULL);
     LONG st = query(ev, 2, &info, sizeof(info), NULL);
     printf("object status=%ld type=%.*ls\n", st, info.length / 2, info.text);
+    char self[MAX_PATH];
+    GetModuleFileNameA(NULL, self, sizeof(self));
+    HANDLE ro = CreateFileA(self, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ULONG basic[14] = {0};
+    st = query(ro, 0, basic, sizeof(basic), NULL);
+    printf("object basic=%ld readonly=%s\n", st, basic[1] & 2 ? "no" : "yes");
+    CloseHandle(ro);
 
     HANDLE token;
     DWORD need = 0;
@@ -71,6 +78,52 @@ static void gecko_test(void)
     HMODULE dll = LoadLibraryA("greet.dll");
     printf("dll over reserved=%s\n",
            !arena || !dll ? "skipped" : (char *)dll >= (char *)arena && (char *)dll < (char *)arena + 0x100000 ? "yes" : "no");
+}
+
+/* the registry keeps what programs write: keys, typed values, ANSI and wide views, classes, deletion */
+static void registry_test(void)
+{
+    HKEY k, sub;
+    DWORD disp = 0, n = 42, type = 0, size;
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\SynthTest");
+    LONG r = RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\SynthTest\\Sub", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sub,
+                             &disp);
+    RegSetValueExW(sub, L"Text", 0, REG_SZ, (const BYTE *)L"wide", 10);
+    RegSetValueExA(sub, "Num", 0, REG_DWORD, (const BYTE *)&n, 4);
+    RegSetValueExW(sub, L"Path", 0, REG_EXPAND_SZ, (const BYTE *)L"%SystemRoot%\\x", 30);
+    printf("reg create=%ld disp=%lu\n", r, disp);
+    char text[32];
+    size = sizeof(text);
+    r = RegQueryValueExA(sub, "Text", NULL, &type, (BYTE *)text, &size);
+    printf("reg ansi=%s size=%lu type=%lu\n", r ? "?" : text, size, type);
+    DWORD num = 0;
+    size = 4;
+    r = RegGetValueW(HKEY_CURRENT_USER, L"Software\\SynthTest\\Sub", L"Num", RRF_RT_REG_DWORD, &type, &num, &size);
+    WCHAR path[64];
+    size = sizeof(path);
+    LONG r2 = RegGetValueW(sub, NULL, L"Path", RRF_RT_REG_SZ, NULL, path, &size);
+    printf("reg dword=%lu expand=%ls\n", r ? 0 : num, r2 ? L"?" : path);
+    RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\SynthTest", 0, KEY_READ, &k);
+    WCHAR name[32];
+    DWORD len = 32, values = 0, subkeys = 0;
+    r = RegEnumKeyExW(k, 0, name, &len, NULL, NULL, NULL, NULL);
+    RegQueryInfoKeyW(sub, NULL, NULL, NULL, &subkeys, NULL, NULL, &values, NULL, NULL, NULL, NULL);
+    printf("reg enum=%ls more=%ld values=%lu\n", r ? L"?" : name, RegEnumKeyExW(k, 1, name, &len, 0, 0, 0, 0), values);
+    HKEY cls;
+    RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\.synthtest", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &cls, NULL);
+    RegSetValueExW(cls, NULL, 0, REG_SZ, (const BYTE *)L"SynthTest.File", 30);
+    RegCloseKey(cls);
+    char prog[32];
+    LONG plen = sizeof(prog);
+    r = RegQueryValueA(HKEY_CLASSES_ROOT, ".synthtest", prog, &plen);
+    printf("reg classes=%s\n", r ? "?" : prog);
+    RegCloseKey(sub);
+    RegCloseKey(k);
+    LONG plain = RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\SynthTest");
+    LONG tree = RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\SynthTest");
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\.synthtest");
+    printf("reg delete=%ld tree=%ld gone=%ld\n", plain, tree,
+           RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\SynthTest", 0, KEY_READ, &k));
 }
 
 static void compat(void)
@@ -618,6 +671,8 @@ int main(int argc, char **argv)
         compat();
     } else if (!strcmp(mode, "gecko")) {
         gecko_test();
+    } else if (!strcmp(mode, "registry")) {
+        registry_test();
     } else if (!strcmp(mode, "shortcut")) {
         shortcut_test();
     } else if (!strcmp(mode, "chain")) {

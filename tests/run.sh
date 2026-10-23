@@ -248,6 +248,22 @@ wintest compat | grep lstrcmpW
 lstrcmpW null=1,1,1
 wintest compat | grep section
 section read-only=ok write-dup=denied write-view=denied
+wintest registry | grep create
+reg create=0 disp=1
+wintest registry | grep ansi
+reg ansi=wide size=5 type=1
+wintest registry | grep dword
+reg dword=42 expand=C:\Windows\x
+wintest registry | grep enum
+reg enum=Sub more=259 values=3
+wintest registry | grep classes
+reg classes=SynthTest.File
+wintest registry | grep delete
+reg delete=5 tree=0 gone=2
+reg add HKCU/Software/Test /v Count /t REG_DWORD /d 42 > /dev/null; reg query HKCU/Software/Test /v Count
+    Count    REG_DWORD    0x2a
+reg query 'HKLM/SOFTWARE/Microsoft/Windows NT/CurrentVersion' /v CurrentBuild
+    CurrentBuild    REG_SZ    19045
 wintest gecko | grep snwprintf
 snwprintf exact=4 over=-1
 wintest gecko | grep cpusets
@@ -256,6 +272,8 @@ wintest gecko | grep view
 view taken=refused err=487 free=same
 wintest gecko | grep object
 object status=0 type=Event
+wintest gecko | grep basic
+object basic=0 readonly=yes
 wintest gecko | grep owner
 owner ok=1 valid=1
 wintest gecko | grep reserved

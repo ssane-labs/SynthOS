@@ -1291,10 +1291,29 @@ static uint64_t h_user_key_path(uint64_t *a, const uint64_t *f, void *t)
     return status;
 }
 
-static uint64_t h_out_handle(uint64_t *a, const uint64_t *f, void *t)
+/* NtOpenKey/NtCreateKey: OBJECT_ATTRIBUTES and its UNICODE_STRING have 64-bit layouts; the 32-bit functions get
+   copies (the name stays where the program has it) */
+static uint64_t h_nt_key(uint64_t *a, const uint64_t *f, void *t)
 {
+    const uint8_t *attr = a[2] ? P(a[2]) : NULL;
+    struct {
+        uint16_t length, max;
+        uint32_t buffer;
+    } name = {0, 0, 0};
+    uint32_t attr32[6] = {24, 0, 0, 0, 0, 0};
+    if (attr) {
+        attr32[1] = narrow(rd64(attr + 8));
+        const uint8_t *us = rd64(attr + 16) ? P(rd64(attr + 16)) : NULL;
+        if (us) {
+            name.length = (uint16_t)(us[0] | us[1] << 8);
+            name.max = (uint16_t)(us[2] | us[3] << 8);
+            name.buffer = U(P(rd64(us + 8)));
+            attr32[2] = U(&name);
+        }
+        attr32[3] = (uint32_t)rd64(attr + 24);
+    }
     uint32_t h = 0;
-    uint32_t r = (uint32_t)T32(t, a[0] ? U(&h) : 0, narrow(a[1]), narrow(a[2]), narrow(a[3]), narrow(a[4]),
+    uint32_t r = (uint32_t)T32(t, a[0] ? U(&h) : 0, narrow(a[1]), attr ? U(attr32) : 0, narrow(a[3]), narrow(a[4]),
                                narrow(a[5]), narrow(a[6]));
     out64(a[0], h);
     return r;
@@ -1309,9 +1328,9 @@ static const struct w64_export ntdll_exports[] = {
     W64_FN("RtlInitUnicodeString", h_init_unicode),
     W64_FN("RtlFreeUnicodeString", h_free_unicode),
     W64_FN("RtlFormatCurrentUserKeyPath", h_user_key_path),
-    W64_FN("NtOpenKey", h_out_handle),
-    W64_FN("NtOpenKeyEx", h_out_handle),
-    W64_FN("NtCreateKey", h_out_handle),
+    W64_FN("NtOpenKey", h_nt_key),
+    W64_FN("NtOpenKeyEx", h_nt_key),
+    W64_FN("NtCreateKey", h_nt_key),
     W64_FN("RtlAddFunctionTable", h_one),
     W64_FN("RtlDeleteFunctionTable", h_one),
     W64_NATIVE("memcpy", w64_memcpy),

@@ -441,8 +441,6 @@ static const struct w32_export probe_advapi32[] = {
     W32_AS("OpenEventLogW", OpenEventLogA),
     W32_AS("CloseEventLog", w32_one1),
     W32_FN(ReadEventLogW),
-    W32_AS("RegDeleteTreeA", w32_zero2),
-    W32_AS("RegDeleteTreeW", w32_zero2),
 };
 
 static const struct w32_export probe_winmm[] = {

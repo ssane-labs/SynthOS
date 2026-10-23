@@ -225,18 +225,6 @@ static void *WINAPI SHCreateMemStream(const void *data, UINT size)
     return NULL;
 }
 
-static DWORD WINAPI SHGetValueW(HANDLE key, const WCHAR *sub, const WCHAR *value, DWORD *type, void *data,
-                                DWORD *size)
-{
-    UNUSED(key);
-    UNUSED(sub);
-    UNUSED(value);
-    UNUSED(type);
-    UNUSED(data);
-    UNUSED(size);
-    return ERROR_FILE_NOT_FOUND;
-}
-
 static uint32_t WINAPI UrlCanonicalizeW(const WCHAR *url, WCHAR *out, DWORD *len, DWORD flags)
 {
     UNUSED(flags);
@@ -272,8 +260,6 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(IsOS),
     W32_FN(QISearch),
     W32_FN(SHCreateMemStream),
-    W32_FN(SHGetValueW),
-    W32_AS("SHSetValueW", w32_zero6),
     W32_AS("SHDeleteKeyW", w32_zero2),
 };
 

@@ -172,6 +172,8 @@ void w32_object_release(struct w32_object *o)
     if (o->sync && --o->sync->refs == 0)
         kfree(o->sync);
     o->sync = NULL;
+    w32_reg_key_unref(o->key);
+    o->key = NULL;
     o->due = 0;
     o->type = WH_FREE;
     o->file = NULL;
@@ -206,6 +208,7 @@ bool w32_object_clone(struct w32_object *dst, struct w32_object *src)
         src->sync->refs++;
     *dst = *src;
     dst->refs = 1;
+    w32_reg_key_ref(dst->key);
     dst->name_serial = 0;
     dst->delete_on_close = false;
     dst->path = src->path ? kstrdup(src->path) : NULL;
@@ -803,6 +806,7 @@ static void cleanup(void)
     for (int i = 0; i < W32_MAX_HANDLES; i++)
         if (w32->handles[i].type != WH_FREE)
             w32_handle_close((HANDLE)(uintptr_t)(HANDLE_BASE + i * 4));
+    w32_registry_flush();
     w32_vm_cleanup();
     w32_unload_all();
     vmm_release(w32->arena_base, w32->arena_size);

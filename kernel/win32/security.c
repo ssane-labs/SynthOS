@@ -880,7 +880,6 @@ static const struct w32_export security_exports[] = {
     W32_AS("CryptSetHashParam", w32_fail4),
     W32_AS("CryptSignHashW", w32_fail6),
     W32_AS("RegDisablePredefinedCache", w32_zero0),
-    W32_AS("RegNotifyChangeKeyValue", w32_zero5),
     W32_FN(EventRegister),
     W32_AS("EventUnregister", w32_zero2),
     W32_AS("EventSetInformation", w32_zero5),

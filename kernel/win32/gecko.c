@@ -55,55 +55,7 @@ STUB(CredReadA, 4, 0, 1168)
 STUB(CredWriteA, 2, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(DestroyPrivateObjectSecurity, 1, 1, 0)
 STUB(DuplicateToken, 3, 0, ERROR_CALL_NOT_IMPLEMENTED)
-STUB(RegRenameKey, 3, ERROR_CALL_NOT_IMPLEMENTED, 0)
 STUB(SetKernelObjectSecurity, 3, 1, 0)
-
-static LONG WINAPI RegSetKeyValueW(HANDLE key, const WCHAR *sub, const WCHAR *value, DWORD type, const void *data,
-                                   DWORD size)
-{
-    LONG(WINAPI * create)(HANDLE, const WCHAR *, DWORD, WCHAR *, DWORD, DWORD, void *, HANDLE *, DWORD *) =
-        fn("advapi32.dll", "RegCreateKeyExW");
-    LONG(WINAPI * set)(HANDLE, const WCHAR *, DWORD, DWORD, const void *, DWORD) = fn("advapi32.dll", "RegSetValueExW");
-    LONG(WINAPI * close)(HANDLE) = fn("advapi32.dll", "RegCloseKey");
-    HANDLE k = key;
-    if (sub && *sub) {
-        LONG err = create(key, sub, 0, NULL, 0, 0xf003f, NULL, &k, NULL);
-        if (err)
-            return err;
-    }
-    LONG err = set(k, value, 0, type, data, size);
-    if (k != key)
-        close(k);
-    return err;
-}
-
-static LONG WINAPI RegDeleteKeyValueW(HANDLE key, const WCHAR *sub, const WCHAR *value)
-{
-    LONG(WINAPI * open)(HANDLE, const WCHAR *, DWORD, DWORD, HANDLE *) = fn("advapi32.dll", "RegOpenKeyExW");
-    LONG(WINAPI * del)(HANDLE, const WCHAR *) = fn("advapi32.dll", "RegDeleteValueW");
-    LONG(WINAPI * close)(HANDLE) = fn("advapi32.dll", "RegCloseKey");
-    HANDLE k = key;
-    if (sub && *sub) {
-        LONG err = open(key, sub, 0, 0xf003f, &k);
-        if (err)
-            return err;
-    }
-    LONG err = del(k, value);
-    if (k != key)
-        close(k);
-    return err;
-}
-
-static LONG WINAPI RegCreateKeyTransactedW(HANDLE key, const WCHAR *sub, DWORD reserved, WCHAR *cls, DWORD options,
-                                           DWORD access, void *sa, HANDLE *out, DWORD *disposition, HANDLE txn,
-                                           void *param)
-{
-    UNUSED(txn);
-    UNUSED(param);
-    LONG(WINAPI * create)(HANDLE, const WCHAR *, DWORD, WCHAR *, DWORD, DWORD, void *, HANDLE *, DWORD *) =
-        fn("advapi32.dll", "RegCreateKeyExW");
-    return create(key, sub, reserved, cls, options, access, sa, out, disposition);
-}
 
 /* avrt, ktmw32, cfgmgr32 */
 STUB(AvSetMmThreadCharacteristicsA, 2, 1, 0)
@@ -423,9 +375,8 @@ static BOOL WINAPI InternetGetConnectedStateExW(DWORD *flags, WCHAR *name, DWORD
 
 static const struct w32_export gecko_advapi32[] = {
     W32_FN(CreatePrivateObjectSecurityEx), W32_FN(CredDeleteA), W32_FN(CredFree), W32_FN(CredReadA),
-    W32_FN(CredWriteA), W32_FN(DestroyPrivateObjectSecurity), W32_FN(DuplicateToken), W32_FN(RegRenameKey),
-    W32_FN(SetKernelObjectSecurity), W32_FN(RegSetKeyValueW), W32_FN(RegDeleteKeyValueW),
-    W32_FN(RegCreateKeyTransactedW),
+    W32_FN(CredWriteA), W32_FN(DestroyPrivateObjectSecurity), W32_FN(DuplicateToken),
+    W32_FN(SetKernelObjectSecurity),
 };
 static const struct w32_export gecko_avrt[] = {W32_FN(AvSetMmThreadCharacteristicsA),
                                                W32_FN(AvRevertMmThreadCharacteristics)};
