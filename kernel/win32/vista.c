@@ -813,6 +813,63 @@ static BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags)
     return TRUE;
 }
 
+/* Windows 10 22H2 (10.0.19045), as GetVersionEx says: programs that ask "Windows 11 or later?" learn it is not */
+static bool version_test(uint32_t have, uint32_t want, unsigned cond)
+{
+    switch (cond) {
+    case 1: return have == want;
+    case 2: return have > want;
+    case 3: return have >= want;
+    case 4: return have < want;
+    case 5: return have <= want;
+    case 6: return (have & want) == want;
+    case 7: return (have & want) != 0;
+    default: return true;
+    }
+}
+
+BOOL w32_verify_version(uint32_t major, uint32_t minor, uint32_t build, uint32_t platform, uint32_t sp_major,
+                           uint32_t sp_minor, uint32_t product, DWORD mask, uint64_t cond)
+{
+    static const uint32_t have[] = {0, 10, 19045, 2, 0, 0};
+    const uint32_t want[] = {minor, major, build, platform, sp_minor, sp_major};
+    /* major, minor and the service pack compare as one version: the first that differs decides */
+    static const int order[] = {1, 0, 5, 4};
+    bool next = true;
+    for (int i = 0; i < 4 && next; i++) {
+        int t = order[i];
+        if (!(mask & (1u << t)))
+            continue;
+        unsigned c = (unsigned)(cond >> (t * 3)) & 7;
+        if (!version_test(have[t], want[t], c))
+            goto old;
+        next = have[t] == want[t] && c >= 1 && c <= 5;
+    }
+    for (int t = 2; t <= 3; t++)
+        if ((mask & (1u << t)) && !version_test(have[t], want[t], (unsigned)(cond >> (t * 3)) & 7))
+            goto old;
+    if ((mask & 0x80) && !version_test(1, product, (unsigned)(cond >> 21) & 7))
+        goto old;
+    return TRUE;
+old:
+    w32_set_error(1150);
+    return FALSE;
+}
+
+static BOOL WINAPI VerifyVersionInfoW(const uint8_t *info, DWORD mask, uint64_t cond)
+{
+    const uint32_t *v = (const uint32_t *)info;
+    return w32_verify_version(v[1], v[2], v[3], v[4], *(const uint16_t *)(info + 276), *(const uint16_t *)(info + 278),
+                          info[282], mask, cond);
+}
+
+static BOOL WINAPI VerifyVersionInfoA(const uint8_t *info, DWORD mask, uint64_t cond)
+{
+    const uint32_t *v = (const uint32_t *)info;
+    return w32_verify_version(v[1], v[2], v[3], v[4], *(const uint16_t *)(info + 148), *(const uint16_t *)(info + 150),
+                          info[154], mask, cond);
+}
+
 static const struct w32_export vista_exports[] = {
     W32_FN(PathCchSkipRoot),
     W32_FN(PathCchCombineEx),
@@ -837,8 +894,8 @@ static const struct w32_export vista_exports[] = {
     W32_FN(GetHandleInformation),
     W32_FN(SetHandleInformation),
     W32_FN(VerSetConditionMask),
-    W32_AS("VerifyVersionInfoA", w32_one4),
-    W32_AS("VerifyVersionInfoW", w32_one4),
+    W32_FN(VerifyVersionInfoA),
+    W32_FN(VerifyVersionInfoW),
     W32_FN(GetComputerNameExW),
     W32_FN(GetLogicalDriveStringsW),
     W32_FN(GetVolumePathNameW),

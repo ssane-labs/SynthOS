@@ -62,6 +62,11 @@ W32CXX   ?= $(if $(W32CC),$(W32CC:%gcc=%g++))
 W32_SRC  := $(wildcard programs/win32/*.c programs/win32/*.cpp)
 W32_DLL  := $(patsubst programs/win32/dll/%.c,$(BUILD)/rootfs/apps/%.dll,$(wildcard programs/win32/dll/*.c))
 W32_BIN  := $(patsubst programs/win32/%,$(BUILD)/rootfs/apps/%.exe,$(basename $(W32_SRC))) $(W32_DLL)
+MSVC_SRC := $(wildcard programs/win32/msvc/*.cpp)
+W32_BIN  += $(MSVC_SRC:programs/win32/msvc/%.cpp=$(BUILD)/rootfs/apps/%.exe)
+CLANG    ?= $(shell command -v clang 2>/dev/null)
+LLDLINK  ?= $(shell command -v lld-link 2>/dev/null)
+DLLTOOL  ?= $(shell command -v llvm-dlltool 2>/dev/null)
 W64CC    ?= $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 W64CXX   ?= $(shell command -v x86_64-w64-mingw32-g++ 2>/dev/null)
 W64_SRC  := $(wildcard programs/win64/*.c programs/win64/*.cpp)
@@ -225,7 +230,21 @@ $(BUILD)/rootfs/apps/%.exe: programs/win32/%.c
 ifneq ($(W32CC),)
 	@echo "  W32CC   $<"
 	@$(if $(wildcard programs/win32/$*.rc),$(W32CC:%gcc=%windres) -O coff -o $(BUILD)/$*.res.o programs/win32/$*.rc)
-	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -lshell32 -lcomdlg32
+	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -lshell32 -lshlwapi -lcomdlg32
+	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
+else
+	@echo "  COPY    programs/win32/prebuilt/$(@F)"
+	@cp programs/win32/prebuilt/$(@F) $@
+endif
+
+# Programs built the way Microsoft's compiler builds them (MSVC C++ exceptions), with clang and lld-link.
+$(BUILD)/rootfs/apps/%.exe: programs/win32/msvc/%.cpp programs/win32/msvc/msvcrt.def
+	@mkdir -p $(@D)
+ifneq ($(and $(CLANG),$(LLDLINK),$(DLLTOOL)),)
+	@echo "  MSVC    $<"
+	@$(CLANG) --target=i686-pc-windows-msvc -O1 -fexceptions -fcxx-exceptions -c $< -o $(BUILD)/$*.obj
+	@$(DLLTOOL) -k -m i386 -d programs/win32/msvc/msvcrt.def -l $(BUILD)/msvcrt.lib
+	@$(LLDLINK) /nologo /entry:start /subsystem:console /nodefaultlib /out:$@ $(BUILD)/$*.obj $(BUILD)/msvcrt.lib
 	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"

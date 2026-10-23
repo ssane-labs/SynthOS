@@ -413,7 +413,9 @@ static struct seh_frame **seh_head(void)
 
 static bool seh_valid(struct seh_frame *f)
 {
-    return (uintptr_t)f != SEH_END && f && (uintptr_t)f >= VMM_USER_START && (uintptr_t)f < VMM_USER_END;
+    /* frames live on thread stacks, which are above the program's heap (0xc0000000 up) */
+    uintptr_t a = (uintptr_t)f;
+    return a != SEH_END && a >= VMM_USER_START && (a < VMM_USER_END || (a >= 0xc0000000u && a < 0xfff00000u));
 }
 
 static void build_record(uint8_t *rec, DWORD code, DWORD flags, DWORD argc, const ULONG_PTR *args, void *addr)
@@ -456,13 +458,13 @@ static void dispatch_exception(uint8_t *rec, uint8_t *ctx)
 
 static void WINAPI RaiseException(DWORD code, DWORD flags, DWORD argc, const ULONG_PTR *args)
 {
+    /* the thread-naming exception is a message to a debugger: without one it has nowhere to go */
+    if (code == 0x406d1388u)
+        return;
     uint8_t rec[80];
-    uint8_t *ctx = w32_zalloc(716);
+    uint32_t ctx[179] = {0x1003f};
     build_record(rec, code, flags & EXCEPTION_NONCONTINUABLE, argc, args, __builtin_return_address(0));
-    if (ctx)
-        memcpy(ctx, &(DWORD){0x1003f}, 4);
-    dispatch_exception(rec, ctx);
-    w32_free(ctx);
+    dispatch_exception(rec, (uint8_t *)ctx);
 }
 
 static void WINAPI RtlUnwind(struct seh_frame *target, void *ip, uint8_t *rec, void *retval)
@@ -484,6 +486,23 @@ static void WINAPI RtlUnwind(struct seh_frame *target, void *ip, uint8_t *rec, v
         ((seh_handler)f->handler)(rec, f, NULL, NULL);
         *head = f->prev;
     }
+}
+
+void w32_seh_raise(uint32_t code, uint32_t flags, uint32_t argc, const uint32_t *args)
+{
+    RaiseException(code, flags, argc, (const ULONG_PTR *)args);
+}
+
+void w32_seh_unwind(void *target, uint8_t *rec)
+{
+    RtlUnwind(target, NULL, rec, NULL);
+}
+
+static LONG WINAPI AppPolicyGetProcessTerminationMethod(HANDLE token, DWORD *method)
+{
+    UNUSED(token);
+    *method = 0;
+    return 0;
 }
 
 static void WINAPI RtlCaptureContext(uint8_t *ctx)
@@ -1350,7 +1369,9 @@ static int spawn(const char *app, const char *cmdline, const uint32_t *startup, 
     struct spawn_args *a = kzalloc(sizeof(*a));
     if (!a)
         return ERROR_NOT_ENOUGH_MEMORY;
-    klog("win32: CreateProcess %.120s", cmdline ? cmdline : app ? app : "?");
+    const char *line = cmdline ? cmdline : app ? app : "?";
+    size_t len = strlen(line);
+    klog("win32: CreateProcess %.100s%s%s", line, len > 150 ? " ... " : "", len > 150 ? line + len - 50 : line + MIN(len, 100));
     a->app = app ? kstrdup(app) : NULL;
     a->cmdline = cmdline ? kstrdup(cmdline) : NULL;
     a->env = copy_env_block(env, wide_env);
@@ -1432,6 +1453,11 @@ static BOOL create_process(const char *app, const char *cmdline, const void *sta
         w32_handle_close(process);
     }
     return TRUE;
+}
+
+BOOL w32_create_process(const char *cmdline, const char *dir, uint32_t *info)
+{
+    return create_process(NULL, cmdline, NULL, info, NULL, false, dir, FALSE, 0);
 }
 
 static BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmdline, void *psa, void *tsa, BOOL inherit, DWORD flags,
@@ -1569,7 +1595,7 @@ static void *WINAPI LocalReAlloc(void *mem, SIZE_T size, UINT flags)
 
 static const struct w32_export kernel32_core[] = {
     W32_FN(ExitProcess), W32_FN(TerminateProcess), W32_FN(GetCurrentProcess), W32_FN(GetCurrentThread),
-    W32_FN(GetCurrentProcessId), W32_FN(GetLastError), W32_FN(SetLastError),
+    W32_FN(GetCurrentProcessId), W32_FN(AppPolicyGetProcessTerminationMethod), W32_FN(GetLastError), W32_FN(SetLastError),
     W32_FN(SetErrorMode), W32_FN(GetErrorMode), W32_FN(GetModuleHandleA), W32_FN(GetModuleHandleW),
     W32_FN(GetModuleHandleExA), W32_FN(GetModuleHandleExW), W32_FN(GetModuleFileNameA),
     W32_FN(GetModuleFileNameW), W32_FN(LoadLibraryA), W32_FN(LoadLibraryW), W32_FN(LoadLibraryExA),

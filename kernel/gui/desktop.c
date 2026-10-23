@@ -18,6 +18,7 @@
 #include <synth/users.h>
 #include <synth/vfs.h>
 #include <synth/winpath.h>
+#include <synth/winshell.h>
 
 #include "image.h"
 #include "internal.h"
@@ -654,6 +655,9 @@ const struct gui_app *gui_app_find(const char *name)
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         if (str_casecmp(app->name, name) == 0)
             return app;
+    const struct gui_app *installed = installed_find(name);
+    if (installed)
+        return installed;
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         if (word_prefix(app->name, name))
             return app;
@@ -664,10 +668,26 @@ void gui_app_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx
 {
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         fn(app, ctx);
+    installed_foreach(fn, ctx);
 }
+
+const struct gui_app *gui_app_for_program(const char *path)
+{
+    const struct gui_app *app = gui_builtin_app_for_program(path);
+    return app ? app : installed_for_program(path);
+}
+
+static bool open_shortcut(const char *file);
 
 void gui_app_launch(const struct gui_app *app, const char *arg)
 {
+#if CONFIG_WIN32
+    const char *lnk = installed_shortcut(app);
+    if (lnk) {
+        open_shortcut(lnk);
+        return;
+    }
+#endif
     if (!app || !app->launch)
         return;
     wm_set_app(app);
@@ -738,6 +758,14 @@ bool gui_start_program(const char *path, const char *args)
     return start_program(path, args ? copy : NULL, NULL);
 }
 
+/* a Windows command line, as the registry keeps them: "C:\Program Files\X\x.exe" -url "%1" */
+bool gui_start_command(const char *cmdline)
+{
+    char program[PATH_MAX_LEN];
+    const char *args;
+    return winshell_split(cmdline, program, sizeof(program), &args) && gui_start_program(program, args);
+}
+
 static bool open_shortcut(const char *file)
 {
     struct lnk *l = kmalloc(sizeof(*l));
@@ -763,7 +791,102 @@ bool gui_start_program(const char *path, const char *args)
     UNUSED(args);
     return false;
 }
+
+bool gui_start_command(const char *cmdline)
+{
+    UNUSED(cmdline);
+    return false;
+}
 #endif
+
+/* the default browser: a built-in one, or one an installer registered (its key under StartMenuInternet) */
+static bool chrome_default;
+static char browser_key[64];
+
+#if CONFIG_WIN32
+static void browser_refresh(void)
+{
+    char key[64];
+    if (winshell_default_browser(key, sizeof(key)))
+        str_copy(browser_key, key, sizeof(browser_key));
+    else if (browser_key[0] && !winshell_browser(browser_key, &(struct winshell_browser){0}))
+        browser_key[0] = 0;
+}
+#endif
+
+const struct gui_app *gui_default_browser(void)
+{
+#if CONFIG_WIN32
+    browser_refresh();
+    struct winshell_browser b;
+    if (browser_key[0] && winshell_browser(browser_key, &b)) {
+        const struct gui_app *app = gui_app_for_program(b.program);
+        if (app)
+            return app;
+    }
+#endif
+    const struct gui_app *app = chrome_default ? gui_app_find("Chrome") : NULL;
+    return app ? app : gui_app_find("Chromium");
+}
+
+static bool open_in_browser(const char *target)
+{
+#if CONFIG_WIN32
+    browser_refresh();
+    char line[1024];
+    if (browser_key[0] && winshell_browser_command(browser_key, target, line, sizeof(line)) && gui_start_command(line))
+        return true;
+#endif
+    const struct gui_app *app = chrome_default ? gui_app_find("Chrome") : NULL;
+    const struct gui_app *web = app ? app : gui_app_find("Chromium");
+    if (!web)
+        return false;
+    gui_app_launch(web, target);
+    return true;
+}
+
+/* a link: web pages in the default browser, ms-settings: in System Settings, other schemes in the program
+   registered for them */
+bool gui_open_url(const char *url)
+{
+    if (!str_ncasecmp(url, "ms-settings:", 12)) {
+        gui_app_launch(gui_app_find("System Settings"), "windows");
+        return true;
+    }
+    if (!str_ncasecmp(url, "http:", 5) || !str_ncasecmp(url, "https:", 6) || !str_ncasecmp(url, "file:", 5))
+        return open_in_browser(url);
+#if CONFIG_WIN32
+    char line[1024];
+    if (winshell_command("open", url, NULL, line, sizeof(line)) && gui_start_command(line))
+        return true;
+#endif
+    gui_message("Cannot open the link", "No app is set up for this kind of link.");
+    return false;
+}
+
+/* Windows programs ask for files and links to be opened while they run; the desktop does it between frames */
+#define OPEN_QUEUE 4
+static char open_queue[OPEN_QUEUE][512];
+static int open_count;
+
+static void queue_open(const char *target)
+{
+    if (open_count < OPEN_QUEUE)
+        str_copy(open_queue[open_count++], target, sizeof(open_queue[0]));
+}
+
+static void open_queued(void)
+{
+    char target[512];
+    while (open_count > 0) {
+        str_copy(target, open_queue[0], sizeof(target));
+        memmove(open_queue[0], open_queue[1], (size_t)--open_count * sizeof(open_queue[0]));
+        if (target[0] == '/')
+            gui_open_file(target);
+        else
+            gui_open_url(target);
+    }
+}
 
 bool gui_open_file(const char *path)
 {
@@ -777,11 +900,8 @@ bool gui_open_file(const char *path)
         return true;
     }
     const char *ext = path_ext(path);
-    const struct gui_app *web = gui_default_browser();
-    if (web && extension_listed(".html;.htm;.xhtml;.url", ext)) {
-        gui_app_launch(web, path);
+    if (extension_listed(".html;.htm;.xhtml;.url", ext) && open_in_browser(path))
         return true;
-    }
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         if (extension_listed(app->extensions, ext)) {
             gui_app_launch(app, path);
@@ -791,6 +911,10 @@ bool gui_open_file(const char *path)
     if (ext && !str_casecmp(ext, ".lnk"))
         return open_shortcut(path);
     if (ext && !str_casecmp(ext, ".exe") && start_program(path, NULL, NULL))
+        return true;
+    /* what an installed program registered itself for opens in it, as on Windows */
+    char line[768];
+    if (winshell_command("open", path, NULL, line, sizeof(line)) && gui_start_command(line))
         return true;
 #endif
     if (exec_is_executable_name(path)) {
@@ -1103,6 +1227,7 @@ static void pump(int timeout_ms)
     wallpaper_fetch_run();
     chrome_install_run();
     chromium_run();
+    open_queued();
 #if CONFIG_WIN32
     if (timeout_ms != 0)
         w32_background();
@@ -1190,6 +1315,9 @@ int gui_run(struct shell *sh)
         return sh_error(sh, "desktop", "cannot open the terminal window");
     }
     input_set_pump(pump);
+#if CONFIG_WIN32
+    winshell_open_hook = queue_open;
+#endif
     last_input = hal_ticks_ms();
     if (gui_setup_needed()) {
         gui_setup();
@@ -1206,6 +1334,9 @@ int gui_run(struct shell *sh)
 
     sh->ctl = CTL_NONE;
     input_set_pump(NULL);
+#if CONFIG_WIN32
+    winshell_open_hook = NULL;
+#endif
     media_stop();
     widgets_stop();
     chrome_stop();
@@ -1464,30 +1595,40 @@ static int set_locktime(struct shell *sh, const char *value)
     return 0;
 }
 
-static bool chrome_default;
-
-const struct gui_app *gui_default_browser(void)
-{
-    const struct gui_app *app = chrome_default ? gui_app_find("Chrome") : NULL;
-    return app ? app : gui_app_find("Chromium");
-}
-
 static void get_browser(char *buf, size_t cap)
 {
-    str_copy(buf, chrome_default ? "chrome" : "chromium", cap);
+#if CONFIG_WIN32
+    browser_refresh();
+#endif
+    str_copy(buf, browser_key[0] ? browser_key : chrome_default ? "chrome" : "chromium", cap);
 }
 
+/* a registered browser becomes the user's choice for web links and pages in the registry, where programs (and the
+   browser itself) look */
 static int set_browser(struct shell *sh, const char *value)
 {
     UNUSED(sh);
-    if (strcmp(value, "chromium") && strcmp(value, "chrome"))
-        return E_INVAL;
-    chrome_default = !strcmp(value, "chrome");
-    return 0;
+    if (!strcmp(value, "chromium") || !strcmp(value, "chrome")) {
+        chrome_default = !strcmp(value, "chrome");
+#if CONFIG_WIN32
+        if (browser_key[0])
+            winshell_set_default_browser(NULL);
+#endif
+        browser_key[0] = 0;
+        return 0;
+    }
+#if CONFIG_WIN32
+    struct winshell_browser b;
+    if (winshell_browser(value, &b) && winshell_set_default_browser(b.key)) {
+        str_copy(browser_key, b.key, sizeof(browser_key));
+        return 0;
+    }
+#endif
+    return E_INVAL;
 }
 
-static const struct setting s_browser = {"browser", "chromium|chrome", "the web browser that opens pages and links",
-                                         get_browser, set_browser};
+static const struct setting s_browser = {"browser", "chromium|chrome|<installed browser>",
+                                         "the web browser that opens pages and links", get_browser, set_browser};
 SETTING(s_browser);
 
 static void get_dnd(char *buf, size_t cap)
@@ -1548,7 +1689,10 @@ COMMAND(launch, "xopen,open", "system", "launch [app|file] [file]", "start a des
         gui_app_launch(app, argc > 2 ? path : NULL);
         return 0;
     }
-    if (sh_resolve(sh, argv[1], path, sizeof(path)) != 0 || !vfs_exists(path))
+    bool exists = sh_resolve(sh, argv[1], path, sizeof(path)) == 0 && vfs_exists(path);
+    if (!exists && strchr(argv[1], ':'))
+        return gui_open_url(argv[1]) ? 0 : 1;
+    if (!exists)
         return sh_error(sh, "launch", "no such app or file: %s", argv[1]);
     return gui_open_file(path) ? 0 : sh_error(sh, "launch", "nothing can open %s", argv[1]);
 }

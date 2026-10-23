@@ -521,11 +521,19 @@ struct gui_app {
 
 const struct gui_app *gui_app_find(const char *name);
 const struct gui_app *gui_app_for_program(const char *path);
+const struct gui_app *gui_builtin_app_for_program(const char *path);
+void installed_refresh(void);
+void installed_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx);
+const struct gui_app *installed_find(const char *name);
+const struct gui_app *installed_for_program(const char *path);
+const char *installed_shortcut(const struct gui_app *app);
 void gui_app_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx);
 void gui_app_launch(const struct gui_app *app, const char *arg);
 bool gui_open_file(const char *path);
 bool gui_program_icon(const char *path, int size, struct canvas *out);
 void gui_message(const char *title, const char *text);
+bool gui_open_url(const char *url);
+bool gui_start_command(const char *cmdline);
 
 /* The open/save panel; done gets the chosen path, or NULL when cancelled. exts: ".png;.jpg" or NULL for any file. */
 struct gui_picker {

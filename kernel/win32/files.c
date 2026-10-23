@@ -206,6 +206,14 @@ static HANDLE WINAPI CreateFileW(LPCWSTR name, DWORD access, DWORD share, void *
     return h;
 }
 
+/* CREATEFILE2_EXTENDED_PARAMETERS: dwSize, dwFileAttributes, dwFileFlags, dwSecurityQosFlags, lpSecurityAttributes,
+   hTemplateFile */
+static HANDLE WINAPI CreateFile2(LPCWSTR name, DWORD access, DWORD share, DWORD disposition, const DWORD *params)
+{
+    DWORD flags = params ? params[1] | params[2] | params[3] : 0;
+    return CreateFileW(name, access, share, params ? (void *)(uintptr_t)params[4] : NULL, disposition, flags, NULL);
+}
+
 long w32_handle_read(HANDLE h, void *buf, size_t n)
 {
     struct w32_object *o = w32_handle_get(h);
@@ -842,6 +850,29 @@ HANDLE w32_find_first(const char *spec, struct w32_find_entry *e)
     struct w32_find *f = kzalloc(sizeof(*f));
     if (!f)
         return INVALID_HANDLE_VALUE;
+    /* a name without wildcards is looked up directly: C:\Program Files and the like are mapped, not listed */
+    char whole[PATH_MAX_LEN];
+    struct vstat st;
+    if (*pattern && !strchr(pattern, '*') && !strchr(pattern, '?') &&
+        w32_path(spec, whole, sizeof(whole)) == 0 && vfs_stat(whole, &st) == 0) {
+        char parent[PATH_MAX_LEN], real[NAME_MAX_LEN];
+        path_dirname(whole, parent, sizeof(parent));
+        bool found = vfs_find_nocase(parent, pattern, real, sizeof(real));
+        str_copy(e->name, found ? real : pattern, sizeof(e->name));
+        e->type = st.type == VN_DIR ? VN_DIR : VN_FILE;
+        e->size = st.size;
+        e->mtime = st.mtime;
+        str_copy(f->dir, "/", sizeof(f->dir));
+        f->index = 0;
+        HANDLE h = w32_handle_new(WH_FIND);
+        struct w32_object *o = w32_handle_get(h);
+        if (!o) {
+            w32_find_free(f);
+            return INVALID_HANDLE_VALUE;
+        }
+        o->find = f;
+        return h;
+    }
     if (w32_path(dir_part, f->dir, sizeof(f->dir)) != 0 || !vfs_is_dir(f->dir)) {
         kfree(f);
         w32_set_error(ERROR_PATH_NOT_FOUND);
@@ -900,6 +931,17 @@ static BOOL find_next(HANDLE h, uint8_t *data, bool wide)
     else
         fill_find_a(data, &e);
     return TRUE;
+}
+
+/* alternate data streams are not listed: a file has only its unnamed one */
+static HANDLE WINAPI FindFirstStreamW(LPCWSTR name, int level, void *data, DWORD flags)
+{
+    UNUSED(name);
+    UNUSED(level);
+    UNUSED(data);
+    UNUSED(flags);
+    w32_set_error(38);
+    return INVALID_HANDLE_VALUE;
 }
 
 static HANDLE WINAPI FindFirstFileA(LPCSTR spec, uint8_t *data)
@@ -1115,6 +1157,11 @@ static DWORD WINAPI GetTempPathA(DWORD size, LPSTR buf)
 static DWORD WINAPI GetTempPathW(DWORD size, LPWSTR buf)
 {
     return to_wide_buffer("C:\\Windows\\Temp\\", buf, size);
+}
+
+static DWORD WINAPI GetTempPath2W(DWORD size, LPWSTR buf)
+{
+    return GetTempPathW(size, buf);
 }
 
 static UINT temp_name(const char *dir, const char *prefix, UINT unique, char *out)
@@ -1461,7 +1508,7 @@ static DWORD WINAPI ExpandEnvironmentStringsW(LPCWSTR in, LPWSTR out, DWORD size
 }
 
 static const struct w32_export kernel32_files[] = {
-    W32_FN(CreateFileA), W32_FN(CreateFileW), W32_FN(ReadFile), W32_FN(WriteFile), W32_FN(SetFilePointer),
+    W32_FN(CreateFileA), W32_FN(CreateFileW), W32_FN(CreateFile2), W32_FN(ReadFile), W32_FN(WriteFile), W32_FN(SetFilePointer),
     W32_FN(SetFilePointerEx), W32_FN(GetFileSize), W32_FN(GetFileSizeEx), W32_FN(GetFileType),
     W32_FN(SetEndOfFile), W32_FN(FlushFileBuffers), W32_FN(DeleteFileA), W32_FN(DeleteFileW), W32_FN(MoveFileA),
     W32_FN(MoveFileW), W32_FN(MoveFileExA), W32_FN(MoveFileExW), W32_FN(CopyFileA), W32_FN(CopyFileW),
@@ -1471,9 +1518,9 @@ static const struct w32_export kernel32_files[] = {
     W32_FN(GetFileAttributesExW), W32_FN(SetFileAttributesA), W32_FN(SetFileAttributesW),
     W32_FN(GetFileInformationByHandle), W32_FN(GetFileTime), W32_FN(SetFileTime), W32_FN(FindFirstFileA),
     W32_FN(FindFirstFileW), W32_FN(FindFirstFileExA), W32_FN(FindFirstFileExW), W32_FN(FindNextFileA),
-    W32_FN(FindNextFileW), W32_FN(FindClose), W32_FN(GetCurrentDirectoryA), W32_FN(GetCurrentDirectoryW),
+    W32_FN(FindNextFileW), W32_FN(FindClose), W32_FN(FindFirstStreamW), W32_AS("FindNextStreamW", w32_fail2), W32_FN(GetCurrentDirectoryA), W32_FN(GetCurrentDirectoryW),
     W32_FN(SetCurrentDirectoryA), W32_FN(SetCurrentDirectoryW), W32_FN(GetFullPathNameA),
-    W32_FN(GetFullPathNameW), W32_FN(SearchPathA), W32_FN(SearchPathW), W32_FN(GetTempPathA), W32_FN(GetTempPathW),
+    W32_FN(GetFullPathNameW), W32_FN(SearchPathA), W32_FN(SearchPathW), W32_FN(GetTempPathA), W32_FN(GetTempPathW), W32_FN(GetTempPath2W),
     W32_FN(GetTempFileNameA),
     W32_FN(GetTempFileNameW), W32_FN(GetWindowsDirectoryA), W32_FN(GetWindowsDirectoryW),
     W32_AS("GetSystemWindowsDirectoryA", GetWindowsDirectoryA),

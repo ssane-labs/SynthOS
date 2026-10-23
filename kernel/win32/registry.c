@@ -443,6 +443,7 @@ static void seed_machine(struct reg_key *m)
         set_string(sf, "Common AppData", REG_SZ, "C:\\ProgramData", true);
     }
     walk(m, "SOFTWARE\\Classes", true, NULL);
+    walk(m, "SOFTWARE\\Policies\\Microsoft", true, NULL);
     walk(m, "SOFTWARE\\Clients\\StartMenuInternet", true, NULL);
     walk(m, "SOFTWARE\\RegisteredApplications", true, NULL);
     walk(m, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", true, NULL);
@@ -495,6 +496,7 @@ static void seed_user(struct reg_key *u, const char *name)
         set_string(env, "TMP", REG_EXPAND_SZ, "%USERPROFILE%\\AppData\\Local\\Temp", true);
     }
     walk(u, "Software\\Classes", true, NULL);
+    walk(u, "Software\\Policies\\Microsoft", true, NULL);
     walk(u, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", true, NULL);
 }
 

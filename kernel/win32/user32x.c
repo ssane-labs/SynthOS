@@ -152,6 +152,12 @@ static BOOL WINAPI GetClassInfoW(HANDLE inst, const WCHAR *name, uint32_t *out)
 static DWORD WINAPI GetWindowThreadProcessId(HANDLE h, DWORD *pid)
 {
     struct w32_window *w = w32_win(h);
+    uint32_t other_pid, other_thread;
+    if (!w && w32_foreign_window(h, &other_pid, &other_thread)) {
+        if (pid)
+            *pid = other_pid;
+        return other_thread;
+    }
     if (!w)
         return 0;
     if (pid) {

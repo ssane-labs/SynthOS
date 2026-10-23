@@ -481,6 +481,8 @@ static void on_tick(uint32_t eip)
             w32->exit_code = STATUS_CONTROL_C_EXIT;
             arch_w32_abort(&w32->jump, STATUS_CONTROL_C_EXIT);
         }
+        if (input_info_take())
+            w32_dump_status();
     }
     if (ticks % 4 == 0)
         w32_signal_tick();
@@ -1024,6 +1026,10 @@ static void dump_line(const char *line)
     }
     else
         w32_console_write(WH_STDERR, line, strlen(line));
+    if (!dump_sh) {
+        size_t n = strlen(line);
+        klog("w32ps: %.*s", (int)(n && line[n - 1] == '\n' ? n - 1 : n), line);
+    }
 }
 
 void w32_dump_status(void)
@@ -1233,6 +1239,18 @@ static void kill_children(struct w32_process *parent)
     }
 }
 
+/* A program started from the desktop leaves its children running when it exits, as on Windows: browsers restart
+   themselves and installers hand over to the installed program that way. */
+static void orphan_children(struct w32_process *parent)
+{
+    for (struct w32_process *p = ring; p; p = p->ring_next) {
+        if (p != parent && p->parent == parent)
+            p->parent = NULL;
+        if (p->ring_next == ring)
+            break;
+    }
+}
+
 void w32_terminate_child(struct w32_child *c, uint32_t code)
 {
     if (!c || c->done || !c->proc)
@@ -1346,7 +1364,10 @@ static void child_entry(void)
     if (w32->message[0])
         stream_printf(p->spawn_ctx->err, "%s: %s\n", path_basename(p->spawn_ctx->path), w32->message);
     cleanup();
-    kill_children(p);
+    if (p->detached)
+        orphan_children(p);
+    else
+        kill_children(p);
     finish_child(p, (uint32_t)exit_status(rc, started));
     w32_leave_forever();
 }

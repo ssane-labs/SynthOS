@@ -847,6 +847,8 @@ static const struct w32_export crt_exports[] = {
     W32_AS("_fpreset", crt_fpreset), W32_AS("_clearfp", crt_clearfp), W32_AS("_statusfp", crt_clearfp),
     W32_AS("malloc", crt_malloc), W32_AS("calloc", crt_calloc), W32_AS("realloc", crt_realloc),
     W32_AS("_recalloc", crt_recalloc), W32_AS("free", crt_free), W32_AS("_msize", crt_msize),
+    W32_AS("??2@YAPAXI@Z", crt_malloc), W32_AS("??_U@YAPAXI@Z", crt_malloc), W32_AS("??3@YAXPAX@Z", crt_free),
+    W32_AS("??_V@YAXPAX@Z", crt_free),
     W32_AS("_expand", crt_expand), W32_AS("_aligned_malloc", crt_aligned_malloc),
     W32_AS("_aligned_free", crt_aligned_free), W32_AS("_aligned_realloc", crt_aligned_realloc),
     W32_AS("_heapchk", crt_heapchk), W32_AS("_heapmin", crt_heapmin), W32_AS("_get_heap_handle", crt_get_heap_handle),

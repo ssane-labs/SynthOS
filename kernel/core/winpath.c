@@ -104,8 +104,12 @@ int winpath_to_vfs(const char *cwd, const char *path, char *out, size_t cap)
 {
     char win[PATH_MAX_LEN];
     size_t n = 0;
-    for (const char *p = path; *p && n + 1 < sizeof(win); p++)
-        win[n++] = *p == '/' ? '\\' : *p;
+    for (const char *p = path; *p && n + 1 < sizeof(win); p++) {
+        char c = *p == '/' ? '\\' : *p;
+        if (c == '\\' && n > 1 && win[n - 1] == '\\')
+            continue;
+        win[n++] = c;
+    }
     win[n] = 0;
     while (n && win[n - 1] == ' ')
         win[--n] = 0;

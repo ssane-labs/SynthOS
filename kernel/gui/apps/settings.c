@@ -15,6 +15,7 @@
 #include <synth/tls.h>
 #include <synth/users.h>
 #include <synth/vfs.h>
+#include <synth/winshell.h>
 
 #include <synth/keys.h>
 
@@ -97,6 +98,7 @@ static void pane_about(struct page *p);
 static void pane_storage(struct page *p);
 static void pane_datetime(struct page *p);
 static void pane_login(struct page *p);
+static void browser_popup(struct page *p);
 
 static const struct {
     const char *name;
@@ -948,9 +950,7 @@ static void pane_dock(struct page *p)
         look_reset();
     end(p, "Each look keeps its own Dock and menu bar layout.");
     section(p, "Desktop");
-    static const char *const browsers[] = {"Chromium", "Google Chrome"};
-    static const char *const browser_values[] = {"chromium", "chrome"};
-    popup(p, "Default web browser", NULL, "browser", browsers, browser_values, 2);
+    browser_popup(p);
     end(p, NULL);
     section(p, "Widgets");
     static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
@@ -1449,7 +1449,53 @@ static void pane_terminal(struct page *p)
     end(p, NULL);
 }
 
+/* the built-in browsers and every browser an installer registered (Firefox, Brave, Opera, ...) */
+#define MAX_BROWSERS 16
+static const char *browser_labels[MAX_BROWSERS], *browser_values[MAX_BROWSERS];
+static char browser_names[MAX_BROWSERS][64], browser_keys[MAX_BROWSERS][64];
+static int browser_count;
+
+#if CONFIG_WIN32
+static void add_browser(const struct winshell_browser *b, void *ctx)
+{
+    UNUSED(ctx);
+    if (browser_count >= MAX_BROWSERS || gui_builtin_app_for_program(b->program))
+        return;
+    str_copy(browser_names[browser_count], b->name, sizeof(browser_names[0]));
+    str_copy(browser_keys[browser_count], b->key, sizeof(browser_keys[0]));
+    browser_labels[browser_count] = browser_names[browser_count];
+    browser_values[browser_count] = browser_keys[browser_count];
+    browser_count++;
+}
+#endif
+
+static void browser_popup(struct page *p)
+{
+    browser_labels[0] = "Chromium";
+    browser_values[0] = "chromium";
+    browser_labels[1] = "Google Chrome";
+    browser_values[1] = "chrome";
+    browser_count = 2;
+#if CONFIG_WIN32
+    winshell_browsers(add_browser, NULL);
+#endif
+    popup(p, "Default web browser", NULL, "browser", browser_labels, browser_values, browser_count);
+}
+
 /* ---- Windows Apps */
+
+#if CONFIG_WIN32
+static void program_row(const struct winshell_program *prog, void *ctx)
+{
+    struct page *p = ctx;
+    char desc[128];
+    ksnprintf(desc, sizeof(desc), "%s%s%s", prog->version, prog->version[0] && prog->publisher[0] ? " - " : "",
+              prog->publisher);
+    if (button(p, prog->name, desc[0] ? desc : NULL, "Uninstall") && prog->uninstall[0] &&
+        !gui_start_command(prog->uninstall))
+        gui_message("Cannot uninstall", "The program's uninstaller is missing.");
+}
+#endif
 
 static void pane_windows(struct page *p)
 {
@@ -1462,12 +1508,15 @@ static void pane_windows(struct page *p)
     section(p, "Browsers");
     info(p, "Chromium", chromium);
     info(p, "Google Chrome", vfs_exists("/home/apps/chrome/chrome.exe") ? "Installed" : "Not installed");
-    static const char *const browsers[] = {"Chromium", "Google Chrome"};
-    static const char *const browser_values[] = {"chromium", "chrome"};
-    popup(p, "Default web browser", NULL, "browser", browsers, browser_values, 2);
+    browser_popup(p);
     toggle_setting(p, "Download Google Chrome by itself", "On an image without Chromium, after the first login",
                    "chromeauto");
     end(p, NULL);
+#if CONFIG_WIN32
+    section(p, "Installed Programs");
+    winshell_programs(program_row, p);
+    end(p, "Programs installed with their own installers, as in Apps & features on Windows.");
+#endif
     section(p, "For Developers");
     toggle_setting(p, "Run programs without windows", "Their output goes to the Terminal (headless)", "w32headless");
     toggle_setting(p, "Log Windows API calls", "Every call goes to the kernel log", "w32trace");

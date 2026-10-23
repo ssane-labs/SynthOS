@@ -324,6 +324,20 @@ static LPSTR WINAPI CharPrevA(LPCSTR start, LPCSTR s)
     return (LPSTR)(s > start ? s - 1 : start);
 }
 
+static LPSTR WINAPI CharPrevExA(WORD cp, LPCSTR start, LPCSTR s, DWORD flags)
+{
+    UNUSED(cp);
+    UNUSED(flags);
+    return CharPrevA(start, s);
+}
+
+static LPSTR WINAPI CharNextExA(WORD cp, LPCSTR s, DWORD flags)
+{
+    UNUSED(cp);
+    UNUSED(flags);
+    return CharNextA(s);
+}
+
 static LPWSTR WINAPI CharNextW(LPCWSTR s)
 {
     return (LPWSTR)(*s ? s + 1 : s);
@@ -377,7 +391,7 @@ static const struct w32_export user32_exports[] = {
     W32_FN(MessageBoxIndirectA), W32_FN(MessageBoxIndirectW), W32_FN(ExitWindowsEx), W32_FN(MessageBeep),
     W32_FN(wsprintfA), W32_FN(wsprintfW),
     W32_FN(wvsprintfA), W32_FN(wvsprintfW), W32_FN(CharUpperA), W32_FN(CharLowerA), W32_FN(CharUpperW),
-    W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA),
+    W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA), W32_FN(CharPrevExA), W32_FN(CharNextExA),
     W32_FN(CharNextW), W32_FN(CharPrevW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
     W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA),
     W32_AS("GetKeyboardLayout", GetKeyboardLayout),

@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <wincrypt.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <winhttp.h>
 
 static LONG WINAPI filter(EXCEPTION_POINTERS *info)
@@ -648,6 +649,68 @@ static void chain_test(void)
         CertCloseStore(roots, 0);
 }
 
+static void narrow_print(const char *label, const wchar_t *w)
+{
+    char buf[300];
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, buf, sizeof(buf), NULL, NULL);
+    printf("%s%s\n", label, buf);
+}
+
+static BOOL version_at_least(DWORD major, DWORD build)
+{
+    OSVERSIONINFOEXW v = {sizeof(v)};
+    v.dwMajorVersion = major;
+    v.dwBuildNumber = build;
+    DWORDLONG m = VerSetConditionMask(0, VER_MAJORVERSION, VER_GREATER_EQUAL);
+    m = VerSetConditionMask(m, VER_MINORVERSION, VER_GREATER_EQUAL);
+    m = VerSetConditionMask(m, VER_BUILDNUMBER, VER_GREATER_EQUAL);
+    return VerifyVersionInfoW(&v, VER_MAJORVERSION | VER_MINORVERSION | VER_BUILDNUMBER, m);
+}
+
+/* What installers rely on: exact names under mapped folders, an INI default coming back as it went in, honest
+   version checks, and documents opening in the program the registry associates with them */
+static void shell_test(void)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(L"C:\\\\Program Files", &fd);
+    printf("find dir=%d\n", h != INVALID_HANDLE_VALUE && (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY));
+    if (h != INVALID_HANDLE_VALUE) {
+        narrow_print("find name=", fd.cFileName);
+        FindClose(h);
+    }
+    wchar_t def[3] = {0x4e21, 0x7e, 0}, out[16];
+    GetPrivateProfileStringW(L"S", L"K", def, out, 16, L"C:\\nothere.ini");
+    printf("ini default=%d\n", out[0] == 0x4e21 && out[1] == 0x7e);
+    printf("version win10=%d win11=%d\n", version_at_least(10, 19041), version_at_least(10, 22000));
+    HKEY k;
+    RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\.synthtest", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL);
+    RegSetValueExW(k, NULL, 0, REG_SZ, (const BYTE *)L"SynthTest.Doc", 28);
+    RegCloseKey(k);
+    const wchar_t *cmd = L"\"C:\\apps\\wintest.exe\" opened \"%1\"";
+    RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\SynthTest.Doc\\shell\\open\\command", 0, NULL, 0,
+                    KEY_ALL_ACCESS, NULL, &k, NULL);
+    RegSetValueExW(k, NULL, 0, REG_SZ, (const BYTE *)cmd, (DWORD)(wcslen(cmd) + 1) * 2);
+    RegCloseKey(k);
+    wchar_t exe[MAX_PATH];
+    DWORD n = MAX_PATH;
+    if (AssocQueryStringW(0, ASSOCSTR_EXECUTABLE, L".synthtest", NULL, exe, &n) == S_OK)
+        narrow_print("assoc exe=", exe);
+    HANDLE f = CreateFileW(L"C:\\Windows\\Temp\\doc.synthtest", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    CloseHandle(f);
+    SHELLEXECUTEINFOW info = {sizeof(info)};
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"open";
+    info.lpFile = L"C:\\Windows\\Temp\\doc.synthtest";
+    BOOL ok = ShellExecuteExW(&info);
+    DWORD code = 99;
+    if (ok && info.hProcess) {
+        WaitForSingleObject(info.hProcess, 10000);
+        GetExitCodeProcess(info.hProcess, &code);
+        CloseHandle(info.hProcess);
+    }
+    printf("shellexec ok=%d process=%d code=%lu\n", ok, info.hProcess != NULL, code);
+}
+
 int main(int argc, char **argv)
 {
     const char *mode = argc > 1 ? argv[1] : "info";
@@ -671,6 +734,11 @@ int main(int argc, char **argv)
         compat();
     } else if (!strcmp(mode, "gecko")) {
         gecko_test();
+    } else if (!strcmp(mode, "shell")) {
+        shell_test();
+    } else if (!strcmp(mode, "opened")) {
+        printf("opened %s\n", argc > 2 ? argv[2] : "?");
+        return 7;
     } else if (!strcmp(mode, "registry")) {
         registry_test();
     } else if (!strcmp(mode, "shortcut")) {

@@ -1687,7 +1687,7 @@ static const struct w32_export winsock_exports[] = {
     W32_FN(WSALookupServiceBeginW), W32_FN(WSALookupServiceNextW), W32_AS("WSALookupServiceEnd", w32_zero1),
     W32_AS("WSASetServiceW", socket_error_set3), W32_AS("WSAEnumNameSpaceProvidersW", no_service_entries),
     W32_FN(WSAEnumProtocolsW), W32_FN(WSCEnumProtocols), W32_FN(WSCGetProviderPath), W32_FN(WSAGetOverlappedResult),
-    W32_FN(WSAStartup),     W32_FN(WSACleanup),       W32_FN(WSAGetLastError), W32_FN(WSASetLastError),
+    W32_AS("WSCSetApplicationCategory", w32_zero7), W32_FN(WSAStartup),     W32_FN(WSACleanup),       W32_FN(WSAGetLastError), W32_FN(WSASetLastError),
     W32_FN(socket),         W32_FN(WSASocketA),       W32_AS("WSASocketW", WSASocketA), W32_FN(closesocket),
     W32_FN(bind),           W32_FN(listen),           W32_FN(accept),          W32_FN(connect),
     W32_FN(send),           W32_FN(recv),             W32_FN(sendto),          W32_FN(recvfrom),

@@ -106,8 +106,11 @@ static void list_add(struct list *l, struct span sp)
     l->out[l->n++] = 0;
 }
 
-static DWORD ini_get(const char *file, const char *app, const char *key, const char *def, char *out, DWORD size)
+static DWORD ini_get(const char *file, const char *app, const char *key, const char *def, char *out, DWORD size,
+                     bool *hit)
 {
+    if (hit)
+        *hit = true;
     if (!out || !size)
         return 0;
     char *data = ini_load(file);
@@ -134,6 +137,7 @@ static DWORD ini_get(const char *file, const char *app, const char *key, const c
         return l.full ? size - 2 : l.n;
     }
     struct span found = trim(def ? def : "", def ? def + strlen(def) : "");
+    bool matched = false;
     while (ini_line(&p, &line)) {
         if (ini_section(line, &name))
             in = span_is(name, app);
@@ -141,9 +145,12 @@ static DWORD ini_get(const char *file, const char *app, const char *key, const c
             if (v.e - v.s >= 2 && (*v.s == '"' || *v.s == '\'') && v.e[-1] == *v.s)
                 v = (struct span){v.s + 1, v.e - 1};
             found = v;
+            matched = true;
             break;
         }
     }
+    if (hit)
+        *hit = matched;
     DWORD n = (DWORD)MIN((size_t)(found.e - found.s), size - 1);
     memmove(out, found.s, n);
     out[n] = 0;
@@ -230,7 +237,7 @@ static BOOL ini_set(const char *file, const char *app, const char *key, const ch
 
 static DWORD WINAPI GetPrivateProfileStringA(LPCSTR app, LPCSTR key, LPCSTR def, LPSTR out, DWORD size, LPCSTR file)
 {
-    return ini_get(file, app, key, def, out, size);
+    return ini_get(file, app, key, def, out, size, NULL);
 }
 
 static DWORD WINAPI GetPrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR def, LPWSTR out, DWORD size,
@@ -238,14 +245,25 @@ static DWORD WINAPI GetPrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR d
 {
     if (!out || !size)
         return 0;
-    char *a = w32_narrow(app), *k = w32_narrow(key), *d = w32_narrow(def), *f = w32_narrow(file);
+    char *a = w32_narrow(app), *k = w32_narrow(key), *f = w32_narrow(file);
     DWORD cap = size * 3 + 2;
     char *buf = w32_alloc(cap);
     DWORD n = 0;
+    bool hit;
     if (buf) {
-        DWORD got = ini_get(f, a, k, d, buf, cap);
+        DWORD got = ini_get(f, a, k, "", buf, cap, &hit);
         size_t w = w32_cp_to_wide(buf, (int)got, out, size, 1);
-        if (a && k) {
+        if (a && k && !hit) {
+            /* the default goes back as it came, whatever characters it holds (NSIS tells a missing key by it) */
+            static const WCHAR empty[1];
+            const WCHAR *d = def ? def : empty;
+            size_t len = w32_wcslen(d);
+            while (len && d[len - 1] == ' ')
+                len--;
+            n = (DWORD)MIN(len, (size_t)size - 1);
+            memmove(out, d, n * sizeof(WCHAR));
+            out[n] = 0;
+        } else if (a && k) {
             n = (DWORD)MIN(w, (size_t)size - 1);
             out[n] = 0;
         } else if (size < 2) {
@@ -260,7 +278,6 @@ static DWORD WINAPI GetPrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR d
     }
     w32_free(a);
     w32_free(k);
-    w32_free(d);
     w32_free(f);
     return n;
 }
@@ -268,7 +285,7 @@ static DWORD WINAPI GetPrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR d
 static UINT WINAPI GetPrivateProfileIntA(LPCSTR app, LPCSTR key, INT def, LPCSTR file)
 {
     char buf[32];
-    if (!ini_get(file, app, key, "", buf, sizeof(buf)))
+    if (!ini_get(file, app, key, "", buf, sizeof(buf), NULL))
         return (UINT)def;
     return (UINT)str_to_long(buf, NULL, 10);
 }

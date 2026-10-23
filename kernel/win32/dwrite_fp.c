@@ -354,3 +354,23 @@ done:
     kfree(on);
     return hr;
 }
+
+float WINAPI dw_params_gamma(void *self)
+{
+    return as_float(dw_params_values(self)[0]);
+}
+
+float WINAPI dw_params_contrast(void *self)
+{
+    return as_float(dw_params_values(self)[1]);
+}
+
+float WINAPI dw_params_cleartype(void *self)
+{
+    return as_float(dw_params_values(self)[2]);
+}
+
+float WINAPI dw_params_gray(void *self)
+{
+    return as_float(dw_params_values(self)[5]);
+}

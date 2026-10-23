@@ -37,5 +37,8 @@ void arch_long_leave(void);
 bool arch_long_active(void);
 uint64_t arch_w64_call(uint32_t fn, int argc, const uint64_t *args);
 uint32_t arch_call_on_stack(uint32_t (*fn)(void *), void *arg, void *stack_top);
+uint32_t arch_call_funclet(void *fn, uint32_t ebp);
+void arch_thiscall(void *fn, void *self, int argc, uint32_t a, uint32_t b);
+NORETURN void arch_continue_at(void *ip, uint32_t ebp, uint32_t esp);
 
 #endif

@@ -141,3 +141,82 @@ crt_longjmp:
     mov esi, [edx + 12]
     mov esp, [edx + 16]
     jmp [edx + 20]
+
+section .text
+
+; MSVC C++ exception support: frame handlers get their FuncInfo in eax, funclets run on the frame's ebp,
+; constructors and destructors are thiscall.
+extern cxx_frame_handler
+global crt_cxx_frame_handler
+crt_cxx_frame_handler:
+    push dword [esp + 16]
+    push dword [esp + 16]
+    push dword [esp + 16]
+    push dword [esp + 16]
+    push eax
+    call cxx_frame_handler
+    add esp, 20
+    ret
+
+; uint32_t arch_call_funclet(void *fn, uint32_t ebp)
+global arch_call_funclet
+arch_call_funclet:
+    push ebp
+    push ebx
+    push esi
+    push edi
+    mov eax, [esp + 20]
+    mov ebp, [esp + 24]
+    call eax
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+; void arch_thiscall(void *fn, void *self, int argc, uint32_t a, uint32_t b)
+global arch_thiscall
+arch_thiscall:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    mov ecx, [ebp + 16]
+    cmp ecx, 2
+    jb .one
+    push dword [ebp + 24]
+.one:
+    test ecx, ecx
+    jz .call
+    push dword [ebp + 20]
+.call:
+    mov ecx, [ebp + 12]
+    call [ebp + 8]
+    lea esp, [ebp - 12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+; void arch_continue_at(void *ip, uint32_t ebp, uint32_t esp)
+global arch_continue_at
+arch_continue_at:
+    mov eax, [esp + 4]
+    mov ebp, [esp + 8]
+    mov esp, [esp + 12]
+    jmp eax
+
+; _EH_prolog: the frame setup of MSVC functions with C++ unwinding, handler in eax
+global crt_eh_prolog
+crt_eh_prolog:
+    push -1
+    push eax
+    push dword [fs:0]
+    mov [fs:0], esp
+    mov eax, [esp + 12]
+    mov [esp + 12], ebp
+    lea ebp, [esp + 12]
+    push eax
+    ret

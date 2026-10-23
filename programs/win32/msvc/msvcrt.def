@@ -1,0 +1,6 @@
+LIBRARY msvcrt.dll
+EXPORTS
+printf
+exit
+_CxxThrowException@8
+__CxxFrameHandler3

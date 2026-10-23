@@ -345,6 +345,7 @@ static const struct w32_export ucrt_exports[] = {
     W32_AS("__current_exception_context", current_exception),
     W32_AS("_register_thread_local_exe_atexit_callback", register_tls_atexit),
     W32_AS("terminate", terminate),
+    W32_AS("?terminate@@YAXXZ", terminate),
     W32_AS("__daylight", daylight),
     W32_AS("__timezone", timezone),
     W32_AS("__tzname", tzname),

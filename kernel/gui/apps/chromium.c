@@ -34,7 +34,7 @@ static const struct gui_app chromium_app = {"Chromium", "The web browser", ICON_
                                             ".html;.htm;.xhtml;.url", &picture};
 GUI_APP(chromium_app);
 
-const struct gui_app *gui_app_for_program(const char *path)
+const struct gui_app *gui_builtin_app_for_program(const char *path)
 {
     if (str_starts(path, DIR "/") && !str_casecmp(path_basename(path), "chrome.exe")) {
         load_picture();

@@ -258,6 +258,18 @@ wintest registry | grep enum
 reg enum=Sub more=259 values=3
 wintest registry | grep classes
 reg classes=SynthTest.File
+wintest shell | grep find
+find name=Program Files
+wintest shell | grep ini
+ini default=1
+wintest shell | grep version
+version win10=1 win11=0
+wintest shell | grep assoc
+assoc exe=C:\apps\wintest.exe
+wintest shell | grep shellexec
+shellexec ok=1 process=1 code=7
+wincxxeh
+cxx 43242 destroyed 5
 wintest registry | grep delete
 reg delete=5 tree=0 gone=2
 reg add HKCU/Software/Test /v Count /t REG_DWORD /d 42 > /dev/null; reg query HKCU/Software/Test /v Count

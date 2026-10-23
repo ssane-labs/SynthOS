@@ -819,6 +819,19 @@ static uint64_t WINAPI GetTraceLoggerHandle(void *buffer)
     return ~0ull;
 }
 
+/* UTF-16 text has a byte-order mark or mostly zero high bytes */
+static BOOL WINAPI IsTextUnicode(const void *buf, int len, int *result)
+{
+    const uint8_t *b = buf;
+    int zeros = 0, pairs = len / 2;
+    for (int i = 0; i < pairs; i++)
+        zeros += b[i * 2 + 1] == 0;
+    BOOL yes = len >= 2 && ((b[0] == 0xff && b[1] == 0xfe) || (pairs && zeros * 4 >= pairs * 3));
+    if (result)
+        *result = yes ? 1 : 0;
+    return yes;
+}
+
 static const struct w32_export security_exports[] = {
     W32_FN(ConvertSidToStringSidW),
     W32_FN(ConvertStringSidToSidW),
@@ -840,6 +853,9 @@ static const struct w32_export security_exports[] = {
     W32_FN(RegUnLoadKeyW),
     W32_AS("CreateServiceW", w32_fail13),
     W32_AS("DeleteService", w32_fail1),
+    W32_AS("QueryServiceObjectSecurity", w32_fail5),
+    W32_AS("SetServiceObjectSecurity", w32_fail3),
+    W32_FN(IsTextUnicode),
     W32_AS("ChangeServiceConfig2W", w32_fail3),
     W32_AS("ImpersonateLoggedOnUser", w32_fail1),
     W32_AS("MakeAbsoluteSD", w32_fail11),

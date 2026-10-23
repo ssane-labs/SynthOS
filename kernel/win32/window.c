@@ -159,6 +159,73 @@ struct w32_window *w32_win(HANDLE h)
     return NULL;
 }
 
+/* Windows are seen by every process, as on Windows: another process can ask whether one exists, how big it is and
+   whose it is (Firefox's GPU process sizes the frames it draws by the browser's window). One table for all. */
+#define SHARED_WINDOWS 256
+
+struct shared_window {
+    HANDLE hwnd;
+    struct w32_process *owner;
+    uint32_t pid, thread;
+    struct rect area;
+    struct window *wm;
+};
+
+static struct shared_window shared_windows[SHARED_WINDOWS];
+
+static void share(struct w32_window *w)
+{
+    struct shared_window *slot = NULL;
+    for (int i = 0; i < SHARED_WINDOWS; i++) {
+        struct shared_window *s = &shared_windows[i];
+        if (s->owner == w32 && s->hwnd == w) {
+            slot = s;
+            break;
+        }
+        if (!slot && !s->owner)
+            slot = s;
+    }
+    if (slot)
+        *slot = (struct shared_window){w, w32, w32_current_pid(), w->thread, w->rect, w->wm};
+}
+
+static void unshare(struct w32_window *w)
+{
+    for (int i = 0; i < SHARED_WINDOWS; i++)
+        if (shared_windows[i].owner == w32 && shared_windows[i].hwnd == w)
+            shared_windows[i].owner = NULL;
+}
+
+/* a window of another process (NULL for this process's own and for unknown handles) */
+static const struct shared_window *foreign(HANDLE h)
+{
+    if (!h)
+        return NULL;
+    for (struct w32_window *it = windows; it; it = it->next_all)
+        if (it == h)
+            return NULL;
+    for (int i = 0; i < SHARED_WINDOWS; i++)
+        if (shared_windows[i].owner && shared_windows[i].owner != w32 && shared_windows[i].hwnd == h)
+            return &shared_windows[i];
+    return NULL;
+}
+
+static struct rect foreign_client(const struct shared_window *s)
+{
+    struct rect r = s->wm ? wm_client_rect(s->wm) : s->area;
+    return s->wm ? r : (struct rect){0, 0, r.w, r.h};
+}
+
+bool w32_foreign_window(HANDLE h, uint32_t *pid, uint32_t *thread)
+{
+    const struct shared_window *s = foreign(h);
+    if (s && pid)
+        *pid = s->pid;
+    if (s && thread)
+        *thread = s->thread;
+    return s != NULL;
+}
+
 struct w32_window *w32_top(struct w32_window *w)
 {
     while (w && w->parent && (w->style & WS_CHILD))
@@ -630,6 +697,7 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
         w->menu = menu;
     }
 
+    share(w);
     CREATESTRUCT cs = {param, instance, menu, parent_h, height, width, y, x, (LONG)style, raw_title, raw_class, ex};
     if (!w32_send(w, WM_NCCREATE, 0, (LPARAM)&cs) || w32_send(w, WM_CREATE, 0, (LPARAM)&cs) == -1) {
         extern BOOL WINAPI w32_destroy_window(HANDLE);
@@ -695,6 +763,7 @@ static void destroy_tree(struct w32_window *w)
     }
     w32_send(w, WM_NCDESTROY, 0, 0);
     kill_timers(w);
+    unshare(w);
     w->destroyed = true;
     w->visible = false;
     if (capture == w)
@@ -795,12 +864,15 @@ static BOOL WINAPI UpdateWindow(HANDLE h)
 
 static BOOL WINAPI IsWindow(HANDLE h)
 {
-    return w32_win(h) != NULL;
+    return w32_win(h) != NULL || foreign(h) != NULL;
 }
 
 static BOOL WINAPI IsWindowVisible(HANDLE h)
 {
     struct w32_window *w = w32_win(h);
+    const struct shared_window *s = w ? NULL : foreign(h);
+    if (s)
+        return !s->wm || !(s->wm->flags & WIN_HIDDEN);
     return w && shown(w);
 }
 
@@ -824,16 +896,23 @@ static BOOL WINAPI EnableWindow(HANDLE h, BOOL enable)
     return was_disabled;
 }
 
-static BOOL WINAPI IsIconic(HANDLE h)
+static struct window *wm_of(HANDLE h)
 {
     struct w32_window *w = w32_win(h);
-    return w && w->wm && (w->wm->flags & WIN_MINIMIZED);
+    const struct shared_window *s = w ? NULL : foreign(h);
+    return w ? w->wm : s ? s->wm : NULL;
+}
+
+static BOOL WINAPI IsIconic(HANDLE h)
+{
+    struct window *wm = wm_of(h);
+    return wm && (wm->flags & WIN_MINIMIZED);
 }
 
 static BOOL WINAPI IsZoomed(HANDLE h)
 {
-    struct w32_window *w = w32_win(h);
-    return w && w->wm && (w->wm->flags & WIN_MAXIMIZED);
+    struct window *wm = wm_of(h);
+    return wm && (wm->flags & WIN_MAXIMIZED);
 }
 
 static void to_rect(RECT *out, struct rect r)
@@ -849,6 +928,12 @@ static struct rect from_rect(const RECT *r)
 static BOOL WINAPI GetClientRect(HANDLE h, RECT *out)
 {
     struct w32_window *w = w32_win(h);
+    const struct shared_window *s = w || !out ? NULL : foreign(h);
+    if (s) {
+        struct rect r = foreign_client(s);
+        to_rect(out, (struct rect){0, 0, r.w, r.h});
+        return TRUE;
+    }
     if (!w || !out)
         return FALSE;
     to_rect(out, (struct rect){0, 0, w->rect.w, w->rect.h});
@@ -869,6 +954,11 @@ static struct rect screen_rect(struct w32_window *w)
 static BOOL WINAPI GetWindowRect(HANDLE h, RECT *out)
 {
     struct w32_window *w = w32_win(h);
+    const struct shared_window *s = w || !out ? NULL : foreign(h);
+    if (s) {
+        to_rect(out, foreign_client(s));
+        return TRUE;
+    }
     if (!w || !out)
         return FALSE;
     to_rect(out, screen_rect(w));
@@ -979,6 +1069,7 @@ static void move_window(struct w32_window *w, int x, int y, int width, int heigh
             w32_invalidate(w->parent, &local, true);
         }
     }
+    share(w);
     send_pos_changed(w, move, size);
     if (size)
         w32_send(w, WM_SIZE, 0, (LPARAM)((uint32_t)w->rect.w | (uint32_t)w->rect.h << 16));
@@ -2962,6 +3053,9 @@ void w32_gdi_reset(void);
 void w32_gui_cleanup(void)
 {
     w32_gdi_reset();
+    for (int i = 0; i < SHARED_WINDOWS; i++)
+        if (shared_windows[i].owner == w32)
+            shared_windows[i].owner = NULL;
     for (struct w32_window *w = windows; w; w = w->next_all)
         if (w->wm) {
             struct window *wm = w->wm;
@@ -2991,6 +3085,11 @@ static void window_attach(void)
     w32_gui_cleanup();
 }
 
+static HANDLE WINAPI GetLastActivePopup(HANDLE wnd)
+{
+    return wnd;
+}
+
 static const struct w32_export window_exports[] = {
     W32_FN(RegisterClassA), W32_FN(RegisterClassW), W32_FN(RegisterClassExA), W32_FN(RegisterClassExW),
     W32_FN(UnregisterClassA), W32_FN(UnregisterClassW), W32_FN(GetClassInfoExA), W32_FN(GetClassInfoExW),
@@ -2999,7 +3098,7 @@ static const struct w32_export window_exports[] = {
     W32_FN(IsIconic), W32_FN(IsZoomed), W32_FN(GetClientRect), W32_FN(GetWindowRect), W32_AS("GetWindowRgnBox", w32_zero2), W32_FN(ClientToScreen),
     W32_FN(ScreenToClient), W32_FN(MapWindowPoints), W32_FN(AdjustWindowRect), W32_FN(AdjustWindowRectEx),
     W32_FN(MoveWindow), W32_FN(SetWindowPos), W32_FN(UpdateLayeredWindow), W32_FN(BringWindowToTop), W32_FN(SetForegroundWindow),
-    W32_FN(GetForegroundWindow), W32_FN(SetActiveWindow), W32_FN(GetActiveWindow), W32_FN(GetParent),
+    W32_FN(GetLastActivePopup), W32_FN(GetForegroundWindow), W32_FN(SetActiveWindow), W32_FN(GetActiveWindow), W32_FN(GetParent),
     W32_FN(SetParent), W32_FN(GetDlgItem), W32_FN(GetDlgCtrlID), W32_FN(GetWindow), W32_FN(GetDesktopWindow),
     W32_FN(EnumChildWindows), W32_FN(EnumWindows), W32_FN(FindWindowA), W32_FN(FindWindowW),
     W32_FN(DefWindowProcA), W32_FN(DefWindowProcW), W32_FN(CallWindowProcA),

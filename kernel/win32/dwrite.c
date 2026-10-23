@@ -1498,6 +1498,77 @@ static uint32_t WINAPI custom_collection(void *self, void *loader, const void *k
     return give(out, o);
 }
 
+/* IDWriteRenderingParams(1..3): gamma, enhanced contrast, ClearType level, pixel geometry, rendering mode, grayscale
+   contrast and grid fit, as the defaults of a Windows desktop; the float getters are in dwrite_fp.c */
+static const uint8_t iid_params[16] = GUID(0x2f0da53a, 0x2add, 0x47cd, 0x82, 0xee, 0xd9, 0xec, 0x34, 0x68, 0x8e, 0x75);
+static const uint8_t iid_params1[16] = GUID(0x94413cf4, 0xa6fc, 0x4248, 0x8b, 0x50, 0x66, 0x74, 0x34, 0x8f, 0xca, 0xd3);
+
+const uint32_t *dw_params_values(void *self)
+{
+    return ((struct obj *)self)->extra;
+}
+
+static uint32_t WINAPI params_geometry(struct obj *self)
+{
+    return ((uint32_t *)self->extra)[3];
+}
+
+static uint32_t WINAPI params_mode(struct obj *self)
+{
+    return ((uint32_t *)self->extra)[4];
+}
+
+static uint32_t WINAPI params_grid(struct obj *self)
+{
+    UNUSED(self);
+    return 0;
+}
+
+static const void *const params_vtbl[] = {
+    query_interface, add_ref, release, dw_params_gamma, dw_params_contrast, dw_params_cleartype, params_geometry,
+    params_mode, dw_params_gray, params_grid, params_mode,
+};
+
+/* 1.8, 0.5, 1.0, RGB, natural symmetric, 1.0 (as float bits) */
+static uint32_t make_params(uint32_t gamma, uint32_t contrast, uint32_t cleartype, uint32_t geometry, uint32_t mode,
+                            void **out)
+{
+    struct obj *o = com_new(params_vtbl, iid_params1, iid_params, 0);
+    uint32_t *v = o ? w32_alloc(6 * sizeof(uint32_t)) : NULL;
+    if (!v) {
+        w32_free(o);
+        *out = NULL;
+        return E_OUTOFMEMORY;
+    }
+    v[0] = gamma;
+    v[1] = contrast;
+    v[2] = cleartype;
+    v[3] = geometry;
+    v[4] = mode;
+    v[5] = contrast;
+    o->extra = v;
+    return give(out, o);
+}
+
+static uint32_t WINAPI rendering_params(struct obj *self, void **out)
+{
+    UNUSED(self);
+    return make_params(0x3fe66666, 0x3f000000, 0x3f800000, 1, 5, out);
+}
+
+static uint32_t WINAPI monitor_rendering_params(struct obj *self, void *monitor, void **out)
+{
+    UNUSED(monitor);
+    return rendering_params(self, out);
+}
+
+static uint32_t WINAPI custom_rendering_params(struct obj *self, uint32_t gamma, uint32_t contrast, uint32_t cleartype,
+                                               uint32_t geometry, uint32_t mode, void **out)
+{
+    UNUSED(self);
+    return make_params(gamma, contrast, cleartype, geometry, mode, out);
+}
+
 TRAPS(factory, 24, 25, 26, 27)
 
 static const void *const factory_vtbl[] = {
@@ -1509,9 +1580,9 @@ static const void *const factory_vtbl[] = {
     font_file_reference,    /* CreateFontFileReference */
     custom_file_reference,  /* CreateCustomFontFileReference */
     create_font_face,       /* CreateFontFace */
-    none2,                  /* CreateRenderingParams */
-    none3,                  /* CreateMonitorRenderingParams */
-    none7,                  /* CreateCustomRenderingParams */
+    rendering_params,         /* CreateRenderingParams */
+    monitor_rendering_params, /* CreateMonitorRenderingParams */
+    custom_rendering_params,  /* CreateCustomRenderingParams */
     ok2,                    /* RegisterFontFileLoader */
     ok2,                    /* UnregisterFontFileLoader */
     none9,                  /* CreateTextFormat */

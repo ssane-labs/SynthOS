@@ -237,6 +237,7 @@ struct w32_thread {
     struct w32_fiber *fiber;
     uint8_t com_apartment;
     int com_inits;
+    void *cxx_object, *cxx_type;
     struct w32_thread *next;
 };
 
@@ -577,6 +578,16 @@ void w32_inet_cleanup(void);
 HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id);
 void w32_run_atexit(void);
 uint32_t w32_call(void *fn, int argc, const uint32_t *args);
+const uint32_t *dw_params_values(void *self);
+float WINAPI dw_params_gamma(void *self);
+float WINAPI dw_params_contrast(void *self);
+float WINAPI dw_params_cleartype(void *self);
+float WINAPI dw_params_gray(void *self);
+BOOL w32_verify_version(uint32_t major, uint32_t minor, uint32_t build, uint32_t platform, uint32_t sp_major,
+                        uint32_t sp_minor, uint32_t product, DWORD mask, uint64_t cond);
+BOOL w32_create_process(const char *cmdline, const char *dir, uint32_t *info);
+void w32_seh_raise(uint32_t code, uint32_t flags, uint32_t argc, const uint32_t *args);
+void w32_seh_unwind(void *target, uint8_t *rec);
 uint32_t w32_kernel_call(uint32_t (*fn)(void *), void *arg);
 
 uint32_t WINAPI w32_zero0(void);

@@ -1,4 +1,7 @@
+#include <synth/path.h>
 #include <synth/string.h>
+#include <synth/winpath.h>
+#include <synth/winshell.h>
 
 #include "win32.h"
 
@@ -181,16 +184,174 @@ static WCHAR *WINAPI StrStrIW(const WCHAR *hay, const WCHAR *needle)
     return n ? NULL : (WCHAR *)hay;
 }
 
+#define E_POINTER 0x80004003u
+
+/* answers from the associations installers registered (synth/winshell.h) */
+static bool assoc_text(int what, const char *assoc, const char *verb, char *out, size_t cap)
+{
+    char command[512], program[PATH_MAX_LEN];
+    const char *args;
+    switch (what) {
+    case 1: return winshell_assoc_command(assoc, verb, out, cap);
+    case 2:
+    case 4:
+        if (!winshell_assoc_command(assoc, verb, command, sizeof(command)) ||
+            !winshell_split(command, program, sizeof(program), &args))
+            return false;
+        if (what == 2) {
+            winpath_from_vfs(program, out, cap);
+        } else {
+            str_copy(out, path_basename(program), cap);
+            char *dot = strrchr(out, '.');
+            if (dot)
+                *dot = 0;
+        }
+        return true;
+    case 20: return winshell_class(assoc, out, cap);
+    default: return false;
+    }
+}
+
 static DWORD WINAPI AssocQueryStringW(DWORD flags, int str, const WCHAR *assoc, const WCHAR *extra, WCHAR *out,
                                       DWORD *len)
 {
     UNUSED(flags);
-    UNUSED(str);
-    UNUSED(assoc);
-    UNUSED(extra);
-    UNUSED(out);
-    UNUSED(len);
-    return E_NO_ASSOCIATION;
+    char *a = w32_narrow(assoc), *v = extra ? w32_narrow(extra) : NULL, text[512];
+    bool ok = a && assoc_text(str, a, v, text, sizeof(text));
+    w32_free(a);
+    w32_free(v);
+    if (!ok)
+        return E_NO_ASSOCIATION;
+    DWORD need = (DWORD)w32_cp_to_wide(text, -1, NULL, 0, 65001);
+    if (!out) {
+        *len = need;
+        return 1;
+    }
+    if (*len < need) {
+        *len = need;
+        return E_POINTER;
+    }
+    w32_cp_to_wide(text, -1, out, *len, 65001);
+    *len = need;
+    return S_OK;
+}
+
+static DWORD WINAPI AssocQueryStringA(DWORD flags, int str, const char *assoc, const char *extra, char *out,
+                                      DWORD *len)
+{
+    UNUSED(flags);
+    char text[512];
+    if (!assoc || !assoc_text(str, assoc, extra, text, sizeof(text)))
+        return E_NO_ASSOCIATION;
+    DWORD need = (DWORD)strlen(text) + 1;
+    if (!out) {
+        *len = need;
+        return 1;
+    }
+    if (*len < need) {
+        *len = need;
+        return E_POINTER;
+    }
+    memcpy(out, text, need);
+    *len = need;
+    return S_OK;
+}
+
+static BOOL WINAPI PathIsUNCServerShareW(const WCHAR *path)
+{
+    if (!path || !is_sep(path[0]) || !is_sep(path[1]))
+        return FALSE;
+    int seps = 0;
+    for (const WCHAR *p = path + 2; *p; p++)
+        if (is_sep(*p))
+            seps++;
+    return seps == 1;
+}
+
+static BOOL WINAPI PathStripToRootW(WCHAR *path)
+{
+    if (!path || !*path)
+        return FALSE;
+    if (path[1] == ':') {
+        path[2 + is_sep(path[2])] = 0;
+        return TRUE;
+    }
+    if (is_sep(path[0]) && is_sep(path[1])) {
+        int seps = 0;
+        for (WCHAR *p = path + 2; *p; p++)
+            if (is_sep(*p) && ++seps == 2) {
+                *p = 0;
+                break;
+            }
+        return TRUE;
+    }
+    if (is_sep(path[0])) {
+        path[1] = 0;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void WINAPI PathQuoteSpacesW(WCHAR *path)
+{
+    size_t n = path ? w32_wcslen(path) : 0;
+    bool space = false;
+    for (size_t i = 0; i < n; i++)
+        space |= path[i] == ' ';
+    if (!space || n + 3 > 260)
+        return;
+    memmove(path + 1, path, n * sizeof(WCHAR));
+    path[0] = path[n + 1] = '"';
+    path[n + 2] = 0;
+}
+
+static void WINAPI PathUnquoteSpacesW(WCHAR *path)
+{
+    size_t n = path ? w32_wcslen(path) : 0;
+    if (n >= 2 && path[0] == '"' && path[n - 1] == '"') {
+        memmove(path, path + 1, (n - 2) * sizeof(WCHAR));
+        path[n - 2] = 0;
+    }
+}
+
+/* "a\.\b\..\c" -> "a\c" */
+static BOOL WINAPI PathCanonicalizeW(WCHAR *out, const WCHAR *in)
+{
+    if (!out || !in)
+        return FALSE;
+    WCHAR buf[260];
+    size_t o = 0, n = w32_wcslen(in);
+    for (size_t i = 0; i < n && o < 259;) {
+        if (in[i] == '.' && (i == 0 || is_sep(in[i - 1])) && (is_sep(in[i + 1]) || !in[i + 1])) {
+            i += in[i + 1] ? 2 : 1;
+            continue;
+        }
+        if (in[i] == '.' && in[i + 1] == '.' && (i == 0 || is_sep(in[i - 1])) && (is_sep(in[i + 2]) || !in[i + 2])) {
+            if (o && is_sep(buf[o - 1]))
+                o--;
+            while (o && !is_sep(buf[o - 1]) && buf[o - 1] != ':')
+                o--;
+            i += in[i + 2] ? 3 : 2;
+            continue;
+        }
+        buf[o++] = in[i++];
+    }
+    if (o == 2 && buf[1] == ':')
+        buf[o++] = '\\';
+    buf[o] = 0;
+    memcpy(out, buf, (o + 1) * sizeof(WCHAR));
+    return TRUE;
+}
+
+static long WINAPI SHStrDupW(const WCHAR *s, WCHAR **out)
+{
+    void *(WINAPI *alloc)(SIZE_T) = (void *(WINAPI *)(SIZE_T))w32_builtin_lookup("ole32.dll", "CoTaskMemAlloc");
+    size_t n = s ? w32_wcslen(s) + 1 : 0;
+    *out = s && alloc ? alloc(n * sizeof(WCHAR)) : NULL;
+    if (!*out)
+        return s ? (long)0x8007000e : (long)0x80070057;
+    memcpy(*out, s, n * sizeof(WCHAR));
+    return 0;
 }
 
 static BOOL WINAPI IsOS(DWORD os)
@@ -257,10 +418,16 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(StrCmpIW),
     W32_FN(StrStrIW),
     W32_FN(AssocQueryStringW),
+    W32_FN(AssocQueryStringA),
+    W32_FN(PathIsUNCServerShareW),
+    W32_FN(PathStripToRootW),
+    W32_FN(PathQuoteSpacesW),
+    W32_FN(PathUnquoteSpacesW),
+    W32_FN(PathCanonicalizeW),
+    W32_FN(SHStrDupW),
     W32_FN(IsOS),
     W32_FN(QISearch),
     W32_FN(SHCreateMemStream),
-    W32_AS("SHDeleteKeyW", w32_zero2),
 };
 
 static const char *const shlwapi_ordinals[438] = {[12] = "SHCreateMemStream", [219] = "QISearch", [437] = "IsOS"};
