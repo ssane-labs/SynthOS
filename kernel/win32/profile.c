@@ -1,3 +1,4 @@
+#include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/string.h>
@@ -21,14 +22,49 @@ static int ini_path(const char *file, char *out, size_t cap)
     return w32_path(win, out, cap);
 }
 
+/* A file that starts with FF FE is UTF-16, as Unicode programs (NSIS) write them: it is read as text in the ANSI code
+   page like the rest, and written back as UTF-16. A UTF-8 mark is skipped. */
+static char *ini_decode(char *data, size_t *len, bool *wide)
+{
+    *wide = *len >= 2 && (uint8_t)data[0] == 0xff && (uint8_t)data[1] == 0xfe;
+    if (!*wide) {
+        if (*len >= 3 && !memcmp(data, "\xef\xbb\xbf", 3)) {
+            memmove(data, data + 3, *len - 3);
+            *len -= 3;
+            data[*len] = 0;
+        }
+        return data;
+    }
+    int units = (int)((*len - 2) / 2);
+    WCHAR *w = (WCHAR *)(data + 2);
+    size_t n = w32_wide_to_cp(w, units, NULL, 0, 1);
+    char *text = kmalloc(n + 1);
+    if (text) {
+        w32_wide_to_cp(w, units, text, n, 1);
+        text[n] = 0;
+        *len = n;
+    }
+    kfree(data);
+    return text;
+}
+
+static char *ini_read(const char *path, size_t *len, bool *wide)
+{
+    char *data = NULL;
+    *wide = false;
+    if (vfs_read_all(path, &data, len))
+        return NULL;
+    return ini_decode(data, len, wide);
+}
+
 static char *ini_load(const char *file)
 {
     char path[PATH_MAX_LEN];
-    char *data = NULL;
     size_t len;
-    if (!file || ini_path(file, path, sizeof(path)) || vfs_read_all(path, &data, &len))
+    bool wide;
+    if (!file || ini_path(file, path, sizeof(path)))
         return NULL;
-    return data;
+    return ini_read(path, &len, &wide);
 }
 
 static struct span trim(const char *s, const char *e)
@@ -180,10 +216,11 @@ static BOOL ini_set(const char *file, const char *app, const char *key, const ch
         w32_set_error(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
-    char *data = NULL;
     size_t len = 0;
-    if (vfs_read_all(path, &data, &len))
-        data = NULL, len = 0;
+    bool wide = false;
+    char *data = ini_read(path, &len, &wide);
+    if (!data)
+        len = 0;
     char *buf = kmalloc(len + strlen(app) + (key ? strlen(key) : 0) + (value ? strlen(value) : 0) + 16);
     if (!buf) {
         kfree(data);
@@ -225,7 +262,21 @@ static BOOL ini_set(const char *file, const char *app, const char *key, const ch
         put_entry(&o, key, value);
     }
     w32_fcache_forget(path);
-    int err = vfs_write_all(path, buf, (size_t)(o - buf));
+    int err;
+    if (wide) {
+        size_t units = w32_cp_to_wide(buf, (int)(o - buf), NULL, 0, 1);
+        WCHAR *w = kmalloc((units + 1) * sizeof(WCHAR));
+        if (w) {
+            w[0] = 0xfeff;
+            w32_cp_to_wide(buf, (int)(o - buf), w + 1, units, 1);
+            err = vfs_write_all(path, w, (units + 1) * sizeof(WCHAR));
+            kfree(w);
+        } else {
+            err = E_NOMEM;
+        }
+    } else {
+        err = vfs_write_all(path, buf, (size_t)(o - buf));
+    }
     kfree(buf);
     kfree(data);
     if (err) {

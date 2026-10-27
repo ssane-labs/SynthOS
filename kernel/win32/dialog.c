@@ -181,11 +181,16 @@ LRESULT WINAPI w32_dialog_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
     if (!w)
         return 0;
     DLGPROC proc = (DLGPROC)w->dlgproc;
+    intptr_t saved = w->dlg_msgresult;
+    w->dlg_msgresult = 0;
     intptr_t handled = proc && msg != WM_NCCREATE && msg != WM_CREATE ? proc(h, msg, wp, lp) : 0;
     if (msg >= WM_CTLCOLOREDIT && msg <= WM_CTLCOLORSTATIC && handled)
         return handled;
+    intptr_t result = w->dlg_msgresult;
+    if (w32_win(h))
+        w->dlg_msgresult = saved;
     if (handled)
-        return msg == WM_INITDIALOG ? handled : w->dlg_msgresult ? w->dlg_msgresult : handled;
+        return msg == WM_INITDIALOG ? handled : result ? result : handled;
     switch (msg) {
     case WM_CLOSE:
         w32_post(w, WM_COMMAND, 2, 0);

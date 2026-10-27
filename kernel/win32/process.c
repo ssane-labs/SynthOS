@@ -1024,7 +1024,7 @@ static void dump_line(const char *line)
         size_t n = strlen(line);
         klog("w32ps: %.*s", (int)(n && line[n - 1] == '\n' ? n - 1 : n), line);
     }
-    else
+    else if (w32 && w32->ctx)
         w32_console_write(WH_STDERR, line, strlen(line));
     if (!dump_sh) {
         size_t n = strlen(line);
@@ -1454,8 +1454,38 @@ static void host_leave(void)
     w32 = NULL;
 }
 
+/* config w32watch <seconds>: what every Windows program is doing, into the kernel log now and then (for programs
+   whose windows keep the keyboard, where Ctrl+T cannot reach) */
+static uint32_t watch_seconds;
+static uint64_t watched_at;
+
+static void get_watch(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%u", watch_seconds);
+}
+
+static int set_watch(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 0 || v > 3600)
+        return E_INVAL;
+    watch_seconds = (uint32_t)v;
+    watched_at = hal_ticks_ms();
+    return 0;
+}
+
+static const struct setting s_watch = {"w32watch", "<seconds>|0",
+                                       "log the state of all Windows programs every so many seconds", get_watch,
+                                       set_watch};
+SETTING(s_watch);
+
 void w32_background(void)
 {
+    if (watch_seconds && !w32 && ring && hal_ticks_ms() - watched_at >= watch_seconds * 1000ull) {
+        watched_at = hal_ticks_ms();
+        w32_dump_status();
+    }
     if (w32 || !ring || hal_in_interrupt() || !host_enter())
         return;
     w32_signal_tick();

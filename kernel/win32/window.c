@@ -698,8 +698,23 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
     }
 
     share(w);
-    CREATESTRUCT cs = {param, instance, menu, parent_h, height, width, y, x, (LONG)style, raw_title, raw_class, ex};
-    if (!w32_send(w, WM_NCCREATE, 0, (LPARAM)&cs) || w32_send(w, WM_CREATE, 0, (LPARAM)&cs) == -1) {
+    /* the window procedure gets the strings in its own character set (a STATIC made by CreateWindowExW sees text) */
+    const void *cs_title = raw_title, *cs_class = raw_class;
+    WCHAR *wide_title = NULL, *wide_class = NULL;
+    bool named_class = (uintptr_t)raw_class >= 0x10000;
+    if (unicode && !w->unicode) {
+        cs_title = raw_title ? title : NULL;
+        cs_class = named_class ? class_name : raw_class;
+    } else if (!unicode && w->unicode) {
+        cs_title = wide_title = raw_title && title ? w32_widen(title) : NULL;
+        if (named_class)
+            cs_class = wide_class = w32_widen(class_name);
+    }
+    CREATESTRUCT cs = {param, instance, menu, parent_h, height, width, y, x, (LONG)style, cs_title, cs_class, ex};
+    bool created = w32_send(w, WM_NCCREATE, 0, (LPARAM)&cs) && w32_send(w, WM_CREATE, 0, (LPARAM)&cs) != -1;
+    w32_free(wide_title);
+    w32_free(wide_class);
+    if (!created) {
         extern BOOL WINAPI w32_destroy_window(HANDLE);
         w32_destroy_window(w);
         return NULL;
@@ -1692,8 +1707,16 @@ static UINT WINAPI IsDlgButtonChecked(HANDLE dlg, int id)
     return (UINT)SendMessageA(GetDlgItem(dlg, id), 0xf0, 0, 0);
 }
 
+/* a dialog keeps DWLP_MSGRESULT, DWLP_DLGPROC and DWLP_USER at 0, 4 and 8 (NSIS plugins swap the procedure) */
+static bool dialog_slot(const struct w32_window *w, int index)
+{
+    return (w->cls->dialog || w->dlgproc) && (index == 0 || index == 4 || index == 8);
+}
+
 static intptr_t get_long(struct w32_window *w, int index)
 {
+    if (dialog_slot(w, index))
+        return index == 0 ? w->dlg_msgresult : index == 4 ? (intptr_t)w->dlgproc : w->dlg_user;
     if (index >= 0)
         return w->extra && index + 4 <= w->cls->window_extra ? *(int32_t *)(w->extra + index) : 0;
     switch (index) {
@@ -1711,6 +1734,15 @@ static intptr_t get_long(struct w32_window *w, int index)
 static intptr_t set_long(struct w32_window *w, int index, intptr_t value)
 {
     intptr_t old = get_long(w, index);
+    if (dialog_slot(w, index)) {
+        if (index == 0)
+            w->dlg_msgresult = value;
+        else if (index == 4)
+            w->dlgproc = (void *)value;
+        else
+            w->dlg_user = value;
+        return old;
+    }
     if (index >= 0) {
         if (w->extra && index + 4 <= w->cls->window_extra)
             *(int32_t *)(w->extra + index) = (int32_t)value;

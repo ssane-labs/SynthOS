@@ -199,7 +199,7 @@ struct w32_window {
     void *dlgproc;
     intptr_t dlg_result;
     bool dlg_ended;
-    intptr_t dlg_msgresult;
+    intptr_t dlg_msgresult, dlg_user;
     bool message_only;
     struct rect caption;
     uint64_t caption_due;
