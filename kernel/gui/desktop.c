@@ -755,6 +755,12 @@ bool gui_start_program(const char *path, const char *args)
 {
     char copy[512];
     str_copy(copy, args ? args : "", sizeof(copy));
+    if (!vfs_exists(path) && !str_casecmp(path_basename(path), "msiexec.exe")) {
+        char *argv[32] = {(char *)path};
+        int argc = 1 + split_command_line(copy, argv + 1, (int)ARRAY_SIZE(argv) - 1);
+        gui_notify("Windows Installer", msiexec_main(NULL, argc, argv) == 0 ? "Done." : "The package failed.");
+        return true;
+    }
     return start_program(path, args ? copy : NULL, NULL);
 }
 

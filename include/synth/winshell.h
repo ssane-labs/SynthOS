@@ -28,6 +28,9 @@ bool winshell_default_browser(char *key, size_t cap);
 bool winshell_set_default_browser(const char *key);
 bool winshell_is_url(const char *target);
 
+struct shell;
+int msiexec_main(struct shell *sh, int argc, char **argv);
+
 /* what Settings lists as installed: the Uninstall entries installers write */
 struct winshell_program {
     char key[96];
