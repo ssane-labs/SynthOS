@@ -122,5 +122,36 @@ EXTRA=""
 out=$(boot bios ide any "dmesg | grep disk:")
 check "install whole disk boots" "$out" "system on hda at sector 0 (installed)"
 
+# Secure Boot: the firmware starts only a loader signed with a key in its db, and that loader starts only the kernel
+# it was sealed with. OVMF's test key ("snakeoil") stands in for the key a user enrolls.
+sb_code=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
+sb_vars=/usr/share/OVMF/OVMF_VARS_4M.snakeoil.fd
+sb_key=/usr/share/ovmf/PkKek-1-snakeoil.key
+sb_cert=/usr/share/ovmf/PkKek-1-snakeoil.pem
+secure_boot() {
+    cp "$sb_vars" "$work/sbvars.fd"
+    rm -f "$work/sb.txt"
+    timeout 60 qemu-system-x86_64 -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
+        -drive if=pflash,format=raw,unit=0,readonly=on,file="$sb_code" -drive if=pflash,format=raw,unit=1,file="$work/sbvars.fd" \
+        -drive format=raw,file="$work/disk.img" -m 256 -display none -serial file:"$work/sb.txt" < /dev/null > /dev/null 2>&1
+    tr -d '\r' < "$work/sb.txt"
+}
+if [ -f "$sb_code" ] && [ -f "$sb_vars" ] && [ -f "$sb_key" ] && python3 -c 'import cryptography' 2>/dev/null; then
+    esp="$work/disk.img@@$((8192 * 512))"
+    cp "$image" "$work/disk.img"
+    mcopy -o -i "$esp" ::/EFI/BOOT/BOOTX64.EFI "$work/own.efi"
+    mcopy -o -i "$esp" ::/SYNTHOS/KERNEL.BIN "$work/kernel.bin"
+    check "secure boot: loader not enrolled" "$(secure_boot)" "Access Denied"
+    python3 -I tools/sbsign.py --key "$sb_key" --pass snakeoil --cert "$sb_cert" "$work/own.efi" "$work/signed.efi"
+    mcopy -o -i "$esp" "$work/signed.efi" ::/EFI/BOOT/BOOTX64.EFI
+    check "secure boot: signed loader" "$(secure_boot)" "Shell ready"
+    python3 -c "import sys; d = bytearray(open(sys.argv[1], 'rb').read()); d[len(d) // 2] ^= 0xff; open(sys.argv[1], 'wb').write(d)" \
+        "$work/kernel.bin"
+    mcopy -o -i "$esp" "$work/kernel.bin" ::/SYNTHOS/KERNEL.BIN
+    check "secure boot: changed kernel" "$(secure_boot)" "is not the kernel this loader was signed with"
+else
+    echo "  skip  secure boot (no OVMF Secure Boot firmware or python3-cryptography)"
+fi
+
 echo "hardware tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

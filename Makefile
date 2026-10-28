@@ -115,13 +115,33 @@ else
 	@echo "  ready   $@ ($$(( $$(wc -c < $(OUT)/kernel.bin) / 1024 )) KB kernel, BIOS only: install dosfstools and mtools for UEFI)"
 endif
 
-$(OUT)/esp.img: $(OUT)/kernel.bin $(BUILD)/efi/BOOTX64.EFI
+# Secure Boot: the loader on the EFI partition carries the SHA-256 of its kernel and is signed with the key in
+# $(SB_DIR) (made on the first build, kept across "make clean"); SYNTHOS.CER next to the kernel is the certificate
+# to enroll in the firmware (docs/INSTALL.md). SB_KEY/SB_CERT pick another key, SB=0 leaves the loader unsigned.
+SB_DIR      ?= keys
+SB_KEY      ?= $(SB_DIR)/db.key
+SB_CERT     ?= $(SB_DIR)/db.crt
+SB          ?= $(if $(and $(shell command -v openssl 2>/dev/null),$(shell python3 -c 'import cryptography' 2>/dev/null && echo y)),1,0)
+
+$(SB_DIR)/db.key:
+	@mkdir -p $(@D)
+	@echo "  KEYGEN  $(SB_DIR) (Secure Boot signing key, keep it private)"
+	@openssl req -new -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 -subj "/CN=SynthOS Secure Boot $$(hostname)/" \
+	    -keyout $(SB_DIR)/db.key -out $(SB_DIR)/db.crt 2>/dev/null
+
+$(OUT)/BOOTX64.EFI: $(BUILD)/efi/BOOTX64.EFI $(OUT)/kernel.bin tools/sbsign.py $(if $(filter 1,$(SB)),$(SB_KEY))
+	@echo "  SIGN    $@$(if $(filter 1,$(SB)),, (sealed, not signed))"
+	@python3 -I tools/sbsign.py $(if $(filter 1,$(SB)),--key $(SB_KEY) --cert $(SB_CERT)) --seal $(OUT)/kernel.bin $< $@
+	@$(if $(filter 1,$(SB)),openssl x509 -in $(SB_CERT) -outform DER -out $(OUT)/SYNTHOS.CER,rm -f $(OUT)/SYNTHOS.CER)
+
+$(OUT)/esp.img: $(OUT)/kernel.bin $(OUT)/BOOTX64.EFI
 	@echo "  ESP     $@"
 	@rm -f $@
 	@mkfs.fat -F 12 -n SYNTHOS -C $@ $$(( $(ESP_SECTORS) / 2 )) >/dev/null
 	@mmd -i $@ ::/EFI ::/EFI/BOOT ::/SYNTHOS
-	@mcopy -i $@ $(BUILD)/efi/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	@mcopy -i $@ $(OUT)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 	@mcopy -i $@ $(OUT)/kernel.bin ::/SYNTHOS/KERNEL.BIN
+	@if [ -f $(OUT)/SYNTHOS.CER ]; then mcopy -i $@ $(OUT)/SYNTHOS.CER ::/SYNTHOS/SYNTHOS.CER; fi
 
 $(BUILD)/efi/BOOTX64.EFI: arch/x86/efi/loader.c arch/x86/efi/trampoline.asm arch/x86/efi/blob.asm
 	@mkdir -p $(@D)

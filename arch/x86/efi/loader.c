@@ -246,6 +246,89 @@ static status fail(const char *why)
     return 1;
 }
 
+/* Under Secure Boot the firmware checks the signature of this loader, and the loader checks the kernel: the build
+   writes the SHA-256 of KERNEL.BIN into kernel_seal and then signs the loader. */
+static const volatile struct {
+    char tag[16];
+    u8 sum[32];
+} kernel_seal __attribute__((used)) = {"SynthOSKernelSum", {0}};
+
+static const u32 sha_k[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
+    0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08,
+    0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+
+static u32 ror(u32 x, int n)
+{
+    return x >> n | x << (32 - n);
+}
+
+static void sha_block(u32 *h, const u8 *p)
+{
+    u32 w[64], v[8];
+    for (int i = 0; i < 16; i++)
+        w[i] = (u32)p[4 * i] << 24 | (u32)p[4 * i + 1] << 16 | (u32)p[4 * i + 2] << 8 | p[4 * i + 3];
+    for (int i = 16; i < 64; i++)
+        w[i] = w[i - 16] + (ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ w[i - 15] >> 3) + w[i - 7] +
+               (ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ w[i - 2] >> 10);
+    for (int i = 0; i < 8; i++)
+        v[i] = h[i];
+    for (int i = 0; i < 64; i++) {
+        u32 t1 = v[7] + (ror(v[4], 6) ^ ror(v[4], 11) ^ ror(v[4], 25)) + ((v[4] & v[5]) ^ (~v[4] & v[6])) + sha_k[i] + w[i];
+        u32 t2 = (ror(v[0], 2) ^ ror(v[0], 13) ^ ror(v[0], 22)) + ((v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]));
+        for (int k = 7; k > 0; k--)
+            v[k] = v[k - 1];
+        v[4] += t1;
+        v[0] = t1 + t2;
+    }
+    for (int i = 0; i < 8; i++)
+        h[i] += v[i];
+}
+
+static void sha256(const u8 *data, uintn len, u8 *out)
+{
+    u32 h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    uintn i = 0;
+    for (; i + 64 <= len; i += 64)
+        sha_block(h, data + i);
+    u8 tail[128];
+    uintn rest = len - i, n = rest < 56 ? 64 : 128;
+    fill(tail, 0, sizeof(tail));
+    copy(tail, data + i, rest);
+    tail[rest] = 0x80;
+    u64 bits = (u64)len * 8;
+    for (int k = 0; k < 8; k++)
+        tail[n - 1 - k] = (u8)(bits >> (8 * k));
+    for (uintn k = 0; k < n; k += 64)
+        sha_block(h, tail + k);
+    for (int k = 0; k < 32; k++)
+        out[k] = (u8)(h[k / 4] >> (24 - 8 * (k % 4)));
+}
+
+static int secure_boot_on(void)
+{
+    u8 value = 0;
+    u32 attrs;
+    uintn size = 1;
+    return !ERROR(st->runtime->get_variable(u"SecureBoot", &global_guid, &attrs, &size, &value)) && value == 1;
+}
+
+static int kernel_sealed(const u8 *kernel, uintn size)
+{
+    u8 sum[32];
+    int set = 0, same = 1;
+    sha256(kernel, size, sum);
+    for (int i = 0; i < 32; i++) {
+        set |= kernel_seal.sum[i];
+        same &= kernel_seal.sum[i] == sum[i];
+    }
+    return set && same;
+}
+
 static u8 mask_shift(u32 mask)
 {
     u8 s = 0;
@@ -813,6 +896,8 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     u8 *kernel = load_kernel(root, &kernel_size);
     if (!kernel || kernel_size < 512 || *(u32 *)(kernel + 8) != KERNEL_MAGIC)
         return fail("\\SYNTHOS\\KERNEL.BIN is missing or damaged");
+    if (secure_boot_on() && !kernel_sealed(kernel, kernel_size))
+        return fail("Secure Boot: \\SYNTHOS\\KERNEL.BIN is not the kernel this loader was signed with");
 
     fill(bi, 0, sizeof(*bi));
     bi->magic = BOOT_MAGIC;
