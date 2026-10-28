@@ -1291,6 +1291,10 @@ static int spawn_args_run(struct spawn_args *a, int argc, char **argv)
     const char *app = a->app;
     DWORD *exit_code = &a->exit_code;
     const char *base = path_basename(argv[0]);
+    if (!str_casecmp(base, "msiexec") || !str_casecmp(base, "msiexec.exe")) {
+        *exit_code = (DWORD)msiexec_main(w32->ctx->sh, argc, argv);
+        return 0;
+    }
     if ((!str_casecmp(base, "cmd") || !str_casecmp(base, "cmd.exe")) && argc > 1 &&
         (!str_casecmp(argv[1], "/c") || !str_casecmp(argv[1], "/k"))) {
         char rest[1024] = "";

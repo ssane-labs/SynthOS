@@ -443,6 +443,12 @@ static void seed_machine(struct reg_key *m)
         set_string(sf, "Common AppData", REG_SZ, "C:\\ProgramData", true);
     }
     walk(m, "SOFTWARE\\Classes", true, NULL);
+    struct reg_key *msi = walk(m, "SOFTWARE\\Classes\\.msi", true, NULL);
+    if (msi)
+        set_string(msi, "", REG_SZ, "Msi.Package", true);
+    struct reg_key *msi_cmd = walk(m, "SOFTWARE\\Classes\\Msi.Package\\shell\\open\\command", true, NULL);
+    if (msi_cmd)
+        set_string(msi_cmd, "", REG_SZ, "msiexec.exe /i \"%1\"", true);
     walk(m, "SOFTWARE\\Policies\\Microsoft", true, NULL);
     walk(m, "SOFTWARE\\Clients\\StartMenuInternet", true, NULL);
     walk(m, "SOFTWARE\\RegisteredApplications", true, NULL);
@@ -1859,6 +1865,39 @@ bool w32_reg_write(const char *path, const char *name, const char *text)
     set_string(k, name ? name : "", REG_SZ, text, false);
     w32_registry_flush();
     return true;
+}
+
+/* what installers write: any type, under a path such as "HKLM\\Software\\X" */
+bool w32_reg_set(const char *path, const char *name, uint32_t type, const void *data, uint32_t size)
+{
+    const char *rest;
+    HKEY base = root_named(path, &rest);
+    LONG err;
+    struct reg_key *k = base ? open_path(base, rest, true, NULL, &err) : NULL;
+    if (!k || set_value(k, name ? name : "", type, data, size) != 0)
+        return false;
+    w32_registry_flush();
+    return true;
+}
+
+bool w32_reg_delete_value(const char *path, const char *name)
+{
+    const char *rest;
+    HKEY base = root_named(path, &rest);
+    bool ok = base && reg_delete_value(base, rest, name ? name : "") == 0;
+    if (ok)
+        w32_registry_flush();
+    return ok;
+}
+
+bool w32_reg_delete_key(const char *path)
+{
+    const char *rest;
+    HKEY base = root_named(path, &rest);
+    bool ok = base && rest[0] == '\\' && reg_delete_key(base, rest + 1, true) == 0;
+    if (ok)
+        w32_registry_flush();
+    return ok;
 }
 
 /* the names of a key's subkeys, one call per name */

@@ -270,6 +270,26 @@ wintest shell | grep shellexec
 shellexec ok=1 process=1 code=7
 wincxxeh
 cxx 43242 destroyed 5
+msiexec /i C:/apps/synthtest.msi /qn | grep Installed
+Installed 3 files, 1 shortcuts and 3 registry values.
+msiexec /i C:/apps/synthtest.msi /qn > /dev/null; echo rc=$?
+rc=0
+cat 'C:/Program Files/SynthTest/data.txt' | wc -c
+7800
+reg query HKLM/Software/SynthCo/SynthTest /v Level
+    Level    REG_DWORD    0x7
+reg query HKLM/Software/SynthCo/SynthTest /v Install
+    Install    REG_SZ    C:\Program Files\SynthTest
+shortcut -l 'C:/ProgramData/Microsoft/Windows/Start Menu/Programs/Synth Test/Synth Test.lnk' | grep target
+target: C:\Program Files\SynthTest\readme.txt
+reg query HKLM/SOFTWARE/Microsoft/Windows/CurrentVersion/Uninstall/{B64FA32C-49B5-417C-9420-B141332C48FE} /v DisplayName
+    DisplayName    REG_SZ    Synth Test App
+msiexec /x {B64FA32C-49B5-417C-9420-B141332C48FE} | grep Removed
+Removed 3 files, 1 shortcuts and 3 registry values.
+cat 'C:/Program Files/SynthTest/data.txt' 2>/dev/null; echo gone=$?
+gone=1
+reg query HKLM/Software/SynthCo/SynthTest /v Level 2>/dev/null; echo regone=$?
+regone=-1
 wintest registry | grep delete
 reg delete=5 tree=0 gone=2
 reg add HKCU/Software/Test /v Count /t REG_DWORD /d 42 > /dev/null; reg query HKCU/Software/Test /v Count

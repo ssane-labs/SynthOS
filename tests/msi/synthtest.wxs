@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Synth Test App" Language="1033" Version="1.2.3" Manufacturer="SynthCo"
+           UpgradeCode="12345678-1234-1234-1234-123456789abc">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+    <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLDIR" Name="SynthTest">
+          <Component Id="CmpMain" Guid="11111111-2222-3333-4444-555555555555">
+            <File Id="FileReadme" Source="src/readme.txt" KeyPath="yes" />
+            <File Id="FileData" Source="src/data.txt" />
+            <RegistryValue Root="HKLM" Key="Software\SynthCo\SynthTest" Name="Install" Type="string" Value="[INSTALLDIR]" />
+            <RegistryValue Root="HKLM" Key="Software\SynthCo\SynthTest" Name="Level" Type="integer" Value="7" />
+          </Component>
+          <Component Id="CmpBlob" Guid="11111111-2222-3333-4444-555555555556">
+            <File Id="FileBlob" Source="src/blob.bin" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppMenuDir" Name="Synth Test">
+          <Component Id="CmpShortcut" Guid="11111111-2222-3333-4444-555555555557">
+            <Shortcut Id="ShortMain" Name="Synth Test" Target="[#FileReadme]" WorkingDirectory="INSTALLDIR" />
+            <RemoveFolder Id="RmAppMenuDir" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\SynthCo\SynthTest" Name="menu" Type="string" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="Complete" Title="Synth Test" Level="1">
+      <ComponentRef Id="CmpMain" />
+      <ComponentRef Id="CmpBlob" />
+      <ComponentRef Id="CmpShortcut" />
+    </Feature>
+  </Product>
+</Wix>
