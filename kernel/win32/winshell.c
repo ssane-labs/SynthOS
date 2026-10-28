@@ -183,6 +183,12 @@ bool winshell_command(const char *verb, const char *target, const char *params, 
     return true;
 }
 
+/* built-in tools have no file on disk: the shell runs them itself */
+static bool builtin_program(const char *win)
+{
+    return !str_casecmp(path_basename(win), "msiexec.exe");
+}
+
 /* The program a Windows command line starts, as a SynthOS path, and where its arguments begin. An unquoted program
    path with spaces is tried a word at a time, as CreateProcess does. */
 bool winshell_split(const char *cmdline, char *program, size_t cap, const char **args)
@@ -204,7 +210,8 @@ bool winshell_split(const char *cmdline, char *program, size_t cap, const char *
             size_t n = sp ? (size_t)(sp - cmdline) : strlen(cmdline);
             str_copy(win, cmdline, MIN(n + 1, sizeof(win)));
             rest = cmdline + n;
-            if (!sp || (winpath_to_vfs("/", win, program, cap) == 0 && vfs_exists(program) && !vfs_is_dir(program)))
+            if (!sp || (winpath_to_vfs("/", win, program, cap) == 0 &&
+                        (builtin_program(win) || (vfs_exists(program) && !vfs_is_dir(program)))))
                 break;
             rest = sp + 1;
         }
@@ -213,7 +220,7 @@ bool winshell_split(const char *cmdline, char *program, size_t cap, const char *
         rest++;
     if (args)
         *args = rest;
-    return winpath_to_vfs("/", win, program, cap) == 0 && vfs_exists(program);
+    return winpath_to_vfs("/", win, program, cap) == 0 && (vfs_exists(program) || builtin_program(win));
 }
 
 static bool browser_at(const char *root, const char *key, struct winshell_browser *b)
