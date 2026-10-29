@@ -50,7 +50,7 @@ CFLAGS := $(ARCH_FLAGS) -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-pr
 ifneq ($(X64),)
 CFLAGS := $(filter-out -fno-pic -fno-pie,$(CFLAGS)) -fpie
 endif
-LDFLAGS := $(if $(CROSS),,$(if $(X64),-m elf_x86_64 -z max-page-size=4096 -no-pie,-m elf_i386)) -nostdlib \
+LDFLAGS := $(if $(CROSS),,$(if $(X64),-m elf_x86_64 -z max-page-size=4096 -no-pie --no-relax,-m elf_i386)) -nostdlib \
            -T arch/x86/$(if $(X64),64/)linker.ld $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx && echo --no-warn-rwx-segments)
 HOSTCFLAGS := -std=gnu11 -O2 -Wall -Wextra -Iinclude -DSYNTH_TOOL
 

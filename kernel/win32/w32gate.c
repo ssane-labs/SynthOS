@@ -21,7 +21,7 @@ struct gate_ret {
 };
 
 extern const struct w32_sig __start_w32sigs[], __stop_w32sigs[];
-extern char __start_text32[], __stop_text32[], w32_gate32[];
+extern char __start_text32[], __stop_text32[], __text_start[], w32_gate32[];
 uint32_t crt_cxx_frame_gate;
 
 void w32_native_call(const void *fn, const uint64_t ints[6], const uint64_t sse[8], const uint64_t *stack,
@@ -105,7 +105,8 @@ static const struct w32_sig *sig_of(const void *fn, size_t *index)
 void *w32_guest_addr(const void *fn)
 {
     size_t i;
-    if (!fn || w32_native_code(fn) || (uintptr_t)fn >= VMM_USER_START)
+    /* program code, 32-bit stubs and data stay as they are */
+    if (!fn || w32_native_code(fn) || (const char *)fn < __text_start || (const char *)fn >= __start_text32)
         return (void *)fn;
     if (!sigs)
         w32_gate_init();

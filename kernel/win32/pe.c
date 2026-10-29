@@ -257,21 +257,35 @@ static void w32_missing(const char *what)
     ksnprintf(w32->message, sizeof(w32->message), "%s is not supported yet", what);
     w32_exit(0xc0000139u);
 }
+W32_GATE(w32_missing);
 
 static void *missing_stub(const char *module, const char *symbol)
 {
     char name[128];
     ksnprintf(name, sizeof(name), "%s!%s", module, symbol);
     char *saved = w32_strdup(name);
-    uint8_t *code = w32_alloc(12);
+    uint8_t *code = w32_alloc(16);
     if (!saved || !code)
         return NULL;
+    uint32_t text = (uint32_t)(uintptr_t)saved;
     code[0] = 0x68;
-    memcpy(code + 1, &saved, 4);
+    memcpy(code + 1, &text, 4);
+#ifdef __x86_64__
+    /* call [gate]: w32_missing is 64-bit code, the program reaches it through its call gate stub */
+    static uint32_t gate;
+    if (!gate)
+        gate = (uint32_t)(uintptr_t)w32_guest_addr((const void *)w32_missing);
+    uint32_t at = (uint32_t)(uintptr_t)&gate;
+    code[5] = 0xff;
+    code[6] = 0x15;
+    memcpy(code + 7, &at, 4);
+    code[11] = 0xcc;
+#else
     code[5] = 0xe8;
     int32_t rel = (int32_t)((uintptr_t)w32_missing - (uintptr_t)(code + 10));
     memcpy(code + 6, &rel, 4);
     code[10] = 0xcc;
+#endif
     return code;
 }
 
@@ -447,6 +461,12 @@ static void *relay(void *fn, const char *module, const char *symbol)
 {
     static const char *const noisy[] = {"SRWLock", "CriticalSection", "LastError", "TlsGetValue", "TlsSetValue",
                                         "FlsGetValue", "Interlocked", "HeapAlloc", "HeapFree", "HeapReAlloc"};
+#ifdef __x86_64__
+    UNUSED(noisy);
+    UNUSED(module);
+    UNUSED(symbol);
+    return fn;
+#endif
     if (!w32_trace || !fn)
         return fn;
     for (size_t i = 0; i < ARRAY_SIZE(noisy); i++)
@@ -485,7 +505,7 @@ static void *resolve(struct w32_image *dll, const char *module, const char *symb
         return pe64 ? w64_stub(module, symbol, ordinal) : missing_stub(module, symbol ? symbol : "?");
     if (dll->builtin) {
         const char *name = symbol ? symbol : w32_builtin_ordinal_name(dll->name, ordinal);
-        fn = symbol ? builtin_lookup(dll->name, symbol) : builtin_ordinal(dll->name, ordinal);
+        fn = w32_guest_addr(symbol ? builtin_lookup(dll->name, symbol) : builtin_ordinal(dll->name, ordinal));
         if (fn && name)
             return relay(fn, dll->name, name);
     } else {
@@ -505,7 +525,7 @@ static void *resolve(struct w32_image *dll, const char *module, const char *symb
 static void *export_lookup(struct w32_image *img, const char *name, uint32_t ordinal, int depth)
 {
     if (img->builtin)
-        return name ? builtin_lookup(img->name, name) : builtin_ordinal(img->name, ordinal);
+        return w32_guest_addr(name ? builtin_lookup(img->name, name) : builtin_ordinal(img->name, ordinal));
     const uint8_t *mem = (const uint8_t *)img->base;
     uint32_t lfanew = rd32(mem + 0x3c);
     uint32_t opt = lfanew + 24;
@@ -548,7 +568,7 @@ static void *export_lookup(struct w32_image *img, const char *name, uint32_t ord
             return w64_stub(target->name, dot[1] == '#' ? NULL : dot + 1,
                             dot[1] == '#' ? (uint32_t)str_to_long(dot + 2, NULL, 10) : 0);
         return dot[1] == '#' ? export_lookup(target, NULL, (uint32_t)str_to_long(dot + 2, NULL, 10), depth + 1)
-                             : (target->builtin ? builtin_lookup(target->name, dot + 1)
+                             : (target->builtin ? w32_guest_addr(builtin_lookup(target->name, dot + 1))
                                                 : export_lookup(target, dot + 1, 0, depth + 1));
     }
     return (void *)(img->base + fn);

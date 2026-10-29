@@ -15,6 +15,7 @@ section .entry
 global _start
 global boot_pml4
 global boot_pack
+global boot_pdpt_low
 extern x86_main
 extern kernel_sectors
 extern __bss_start

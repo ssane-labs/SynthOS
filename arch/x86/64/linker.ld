@@ -16,6 +16,7 @@ SECTIONS
     . += KOFF;
 
     .text : AT(ADDR(.text) - KOFF) {
+        __text_start = .;
         *(.text .text.*)
         . = ALIGN(16);
         __start_text32 = .;
