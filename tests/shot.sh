@@ -2,7 +2,7 @@
 # usage: tests/shot.sh IMAGE OUT.png [seconds] [keys...]   (a key 'sleep:N' pauses N seconds)
 img=$1; out=$2; wait=${3:-2}; shift 3 2>/dev/null
 sock=$(mktemp -u /tmp/synthos-mon.XXXXXX)
-${QEMU:-qemu-system-x86_64} -drive format=raw,file="$img" -m 256 ${QEMU_EXTRA} -display none -monitor unix:$sock,server,nowait &
+${QEMU:-qemu-system-x86_64} -drive format=raw,file="$img",snapshot=on -m 256 ${QEMU_EXTRA} -display none -monitor unix:$sock,server,nowait &
 pid=$!
 sleep "$wait"
 for k in "$@"; do

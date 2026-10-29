@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lists the imports of Windows programs that SynthOS does not provide yet.
 
-usage: tools/w32missing.py build/serial/kernel.elf DIR_OR_FILES...
+usage: tools/w32missing.py build/serial32/kernel.elf DIR_OR_FILES...
 
 DLLs that ship next to the programs are resolved against their own exports; everything else is looked up in the
 built-in modules of the kernel (with the same api-set aliases as kernel/win32/pe.c). Needs python3-pefile.

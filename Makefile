@@ -1,6 +1,6 @@
 #  SynthOS build
 #
-#  make            build the bootable disk image (build/synthos.img)
+#  make            build the bootable disk image (build/vga/synthos.img, 64-bit; ARCH=i686 for old PCs)
 #  make usb        the image for a USB stick (build/synthos-usb.img)
 #  make run        boot it in QEMU
 #  make test       build a serial-console image and run the automated tests
@@ -9,10 +9,12 @@
 include config.mk
 
 BUILD    ?= build
-# ARCH=x86_64 builds the 64-bit kernel (build/vga64, build/serial64); it does not run Windows programs yet
-ARCH     ?= i686
+# the 64-bit kernel by default; ARCH=i686 builds the 32-bit one for old PCs (i486 and up: build/vga32, build/serial32,
+# build/synthos-usb32.img)
+ARCH     ?= x86_64
 X64      := $(filter x86_64,$(ARCH))
-OUT      := $(BUILD)/$(if $(SERIAL),serial,vga)$(if $(X64),64)
+SUFFIX   := $(if $(X64),,32)
+OUT      := $(BUILD)/$(if $(SERIAL),serial,vga)$(SUFFIX)
 IMAGE    := $(OUT)/synthos.img
 
 ifneq ($(X64),)
@@ -404,11 +406,11 @@ run: $(IMAGE)
 
 run-serial:
 	@$(MAKE) --no-print-directory SERIAL=1
-	$(QEMU) -drive format=raw,file=$(BUILD)/serial$(if $(X64),64)/synthos.img -m 256 -nographic $(QEMU_FLAGS)
+	$(QEMU) -drive format=raw,file=$(BUILD)/serial$(SUFFIX)/synthos.img -m 256 -nographic $(QEMU_FLAGS)
 
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
-	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
+	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(SUFFIX)/synthos.img
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools
@@ -418,7 +420,7 @@ test-crypto:
 
 test-hw:
 	@$(MAKE) --no-print-directory SERIAL=1
-	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/hw.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
+	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/hw.sh $(BUILD)/serial$(SUFFIX)/synthos.img
 
 OVMF ?= $(firstword $(wildcard /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/edk2/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd))
 OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd))
@@ -431,7 +433,7 @@ run-uefi: $(IMAGE)
 
 # the image to write to a USB stick (Rufus in DD mode, balenaEtcher or dd); the data partition grows to the stick
 usb: $(IMAGE)
-	@python3 -I tools/mkusb.py $(IMAGE) $(BUILD)/synthos-usb.img
+	@python3 -I tools/mkusb.py $(IMAGE) $(BUILD)/synthos-usb$(SUFFIX).img
 
 clean:
 	rm -rf $(BUILD)

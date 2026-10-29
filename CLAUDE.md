@@ -4,13 +4,14 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
 
 ## Commands
 
-- `make` — build `build/vga/synthos.img` (own bootloader + kernel + ramdisk)
+- `make` — build `build/vga/synthos.img` (own bootloader + 64-bit kernel + ramdisk)
 - `make test` — serial-console build, boots in QEMU, runs `tests/run.sh` (must stay at 0 failures; starts local
   HTTPS/cookie servers when `openssl`/`python3` exist)
-- `make test-hw` — same image on BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI and i486 (needs `ovmf`), then installs next to a
+- `make test-hw` — same image on BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI (+ i486 with ARCH=i686; needs `ovmf`), then installs next to a
   GPT "Windows" partition (UEFI, boot-entry registration) and over a whole disk (BIOS), ~4 min
-- `make ARCH=x86_64` — the 64-bit kernel (`build/vga64`, `build/serial64`; any target: `test`, `test-hw`, `usb`);
-  arch code in `arch/x86/64/` replaces cpu.c/paging.c/entry/isr/BIOS and AP start-up. There `kernel/win32` is x32 code
+- The default build is the 64-bit kernel; `make ARCH=i686` builds the 32-bit one for old PCs (`build/vga32`,
+  `build/serial32`, `build/synthos-usb32.img`; any target: `test`, `test-hw`, `usb`); both must pass `make test`.
+  64-bit arch code in `arch/x86/64/` replaces cpu.c/paging.c/entry/isr/BIOS and AP start-up. There `kernel/win32` is x32 code
   (clang, 4-byte pointers = the layout 32-bit programs use), converted to ELF64; programs run in compatibility mode
   and reach built-ins through the call gate (`w32gate.c`, signatures from `tools/w32sig.py`). Kernel structures it
   shares keep the 64-bit layout with `K64(...)`/`KARR(...)` (`synth/types.h`); call program code through
@@ -26,7 +27,7 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
   (the VGA build boots into the desktop; keys go to the Terminal window, `launch <app>` opens apps;
   a key `sleep:N` pauses, `AFTER=N` waits before the shot, `QEMU_EXTRA` adds flags)
 - `prof -o file cmd` inside the OS + `tools/profsym.py build/<variant>/kernel.elf < file` — where time goes
-- `tools/w32audit.py build/serial/kernel.elf` — every built-in Win32 export must pop the same stack bytes as
+- `tools/w32audit.py build/serial32/kernel.elf` — every built-in Win32 export must pop the same stack bytes as
   Wine's .spec says (run it after adding exports); Ctrl+T while a Win32 program runs dumps its processes/threads
 
 ## Rules

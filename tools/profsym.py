@@ -24,7 +24,8 @@ for line in sys.stdin:
         continue
     addr, count = int(m.group(1), 16), int(m.group(2))
     i = bisect.bisect_right(addrs, addr) - 1
-    name = syms[i][1] if i >= 0 and addr < 0x400000 else "(program code)"
+    kernel = addr < 0x400000 or 0xb0000000 <= addr < 0xc0000000
+    name = syms[i][1] if i >= 0 and kernel else "(program code)"
     totals[name] = totals.get(name, 0) + count
 for name, count in sorted(totals.items(), key=lambda kv: -kv[1]):
     print(f"{count:7d} {100.0 * count / max(samples, 1):5.1f}%  {name}")

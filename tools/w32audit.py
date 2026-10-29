@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks that built-in Win32 exports clean up the stack like Windows does.
 
-usage: tools/w32audit.py build/serial/kernel.elf
+usage: tools/w32audit.py build/serial32/kernel.elf
 
 Each export's `ret N` in the kernel is compared with the argument list in Wine's
 .spec file for the same DLL (downloaded once into build/wine-specs). A stdcall
@@ -9,7 +9,7 @@ function that pops the wrong number of bytes corrupts the caller's stack.
 Needs python3-capstone and network access on the first run.
 """
 import sys, struct, re, os, subprocess, urllib.request, capstone
-elf = sys.argv[1] if len(sys.argv) > 1 else 'build/serial/kernel.elf'
+elf = sys.argv[1] if len(sys.argv) > 1 else 'build/serial32/kernel.elf'
 CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(elf))), 'wine-specs')
 # never return, or tail-call a cdecl helper
 KNOWN = {'DebugBreak', 'ExitProcess', 'ExitThread', 'FatalExit', 'GetACP'}
