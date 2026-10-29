@@ -1,7 +1,7 @@
 #include <synth/crypto.h>
 #include <synth/string.h>
 
-static uint8_t sbox[256];
+static uint8_t sbox[256], inv_sbox[256];
 static uint32_t te[4][256];
 static bool tables_ready;
 
@@ -24,6 +24,8 @@ static void build_tables(void)
         sbox[p] = x ^ 0x63;
     } while (p != 1);
     sbox[0] = 0x63;
+    for (int i = 0; i < 256; i++)
+        inv_sbox[sbox[i]] = (uint8_t)i;
     for (int i = 0; i < 256; i++) {
         uint8_t s = sbox[i], s2 = xtime(s), s3 = s2 ^ s;
         uint32_t t = (uint32_t)s2 << 24 | (uint32_t)s << 16 | (uint32_t)s << 8 | s3;
@@ -94,6 +96,40 @@ void aes_encrypt(const struct aes *a, const uint8_t in[16], uint8_t out[16])
     put_be32(out + 4, sub_word((s1 & 0xff000000) | (s2 & 0xff0000) | (s3 & 0xff00) | (s0 & 0xff)) ^ rk[1]);
     put_be32(out + 8, sub_word((s2 & 0xff000000) | (s3 & 0xff0000) | (s0 & 0xff00) | (s1 & 0xff)) ^ rk[2]);
     put_be32(out + 12, sub_word((s3 & 0xff000000) | (s0 & 0xff0000) | (s1 & 0xff00) | (s2 & 0xff)) ^ rk[3]);
+}
+
+static uint8_t gmul(uint8_t a, uint8_t b)
+{
+    uint8_t p = 0;
+    for (; b; b >>= 1, a = xtime(a))
+        if (b & 1)
+            p ^= a;
+    return p;
+}
+
+/* the inverse cipher, byte by byte: decryption is rare (Windows programs that store data with BCrypt or CryptoAPI) */
+void aes_decrypt(const struct aes *a, const uint8_t in[16], uint8_t out[16])
+{
+    uint8_t s[16], t[16];
+    for (int i = 0; i < 16; i++)
+        s[i] = in[i] ^ (uint8_t)(a->rk[4 * a->rounds + i / 4] >> (24 - 8 * (i % 4)));
+    for (int r = a->rounds - 1; r >= 0; r--) {
+        for (int c = 0; c < 4; c++)
+            for (int row = 0; row < 4; row++)
+                t[((c + row) % 4) * 4 + row] = s[c * 4 + row];
+        for (int i = 0; i < 16; i++)
+            s[i] = inv_sbox[t[i]] ^ (uint8_t)(a->rk[4 * r + i / 4] >> (24 - 8 * (i % 4)));
+        if (!r)
+            break;
+        for (int c = 0; c < 4; c++) {
+            uint8_t a0 = s[4 * c], a1 = s[4 * c + 1], a2 = s[4 * c + 2], a3 = s[4 * c + 3];
+            s[4 * c] = gmul(a0, 14) ^ gmul(a1, 11) ^ gmul(a2, 13) ^ gmul(a3, 9);
+            s[4 * c + 1] = gmul(a0, 9) ^ gmul(a1, 14) ^ gmul(a2, 11) ^ gmul(a3, 13);
+            s[4 * c + 2] = gmul(a0, 13) ^ gmul(a1, 9) ^ gmul(a2, 14) ^ gmul(a3, 11);
+            s[4 * c + 3] = gmul(a0, 11) ^ gmul(a1, 13) ^ gmul(a2, 9) ^ gmul(a3, 14);
+        }
+    }
+    memcpy(out, s, 16);
 }
 
 /* GHASH with 8-bit tables in 32-bit words (Shoup): m[b] is H times the byte b, last8[r] folds back the 8 bits

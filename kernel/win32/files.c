@@ -263,6 +263,27 @@ long w32_handle_write(HANDLE h, const void *buf, size_t n)
     }
 }
 
+/* what GetProcessIoCounters reports: reads and writes through handles, with their bytes */
+static W32_STATE uint64_t io_reads, io_writes, io_read_bytes, io_write_bytes;
+
+static BOOL WINAPI GetProcessIoCounters(HANDLE process, uint64_t *io)
+{
+    if (!io) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    struct w32_object *o = w32_handle_get(process);
+    bool self = process == (HANDLE)(intptr_t)-1 || !o || o->type != WH_PROCESS || !o->max;
+    memset(io, 0, 6 * sizeof(uint64_t));
+    if (self) {
+        io[0] = io_reads;
+        io[1] = io_writes;
+        io[3] = io_read_bytes;
+        io[4] = io_write_bytes;
+    }
+    return TRUE;
+}
+
 static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, void *overlapped)
 {
     uint32_t *ov = overlapped;
@@ -284,6 +305,8 @@ static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, void *ove
     }
     if (read)
         *read = (DWORD)got;
+    io_reads++;
+    io_read_bytes += (uint64_t)got;
     if (ov) {
         if (!got && n && o && o->type == WH_FILE) {
             w32_ov_set(ov, 0xc0000011u, 0);
@@ -316,6 +339,8 @@ static BOOL WINAPI WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written,
     }
     if (written)
         *written = (DWORD)put;
+    io_writes++;
+    io_write_bytes += (uint64_t)put;
     if (ov)
         w32_io_complete(o, ov, 0, (uint32_t)put, true);
     return TRUE;
@@ -1508,7 +1533,8 @@ static DWORD WINAPI ExpandEnvironmentStringsW(LPCWSTR in, LPWSTR out, DWORD size
 }
 
 static const struct w32_export kernel32_files[] = {
-    W32_FN(CreateFileA), W32_FN(CreateFileW), W32_FN(CreateFile2), W32_FN(ReadFile), W32_FN(WriteFile), W32_FN(SetFilePointer),
+    W32_FN(CreateFileA), W32_FN(CreateFileW), W32_FN(CreateFile2), W32_FN(ReadFile), W32_FN(WriteFile),
+    W32_FN(GetProcessIoCounters), W32_FN(SetFilePointer),
     W32_FN(SetFilePointerEx), W32_FN(GetFileSize), W32_FN(GetFileSizeEx), W32_FN(GetFileType),
     W32_FN(SetEndOfFile), W32_FN(FlushFileBuffers), W32_FN(DeleteFileA), W32_FN(DeleteFileW), W32_FN(MoveFileA),
     W32_FN(MoveFileW), W32_FN(MoveFileExA), W32_FN(MoveFileExW), W32_FN(CopyFileA), W32_FN(CopyFileW),

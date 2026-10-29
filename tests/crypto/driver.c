@@ -25,7 +25,9 @@ static void hex(const uint8_t *p, size_t n)
 }
 static const struct hash_alg *alg(const char *s)
 {
-    return !strcmp(s, "sha256") ? &hash_sha256 : !strcmp(s, "sha384") ? &hash_sha384 : &hash_sha512;
+    return !strcmp(s, "sha256") ? &hash_sha256 : !strcmp(s, "sha384") ? &hash_sha384 : !strcmp(s, "sha1") ? &hash_sha1
+           : !strcmp(s, "md5")    ? &hash_md5
+                                  : &hash_sha512;
 }
 static uint8_t a[4096], b[4096], c[4096], d[4096], e[4096], o[8192];
 int main(int argc, char **argv)
@@ -40,6 +42,15 @@ int main(int argc, char **argv)
         const struct hash_alg *h = alg(argv[2]);
         hash_digest(h, a, n, o);
         hex(o, h->digest);
+    } else if (!strcmp(cmd, "aes")) {
+        size_t kl = unhex(argv[2], a);
+        unhex(argv[3], b);
+        struct aes k;
+        aes_init(&k, a, kl);
+        aes_encrypt(&k, b, o);
+        aes_decrypt(&k, o, o + 16);
+        hex(o, 16);
+        hex(o + 16, 16);
     } else if (!strcmp(cmd, "hkdf")) {
         const struct hash_alg *h = alg(argv[2]);
         size_t sl = unhex(argv[3], a), il = unhex(argv[4], b), fl = unhex(argv[5], c);

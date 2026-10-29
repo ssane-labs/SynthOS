@@ -250,7 +250,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win32/%.c
 ifneq ($(W32CC),)
 	@echo "  W32CC   $<"
 	@$(if $(wildcard programs/win32/$*.rc),$(W32CC:%gcc=%windres) -O coff -o $(BUILD)/$*.res.o programs/win32/$*.rc)
-	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -lshell32 -lshlwapi -lcomdlg32
+	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -lshell32 -lshlwapi -lcomdlg32 -lbcrypt -lsecur32
 	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"
@@ -356,7 +356,7 @@ test:
 test-crypto:
 	@mkdir -p $(BUILD)/tools
 	@$(HOSTCC) -O2 -Iinclude -o $(BUILD)/tools/cryptotest tests/crypto/driver.c kernel/crypto/hash.c kernel/crypto/aes.c \
-	    kernel/crypto/chacha.c kernel/crypto/x25519.c kernel/crypto/pk.c kernel/lib/sha256.c kernel/lib/sha1.c
+	    kernel/crypto/chacha.c kernel/crypto/x25519.c kernel/crypto/pk.c kernel/lib/sha256.c kernel/lib/sha1.c kernel/lib/md5.c
 	@python3 -I tests/crypto/check.py $(BUILD)/tools/cryptotest
 
 test-hw:

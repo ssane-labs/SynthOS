@@ -278,6 +278,18 @@ wintest shell | grep shellexec
 shellexec ok=1 process=1 code=7
 wincxxeh
 cxx 43242 destroyed 5
+wintest crypto | grep sha256
+sha256 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+wintest crypto | grep hmac
+hmac-sha1 de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9
+wintest crypto | grep aes
+aes enc=0 32 dec=0 27 same=1
+wintest crypto | grep md5
+md5 900150983cd24fb0d6963f7d28e17f72
+wintest crypto | grep base64
+base64 ok=1 'hello world'
+wintest crypto | grep username
+username ok=1 slash=1
 msiexec /i C:/apps/synthtest.msi /qn | grep Installed
 Installed 3 files, 1 shortcuts and 3 registry values.
 msiexec /i C:/apps/synthtest.msi /qn > /dev/null; echo rc=$?

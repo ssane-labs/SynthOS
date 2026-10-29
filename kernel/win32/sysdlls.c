@@ -292,29 +292,6 @@ static const struct w32_export version_exports[] = {
     W32_FN(VerQueryValueW),          W32_AS("VerQueryValueA", VerQueryValueW),
 };
 
-static LONG WINAPI BCryptGenRandom(HANDLE alg, BYTE *buf, ULONG len, ULONG flags)
-{
-    UNUSED(alg);
-    UNUSED(flags);
-    random_bytes(buf, len);
-    return 0;
-}
-
-static LONG WINAPI BCryptOpenAlgorithmProvider(HANDLE *alg, LPCWSTR id, LPCWSTR impl, ULONG flags)
-{
-    UNUSED(id);
-    UNUSED(impl);
-    UNUSED(flags);
-    *alg = (HANDLE)(uintptr_t)0x5bc00001u;
-    return 0;
-}
-
-static const struct w32_export bcrypt_exports[] = {
-    W32_FN(BCryptGenRandom),
-    W32_FN(BCryptOpenAlgorithmProvider),
-    W32_AS("BCryptCloseAlgorithmProvider", w32_zero2),
-};
-
 struct cert_context {
     DWORD encoding;
     const BYTE *data;
@@ -1423,7 +1400,6 @@ static const struct w32_export advapi_extra_exports[] = {
 };
 
 W32_EXPORTS(version_module, "version.dll", version_exports);
-W32_EXPORTS(bcrypt_module, "bcrypt.dll", bcrypt_exports);
 W32_EXPORTS(advapi_extra_module, "advapi32.dll", advapi_extra_exports);
 W32_EXPORTS(crypt32_module, "crypt32.dll", crypt32_exports);
 W32_EXPORTS(iphlpapi_module, "iphlpapi.dll", iphlpapi_exports);

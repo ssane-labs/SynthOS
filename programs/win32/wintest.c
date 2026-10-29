@@ -6,6 +6,9 @@
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <winhttp.h>
+#include <bcrypt.h>
+#define SECURITY_WIN32
+#include <security.h>
 
 static LONG WINAPI filter(EXCEPTION_POINTERS *info)
 {
@@ -669,6 +672,63 @@ static BOOL version_at_least(DWORD major, DWORD build)
 
 /* What installers rely on: exact names under mapped folders, an INI default coming back as it went in, honest
    version checks, and documents opening in the program the registry associates with them */
+static void hex_line(const char *what, const unsigned char *p, unsigned n)
+{
+    printf("%s ", what);
+    for (unsigned i = 0; i < n; i++)
+        printf("%02x", p[i]);
+    printf("\n");
+}
+
+/* CNG and CryptoAPI: hashes, HMAC, AES-CBC both ways, Base64, the logon name */
+static void crypto_test(void)
+{
+    BCRYPT_ALG_HANDLE alg, mac, aes;
+    BCRYPT_HASH_HANDLE h;
+    BCRYPT_KEY_HANDLE key;
+    unsigned char out[64], iv[16], iv2[16], ct[48], pt[48];
+    DWORD len = 0, size = 0;
+    BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+    BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, (PUCHAR)&len, 4, &size, 0);
+    BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0);
+    BCryptHashData(h, (PUCHAR)"abc", 3, 0);
+    BCryptFinishHash(h, out, len, 0);
+    BCryptDestroyHash(h);
+    hex_line("sha256", out, len);
+    BCryptOpenAlgorithmProvider(&mac, BCRYPT_SHA1_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+    BCryptCreateHash(mac, &h, NULL, 0, (PUCHAR)"key", 3, 0);
+    BCryptHashData(h, (PUCHAR)"The quick brown fox jumps over the lazy dog", 43, 0);
+    BCryptFinishHash(h, out, 20, 0);
+    hex_line("hmac-sha1", out, 20);
+    BCryptOpenAlgorithmProvider(&aes, BCRYPT_AES_ALGORITHM, NULL, 0);
+    BCryptSetProperty(aes, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CBC, sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
+    BCryptGenerateSymmetricKey(aes, &key, NULL, 0, (PUCHAR)"0123456789abcdef", 16, 0);
+    memset(iv, 7, 16);
+    memcpy(iv2, iv, 16);
+    const char *msg = "a secret worth twenty-seven";
+    ULONG got = 0, back = 0;
+    NTSTATUS e = BCryptEncrypt(key, (PUCHAR)msg, 27, NULL, iv, 16, ct, sizeof(ct), &got, BCRYPT_BLOCK_PADDING);
+    NTSTATUS d = BCryptDecrypt(key, ct, got, NULL, iv2, 16, pt, sizeof(pt), &back, BCRYPT_BLOCK_PADDING);
+    printf("aes enc=%lx %lu dec=%lx %lu same=%d\n", (unsigned long)e, (unsigned long)got, (unsigned long)d,
+           (unsigned long)back, back == 27 && !memcmp(pt, msg, 27));
+    HCRYPTPROV prov;
+    HCRYPTHASH md5;
+    CryptAcquireContextA(&prov, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT);
+    CryptCreateHash(prov, CALG_MD5, 0, 0, &md5);
+    CryptHashData(md5, (const BYTE *)"abc", 3, 0);
+    len = sizeof(out);
+    CryptGetHashParam(md5, HP_HASHVAL, out, &len, 0);
+    CryptDestroyHash(md5);
+    hex_line("md5", out, len);
+    len = sizeof(out);
+    BOOL ok = CryptStringToBinaryA("aGVsbG8gd29ybGQ=", 0, CRYPT_STRING_BASE64, out, &len, NULL, NULL);
+    printf("base64 ok=%d '%.*s'\n", ok, (int)len, (char *)out);
+    char name[64];
+    ULONG n = sizeof(name);
+    ok = GetUserNameExA(NameSamCompatible, name, &n);
+    printf("username ok=%d slash=%d\n", ok, strchr(name, '\\') != NULL);
+}
+
 static void shell_test(void)
 {
     WIN32_FIND_DATAW fd;
@@ -736,6 +796,8 @@ int main(int argc, char **argv)
         gecko_test();
     } else if (!strcmp(mode, "shell")) {
         shell_test();
+    } else if (!strcmp(mode, "crypto")) {
+        crypto_test();
     } else if (!strcmp(mode, "opened")) {
         printf("opened %s\n", argc > 2 ? argv[2] : "?");
         return 7;

@@ -1,4 +1,5 @@
 #include <synth/crypto.h>
+#include <synth/sha1.h>
 #include <synth/string.h>
 
 static const uint64_t k512[80] = {
@@ -134,6 +135,15 @@ static void s512_update(union hash_ctx *c, const void *d, size_t n) { sha512_upd
 static void s384_final(union hash_ctx *c, uint8_t *o) { sha512_final(&c->s512, o, 48); }
 static void s512_final(union hash_ctx *c, uint8_t *o) { sha512_final(&c->s512, o, 64); }
 
+static void s1_init(union hash_ctx *c) { sha1_init(&c->s256); }
+static void s1_update(union hash_ctx *c, const void *d, size_t n) { sha1_update(&c->s256, d, n); }
+static void s1_final(union hash_ctx *c, uint8_t *o) { sha1_final(&c->s256, o); }
+static void m5_init(union hash_ctx *c) { md5_init(&c->s256); }
+static void m5_update(union hash_ctx *c, const void *d, size_t n) { md5_update(&c->s256, d, n); }
+static void m5_final(union hash_ctx *c, uint8_t *o) { md5_final(&c->s256, o); }
+
+const struct hash_alg hash_sha1 = {"sha1", 20, 64, s1_init, s1_update, s1_final};
+const struct hash_alg hash_md5 = {"md5", 16, 64, m5_init, m5_update, m5_final};
 const struct hash_alg hash_sha256 = {"sha256", 32, 64, s256_init, s256_update, s256_final};
 const struct hash_alg hash_sha384 = {"sha384", 48, 128, s384_init, s512_update, s384_final};
 const struct hash_alg hash_sha512 = {"sha512", 64, 128, s512_init, s512_update, s512_final};

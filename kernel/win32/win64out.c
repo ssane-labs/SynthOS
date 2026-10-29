@@ -9,6 +9,10 @@
 #define U(v) ((uint32_t)(uintptr_t)(v))
 
 static const struct w64_export out_exports[] = {
+    W64_OUT("BCryptCreateHash", A(1)),
+    W64_OUT("BCryptDuplicateHash", A(1)),
+    W64_OUT("BCryptGenerateSymmetricKey", A(1)),
+    W64_OUT("BCryptImportKey", A(3)),
     W64_OUT("BCryptOpenAlgorithmProvider", A(0)),
     W64_OUT("ConvertSidToStringSidA", A(1)),
     W64_OUT("ConvertSidToStringSidW", A(1)),
@@ -21,6 +25,7 @@ static const struct w64_export out_exports[] = {
     W64_OUT("CreatePipe", A(0) | A(1)),
     W64_OUT("CryptAcquireContextA", A(0)),
     W64_OUT("CryptAcquireContextW", A(0)),
+    W64_OUT("CryptCreateHash", A(4)),
     W64_OUT("DeriveAppContainerSidFromAppContainerName", A(1)),
     W64_OUT("GetAce", A(2)),
     W64_OUT("GetAcceptExSockaddrs", A(4) | A(6)),

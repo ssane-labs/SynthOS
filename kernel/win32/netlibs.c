@@ -70,28 +70,15 @@ static const struct w32_export secur32_exports[] = {
     W32_AS("InitializeSecurityContextW", w32_secerr12),
     W32_AS("QuerySecurityPackageInfoA", w32_secerr2),
     W32_AS("QuerySecurityPackageInfoW", w32_secerr2),
-    W32_AS("GetUserNameExA", w32_fail3),
-    W32_AS("GetUserNameExW", w32_fail3),
 };
 
 static const struct w32_export bcrypt_extra_exports[] = {
-    W32_AS("BCryptCreateHash", w32_status7),
-    W32_AS("BCryptDecrypt", w32_status10),
     W32_AS("BCryptDeriveKey", w32_status7),
-    W32_AS("BCryptDestroyHash", w32_zero1),
-    W32_AS("BCryptDestroyKey", w32_zero1),
     W32_AS("BCryptDestroySecret", w32_zero1),
-    W32_AS("BCryptEncrypt", w32_status10),
-    W32_AS("BCryptExportKey", w32_status7),
     W32_AS("BCryptFinalizeKeyPair", w32_status2),
-    W32_AS("BCryptFinishHash", w32_status4),
     W32_AS("BCryptGenerateKeyPair", w32_status4),
-    W32_AS("BCryptGetProperty", w32_status6),
-    W32_AS("BCryptHashData", w32_status4),
-    W32_AS("BCryptImportKey", w32_status9),
     W32_AS("BCryptImportKeyPair", w32_status7),
     W32_AS("BCryptSecretAgreement", w32_status4),
-    W32_AS("BCryptSetProperty", w32_status5),
     W32_AS("BCryptSignHash", w32_status8),
     W32_AS("BCryptVerifySignature", w32_status7),
 };
@@ -111,19 +98,13 @@ static const struct w32_export crypt32_extra_exports[] = {
     W32_AS("CertGetNameStringW", w32_one6),
     W32_AS("CryptDecodeObjectEx", w32_fail8),
     W32_AS("CryptQueryObject", w32_fail11),
-    W32_AS("CryptStringToBinaryA", w32_fail7),
-    W32_AS("CryptStringToBinaryW", w32_fail7),
     W32_AS("PFXImportCertStore", w32_fail3),
 };
 
 static const struct w32_export advapi_crypt_exports[] = {
-    W32_AS("CryptCreateHash", w32_fail5),
-    W32_AS("CryptDestroyHash", w32_one1),
     W32_AS("CryptDestroyKey", w32_one1),
     W32_AS("CryptEncrypt", w32_fail7),
     W32_AS("CryptDecrypt", w32_fail6),
-    W32_AS("CryptGetHashParam", w32_fail5),
-    W32_AS("CryptHashData", w32_fail4),
     W32_AS("CryptImportKey", w32_fail6),
 };
 

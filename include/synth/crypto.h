@@ -28,7 +28,7 @@ struct hash_alg {
     void (*final)(union hash_ctx *c, uint8_t *out);
 };
 
-extern const struct hash_alg hash_sha256, hash_sha384, hash_sha512;
+extern const struct hash_alg hash_sha256, hash_sha384, hash_sha512, hash_sha1, hash_md5;
 
 void sha384_init(struct sha512 *s);
 void sha512_init(struct sha512 *s);
@@ -57,6 +57,7 @@ struct aes {
 
 void aes_init(struct aes *a, const uint8_t *key, size_t key_len);
 void aes_encrypt(const struct aes *a, const uint8_t in[16], uint8_t out[16]);
+void aes_decrypt(const struct aes *a, const uint8_t in[16], uint8_t out[16]);
 
 struct gcm {
     struct aes aes;

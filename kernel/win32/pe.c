@@ -128,6 +128,8 @@ static const char *builtin_alias(const char *name)
                                           {"api-ms-win-security-", "advapi32.dll"},
                                           {"api-ms-win-power-", "powrprof.dll"},
                                           {"api-ms-win-appmodel-", "kernel32.dll"},
+                                          {"combase.dll", "ole32.dll"},
+                                          {"api-ms-win-core-com-", "ole32.dll"},
                                           {"psapi.dll", "kernel32.dll"}};
     for (size_t i = 0; i < ARRAY_SIZE(sets); i++)
         if (str_starts(name, sets[i][0]))
