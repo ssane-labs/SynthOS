@@ -141,6 +141,21 @@ int main(int argc, char **argv)
     }
     RemoveDirectoryA(folder);
 
+    /* a browser presenting software-rendered frames: one 1024x640 picture copied to a DC per frame */
+    BITMAPINFO frame = {{sizeof(BITMAPINFOHEADER), 1024, 640, 1, 32, BI_RGB}}, target = frame;
+    target.bmiHeader.biHeight = -640;
+    unsigned *pixels = calloc(1024 * 640, 4), *shown;
+    HDC mem = CreateCompatibleDC(NULL);
+    HBITMAP bm = CreateDIBSection(mem, &target, DIB_RGB_COLORS, (void **)&shown, NULL, 0);
+    SelectObject(mem, bm);
+    begin();
+    for (int i = 0; i < 60; i++)
+        StretchDIBits(mem, 0, 639, 1024, -640, 0, 0, 1024, 640, pixels, &frame, DIB_RGB_COLORS, SRCCOPY);
+    end("StretchDIBits 60 frames", 60, "frames");
+    DeleteDC(mem);
+    DeleteObject(bm);
+    free(pixels);
+
     fprintf(report, "total %lu ms (check %ld %lu %lu)\n", (unsigned long)total_ms, got & 1, (unsigned long)(sum & 1),
             (unsigned long)(acc & 0));
     return 0;

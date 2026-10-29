@@ -1885,14 +1885,24 @@ static void blit_dib(struct target *t, int dx, int dy, int dw, int dh, const str
         int ty = dy + (dh < 0 ? -y : y);
         if (ty < t->clip.y || ty >= t->clip.y + t->clip.h)
             continue;
-        int src_y = sy + (int)((int64_t)y * sh / dh);
+        int src_y = sy + (int)((int64_t)y * sh / ABS(dh));
         if (src_y < 0 || src_y >= h)
             continue;
+        if (bmi->bpp == 32 && dw == sw) {
+            /* unscaled 32-bit rows (how programs present frames) are copied as they are */
+            int row = bmi->height < 0 ? src_y : h - 1 - src_y;
+            const uint32_t *in = (const uint32_t *)bits + (size_t)row * (size_t)bmi->width + sx;
+            uint32_t *out = t->c->px + ty * t->c->stride + dx;
+            int x0 = MAX(MAX(t->clip.x - dx, -sx), 0), x1 = MIN(MIN(t->clip.x + t->clip.w - dx, bmi->width - sx), dw);
+            for (int x = x0; x < x1; x++)
+                out[x] = in[x] | 0xff000000u;
+            continue;
+        }
         for (int x = 0; x < ABS(dw); x++) {
             int tx = dx + (dw < 0 ? -x : x);
             if (tx < t->clip.x || tx >= t->clip.x + t->clip.w)
                 continue;
-            int src_x = sx + (int)((int64_t)x * sw / dw);
+            int src_x = sx + (int)((int64_t)x * sw / ABS(dw));
             if (src_x < 0 || src_x >= bmi->width)
                 continue;
             t->c->px[ty * t->c->stride + tx] = dib_pixel(bmi, bits, src_x, src_y);
@@ -2030,12 +2040,12 @@ static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx
     if (uses_src && !xmap)
         return FALSE;
     for (int x = 0; uses_src && x < adw; x++)
-        xmap[x] = sx + (int)((int64_t)x * sw / dw);
+        xmap[x] = sx + (int)((int64_t)x * sw / adw);
     for (int y = 0; y < ABS(dh); y++) {
         int ty = dt.oy + dy + (dh < 0 ? -y : y);
         if (ty < dt.clip.y || ty >= dt.clip.y + dt.clip.h)
             continue;
-        int yy = sy + (int)((int64_t)y * sh / dh);
+        int yy = sy + (int)((int64_t)y * sh / ABS(dh));
         for (int x = 0; x < adw; x++) {
             int tx = dt.ox + dx + (dw < 0 ? -x : x);
             if (tx < dt.clip.x || tx >= dt.clip.x + dt.clip.w)

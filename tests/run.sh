@@ -278,6 +278,14 @@ wintest shell | grep shellexec
 shellexec ok=1 process=1 code=7
 wincxxeh
 cxx 43242 destroyed 5
+wintest props | grep propstore
+propstore hr=0 count=1 same=1
+wintest props | grep clsid
+clsid hr=0 vt=72 same=1
+wintest props | grep flip
+flip lines=2 top=112233 bottom=445566
+wintest props | grep stockicon
+stockicon hr=0 icon=1 path=1
 wintest crypto | grep sha256
 sha256 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 wintest crypto | grep hmac

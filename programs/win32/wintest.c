@@ -5,6 +5,7 @@
 #include <wincrypt.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <propsys.h>
 #include <winhttp.h>
 #include <bcrypt.h>
 #define SECURITY_WIN32
@@ -729,6 +730,53 @@ static void crypto_test(void)
     printf("username ok=%d slash=%d\n", ok, strchr(name, '\\') != NULL);
 }
 
+/* propsys and shell32 helpers browsers use for jump lists and UAC shields */
+static const IID iid_property_store = {0x886d8eeb, 0x8cf2, 0x4446, {0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99}};
+
+static void props_test(void)
+{
+    HMODULE ps = LoadLibraryA("propsys.dll");
+    HRESULT(WINAPI * create)(REFIID, void **) = (void *)GetProcAddress(ps, "PSCreateMemoryPropertyStore");
+    HRESULT(WINAPI * from_clsid)(REFCLSID, PROPVARIANT *) = (void *)GetProcAddress(ps, "InitPropVariantFromCLSID");
+    IPropertyStore *store = NULL;
+    HRESULT hr = create ? create(&iid_property_store, (void **)&store) : E_FAIL;
+    PROPERTYKEY key = {{0x9f4c2855, 0x9f79, 0x4b39, {0xa8, 0xd0, 0xe1, 0xd4, 0x2d, 0xe1, 0xd5, 0xf3}}, 5};
+    PROPVARIANT v = {0}, got = {0};
+    v.vt = VT_LPWSTR;
+    v.pwszVal = L"Synth.Test";
+    DWORD count = 0;
+    if (SUCCEEDED(hr)) {
+        store->lpVtbl->SetValue(store, &key, &v);
+        store->lpVtbl->SetValue(store, &key, &v);
+        store->lpVtbl->GetCount(store, &count);
+        store->lpVtbl->GetValue(store, &key, &got);
+    }
+    printf("propstore hr=%lx count=%lu same=%d\n", (unsigned long)hr, count,
+           got.vt == VT_LPWSTR && !wcscmp(got.pwszVal, L"Synth.Test"));
+    PropVariantClear(&got);
+    if (store)
+        store->lpVtbl->Release(store);
+    PROPVARIANT c = {0};
+    hr = from_clsid ? from_clsid(&iid_property_store, &c) : E_FAIL;
+    printf("clsid hr=%lx vt=%d same=%d\n", (unsigned long)hr, c.vt,
+           c.vt == VT_CLSID && IsEqualGUID(c.puuid, &iid_property_store));
+    PropVariantClear(&c);
+    /* Firefox presents frames with a negative destination height: rows stored top first come out upright */
+    BITMAPINFO up = {{sizeof(BITMAPINFOHEADER), 1, 2, 1, 32, BI_RGB}}, down = {{sizeof(BITMAPINFOHEADER), 1, -2, 1, 32, BI_RGB}};
+    unsigned rows[2] = {0x112233, 0x445566}, *px;
+    HDC mem = CreateCompatibleDC(NULL);
+    HBITMAP bm = CreateDIBSection(mem, &down, DIB_RGB_COLORS, (void **)&px, NULL, 0);
+    SelectObject(mem, bm);
+    int lines = StretchDIBits(mem, 0, 1, 1, -2, 0, 0, 1, 2, rows, &up, DIB_RGB_COLORS, SRCCOPY);
+    printf("flip lines=%d top=%06x bottom=%06x\n", lines, px[0] & 0xffffff, px[1] & 0xffffff);
+    DeleteDC(mem);
+    DeleteObject(bm);
+    SHSTOCKICONINFO info = {sizeof(info)};
+    hr = SHGetStockIconInfo(SIID_SHIELD, SHGSI_ICON, &info);
+    printf("stockicon hr=%lx icon=%d path=%d\n", (unsigned long)hr, info.hIcon != NULL,
+           wcsstr(info.szPath, L"shell32.dll") != NULL);
+}
+
 static void shell_test(void)
 {
     WIN32_FIND_DATAW fd;
@@ -796,6 +844,8 @@ int main(int argc, char **argv)
         gecko_test();
     } else if (!strcmp(mode, "shell")) {
         shell_test();
+    } else if (!strcmp(mode, "props")) {
+        props_test();
     } else if (!strcmp(mode, "crypto")) {
         crypto_test();
     } else if (!strcmp(mode, "opened")) {

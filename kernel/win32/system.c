@@ -521,6 +521,45 @@ static BOOL WINAPI SHGetPathFromIDListW(const void *pidl, WCHAR *out)
     return TRUE;
 }
 
+/* SHSTOCKICONINFO: cbSize, hIcon, iSysImageIndex, iIcon, szPath[260] (536 bytes, 544 with a 64-bit hIcon); the shield
+   (77) is the system's, the rest the application icon, all said to live in shell32.dll */
+static long WINAPI SHGetStockIconInfo(int id, UINT flags, uint32_t *info)
+{
+    if (!info || (info[0] != 536 && info[0] != 544))
+        return (long)0x80070057;
+    HANDLE(WINAPI * load)(HANDLE, uintptr_t) =
+        (HANDLE(WINAPI *)(HANDLE, uintptr_t))w32_builtin_lookup("user32.dll", "LoadIconW");
+    uint32_t icon = (flags & 0x100) && load ? (uint32_t)load(NULL, id == 77 ? 32518 : 32512) : 0, *p = info + 2;
+    info[1] = icon;
+    if (info[0] == 544) {
+        info[1] = 0;
+        info[2] = icon;
+        info[3] = 0;
+        p = info + 4;
+    }
+    p[0] = (uint32_t)id;
+    p[1] = (uint32_t)id;
+    w32_cp_to_wide("C:\\Windows\\System32\\shell32.dll", -1, (WCHAR *)(p + 2), 260, 0);
+    return 0;
+}
+
+/* "Show in folder": opens the folder in Files; with no items the PIDL names the item itself, so its parent opens */
+static long WINAPI SHOpenFolderAndSelectItems(const void *folder, UINT count, const void **items, DWORD flags)
+{
+    UNUSED(items);
+    UNUSED(flags);
+    const WCHAR *w = pidl_path(folder);
+    char *name = w ? w32_narrow(w) : NULL, path[PATH_MAX_LEN], dir[PATH_MAX_LEN];
+    long r = (long)0x80070002;
+    if (name && w32_path(name, path, sizeof(path)) == 0 && vfs_exists(path)) {
+        path_dirname(path, dir, sizeof(dir));
+        open_natively(count ? path : dir, NULL);
+        r = 0;
+    }
+    w32_free(name);
+    return r;
+}
+
 static BOOL WINAPI SHGetPathFromIDListA(const void *pidl, char *out)
 {
     const WCHAR *path = pidl_path(pidl);
@@ -879,8 +918,8 @@ static const struct w32_export shell32_exports[] = {
     W32_FN(SHGetSpecialFolderLocation), W32_FN(SHGetFolderLocation), W32_FN(SHGetKnownFolderIDList),
     W32_FN(SHGetPathFromIDListW), W32_FN(SHGetPathFromIDListA), W32_FN(SHGetPathFromIDListEx),
     W32_FN(SHParseDisplayName), W32_FN(ILCreateFromPathA), W32_FN(ILClone), W32_FN(ILGetSize),
-    W32_AS("SHOpenFolderAndSelectItems", w32_notimpl4), W32_AS("SHGetFileInfoW", w32_zero5),
-    W32_AS("SHAppBarMessage", w32_zero2), W32_AS("SHGetStockIconInfo", w32_notimpl3),
+    W32_FN(SHOpenFolderAndSelectItems), W32_AS("SHGetFileInfoW", w32_zero5),
+    W32_AS("SHAppBarMessage", w32_zero2), W32_FN(SHGetStockIconInfo),
     W32_AS("SHGetPropertyStoreForWindow", shell_notimpl3), W32_AS("SetCurrentProcessExplicitAppUserModelID", w32_zero1),
     W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("DragQueryFileW", w32_zero4),
     W32_AS("SHCreateAssociationRegistration", shell_notimpl2), W32_AS("SHChangeNotifyRegister", w32_zero6),

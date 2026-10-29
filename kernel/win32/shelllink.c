@@ -446,6 +446,139 @@ static uint32_t WINAPI CoCreateInstance(const uint8_t *clsid, void *outer, DWORD
     return hr;
 }
 
+/* PSCreateMemoryPropertyStore: an IPropertyStore that only keeps values (jump lists and AppUserModel IDs) */
+#define STORE_MAX 16
+
+struct memory_store {
+    const void *vt;
+    LONG refs;
+    int count;
+    struct {
+        uint8_t key[20];
+        uint16_t value[8];
+    } items[STORE_MAX];
+};
+
+#define STORE(p) ((struct memory_store *)(p))
+
+static uint32_t variant_copy(uint16_t *to, const uint16_t *from)
+{
+    uint32_t(WINAPI * fn)(uint16_t *, const uint16_t *) =
+        (uint32_t(WINAPI *)(uint16_t *, const uint16_t *))w32_builtin_lookup("ole32.dll", "PropVariantCopy");
+    return fn ? fn(to, from) : E_POINTER;
+}
+
+static void variant_clear(uint16_t *v)
+{
+    uint32_t(WINAPI * fn)(uint16_t *) = (uint32_t(WINAPI *)(uint16_t *))w32_builtin_lookup("ole32.dll", "PropVariantClear");
+    if (fn)
+        fn(v);
+}
+
+static uint32_t WINAPI ms_query(void *p, const uint8_t *iid, void **out)
+{
+    if (!out)
+        return E_POINTER;
+    if (memcmp(iid, iid_unknown, 16) && memcmp(iid, iid_property_store, 16)) {
+        *out = NULL;
+        return E_NOINTERFACE;
+    }
+    STORE(p)->refs++;
+    *out = p;
+    return S_OK;
+}
+
+static ULONG WINAPI ms_add_ref(void *p)
+{
+    return (ULONG)++STORE(p)->refs;
+}
+
+static ULONG WINAPI ms_release(void *p)
+{
+    struct memory_store *m = STORE(p);
+    if (--m->refs > 0)
+        return (ULONG)m->refs;
+    for (int i = 0; i < m->count; i++)
+        variant_clear(m->items[i].value);
+    w32_free(m);
+    return 0;
+}
+
+static uint32_t WINAPI ms_count(void *p, DWORD *count)
+{
+    if (!count)
+        return E_POINTER;
+    *count = (DWORD)STORE(p)->count;
+    return S_OK;
+}
+
+static uint32_t WINAPI ms_at(void *p, DWORD index, void *key)
+{
+    if ((int)index >= STORE(p)->count || !key)
+        return 0x80070057u;
+    memcpy(key, STORE(p)->items[index].key, 20);
+    return S_OK;
+}
+
+static int ms_find(struct memory_store *m, const uint8_t *key)
+{
+    for (int i = 0; i < m->count; i++)
+        if (!memcmp(m->items[i].key, key, 20))
+            return i;
+    return -1;
+}
+
+static uint32_t WINAPI ms_get(void *p, const uint8_t *key, uint16_t *value)
+{
+    if (!key || !value)
+        return E_POINTER;
+    int i = ms_find(STORE(p), key);
+    memset(value, 0, 16);
+    return i < 0 ? S_OK : variant_copy(value, STORE(p)->items[i].value);
+}
+
+static uint32_t WINAPI ms_set(void *p, const uint8_t *key, const uint16_t *value)
+{
+    struct memory_store *m = STORE(p);
+    if (!key || !value)
+        return E_POINTER;
+    int i = ms_find(m, key);
+    if (i < 0) {
+        if (m->count == STORE_MAX)
+            return E_OUTOFMEMORY;
+        i = m->count++;
+        memcpy(m->items[i].key, key, 20);
+    } else {
+        variant_clear(m->items[i].value);
+    }
+    return variant_copy(m->items[i].value, value);
+}
+
+static const void *const memory_store_vt[] = {ms_query, ms_add_ref, ms_release, ms_count,
+                                              ms_at,    ms_get,     ms_set,     ps_commit};
+
+static uint32_t WINAPI PSCreateMemoryPropertyStore(const uint8_t *iid, void **out)
+{
+    if (!out)
+        return E_POINTER;
+    *out = NULL;
+    struct memory_store *m = w32_alloc(sizeof(*m));
+    if (!m)
+        return E_OUTOFMEMORY;
+    memset(m, 0, sizeof(*m));
+    m->vt = memory_store_vt;
+    m->refs = 1;
+    uint32_t hr = ms_query(m, iid, out);
+    ms_release(m);
+    return hr;
+}
+
+static const struct w32_export memory_store_exports[] = {
+    W32_FN(PSCreateMemoryPropertyStore),
+};
+
+W32_EXPORTS(memory_store_module, "propsys.dll", memory_store_exports);
+
 static const struct w32_export shelllink_exports[] = {
     W32_FN(CoCreateInstance),
     W32_FN(CoGetClassObject),

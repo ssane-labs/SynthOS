@@ -223,6 +223,7 @@ static const struct w64_export com_exports[] = {
     W64_FN("SHGetPropertyStoreForWindow", h_no_object2),
     W64_FN("RoGetActivationFactory", h_no_object2),
     W64_FN("CoGetInterfaceAndReleaseStream", h_no_object2),
+    W64_FN("PSCreateMemoryPropertyStore", h_no_object2),
     W64_FN("CoMarshalInterThreadInterfaceInStream", h_no_object2),
     W64_FN("CoUnmarshalInterface", h_no_object2),
     W64_FN("D3D12CreateDevice", h_no_object3),

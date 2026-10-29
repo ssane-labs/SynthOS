@@ -208,9 +208,21 @@ static const struct w32_export dbghelp_exports[] = {
 
 STUB(PSGetPropertyKeyFromName, 2, TYPE_E_ELEMENTNOTFOUND, 0)
 
+/* VT_CLSID: the GUID in memory PropVariantClear frees */
+static uint32_t WINAPI InitPropVariantFromCLSID(const void *clsid, uint16_t *pv)
+{
+    void *copy = clsid && pv ? w32_alloc(16) : NULL;
+    if (!copy)
+        return clsid && pv ? 0x8007000eu : 0x80070057u;
+    memcpy(copy, clsid, 16);
+    memset(pv, 0, 16);
+    pv[0] = 72;
+    *(void **)(pv + 4) = copy;
+    return 0;
+}
+
 static const struct w32_export propsys_exports[] = {
-    W32_AS("InitPropVariantFromCLSID", w32_notimpl2),
-    W32_AS("PSCreateMemoryPropertyStore", w32_notimpl2),
+    W32_FN(InitPropVariantFromCLSID),
     W32_FN(PSGetPropertyKeyFromName),
     W32_AS("VariantCompare", w32_zero2),
 };

@@ -379,6 +379,7 @@ static const struct w32_export gecko_advapi32[] = {
     W32_FN(SetKernelObjectSecurity),
 };
 static const struct w32_export gecko_avrt[] = {W32_FN(AvSetMmThreadCharacteristicsA),
+                                               W32_AS("AvSetMmThreadCharacteristicsW", AvSetMmThreadCharacteristicsA),
                                                W32_FN(AvRevertMmThreadCharacteristics)};
 static const struct w32_export gecko_ktmw32[] = {W32_FN(CreateTransaction), W32_FN(CommitTransaction)};
 static const struct w32_export gecko_cfgmgr32[] = {W32_FN(CM_Register_Notification), W32_FN(CM_Unregister_Notification),
