@@ -31,14 +31,18 @@ void hal_profile_callers(bool on)
    leaf function such as memcpy. */
 static uint32_t caller_of(struct regs *r)
 {
-    uint32_t end = (uint32_t)__text_end;
+    uintptr_t end = (uintptr_t)__text_end;
     if (r->eip < 0x100000u || r->eip >= end)
-        return r->eip;
+        return (uint32_t)r->eip;
+#ifdef __x86_64__
+    const uint64_t *sp = (const uint64_t *)r->rsp;
+#else
     const uint32_t *sp = &r->eflags + 1;
+#endif
     for (int i = 0; i < 24; i++)
         if (sp[i] >= 0x100000u && sp[i] < end)
-            return sp[i];
-    return r->eip;
+            return (uint32_t)sp[i];
+    return (uint32_t)r->eip;
 }
 
 void hal_profile_start(uint32_t *buf, uint32_t cap)
@@ -57,7 +61,7 @@ uint32_t hal_profile_stop(void)
 static void pit_tick(struct regs *r)
 {
     if (prof_buf && prof_len < prof_cap)
-        prof_buf[prof_len++] = prof_callers ? caller_of(r) : r->eip;
+        prof_buf[prof_len++] = prof_callers ? caller_of(r) : (uint32_t)r->eip;
     ticks++;
     if (ticks * 1000u / tick_hz % 2 == 0)
         for (int i = 0; i < hook_count; i++)

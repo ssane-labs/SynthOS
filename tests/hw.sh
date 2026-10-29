@@ -74,6 +74,10 @@ for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:an
     rest=${config#*:}
     disk=${rest%%:*}
     cpu=${rest#*:}
+    if [ "$NO_WIN32" = 1 ] && [ "$cpu" = 486 ]; then
+        echo "  skip  $config (64-bit kernel)"
+        continue
+    fi
     if [ "$fw" = uefi ] && [ -z "$ovmf" ]; then
         echo "  skip  $config (no OVMF firmware)"
         continue
@@ -84,7 +88,7 @@ for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:an
     first=$(boot "$fw" "$disk" "$cpu" "echo $tag > /home/hw.txt" "calc 6*7" "winhello hw")
     second=$(boot "$fw" "$disk" "$cpu" "cat /home/hw.txt")
     check "$config shell" "$first" "42"
-    [ "$cpu" = 486 ] || check "$config windows" "$first" "Hello from Windows"
+    [ "$cpu" = 486 ] || [ "$NO_WIN32" = 1 ] || check "$config windows" "$first" "Hello from Windows"
     [ "$cpu" = smp ] && check "$config processors" "$first" "Processors: 4 cores"
     check "$config persistence" "$second" "$tag"
 done

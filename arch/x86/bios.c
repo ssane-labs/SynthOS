@@ -38,8 +38,7 @@ bool bios_call(uint8_t intno, struct bios_regs *r)
 {
     if (!ready)
         return false;
-    uint32_t flags;
-    __asm__ volatile("pushfl; popl %0; cli" : "=r"(flags));
+    uint32_t flags = cpu_irq_save();
     uint8_t mask1 = inb(0x21), mask2 = inb(0xa1);
     struct bios_regs *shared = (struct bios_regs *)THUNK_REGS;
     *shared = *r;

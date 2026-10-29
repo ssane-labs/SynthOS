@@ -1454,8 +1454,10 @@ static void pane_terminal(struct page *p)
 /* the built-in browsers and every browser an installer registered (Firefox, Brave, Opera, ...) */
 #define MAX_BROWSERS 16
 static const char *browser_labels[MAX_BROWSERS], *browser_values[MAX_BROWSERS];
-static char browser_names[MAX_BROWSERS][64], browser_keys[MAX_BROWSERS][64];
 static int browser_count;
+#if CONFIG_WIN32
+static char browser_names[MAX_BROWSERS][64], browser_keys[MAX_BROWSERS][64];
+#endif
 
 #if CONFIG_WIN32
 static void add_browser(const struct winshell_browser *b, void *ctx)

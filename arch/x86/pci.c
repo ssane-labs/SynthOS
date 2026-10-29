@@ -101,7 +101,7 @@ bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *ou
     static struct range_set used;
     used.count = 0;
     const struct x86_bootinfo *bi = x86_boot_info();
-    const struct e820_entry *map = (const struct e820_entry *)bi->mmap_addr;
+    const struct e820_entry *map = (const struct e820_entry *)(uintptr_t)bi->mmap_addr;
     uint64_t ram_top = 0;
     for (uint32_t i = 0; i < bi->mmap_count; i++) {
         add_range(&used, map[i].base, map[i].base + map[i].length);

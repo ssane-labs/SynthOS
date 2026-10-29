@@ -677,7 +677,9 @@ const struct gui_app *gui_app_for_program(const char *path)
     return app ? app : installed_for_program(path);
 }
 
+#if CONFIG_WIN32
 static bool open_shortcut(const char *file);
+#endif
 
 void gui_app_launch(const struct gui_app *app, const char *arg)
 {
@@ -875,11 +877,13 @@ bool gui_open_url(const char *url)
 static char open_queue[OPEN_QUEUE][512];
 static int open_count;
 
+#if CONFIG_WIN32
 static void queue_open(const char *target)
 {
     if (open_count < OPEN_QUEUE)
         str_copy(open_queue[open_count++], target, sizeof(open_queue[0]));
 }
+#endif
 
 static void open_queued(void)
 {

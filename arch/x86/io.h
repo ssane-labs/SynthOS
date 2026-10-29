@@ -61,9 +61,9 @@ static inline void cpu_halt(void)
 
 static inline uint32_t cpu_irq_save(void)
 {
-    uint32_t flags;
+    uintptr_t flags;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) : : "memory");
-    return flags;
+    return (uint32_t)flags;
 }
 
 static inline void cpu_irq_restore(uint32_t flags)
@@ -74,7 +74,7 @@ static inline void cpu_irq_restore(uint32_t flags)
 
 static inline bool cpu_irqs_enabled(void)
 {
-    uint32_t flags;
+    uintptr_t flags;
     __asm__ volatile("pushf; pop %0" : "=r"(flags));
     return flags & 0x200;
 }
@@ -89,7 +89,11 @@ static inline void cpu_wait(bool device_irq)
 
 static inline void cpu_barrier(void)
 {
+#ifdef __x86_64__
+    __asm__ volatile("lock; orl $0, (%%rsp)" : : : "memory");
+#else
     __asm__ volatile("lock; orl $0, (%%esp)" : : : "memory");
+#endif
 }
 
 static inline uint64_t cpu_rdtsc(void)
@@ -99,12 +103,32 @@ static inline uint64_t cpu_rdtsc(void)
     return (uint64_t)hi << 32 | lo;
 }
 
+#ifdef __x86_64__
+/* the frame the 64-bit interrupt stubs build; the 32-bit names alias the full registers */
+struct regs {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    union { uint64_t rbp, ebp; };
+    union { uint64_t rdi, edi; };
+    union { uint64_t rsi, esi; };
+    union { uint64_t rdx, edx; };
+    union { uint64_t rcx, ecx; };
+    union { uint64_t rbx, ebx; };
+    union { uint64_t rax, eax; };
+    uint64_t vector, error;
+    union { uint64_t rip, eip; };
+    uint64_t cs;
+    union { uint64_t rflags, eflags; };
+    union { uint64_t rsp, esp; };
+    uint64_t ss;
+};
+#else
 struct regs {
     uint32_t gs, fs, es, ds;
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
     uint32_t vector, error;
     uint32_t eip, cs, eflags;
 };
+#endif
 
 struct x86_bootinfo {
     uint32_t magic;

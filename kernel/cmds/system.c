@@ -286,7 +286,11 @@ COMMAND(mem, "free", "system", "mem", "show memory usage")
         sh_printf(sh, " %u%%\n  free %s of %s, used for Windows programs\n",
                   (unsigned)((high_total - high_free) * 100 / high_total), free, total);
     }
+#ifdef __x86_64__
+    sh_printf(sh, "Paging  4-level (64-bit kernel)\n");
+#else
     sh_printf(sh, "Paging  %s\n", vmm_pae() ? "PAE (64-bit page tables, physical memory up to 64 GB)" : "32-bit");
+#endif
     return 0;
 }
 

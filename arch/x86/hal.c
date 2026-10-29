@@ -256,6 +256,9 @@ void hal_fs_init(void)
 
 const char *hal_arch(void)
 {
+#ifdef __x86_64__
+    return "x86-64";
+#endif
     uint32_t family = cpu_info()->family;
     return family >= 6 ? "x86 (i686)" : family == 5 ? "x86 (i586)" : "x86 (i486)";
 }
@@ -325,7 +328,7 @@ static void setup_heap(struct boot_info *bi)
 {
     uintptr_t start = ALIGN_UP((uintptr_t)kernel_end, 4096);
     uint64_t low_end = 0, best_base = 0, best_end = 0, total = 0;
-    const struct e820_entry *map = (const struct e820_entry *)bootinfo->mmap_addr;
+    const struct e820_entry *map = (const struct e820_entry *)(uintptr_t)bootinfo->mmap_addr;
     for (uint32_t i = 0; i < bootinfo->mmap_count; i++) {
         if (map[i].type != 1)
             continue;

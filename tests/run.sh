@@ -721,6 +721,14 @@ urlmon: ok, 16 bytes
 EOF
 fi
 
+# the 64-bit kernel does not run Windows programs yet: NO_WIN32=1 leaves those cases out
+if [ "$NO_WIN32" = 1 ]; then
+    awk 'NR % 2 == 1 { cmd = $0; next }
+         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
+        "$work/cases" | sed -e 's/^Paging  PAE$/Paging  4-level/' -e 's|^1  /tmp/auto.txt$|  /tmp/auto.txt|' \
+        > "$work/cases.native" && mv "$work/cases.native" "$work/cases"
+fi
+
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"
 echo "shutdown" >> "$work/input"
 

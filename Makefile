@@ -9,10 +9,19 @@
 include config.mk
 
 BUILD    ?= build
-OUT      := $(BUILD)/$(if $(SERIAL),serial,vga)
+# ARCH=x86_64 builds the 64-bit kernel (build/vga64, build/serial64); it does not run Windows programs yet
+ARCH     ?= i686
+X64      := $(filter x86_64,$(ARCH))
+OUT      := $(BUILD)/$(if $(SERIAL),serial,vga)$(if $(X64),64)
 IMAGE    := $(OUT)/synthos.img
 
-ifneq ($(shell command -v i686-elf-gcc 2>/dev/null),)
+ifneq ($(X64),)
+ifneq ($(shell command -v x86_64-elf-gcc 2>/dev/null),)
+CROSS    ?= x86_64-elf-
+endif
+CONFIG_WIN32 := 0
+CONFIG_DEFINES := $(subst -DCONFIG_WIN32=1,-DCONFIG_WIN32=0,$(CONFIG_DEFINES))
+else ifneq ($(shell command -v i686-elf-gcc 2>/dev/null),)
 CROSS    ?= i686-elf-
 endif
 
@@ -24,16 +33,25 @@ HOSTCC   ?= cc
 QEMU     ?= qemu-system-x86_64
 QEMU_SOUND ?= -audiodev none,id=snd -device AC97,audiodev=snd
 
+ifneq ($(X64),)
+ARCH_FLAGS := $(if $(CROSS),,-m64) -march=x86-64 -mno-red-zone -mcmodel=small -mno-sse -mno-mmx -mno-80387
+else
 ARCH_FLAGS := $(if $(CROSS),,-m32) -march=i486 -mtune=i686 -mno-sse -mno-mmx -mno-80387
+endif
 CFLAGS := $(ARCH_FLAGS) -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
           -fno-pic -fno-pie -fno-strict-aliasing -fno-tree-loop-distribute-patterns \
           -fno-asynchronous-unwind-tables -fno-omit-frame-pointer \
           -Wall -Wextra -Wno-override-init -Wno-unused-parameter \
           -Iinclude $(CONFIG_DEFINES) $(if $(SERIAL),-DCONFIG_SERIAL_CONSOLE)
-LDFLAGS := $(if $(CROSS),,-m elf_i386) -nostdlib -T arch/x86/linker.ld $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx && echo --no-warn-rwx-segments)
+LDFLAGS := $(if $(CROSS),,$(if $(X64),-m elf_x86_64 -z max-page-size=4096,-m elf_i386)) -nostdlib \
+           -T arch/x86/$(if $(X64),64/)linker.ld $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx && echo --no-warn-rwx-segments)
 HOSTCFLAGS := -std=gnu11 -O2 -Wall -Wextra -Iinclude -DSYNTH_TOOL
 
 KERNEL_SRC := $(shell find kernel -name '*.c') $(wildcard arch/x86/*.c)
+ifneq ($(X64),)
+KERNEL_SRC := $(filter-out arch/x86/cpu.c arch/x86/paging.c arch/x86/libgcc.c,$(KERNEL_SRC)) \
+              $(wildcard arch/x86/64/*.c)
+endif
 ifeq ($(CONFIG_DOS),0)
 KERNEL_SRC := $(filter-out kernel/dos/%,$(KERNEL_SRC))
 endif
@@ -50,6 +68,10 @@ ifeq ($(CONFIG_EDITOR),0)
 KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm arch/x86/long.asm
+ifneq ($(X64),)
+KERNEL_ASM := arch/x86/64/entry.asm arch/x86/64/isr.asm
+endif
+NASM_OBJ   := $(if $(X64),elf64,elf32)
 KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/biosblob.o
 
 SX_SRC   := $(wildcard programs/sx/*.sasm)
@@ -180,7 +202,7 @@ $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/linker.ld
 	@echo "  LD      $@"
 	@$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
 
-$(OUT)/obj/%_fp.o: CFLAGS += -m80387 -mfpmath=387
+$(OUT)/obj/%_fp.o: CFLAGS += $(if $(X64),-msse -msse2 -mfpmath=sse,-m80387 -mfpmath=387)
 $(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
@@ -193,14 +215,14 @@ $(OUT)/obj/%.o: %.c
 $(OUT)/obj/%.o: %.asm
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
-	@$(NASM) -f elf32 -o $@ $<
+	@$(NASM) -f $(NASM_OBJ) -o $@ $<
 
-$(OUT)/biosthunk.bin: arch/x86/biosthunk.asm
+$(OUT)/biosthunk.bin: arch/x86/$(if $(X64),64/)biosthunk.asm
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -o $@ $<
 
-$(OUT)/smpboot.bin: arch/x86/smpboot.asm
+$(OUT)/smpboot.bin: arch/x86/$(if $(X64),64/)smpboot.asm
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -o $@ $<
@@ -208,7 +230,7 @@ $(OUT)/smpboot.bin: arch/x86/smpboot.asm
 $(OUT)/obj/biosblob.o: arch/x86/biosblob.asm $(OUT)/biosthunk.bin $(OUT)/smpboot.bin
 	@mkdir -p $(@D)
 	@echo "  NASM    $<"
-	@$(NASM) -f elf32 -DTHUNK_FILE='"$(OUT)/biosthunk.bin"' -DSMP_FILE='"$(OUT)/smpboot.bin"' -o $@ $<
+	@$(NASM) -f $(NASM_OBJ) -DTHUNK_FILE='"$(OUT)/biosthunk.bin"' -DSMP_FILE='"$(OUT)/smpboot.bin"' -o $@ $<
 
 $(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(W32_BIN) $(wildcard programs/sx/*)
 	@mkdir -p $(BUILD)/rootfs
@@ -347,11 +369,11 @@ run: $(IMAGE)
 
 run-serial:
 	@$(MAKE) --no-print-directory SERIAL=1
-	$(QEMU) -drive format=raw,file=$(BUILD)/serial/synthos.img -m 256 -nographic $(QEMU_FLAGS)
+	$(QEMU) -drive format=raw,file=$(BUILD)/serial$(if $(X64),64)/synthos.img -m 256 -nographic $(QEMU_FLAGS)
 
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
-	@tests/run.sh $(BUILD)/serial/synthos.img
+	@$(if $(X64),NO_WIN32=1 )tests/run.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools
@@ -361,7 +383,7 @@ test-crypto:
 
 test-hw:
 	@$(MAKE) --no-print-directory SERIAL=1
-	@tests/hw.sh $(BUILD)/serial/synthos.img
+	@$(if $(X64),NO_WIN32=1 )tests/hw.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
 
 OVMF ?= $(firstword $(wildcard /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/edk2/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd))
 OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd))

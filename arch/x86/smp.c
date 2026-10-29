@@ -87,7 +87,7 @@ void ap_entry(int index)
 static uint32_t low_page(void)
 {
     const struct x86_bootinfo *bi = x86_boot_info();
-    const struct e820_entry *map = (const struct e820_entry *)bi->mmap_addr;
+    const struct e820_entry *map = (const struct e820_entry *)(uintptr_t)bi->mmap_addr;
     uint32_t keep_lo = MIN((uint32_t)(uintptr_t)bi, bi->mmap_addr) & ~4095u;
     uint32_t keep_hi = ALIGN_UP(MAX((uint32_t)(uintptr_t)bi + sizeof(*bi), bi->mmap_addr + bi->mmap_count * 24u), 4096u);
     uint32_t best = 0;
@@ -127,7 +127,7 @@ int hal_start_cpus(void)
     uint32_t *vars = (uint32_t *)(code + off[4]);
     *(uint32_t *)(code + off[0]) = page + off[3];
     *(uint32_t *)(code + off[1]) = page + off[2];
-    uint32_t cr3, cr4;
+    uintptr_t cr3, cr4;
     __asm__ volatile("mov %%cr3, %0; mov %%cr4, %1" : "=r"(cr3), "=r"(cr4));
     void **stacks = kzalloc(sizeof(void *) * MAX_CPUS);
     if (!stacks)
@@ -136,12 +136,21 @@ int hal_start_cpus(void)
         uint8_t *s = kmalloc(AP_STACK);
         stacks[i] = s ? s + AP_STACK : NULL;
     }
-    vars[0] = cr3;
-    vars[1] = cr4;
+    vars[0] = (uint32_t)cr3;
+    vars[1] = (uint32_t)cr4;
+#ifdef __x86_64__
+    /* the 64-bit start-up code keeps 8-byte entry and stack pointers */
+    uint64_t entry = (uintptr_t)ap_entry, stack_list = (uintptr_t)stacks;
+    memcpy(&vars[2], &entry, 8);
+    memcpy(&vars[4], &stack_list, 8);
+    vars[6] = 1;
+    vars[7] = MAX_CPUS;
+#else
     vars[2] = (uint32_t)(uintptr_t)ap_entry;
     vars[3] = (uint32_t)(uintptr_t)stacks;
     vars[4] = 1;
     vars[5] = MAX_CPUS;
+#endif
     send_ipi(ICR_ALL_BUT_SELF | ICR_INIT | ICR_ASSERT);
     hal_sleep_ms(10);
     for (int i = 0; i < 2; i++) {
