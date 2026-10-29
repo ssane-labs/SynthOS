@@ -1,4 +1,9 @@
+#include <synth/command.h>
+#include <synth/exec.h>
 #include <synth/fmt.h>
+#include <synth/heap.h>
+#include <synth/path.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/users.h>
 #include <synth/vfs.h>
@@ -388,4 +393,80 @@ void winshell_programs(void (*fn)(const struct winshell_program *p, void *ctx), 
     l->root = "HKLM";
     w32_reg_subkeys("HKLM\\" UNINSTALL, program_one, l);
     kfree(l);
+}
+
+#define RUN_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+struct run_names {
+    char names[32][64];
+    int n;
+};
+
+static void run_name(const char *name, void *ctx)
+{
+    struct run_names *l = ctx;
+    if (l->n < 32 && name[0])
+        str_copy(l->names[l->n++], name, sizeof(l->names[0]));
+}
+
+void winshell_run_entries(void (*fn)(const struct winshell_run *r, void *ctx), void *ctx)
+{
+    static const char *const keys[] = {"HKCU\\" RUN_KEY, "HKLM\\" RUN_KEY, "HKCU\\" RUN_KEY "Once", "HKLM\\" RUN_KEY "Once"};
+    struct run_names *l = kmalloc(sizeof(*l));
+    struct winshell_run *r = kmalloc(sizeof(*r));
+    for (size_t i = 0; l && r && i < ARRAY_SIZE(keys); i++) {
+        l->n = 0;
+        w32_reg_values(keys[i], run_name, l);
+        for (int k = 0; k < l->n; k++) {
+            if (!w32_reg_read(keys[i], l->names[k], r->command, sizeof(r->command)) || !r->command[0])
+                continue;
+            str_copy(r->key, keys[i], sizeof(r->key));
+            str_copy(r->name, l->names[k], sizeof(r->name));
+            r->once = i >= 2;
+            fn(r, ctx);
+        }
+    }
+    kfree(l);
+    kfree(r);
+}
+
+bool winshell_run_remove(const struct winshell_run *r)
+{
+    return w32_reg_delete_value(r->key, r->name);
+}
+
+/* start, as in Windows: a file or a link opens in the program its association names */
+COMMAND(start, NULL, "system", "start <file|url>", "open a file or a link in the program registered for it")
+{
+    if (argc != 2)
+        return command_usage(sh, command_find("start"));
+    char path[PATH_MAX_LEN], program[PATH_MAX_LEN];
+    const char *target = argv[1], *rest;
+    if (!winshell_is_url(target)) {
+        if (sh_resolve(sh, target, path, sizeof(path)) != 0 || !vfs_exists(path))
+            return sh_error(sh, "start", "no such file: %s", target);
+        target = path;
+    }
+    char *line = kmalloc(1024), *buf = kmalloc(1024), *args[64];
+    int rc;
+    if (!line || !buf) {
+        rc = sh_error(sh, "start", "out of memory");
+    } else if (!winshell_command("open", target, NULL, line, 1024)) {
+        rc = sh_error(sh, "start", "no program is registered for %s", argv[1]);
+    } else if (!winshell_split(line, program, sizeof(program), &rest)) {
+        rc = sh_error(sh, "start", "the registered program is missing: %s", line);
+    } else {
+        args[0] = program;
+        int n = 1 + w32_split_args(rest, buf, args + 1, 62);
+        args[n] = NULL;
+        if (builtin_program(program)) {
+            rc = msiexec_main(sh, n, args);
+        } else {
+            struct exec_ctx ctx = {sh, program, n, args, sh->in, sh->out, sh->err, NULL, NULL, NULL};
+            rc = exec_program(&ctx);
+        }
+    }
+    kfree(line);
+    kfree(buf);
+    return rc;
 }

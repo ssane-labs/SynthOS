@@ -11,6 +11,8 @@
 #include "internal.h"
 
 static const struct gui_look defaults[] = {
+    {"mono", "Mono", "Black and white liquid glass, menu bar and a dock below", true, RGB(150, 150, 156),
+     RGB(142, 142, 147), DOCK_CENTER, STATUS_MENUBAR, 0},
     {"dune", "Dune", "Warm desert glass, launcher in the corner", false, RGB(214, 150, 96),
      RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, 0},
     {"mist", "Mist", "Quiet morning fog, menu bar and a floating dock", false, RGB(120, 140, 170), RGB(78, 112, 214),
@@ -150,7 +152,7 @@ static int set_look(struct shell *sh, const char *value)
     return E_INVAL;
 }
 
-static const struct setting s_look = {"look", "dune|mist|night", "desktop design: colors, wallpaper and layout",
+static const struct setting s_look = {"look", "mono|dune|mist|night", "desktop design: colors, wallpaper and layout",
                                       get_look, set_look};
 SETTING(s_look);
 

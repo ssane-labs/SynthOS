@@ -119,7 +119,7 @@ desktop is not running
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets
-dune clock,tasks
+mono clock,tasks
 config widgets all; widgets list | grep -c desktop
 6
 widgets add moon
@@ -162,16 +162,24 @@ config mute; config mute off; config volume 100
 mute = on
 config termstatus off; config termstatus
 termstatus = off
-config dockapps 'Files|/home/notes.txt|Terminal'; grep dune ~/.dock
-dune Files|/home/notes.txt|Terminal
+config dockapps 'Files|/home/notes.txt|Terminal'; grep mono ~/.dock
+mono Files|/home/notes.txt|Terminal
 config dockapps default; config dockapps
 Launchpad|Files|Chromium|Terminal
 config chromeauto off; config chromeauto; config chromeauto on
 off
 config dockstyle side; config statusbar menubar; head -n 1 ~/.looks
-dune dock=side status=menubar
+mono dock=side status=menubar
 config dockstyle corner; config statusbar pill; config dockstyle
 corner
+config dockmode autohide; config dockhide
+on
+config dockmode off; config dockmode
+off
+config dockmode show; config dockmode; config dockhide
+show
+config look; config wallpaper
+mono
 which ls hello
 hello: /bin/hello.sx
 formats | grep -c DOS
@@ -290,6 +298,10 @@ cat 'C:/Program Files/SynthTest/data.txt' 2>/dev/null; echo gone=$?
 gone=1
 reg query HKLM/Software/SynthCo/SynthTest /v Level 2>/dev/null; echo regone=$?
 regone=-1
+start C:/apps/synthtest.msi | grep Installed
+Installed 3 files, 1 shortcuts and 3 registry values.
+msiexec /x C:/apps/synthtest.msi | grep Removed
+Removed 3 files, 1 shortcuts and 3 registry values.
 wintest registry | grep delete
 reg delete=5 tree=0 gone=2
 reg add HKCU/Software/Test /v Count /t REG_DWORD /d 42 > /dev/null; reg query HKCU/Software/Test /v Count
@@ -519,6 +531,16 @@ Google Chrome (32-bit)
 autostart add Notepad; autostart add !echo hi; autostart list
 2  !echo hi
 autostart remove 1; autostart remove 1; autostart list
+nothing starts at login
+echo hi > /tmp/auto.txt; autostart add /tmp/auto.txt; autostart list
+1  /tmp/auto.txt
+autostart folder | head -n 1
+C:\Users\root\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup
+ls 'C:/Users/root/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup'
+auto.lnk
+autostart remove 1; reg add HKCU/Software/Microsoft/Windows/CurrentVersion/Run /v Tool /t REG_SZ /d 'C:\apps\winhello.exe' > /dev/null; autostart list
+1  Tool
+autostart remove 1; autostart list
 nothing starts at login
 install
 no disk to install on

@@ -1226,7 +1226,7 @@ static int run_cmd(struct spawn_args *a, const char *rest)
     return 0;
 }
 
-static int split_args(const char *line, char *buf, char **argv, int max)
+int w32_split_args(const char *line, char *buf, char **argv, int max)
 {
     int argc = 0;
     const char *p = line;
@@ -1278,7 +1278,7 @@ static int spawn_now(struct spawn_args *a)
     char **argv = kmalloc(256 * sizeof(char *));
     int rc = ERROR_NOT_ENOUGH_MEMORY;
     if (buf && argv) {
-        int argc = split_args(line, buf, argv, 255);
+        int argc = w32_split_args(line, buf, argv, 255);
         rc = argc ? spawn_args_run(a, argc, argv) : ERROR_INVALID_PARAMETER;
     }
     kfree(buf);

@@ -82,7 +82,8 @@ static struct rect grid_r[GRID_MAX];
 static int grid_count, grid_hover = -1, grid_pressed = -1;
 static int base_size = 52;
 static bool magnify = false;
-static bool autohide;
+static bool autohide, dock_off;
+static struct spring slide;
 static int hover_x = -1, hover_item = -1, pressed_item = -1;
 static bool revealed, over;
 static int mag_x = -1;
@@ -298,12 +299,12 @@ static void build(void)
 
 static bool visible_now(void)
 {
-    return kind != DOCK_CENTER || !autohide || revealed;
+    return !dock_off && (kind != DOCK_CENTER || !autohide || revealed);
 }
 
 int dock_reserved(void)
 {
-    if (!started && look_current()->dock != DOCK_CENTER)
+    if (dock_off || (!started && look_current()->dock != DOCK_CENTER))
         return 0;
     if ((started ? kind : look_current()->dock) != DOCK_CENTER)
         return 0;
@@ -313,12 +314,12 @@ int dock_reserved(void)
 /* The corner Dock keeps no strip of the screen for itself, but new windows still try not to open under it. */
 struct rect dock_obstacle(void)
 {
-    return started && kind == DOCK_CORNER ? dock_rect : (struct rect){0, 0, 0, 0};
+    return started && !dock_off && kind == DOCK_CORNER ? dock_rect : (struct rect){0, 0, 0, 0};
 }
 
 int dock_rail_reserved(void)
 {
-    return look_current()->dock == DOCK_RAIL ? RAIL_X + RAIL_W0 + 8 : 0;
+    return !dock_off && look_current()->dock == DOCK_RAIL ? RAIL_X + RAIL_W0 + 8 : 0;
 }
 
 int shell_left_reserved(void)
@@ -372,7 +373,8 @@ static void layout_center(void)
         total += item_width(&items[i]) + (i ? GAP : 0);
     int x = s.x + (s.w - total - 2 * PAD) / 2;
     int h = base_size + 2 * PAD;
-    int y = visible_now() ? s.y + s.h - BOTTOM - h : s.y + s.h + 2;
+    int shown = s.y + s.h - BOTTOM - h, hidden = s.y + s.h + 2;
+    int y = hidden + (shown - hidden) * CLAMP(slide.pos, 0, 1024) / 1024;
     dock_rect = (struct rect){x, y, total + 2 * PAD, h};
     x += PAD;
     for (int i = 0; i < count; i++) {
@@ -880,6 +882,8 @@ bool dock_animate(void)
     bool busy = false;
     int k = kind == DOCK_CENTER ? 420 : 260, d = kind == DOCK_CENTER ? 34 : 24;
     busy |= spring_step(&grow, k, d, dt);
+    slide.target = visible_now() ? 1024 : 0;
+    busy |= spring_step(&slide, 260, 32, dt);
     busy |= spring_step(&hl, 520, 40, dt);
     busy |= spring_step(&hl_alpha, 400, 40, dt);
     for (int i = 0; i < count; i++) {
@@ -1078,7 +1082,7 @@ static void paint_corner(struct canvas *c)
 
 void dock_paint(struct canvas *c, int screen)
 {
-    if (!started || screen != 0 || rect_empty(rect_intersect(zone, c->clip)))
+    if (!started || screen != 0 || (dock_off && !spring_busy(&slide)) || rect_empty(rect_intersect(zone, c->clip)))
         return;
     switch (kind) {
     case DOCK_RAIL: paint_rail(c); break;
@@ -1126,7 +1130,7 @@ static bool inside(int x, int y)
 
 bool dock_hit(int x, int y)
 {
-    if (!started)
+    if (!started || dock_off)
         return false;
     if (!visible_now()) {
         struct rect s = wm_screen_rect(0);
@@ -1367,6 +1371,7 @@ void dock_start(void)
     dnd.active = dnd.armed = false;
     hover_x = hover_item = pressed_item = grid_hover = grid_pressed = -1;
     spring_set(&grow, kind == DOCK_CORNER ? -900 : 0);
+    spring_set(&slide, dock_off || (kind == DOCK_CENTER && autohide) ? 0 : 1024);
     grow.target = 0;
     spring_set(&hl, 0);
     spring_set(&hl_alpha, 0);
@@ -1466,22 +1471,54 @@ static void get_hide(char *buf, size_t cap)
     str_copy(buf, autohide ? "on" : "off", cap);
 }
 
+static void set_mode(bool hide, bool off)
+{
+    autohide = hide;
+    dock_off = off;
+    revealed = false;
+    dock_changed();
+    if (gui_active()) {
+        wm_reflow();
+        wm_damage_all();
+    }
+}
+
 static int set_hide(struct shell *sh, const char *value)
 {
     UNUSED(sh);
     if (strcmp(value, "on") && strcmp(value, "off"))
         return E_INVAL;
-    autohide = !strcmp(value, "on");
-    revealed = false;
-    dock_changed();
-    if (gui_active())
-        wm_damage_all();
+    set_mode(!strcmp(value, "on"), dock_off);
+    return 0;
+}
+
+static void get_mode(char *buf, size_t cap)
+{
+    str_copy(buf, dock_off ? "off" : autohide ? "autohide" : "show", cap);
+}
+
+static int set_dock_mode(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (!strcmp(value, "show"))
+        set_mode(false, false);
+    else if (!strcmp(value, "autohide"))
+        set_mode(true, false);
+    else if (!strcmp(value, "off"))
+        set_mode(autohide, true);
+    else
+        return E_INVAL;
     return 0;
 }
 
 static const struct setting s_dockhide = {"dockhide", "on|off", "hide the dock until the pointer reaches the bottom",
                                           get_hide, set_hide};
+static const struct setting s_dockmode = {"dockmode", "show|autohide|off",
+                                          "the Dock always shown, sliding away until the pointer reaches the bottom, "
+                                          "or turned off",
+                                          get_mode, set_dock_mode};
 SETTING(s_dockhide);
+SETTING(s_dockmode);
 
 static void get_dots(char *buf, size_t cap)
 {

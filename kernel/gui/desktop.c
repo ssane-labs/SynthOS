@@ -1106,6 +1106,11 @@ static void cmd_key(int key)
             wm_close(f);
         return;
     }
+    if ((base == 'f' || base == 'F') && (mods & KEY_MOD_CTRL)) {
+        if (f)
+            wm_toggle_fullscreen(f);
+        return;
+    }
     if (base == 'm' || base == 'M') {
         if (f)
             wm_minimize(f);
@@ -1168,6 +1173,10 @@ static void handle_key(int key)
         struct window *f = wm_focused();
         if (f)
             wm_close(f);
+        return;
+    }
+    if (key == KEY_F11 && wm_focused()) {
+        wm_toggle_fullscreen(wm_focused());
         return;
     }
     struct window *popup = wm_top_popup();
@@ -1379,7 +1388,7 @@ void gui_wallpaper_use(const char *path)
     set_wallpaper(NULL, path);
 }
 
-static const struct setting s_wallpaper = {"wallpaper", "auto|dune|mist|night|sunset|waves|hills|aurora|synthwave|solid|<picture file>",
+static const struct setting s_wallpaper = {"wallpaper", "auto|mono|dune|mist|night|sunset|waves|hills|aurora|synthwave|solid|<picture file>",
                                            "desktop background", get_wallpaper, set_wallpaper};
 SETTING(s_wallpaper);
 

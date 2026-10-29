@@ -33,7 +33,7 @@
 #define SECTIONS 32
 #define HISTORY 16
 #define SETTINGS_FILE "/home/.synth.conf"
-#define WALLS 10
+#define WALLS 11
 #define LOOK_W 140
 #define LOOK_H 88
 #define THUMB_W 124
@@ -131,9 +131,9 @@ static const struct {
     {"Login Items", "login", SYM_LIST, RGB(142, 142, 148), 2, P_GENERAL, pane_login},
 };
 
-static const char *const wall_names[WALLS] = {"From the look", "Dune", "Mist", "Night", "Sunset",
+static const char *const wall_names[WALLS] = {"From the look", "Mono", "Dune", "Mist", "Night", "Sunset",
                                               "Waves", "Hills", "Aurora", "Synthwave", "Solid"};
-static const char *const wall_values[WALLS] = {"auto", "dune", "mist", "night", "sunset",
+static const char *const wall_values[WALLS] = {"auto", "mono", "dune", "mist", "night", "sunset",
                                                "waves", "hills", "aurora", "synthwave", "solid"};
 
 struct settings {
@@ -934,7 +934,9 @@ static void pane_dock(struct page *p)
     static const char *const docks[] = {"Bottom", "Corner", "Side"};
     static const char *const dock_values[] = {"bottom", "corner", "side"};
     choice(p, "Position on screen", NULL, "dockstyle", docks, dock_values, 3, 240);
-    toggle_setting(p, "Automatically hide and show the Dock", NULL, "dockhide");
+    static const char *const modes[] = {"Always", "Hide Automatically", "Off"};
+    static const char *const mode_values[] = {"show", "autohide", "off"};
+    choice(p, "Show the Dock", NULL, "dockmode", modes, mode_values, 3, 240);
     toggle_setting(p, "Animate opening applications", NULL, "dockbounce");
     toggle_setting(p, "Show indicators for open applications", NULL, "dockdots");
     if (button(p, "Icons in the Dock", "Drag icons onto the Dock, along it or off it", "Reset Icons"))

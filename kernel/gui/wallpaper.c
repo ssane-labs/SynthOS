@@ -574,6 +574,88 @@ static void paint_sunset(struct canvas *c, bool dark)
     stars(c, horizon / 3, 400, 140);
 }
 
+/* Black and white liquid glass: clear rods flowing across a gray field, each lit like glass (a bright rim on top, a
+   highlight streak, a dark caustic line inside the lower edge) and casting a soft shadow below. */
+struct ribbon {
+    int mid, amp, waves, phase, thick, swell;
+};
+
+static uint32_t glass_rod(uint32_t p, int s, bool dark)
+{
+    int a = s < 0 ? -s : s;
+    p = color_mix(p, RGB(255, 255, 255), dark ? 26 : 70);
+    p = color_mix(p, dark ? RGB(0, 0, 0) : RGB(80, 80, 86), CLAMP(s, 0, 1024) * (dark ? 110 : 80) / 1024);
+    if (a > 760) {
+        int r = (a - 760) * 255 / 264;
+        p = color_mix(p, RGB(255, 255, 255), r * r / 255 * (s < 0 ? 220 : 130) / 255);
+    }
+    int d = s + 520;
+    d = d < 0 ? -d : d;
+    if (d < 150) {
+        int q = (150 - d) * 255 / 150;
+        p = color_mix(p, RGB(255, 255, 255), q * q / 255 * (dark ? 235 : 200) / 255);
+    }
+    int line = 100 - (s > 680 ? s - 680 : 680 - s);
+    if (line > 0)
+        p = color_mix(p, RGB(0, 0, 0), line * (dark ? 140 : 80) / 100);
+    return p;
+}
+
+static void paint_ribbon(struct canvas *c, const struct ribbon *r, bool dark)
+{
+    int w = c->w, h = c->h, shadow = MAX(4, h * 4 / 100);
+    for (int x = 0; x < w; x++) {
+        int t = x * SIN_STEPS / MAX(w, 1);
+        int64_t mid = (int64_t)h * 16 * (r->mid * 16384 + r->amp * isin(t * r->waves / 100 + r->phase * SIN_STEPS / 1000)) /
+                      (1000 * 16384);
+        int64_t half = (int64_t)h * 16 * (r->thick * 16384 + r->swell * isin(t * r->waves * 17 / 1000 + 300)) /
+                       (2000 * 16384);
+        half = MAX(half, 32);
+        int top = (int)((mid - half) / 16) - 1, bottom = (int)((mid + half) / 16) + 1;
+        for (int y = MAX(bottom - 1, 0); y < MIN(bottom + shadow, h); y++) {
+            int k = shadow - (y - bottom + 1);
+            if (k > 0) {
+                uint32_t *p = c->px + y * c->stride + x;
+                *p = color_mix(*p, RGB(0, 0, 0), k * k * (dark ? 110 : 60) / (shadow * shadow));
+            }
+        }
+        for (int y = MAX(top, 0); y <= MIN(bottom, h - 1); y++) {
+            int64_t off = (int64_t)y * 16 + 8 - mid;
+            int64_t inside = half - (off < 0 ? -off : off);
+            int cover = (int)CLAMP(inside + 8, 0, 16);
+            if (!cover)
+                continue;
+            int s = (int)CLAMP(off * 1024 / half, -1024, 1024);
+            uint32_t *p = c->px + y * c->stride + x;
+            *p = color_mix(*p, glass_rod(*p, s, dark), cover * 16);
+        }
+    }
+}
+
+static void paint_mono(struct canvas *c, bool dark)
+{
+    static const struct ribbon ribbons[] = {
+        {270, 70, 65, 120, 60, 22},
+        {520, 110, 90, 640, 120, 40},
+        {800, 60, 140, 330, 70, 26},
+    };
+    sin_init();
+    int w = c->w, h = c->h;
+    uint32_t top = dark ? RGB(34, 34, 37) : RGB(240, 240, 242), bottom = dark ? RGB(3, 3, 4) : RGB(170, 170, 176);
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = c->px + y * c->stride, base = lerp(top, bottom, y, h);
+        for (int x = 0; x < w; x++)
+            row[x] = add_light(base, RGB(255, 255, 255), glow_at(x, y, w / 5, h / 6, h) * (dark ? 46 : 30) / 1024);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(ribbons); i++)
+        paint_ribbon(c, &ribbons[i], dark);
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        for (int x = 0; x < w; x++)
+            row[x] = dither(row[x], x, y);
+    }
+}
+
 static bool paint_image(struct canvas *c, const char *path)
 {
     struct image img;
@@ -600,7 +682,9 @@ static bool paint_image(struct canvas *c, const char *path)
 void wallpaper_paint(struct canvas *c, const char *kind, bool dark)
 {
     c->clip = (struct rect){0, 0, c->w, c->h};
-    if (!strcmp(kind, "dune"))
+    if (!strcmp(kind, "mono"))
+        paint_mono(c, dark);
+    else if (!strcmp(kind, "dune"))
         paint_paper(c, &papers[0][dark]);
     else if (!strcmp(kind, "mist"))
         paint_paper(c, &papers[1][dark]);

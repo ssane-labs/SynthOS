@@ -42,4 +42,15 @@ struct winshell_program {
 
 void winshell_programs(void (*fn)(const struct winshell_program *p, void *ctx), void *ctx);
 
+/* what installers start at logon: the Run and RunOnce values of HKCU and HKLM */
+struct winshell_run {
+    char key[96];
+    char name[64];
+    char command[512];
+    bool once;
+};
+
+void winshell_run_entries(void (*fn)(const struct winshell_run *r, void *ctx), void *ctx);
+bool winshell_run_remove(const struct winshell_run *r);
+
 #endif

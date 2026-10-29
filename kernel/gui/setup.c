@@ -373,7 +373,7 @@ static void look_page(struct ui *ui, struct setup *s)
 {
     struct rect r = body(ui, s);
     title(ui, r, "Choose your look", "It changes behind this card as you pick.");
-    int n = MIN(look_count(), 3), cw = (r.w - (n - 1) * 16) / MAX(n, 1);
+    int n = MIN(look_count(), 4), cw = (r.w - (n - 1) * 16) / MAX(n, 1);
     for (int i = 0; i < n; i++) {
         const struct gui_look *l = look_get(i);
         struct rect card = {r.x + i * (cw + 16), r.y + 64, cw, 168};

@@ -310,6 +310,12 @@ static bool framed(const struct window *w)
     return !(w->flags & (WIN_POPUP | WIN_DIALOG | WIN_OVERLAY | WIN_BARE));
 }
 
+/* a window that fills its area has square corners, so it meets the menu bar and the screen edges with no gap */
+static int corner(const struct window *w)
+{
+    return w->flags & (WIN_MAXIMIZED | WIN_FULLSCREEN) ? 0 : w->radius;
+}
+
 struct rect wm_client_rect(const struct window *w)
 {
     if (!framed(w) || (w->flags & WIN_FULLSIZE))
@@ -702,7 +708,7 @@ static void draw_ghosts(struct canvas *c, bool above)
             if (w->glass && style.glass != GLASS_SOLID) {
                 struct glass_look look;
                 glass_look_for(&look, w->flags & WIN_OVERLAY ? GLASS_OVERLAY : w->flags & WIN_POPUP ? GLASS_MENU : GLASS_WINDOW,
-                               w->radius);
+                               corner(w));
                 glass_prepare(c, w->glass, &look);
             }
             if (!snapshot(w, &g->snap, g->margin))
@@ -1208,11 +1214,53 @@ void wm_toggle_maximize(struct window *w)
     } else {
         w->restore = w->frame;
         w->flags |= WIN_MAXIMIZED;
-        struct rect work = wm_work_area(wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + 8));
-        set_frame(w, (struct rect){work.x + 4, work.y + 4, work.w - 8, work.h - 8});
+        set_frame(w, wm_work_area(wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + 8)));
     }
     if (g)
         g->frame = w->frame;
+}
+
+/* Full screen: the window takes its whole screen, and while it is in front the menu bar and the Dock step aside
+   (the menu bar comes back while the pointer is at the top edge). */
+void wm_toggle_fullscreen(struct window *w)
+{
+    if (!framed(w) || (!(w->flags & WIN_RESIZABLE) && !(w->flags & WIN_FULLSCREEN)))
+        return;
+    struct rect from = w->frame;
+    struct ghost *g = ghosts;
+    morph(w, from);
+    if (ghosts != g && ghosts->kind == ANIM_MORPH)
+        g = ghosts;
+    else
+        g = NULL;
+    if (w->flags & WIN_FULLSCREEN) {
+        w->flags &= ~WIN_FULLSCREEN;
+        set_frame(w, w->restore_full);
+    } else {
+        w->restore_full = w->frame;
+        w->flags |= WIN_FULLSCREEN;
+        set_frame(w, wm_screen_rect(wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + 8)));
+        wm_focus(w);
+    }
+    if (g)
+        g->frame = w->frame;
+    wm_damage_all();
+}
+
+bool wm_fullscreen_front(void)
+{
+    for (struct window *w = top; w; w = w->below)
+        if (visible(w) && !w->anim_hold && framed(w))
+            return (w->flags & WIN_FULLSCREEN) &&
+                   rect_contains(screens[0].area, w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2);
+    return false;
+}
+
+static bool full_menu;
+
+bool wm_fullscreen_menu(void)
+{
+    return full_menu;
 }
 
 void wm_foreach(void (*fn)(struct window *w, void *ctx), void *ctx)
@@ -1360,9 +1408,9 @@ static void draw_window(struct canvas *c, struct window *w)
     bool active = w == focus || floating(w);
     if (!(w->flags & WIN_NOSHADOW)) {
         if (floating(w))
-            gfx_drop_shadow(c, f, w->radius, 8, style.dark ? 90 : 34, 2);
+            gfx_drop_shadow(c, f, corner(w), 8, style.dark ? 90 : 34, 2);
         else
-            gfx_drop_shadow(c, f, w->radius, active ? SHADOW : 8, style.dark ? (active ? 130 : 80) : (active ? 46 : 26),
+            gfx_drop_shadow(c, f, corner(w), active ? SHADOW : 8, style.dark ? (active ? 130 : 80) : (active ? 46 : 26),
                             active ? SHADOW_DY : 2);
     }
     struct rect cr = wm_client_rect(w);
@@ -1370,22 +1418,22 @@ static void draw_window(struct canvas *c, struct window *w)
     if (w->glass && style.glass != GLASS_SOLID) {
         struct glass_look look;
         glass_look_for(&look, w->flags & WIN_OVERLAY ? GLASS_OVERLAY : w->flags & WIN_POPUP ? GLASS_MENU : GLASS_WINDOW,
-                       w->radius);
+                       corner(w));
         glass_draw(c, w->glass, &look);
     } else if (w->glass) {
-        gfx_round(c, f, w->radius, style.sidebar | 0xff000000u);
+        gfx_round(c, f, corner(w), style.sidebar | 0xff000000u);
     }
     struct canvas src = w->surface, body = *c;
     if (titled) {
         struct canvas t = *c;
         t.clip = rect_intersect(c->clip, (struct rect){f.x, f.y, f.w, TITLE_HEIGHT});
-        gfx_round(&t, f, w->radius, active ? style.titlebar : style.titlebar_inactive);
+        gfx_round(&t, f, corner(w), active ? style.titlebar : style.titlebar_inactive);
         gfx_fill(c, (struct rect){f.x, f.y + TITLE_HEIGHT - 1, f.w, 1}, style.separator);
         src.px -= TITLE_HEIGHT * src.stride;
         src.h += TITLE_HEIGHT;
         body.clip = rect_intersect(c->clip, cr);
     }
-    gfx_blit_round(&body, f, &src, w->radius, w->glass != NULL || (w->flags & WIN_TRANSLUCENT));
+    gfx_blit_round(&body, f, &src, corner(w), w->glass != NULL || (w->flags & WIN_TRANSLUCENT));
     if (framed(w)) {
         if (!(w->flags & WIN_NOTITLE)) {
             struct rect tr = {f.x + 76, f.y, f.w - 152, title_band(w)};
@@ -1398,9 +1446,9 @@ static void draw_window(struct canvas *c, struct window *w)
             draw_more(c, w);
     }
     if (!(w->flags & (WIN_OVERLAY | WIN_BARE))) {
-        gfx_round_frame(c, f, w->radius, style.dark ? ALPHA(0, 230) : ALPHA(0, 44));
+        gfx_round_frame(c, f, corner(w), style.dark ? ALPHA(0, 230) : ALPHA(0, 44));
         if (style.dark)
-            gfx_round_frame_gradient(c, rect_inset(f, 1), w->radius - 1, ALPHA(0xffffffffu, 40), ALPHA(0xffffffffu, 12));
+            gfx_round_frame_gradient(c, rect_inset(f, 1), MAX(corner(w) - 1, 0), ALPHA(0xffffffffu, 40), ALPHA(0xffffffffu, 12));
     }
 }
 
@@ -1438,7 +1486,7 @@ static bool covers(const struct window *w, struct rect area)
 {
     if (!visible(w) || w->anim_hold || floating(w) || w->glass || (w->flags & WIN_TRANSLUCENT))
         return false;
-    struct rect inner = rect_intersect(rect_inset(w->frame, MAX(w->radius, 1)), area);
+    struct rect inner = rect_intersect(rect_inset(w->frame, MAX(corner(w), 1)), area);
     return inner.x == area.x && inner.y == area.y && inner.w == area.w && inner.h == area.h;
 }
 
@@ -1459,8 +1507,11 @@ static void compose(int index, struct rect area)
             draw_window(c, w);
     if (ghosts)
         draw_ghosts(c, false);
-    menubar_paint(c, index);
-    dock_paint(c, index);
+    bool full = index == 0 && wm_fullscreen_front();
+    if (!full || full_menu)
+        menubar_paint(c, index);
+    if (!full)
+        dock_paint(c, index);
     if (index == 0)
         dock_paint_drag(c);
     for (struct window *w = bottom; w; w = w->above)
@@ -1640,6 +1691,7 @@ enum {
     ACT_KEY,
     ACT_MINIMIZE,
     ACT_ZOOM,
+    ACT_FULL,
     ACT_PIN,
     ACT_CLOSE,
 };
@@ -1655,6 +1707,8 @@ static void more_pick(struct window *owner, int index)
         wm_minimize(w);
     else if (act == ACT_ZOOM)
         wm_toggle_maximize(w);
+    else if (act == ACT_FULL)
+        wm_toggle_fullscreen(w);
     else if (act == ACT_PIN)
         wm_set_pinned(w, !(w->flags & WIN_PINNED));
     else if (act == ACT_CLOSE)
@@ -1691,6 +1745,10 @@ void wm_window_menu(struct window *w, int x, int y)
     if (w->flags & WIN_RESIZABLE) {
         more_action[n] = ACT_ZOOM;
         more_items[n++] = (struct menu_item){w->flags & WIN_MAXIMIZED ? "Restore Size" : "Fill Screen", 0, NULL};
+    }
+    if (w->flags & (WIN_RESIZABLE | WIN_FULLSCREEN)) {
+        more_action[n] = ACT_FULL;
+        more_items[n++] = (struct menu_item){w->flags & WIN_FULLSCREEN ? "Exit Full Screen" : "Enter Full Screen", 0, "F11"};
     }
     more_action[n] = ACT_CLOSE;
     more_items[n++] = (struct menu_item){"Close", 0, "\xe2\x8c\x98W"};
@@ -1914,6 +1972,13 @@ static void clamp_mouse(int x, int y)
     nearest_point(&x, &y);
     mouse_x = x;
     mouse_y = y;
+    struct rect a = screens[0].area;
+    bool want = wm_fullscreen_front() && rect_contains(a, x, y) &&
+                y < a.y + (full_menu ? MAX(menubar_height(), 2) : 2);
+    if (want != full_menu) {
+        full_menu = want;
+        wm_damage_all();
+    }
 }
 
 static void absolute_point(const struct pointer_event *ev, int *x, int *y)
@@ -2248,9 +2313,12 @@ static void keep_visible(struct window *w, void *ctx)
     bool visible_somewhere = false;
     for (int i = 0; i < screen_count; i++)
         visible_somewhere |= rect_contains(screens[i].area, cx, ty);
+    if (w->flags & WIN_FULLSCREEN) {
+        set_frame(w, wm_screen_rect(wm_screen_at(cx, ty)));
+        return;
+    }
     if (w->flags & WIN_MAXIMIZED) {
-        struct rect work = wm_work_area(wm_screen_at(cx, ty));
-        set_frame(w, (struct rect){work.x + 4, work.y + 4, work.w - 8, work.h - 8});
+        set_frame(w, wm_work_area(wm_screen_at(cx, ty)));
         return;
     }
     struct rect work = wm_work_area(visible_somewhere ? wm_screen_at(cx, ty) : 0);
@@ -2439,7 +2507,8 @@ bool wm_animations(void)
     return animations;
 }
 
-COMMAND(windows, NULL, "system", "windows [pin|unpin <n>]", "list the open windows; keep one on top of the others")
+COMMAND(windows, NULL, "system", "windows [pin|unpin|max|full <n>] [frame <n>]",
+        "list the open windows; keep one on top, fill the screen, go full screen or show where it is")
 {
     if (!screen_count)
         return sh_error(sh, "windows", "the desktop is not running");
@@ -2459,12 +2528,23 @@ COMMAND(windows, NULL, "system", "windows [pin|unpin <n>]", "list the open windo
         return 0;
     }
     long k;
-    bool pin = !strcmp(argv[1], "pin");
-    if (argc != 3 || (!pin && strcmp(argv[1], "unpin")) || !str_parse_long(argv[2], &k))
+    const char *op = argv[1];
+    if (argc != 3 || !str_parse_long(argv[2], &k))
         return command_usage(sh, command_find("windows"));
     if (k < 1 || k > n)
         return sh_error(sh, "windows", "there is no window %ld", k);
-    wm_set_pinned(list[k - 1], pin);
+    struct window *w = list[k - 1];
+    if (!strcmp(op, "pin") || !strcmp(op, "unpin"))
+        wm_set_pinned(w, !strcmp(op, "pin"));
+    else if (!strcmp(op, "max"))
+        wm_toggle_maximize(w);
+    else if (!strcmp(op, "full"))
+        wm_toggle_fullscreen(w);
+    else if (!strcmp(op, "frame"))
+        sh_printf(sh, "%d %d %d %d%s%s\n", w->frame.x, w->frame.y, w->frame.w, w->frame.h,
+                  w->flags & WIN_MAXIMIZED ? " max" : "", w->flags & WIN_FULLSCREEN ? " full" : "");
+    else
+        return command_usage(sh, command_find("windows"));
     return 0;
 }
 

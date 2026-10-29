@@ -395,6 +395,8 @@ bool chrome_hit(int x, int y)
 {
     if (!started)
         return false;
+    if (wm_fullscreen_front())
+        return wm_fullscreen_menu() && in_bar(x, y);
     if (in_bar(x, y) || panel_hit(x, y))
         return true;
     return dock_hit(x, y);

@@ -1915,6 +1915,21 @@ int w32_reg_subkeys(const char *path, void (*fn)(const char *name, void *ctx), v
     return n;
 }
 
+/* the names of a key's values, one call per name */
+int w32_reg_values(const char *path, void (*fn)(const char *name, void *ctx), void *ctx)
+{
+    const char *rest;
+    HKEY base = root_named(path, &rest);
+    LONG err;
+    struct reg_key *k = base ? open_path(base, rest, false, NULL, &err) : NULL;
+    if (!k)
+        return E_NOENT;
+    int n = 0;
+    for (struct reg_value *v = k->values; v; v = v->next, n++)
+        fn(v->name, ctx);
+    return n;
+}
+
 static const char *type_name(uint32_t t)
 {
     switch (t) {

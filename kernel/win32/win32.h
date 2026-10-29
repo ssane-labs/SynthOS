@@ -548,7 +548,9 @@ bool w32_reg_set(const char *path, const char *name, uint32_t type, const void *
 bool w32_reg_delete_value(const char *path, const char *name);
 bool w32_reg_delete_key(const char *path);
 int msiexec_main(struct shell *sh, int argc, char **argv);
+int w32_split_args(const char *line, char *buf, char **argv, int max);
 int w32_reg_subkeys(const char *path, void (*fn)(const char *name, void *ctx), void *ctx);
+int w32_reg_values(const char *path, void (*fn)(const char *name, void *ctx), void *ctx);
 const char *w32_engine_environment(enum w32_engine e);
 bool w64_setup(void);
 void w64_set_image(uint32_t base);
