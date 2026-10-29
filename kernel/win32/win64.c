@@ -855,6 +855,18 @@ static uint64_t h_p_wpgmptr(uint64_t *a, const uint64_t *f, void *t) { return U(
 static uint64_t h_p_pctype(uint64_t *a, const uint64_t *f, void *t) { return U(d_pctype()); }
 static uint64_t h_p_pwctype(uint64_t *a, const uint64_t *f, void *t) { return U(d_pwctype()); }
 static uint64_t h_p_tzname(uint64_t *a, const uint64_t *f, void *t) { return U(d_tzname()); }
+
+/* the C runtime's error texts as a table of 8-byte pointers (Python reads it through strerror) */
+static uint64_t sys_errlist64[64];
+
+static uint64_t h_sys_errlist(uint64_t *a, const uint64_t *f, void *t)
+{
+    int n;
+    char **list = w32_crt_errlist(&n);
+    for (int i = 0; i < n && i < (int)ARRAY_SIZE(sys_errlist64); i++)
+        sys_errlist64[i] = U(list[i]);
+    return U(sys_errlist64);
+}
 static uint64_t h_iob_func(uint64_t *a, const uint64_t *f, void *t) { return U(S->iob); }
 
 static uint64_t h_acrt_iob_func(uint64_t *a, const uint64_t *f, void *t)
@@ -1345,6 +1357,7 @@ static const struct w64_export msvcrt_exports[] = {
     W64_FN("__getmainargs", h_getmainargs),
     W64_FN("__wgetmainargs", h_wgetmainargs),
     W64_FN("__p___argv", h_p_argv),
+    W64_FN("__sys_errlist", h_sys_errlist),
     W64_FN("__p___wargv", h_p_wargv),
     W64_FN("__p__environ", h_p_environ),
     W64_FN("__p__wenviron", h_p_wenviron),

@@ -350,8 +350,10 @@ static bool apply_relocations(const struct pe_info *pe, uint8_t *mem, uint64_t d
     dir_of(pe, DIR_RELOC, &rva, &size);
     if (!delta)
         return true;
-    if (!rva || !size || (pe->characteristics & 0x0001))
+    if (pe->characteristics & 0x0001)
         return false;
+    if (!rva || !size)
+        return true;
     uint32_t off = 0;
     while (off + 8 <= size && rva + off + 8 <= pe->image_size) {
         uint32_t page = rd32(mem + rva + off), block = rd32(mem + rva + off + 4);
@@ -951,7 +953,9 @@ static struct w32_image *load_file(const char *path, const char *name, int *erro
     }
     uint32_t reloc_rva, reloc_size;
     dir_of(&pe, DIR_RELOC, &reloc_rva, &reloc_size);
-    bool relocatable = reloc_rva && reloc_size && !(pe.characteristics & 0x0001);
+    /* a DLL without fixups (python3.dll forwards everything) moves anyway, as on Windows: only "relocations
+       stripped" pins an image to its base */
+    bool relocatable = !(pe.characteristics & 0x0001) && ((reloc_rva && reloc_size) || (pe.characteristics & 0x2000));
     uint32_t base = pick_base(pe.image_base, pe.image_size, relocatable);
     struct image_cache *cache = NULL;
     if (base && pe.image_size >= CACHE_MIN && ((pe.characteristics & 0x2000) || pe.image_size < CACHE_EXE_MAX)) {

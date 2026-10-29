@@ -1259,6 +1259,12 @@ static int *crt_sys_nerr(void)
     return &n;
 }
 
+char **w32_crt_errlist(int *count)
+{
+    *count = *crt_sys_nerr();
+    return crt_sys_errlist();
+}
+
 static void crt_perror(const char *s)
 {
     crt_flush_all();
