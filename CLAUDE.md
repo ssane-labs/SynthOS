@@ -15,8 +15,9 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
   and reach built-ins through the call gate (`w32gate.c`, signatures from `tools/w32sig.py`). Kernel structures it
   shares keep the 64-bit layout with `K64(...)`/`KARR(...)` (`synth/types.h`); call program code through
   `W32_CALL(type, fn, args...)`, COM method tables get `W32_VTABLE`; kernel functions with pointer/size_t
-  out-parameters go through `arch/x86/64/w32abi.c` (`x32.syms`). Win64 programs do not run there yet (`W32=0` leaves
-  the subsystem out)
+  out-parameters go through `arch/x86/64/w32abi.c` (`x32.syms`). Win64 programs run in 64-bit mode and reach the
+  same subsystem through `w64.asm` (`w64_gate` → win64.c dispatch, `w64_call32` → the gate's signatures).
+  `W32=0` leaves the subsystem out
 - `make usb` — compact USB-stick image `build/synthos-usb.img` (docs/INSTALL.md is the user guide)
 - `make test-crypto` — kernel crypto built for the host, checked against Python `cryptography`
 - `make run-uefi` — boot with OVMF firmware (framebuffer console)

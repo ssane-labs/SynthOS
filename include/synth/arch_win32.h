@@ -12,6 +12,7 @@ struct w32_jump {
 /* 64-bit kernel: calls into 32-bit program code (compatibility mode) and back. The program's stack is the current
    one unless stack is given; ebp and ecx are what funclets and thiscall methods expect. Returns edx:eax. */
 uint64_t arch_w32_enter(uint32_t fn, int argc, const uint32_t *args, uint32_t stack, uint32_t ebp, uint32_t ecx);
+uint32_t arch_native_call(uint32_t (*fn)(uint32_t), uint32_t arg, void *stack_top, struct w32_jump *jump);
 #else
 struct w32_jump {
     uint32_t ebx;

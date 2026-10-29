@@ -50,7 +50,7 @@ void arch_w64_set_teb(uint32_t base)
 
 void arch_load_teb_selector(void)
 {
-    __asm__ volatile("mov %0, %%fs" : : "r"(0x18) : "memory");
+    __asm__ volatile("mov %0, %%fs; mov %1, %%gs" : : "r"(0x18), "r"(0x38) : "memory");
 }
 static struct idt_entry idt[256] __attribute__((aligned(16)));
 static struct table_ptr idt_ptr;

@@ -224,6 +224,21 @@ uint64_t w32_call_guest(const void *fn, int argc, const uint64_t *args, const ui
     return arch_w32_enter((uint32_t)(uintptr_t)fn, n, words, 0, 0, 0);
 }
 
+/* a built-in function called with its arguments laid out as a 32-bit program pushes them (64-bit programs' calls) */
+uint64_t w64_call32(void *fn, const uint32_t *args, int count)
+{
+    UNUSED(count);
+    size_t index;
+    if (!sigs)
+        w32_gate_init();
+    const struct w32_sig *s = sig_of(fn, &index);
+    if (!s)
+        panic("win64: %p has no call gate entry", fn);
+    struct gate_ret r;
+    w32_gate_dispatch((uint32_t)index, (uint32_t)(uintptr_t)args, &r);
+    return s->ret == R_I64 ? r.rax : (uint32_t)r.rax;
+}
+
 /* calls from the kernel into a program's (or a stub's) code with 32-bit arguments */
 uint32_t w32_call(void *fn, int argc, const uint32_t *args)
 {

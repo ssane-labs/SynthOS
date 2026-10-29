@@ -220,6 +220,38 @@ arch_w32_call:
     mov dword [r8 + 64], 0
     ret
 
+; uint32_t arch_native_call(uint32_t (*fn)(uint32_t), uint32_t arg, void *stack_top, struct w32_jump *jump): a kernel
+; function on a program's stack, with the jump arch_w32_abort returns through
+global arch_native_call
+arch_native_call:
+    mov [rcx], rbx
+    mov [rcx + 8], rbp
+    mov [rcx + 16], r12
+    mov [rcx + 24], r13
+    mov [rcx + 32], r14
+    mov [rcx + 40], r15
+    lea rax, [rsp + 8]
+    mov [rcx + 48], rax
+    mov rax, [rsp]
+    mov [rcx + 56], rax
+    mov dword [rcx + 64], 1
+    push rbx
+    push r12
+    push rbp
+    mov rbx, rsp
+    mov r12, rcx
+    mov rax, rdi
+    mov edi, esi
+    mov rsp, rdx
+    and rsp, -16
+    call rax
+    mov rsp, rbx
+    mov dword [r12 + 64], 0
+    pop rbp
+    pop r12
+    pop rbx
+    ret
+
 ; void arch_w32_abort(struct w32_jump *jump, uint32_t code)
 global arch_w32_abort
 arch_w32_abort:

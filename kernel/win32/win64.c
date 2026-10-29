@@ -352,7 +352,11 @@ uint64_t w64_call(uint64_t fn, int argc, const uint64_t *args)
         return arch_w64_call((uint32_t)fn, argc, args);
     struct call_request r = {fn, argc, args, 0};
     uint32_t arg = U(&r);
+#ifdef __x86_64__
+    arch_native_call((uint32_t(*)(uint32_t))call_on_program_stack, arg, w32->stack + w32->stack_size - 4096, &w32->jump);
+#else
     w32_call((void *)call_on_program_stack, 1, &arg);
+#endif
     return r.result;
 }
 

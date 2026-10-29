@@ -74,7 +74,7 @@ for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:an
     rest=${config#*:}
     disk=${rest%%:*}
     cpu=${rest#*:}
-    if [ "$NO_WIN32" = 1 ] && [ "$cpu" = 486 ]; then
+    if [ "$KERNEL64" = 1 ] && [ "$cpu" = 486 ]; then
         echo "  skip  $config (64-bit kernel)"
         continue
     fi

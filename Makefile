@@ -77,7 +77,7 @@ KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm arch/x86/long.asm
 ifneq ($(X64),)
-KERNEL_ASM := arch/x86/64/entry.asm arch/x86/64/isr.asm $(if $(filter 1,$(W32)),arch/x86/64/win32.asm)
+KERNEL_ASM := arch/x86/64/entry.asm arch/x86/64/isr.asm $(if $(filter 1,$(W32)),arch/x86/64/win32.asm arch/x86/64/w64.asm)
 endif
 NASM_OBJ   := $(if $(X64),elf64,elf32)
 KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/biosblob.o \
@@ -408,7 +408,7 @@ run-serial:
 
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
-	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),NO_WIN64=1,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
+	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools
