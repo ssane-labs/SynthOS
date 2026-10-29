@@ -373,6 +373,7 @@ long w32_console_read(char *buf, size_t n)
     return (long)k;
 }
 
+#ifndef __x86_64__
 uint32_t w32_call(void *fn, int argc, const uint32_t *args)
 {
     if (!w32->jump.active)
@@ -390,6 +391,7 @@ uint32_t w32_call(void *fn, int argc, const uint32_t *args)
     default: return ((f4)fn)(args[0], args[1], args[2], args[3]);
     }
 }
+#endif
 
 void w32_run_atexit(void)
 {

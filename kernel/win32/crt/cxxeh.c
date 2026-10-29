@@ -212,6 +212,7 @@ int cxx_frame_handler(const struct cxx_func_info *fi, uint8_t *rec, struct cxx_f
     }
     return 1;
 }
+W32_GATE(cxx_frame_handler);
 
 /* throw; inside a catch throws the object being handled again */
 static void WINAPI cxx_throw(void *object, const struct cxx_throw_info *ti)

@@ -19,8 +19,10 @@ ifneq ($(X64),)
 ifneq ($(shell command -v x86_64-elf-gcc 2>/dev/null),)
 CROSS    ?= x86_64-elf-
 endif
+ifneq ($(W32),1)
 CONFIG_WIN32 := 0
 CONFIG_DEFINES := $(subst -DCONFIG_WIN32=1,-DCONFIG_WIN32=0,$(CONFIG_DEFINES))
+endif
 else ifneq ($(shell command -v i686-elf-gcc 2>/dev/null),)
 CROSS    ?= i686-elf-
 endif
@@ -43,7 +45,12 @@ CFLAGS := $(ARCH_FLAGS) -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-pr
           -fno-asynchronous-unwind-tables -fno-omit-frame-pointer \
           -Wall -Wextra -Wno-override-init -Wno-unused-parameter \
           -Iinclude $(CONFIG_DEFINES) $(if $(SERIAL),-DCONFIG_SERIAL_CONSOLE)
-LDFLAGS := $(if $(CROSS),,$(if $(X64),-m elf_x86_64 -z max-page-size=4096,-m elf_i386)) -nostdlib \
+# the 64-bit kernel runs at 0xb0100000, above what -mcmodel=small reaches with absolute addresses: position
+# independent code keeps every access RIP-relative
+ifneq ($(X64),)
+CFLAGS := $(filter-out -fno-pic -fno-pie,$(CFLAGS)) -fpie
+endif
+LDFLAGS := $(if $(CROSS),,$(if $(X64),-m elf_x86_64 -z max-page-size=4096 -no-pie,-m elf_i386)) -nostdlib \
            -T arch/x86/$(if $(X64),64/)linker.ld $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx && echo --no-warn-rwx-segments)
 HOSTCFLAGS := -std=gnu11 -O2 -Wall -Wextra -Iinclude -DSYNTH_TOOL
 
@@ -69,7 +76,7 @@ KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm arch/x86/long.asm
 ifneq ($(X64),)
-KERNEL_ASM := arch/x86/64/entry.asm arch/x86/64/isr.asm
+KERNEL_ASM := arch/x86/64/entry.asm arch/x86/64/isr.asm $(if $(filter 1,$(W32)),arch/x86/64/win32.asm)
 endif
 NASM_OBJ   := $(if $(X64),elf64,elf32)
 KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/biosblob.o
@@ -203,7 +210,25 @@ $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/linker.ld
 	@$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
 
 $(OUT)/obj/%_fp.o: CFLAGS += $(if $(X64),-msse -msse2 -mfpmath=sse,-m80387 -mfpmath=387)
-$(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
+# the Windows subsystem of the 64-bit kernel needs clang (4-byte __ptr32 pointers for 32-bit programs)
+ifneq ($(X64),)
+$(OUT)/obj/kernel/win32/%.o: CC = clang
+$(OUT)/obj/kernel/win32/%.o: CFLAGS := --target=x86_64-unknown-none-elf -fms-extensions -Wno-microsoft \
+    $(filter-out -fno-tree-loop-distribute-patterns -march=x86-64 -O2,$(CFLAGS)) -march=x86-64
+$(OUT)/obj/kernel/win32/%_fp.o: CFLAGS += -msse -msse2 -mfpmath=sse -m80387
+$(OUT)/obj/kernel/win32/crt/%_fp.o: CFLAGS += -msse -msse2 -mfpmath=sse -m80387
+# every Windows source of the 64-bit kernel is compiled with its call gate signatures (tools/w32sig.py) appended
+W32SIG_CC := clang -std=gnu11 -ffreestanding -fno-builtin -fms-extensions -Iinclude $(CONFIG_DEFINES) \
+             $(if $(SERIAL),-DCONFIG_SERIAL_CONSOLE)
+$(OUT)/obj/kernel/win32/%.o: kernel/win32/%.c tools/w32sig.py
+	@mkdir -p $(@D)
+	@echo "  CC      $< (gate)"
+	@python3 -I tools/w32sig.py $< $(@:.o=.sig.h) $(W32SIG_CC)
+	@printf '#include "%s"\n#include "%s"\n' "$(abspath $<)" "$(abspath $(@:.o=.sig.h))" > $(@:.o=.wrap.c)
+	@$(CC) $(CFLAGS) -MMD -MP -MT $@ -c $(@:.o=.wrap.c) -o $@
+endif
+# clang 18 miscompiles __ptr32 returns at -Os and -O0 (it crashes), so the 64-bit Windows subsystem uses -O2
+$(OUT)/obj/kernel/win32/%.o: CFLAGS += $(if $(X64),-O2,-Os)
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
 

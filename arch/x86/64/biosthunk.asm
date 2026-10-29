@@ -33,11 +33,8 @@ thunk:
     mov [saved_cr4], eax
     mov rax, cr0
     mov [saved_cr0], eax
-    ; 32-bit pointer to the same GDT for the way back through protected mode
-    mov ax, [saved_gdt64]
-    mov [gdt32], ax
-    mov eax, [saved_gdt64 + 2]
-    mov [gdt32 + 2], eax
+    ; paging goes off on the way, so the trip uses this blob's own GDT (the kernel's is mapped high)
+    lgdt [gdt64ptr]
     mov rsp, THUNK_STACK
     push qword CODE32
     lea rax, [rel compat]
@@ -165,12 +162,24 @@ back64:
     ret
 
 align 8
+gdt:
+    dq 0
+    dq 0x00cf9a000000ffff   ; 0x08 32-bit code
+    dq 0x00cf92000000ffff   ; 0x10 data
+    dq 0
+    dq 0x00009a000000ffff   ; 0x20 16-bit code
+    dq 0x000092000000ffff   ; 0x28 16-bit data
+    dq 0x00209a0000000000   ; 0x30 64-bit code
+gdt_end:
 real_idt:
     dw 0x3ff
     dd 0
 gdt32:
-    dw 0
-    dd 0
+    dw gdt_end - gdt - 1
+    dd gdt
+gdt64ptr:
+    dw gdt_end - gdt - 1
+    dq gdt
 saved_gdt64:
     dw 0
     dq 0

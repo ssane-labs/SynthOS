@@ -5,9 +5,14 @@
 
 #include "../io.h"
 
-/* The 64-bit kernel sees physical memory where it is: the entry code maps 0-4 GiB one to one with 2 MiB pages,
-   device memory above that is added the same way when a driver asks for it. Pages that need other caching or a
-   different target are split into 4 KiB entries. */
+/* The 64-bit kernel's address space, the same in every process:
+     0 - 4 MiB                      low memory, one to one (BIOS data, start-up code)
+     4 MiB - 2.75 GiB               32-bit programs
+     0xb0000000 (KERNEL_OFFSET)     the kernel image (the first 256 MiB of physical memory)
+     0xc0000000 - 4 GiB             the kernel heap
+     DIRECT (0xffff800000000000)    all physical memory, for devices and page tables
+   so every pointer a 32-bit program may see (heap objects, the kernel's static data, call gate stubs) is below
+   4 GiB. The boot space also maps 4 MiB - 2.75 GiB one to one, which the start-up code uses. */
 
 #define P_PRESENT 0x001ull
 #define P_WRITE 0x002ull
@@ -16,14 +21,23 @@
 #define P_LARGE 0x080ull
 #define P_ADDR 0x000ffffffffff000ull
 #define LARGE (2ull << 20)
+#define DIRECT 0xffff800000000000ull
+#define HEAP_VIRT 0xc0000000ull
+#define HEAP_LIMIT 0x3f000000ull
 
 extern uint64_t boot_pml4[512];
 
 static bool enabled;
+static uint64_t heap_phys, heap_bytes;
 
-/* tables needed before the kernel heap exists (the boot framebuffer) come from here */
-static uint64_t early_tables[16][512] __attribute__((aligned(4096)));
+/* tables needed before the kernel heap exists come from here */
+static uint64_t early_tables[24][512] __attribute__((aligned(4096)));
 static int early_used;
+
+static inline uint64_t *table_at(uint64_t entry)
+{
+    return (uint64_t *)(uintptr_t)(DIRECT + (entry & P_ADDR));
+}
 
 static void *table_alloc(void)
 {
@@ -41,17 +55,16 @@ static inline void invlpg(uint64_t va)
 static uint64_t *next_level(uint64_t *entry, bool create)
 {
     if (*entry & P_PRESENT)
-        return (uint64_t *)(uintptr_t)(*entry & P_ADDR);
+        return table_at(*entry);
     if (!create)
         return NULL;
     uint64_t *t = table_alloc();
     if (!t)
         return NULL;
-    *entry = (uint64_t)(uintptr_t)t | P_PRESENT | P_WRITE;
+    *entry = vmm_phys(t) | P_PRESENT | P_WRITE;
     return t;
 }
 
-/* the page directory entry for a 2 MiB region */
 static uint64_t *pd_entry(uint64_t va, bool create)
 {
     uint64_t *pdpt = next_level(&boot_pml4[(va >> 39) & 511], create);
@@ -68,6 +81,8 @@ static uint64_t *pte(uint64_t va, bool create)
     if (!pde)
         return NULL;
     if ((*pde & P_PRESENT) && (*pde & P_LARGE)) {
+        if (!create)
+            return NULL;
         uint64_t *t = table_alloc();
         if (!t)
             return NULL;
@@ -76,21 +91,54 @@ static uint64_t *pte(uint64_t va, bool create)
             flags |= 0x80ull;
         for (int i = 0; i < 512; i++)
             t[i] = (base + (uint64_t)i * 4096) | flags | P_PRESENT;
-        *pde = (uint64_t)(uintptr_t)t | P_PRESENT | P_WRITE;
+        *pde = vmm_phys(t) | P_PRESENT | P_WRITE;
+        uint64_t va_base = va & ~(LARGE - 1);
         for (int i = 0; i < 512; i++)
-            invlpg(base + (uint64_t)i * 4096);
+            invlpg(va_base + (uint64_t)i * 4096);
     }
     uint64_t *t = next_level(pde, create);
     return t ? &t[(va >> 12) & 511] : NULL;
+}
+
+/* maps [va, va + size) to [phys, ...) with 2 MiB pages where both line up */
+static bool map_range(uint64_t va, uint64_t phys, uint64_t size, uint64_t cache)
+{
+    uint64_t end = va + size;
+    while (va < end) {
+        if (!(va & (LARGE - 1)) && !(phys & (LARGE - 1)) && end - va >= LARGE) {
+            uint64_t *pde = pd_entry(va, true);
+            if (!pde)
+                return false;
+            if (!(*pde & P_PRESENT) || (*pde & P_LARGE)) {
+                *pde = phys | P_PRESENT | P_WRITE | P_LARGE | cache;
+                invlpg(va);
+                va += LARGE;
+                phys += LARGE;
+                continue;
+            }
+        }
+        uint64_t *e = pte(va, true);
+        if (!e)
+            return false;
+        *e = phys | P_PRESENT | P_WRITE | cache;
+        invlpg(va);
+        va += 4096;
+        phys += 4096;
+    }
+    return true;
 }
 
 void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size)
 {
     UNUSED(table_start);
     UNUSED(table_limit);
+    heap_phys = ALIGN_UP((uint64_t)start, 4096u);
+    heap_bytes = MIN(((uint64_t)end - heap_phys) & ~4095ull, HEAP_LIMIT);
+    if (!map_range(HEAP_VIRT, heap_phys, heap_bytes, 0))
+        return NULL;
     enabled = true;
-    *size = end - start;
-    return (void *)(uintptr_t)start;
+    *size = (size_t)heap_bytes;
+    return (void *)(uintptr_t)HEAP_VIRT;
 }
 
 bool vmm_available(void)
@@ -100,7 +148,14 @@ bool vmm_available(void)
 
 uint32_t vmm_phys(const void *ptr)
 {
-    return (uint32_t)(uintptr_t)ptr;
+    uint64_t v = (uintptr_t)ptr;
+    if (v >= HEAP_VIRT && v - HEAP_VIRT < heap_bytes)
+        return (uint32_t)(v - HEAP_VIRT + heap_phys);
+    if (v >= KERNEL_OFFSET && v < KERNEL_OFFSET + 0x10000000u)
+        return (uint32_t)(v - KERNEL_OFFSET);
+    if (v >= DIRECT)
+        return (uint32_t)(v - DIRECT);
+    return (uint32_t)v;
 }
 
 bool vmm_pae(void)
@@ -108,70 +163,39 @@ bool vmm_pae(void)
     return true;
 }
 
-static void *map_identity(uint64_t phys, size_t size, uint64_t cache)
+static void *map_direct(uint64_t phys, size_t size, uint64_t cache)
 {
     uint64_t first = phys & ~4095ull, last = (phys + size + 4095) & ~4095ull;
-    for (uint64_t a = first; a < last;) {
-        uint64_t *pde = pd_entry(a, true);
-        if (!pde)
-            return NULL;
-        bool whole = !(a & (LARGE - 1)) && last - a >= LARGE;
-        if (whole && (!(*pde & P_PRESENT) || (*pde & P_LARGE))) {
-            uint64_t want = a | P_PRESENT | P_WRITE | P_LARGE | cache;
-            if (*pde != want) {
-                *pde = want;
-                invlpg(a);
-            }
-            a += LARGE;
-            continue;
-        }
-        uint64_t *e = pte(a, true);
-        if (!e)
-            return NULL;
-        uint64_t want = a | P_PRESENT | P_WRITE | cache;
-        if (*e != want) {
-            *e = want;
-            invlpg(a);
-        }
-        a += 4096;
-    }
-    return (void *)(uintptr_t)phys;
+    if (!map_range(DIRECT + first, first, last - first, cache))
+        return NULL;
+    return (void *)(uintptr_t)(DIRECT + phys);
 }
 
 void *vmm_map_phys64(uint64_t phys, size_t size)
 {
-    return map_identity(phys, size, 0);
+    return map_direct(phys, size, 0);
 }
 
 void *vmm_map_phys(uint32_t phys, size_t size)
 {
-    return map_identity(phys, size, 0);
+    return map_direct(phys, size, 0);
 }
 
 void *vmm_map_uncached(uint64_t phys, size_t size)
 {
-    return map_identity(phys, size, P_PWT | P_PCD);
+    return map_direct(phys, size, P_PWT | P_PCD);
 }
 
 void *vmm_map_framebuffer(uint64_t phys, size_t size)
 {
-    return map_identity(phys, size, cpu_info()->pat ? P_PWT : 0);
+    return map_direct(phys, size, cpu_info()->pat ? P_PWT : 0);
 }
 
 int vmm_map(uintptr_t vaddr, void *memory, size_t size)
 {
-    uintptr_t phys = (uintptr_t)memory;
-    for (size_t off = 0; off < size; off += 4096) {
-        uint64_t *e = pte(vaddr + off, true);
-        if (!e)
-            return -1;
-        *e = (phys + off) | P_PRESENT | P_WRITE;
-        invlpg(vaddr + off);
-    }
-    return 0;
+    return map_range(vaddr, vmm_phys(memory), ALIGN_UP(size, 4096u), 0) ? 0 : -1;
 }
 
-/* addresses taken away from the identity map read as unmapped until mapped again */
 void vmm_unmap(uintptr_t vaddr, size_t size)
 {
     for (size_t off = 0; off < size; off += 4096) {
@@ -201,8 +225,8 @@ bool vmm_range_free(uintptr_t vaddr, size_t size)
     return false;
 }
 
-/* address spaces, frames above 4 GiB, copy-on-write and committed regions belong to the Windows subsystem, which
-   the 64-bit kernel does not run yet: one address space, no extra frames */
+/* address spaces, frames above 4 GiB, copy-on-write and committed regions belong to the Windows subsystem: one
+   address space and no extra frames until it runs on this kernel */
 size_t vmm_high_pages(void)
 {
     return 0;
@@ -229,19 +253,19 @@ void vmm_frames_free(const uint32_t *pfns, size_t n)
 int vmm_map_frames(uintptr_t vaddr, const uint32_t *pfns, size_t n)
 {
     for (size_t i = 0; i < n; i++)
-        if (vmm_map(vaddr + i * 4096, (void *)((uintptr_t)pfns[i] << 12), 4096))
+        if (!map_range(vaddr + i * 4096, (uint64_t)pfns[i] << 12, 4096, 0))
             return -1;
     return 0;
 }
 
 uint32_t vmm_long_mode_root(void)
 {
-    return (uint32_t)(uintptr_t)boot_pml4;
+    return vmm_phys(boot_pml4);
 }
 
 uint32_t vmm_pae_root(void)
 {
-    return (uint32_t)(uintptr_t)boot_pml4;
+    return vmm_phys(boot_pml4);
 }
 
 struct vmm_space {

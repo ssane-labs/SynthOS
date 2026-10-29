@@ -32,7 +32,7 @@ void hal_profile_callers(bool on)
 static uint32_t caller_of(struct regs *r)
 {
     uintptr_t end = (uintptr_t)__text_end;
-    if (r->eip < 0x100000u || r->eip >= end)
+    if (r->eip < KERNEL_OFFSET + 0x100000u || r->eip >= end)
         return (uint32_t)r->eip;
 #ifdef __x86_64__
     const uint64_t *sp = (const uint64_t *)r->rsp;
@@ -40,7 +40,7 @@ static uint32_t caller_of(struct regs *r)
     const uint32_t *sp = &r->eflags + 1;
 #endif
     for (int i = 0; i < 24; i++)
-        if (sp[i] >= 0x100000u && sp[i] < end)
+        if (sp[i] >= KERNEL_OFFSET + 0x100000u && sp[i] < end)
             return (uint32_t)sp[i];
     return (uint32_t)r->eip;
 }

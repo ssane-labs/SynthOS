@@ -26,9 +26,31 @@ void gdt_load(const struct table_ptr *ptr);
 
 /* the same selectors as the 32-bit kernel: 0x08/0x10 flat 32-bit, 0x20/0x28 16-bit (BIOS calls), 0x30 64-bit code */
 static uint64_t gdt[8] = {
-    0, 0x00cf9a000000ffffull, 0x00cf92000000ffffull, 0, 0x00009a000000ffffull, 0x000092000000ffffull,
-    0x00209a0000000000ull, 0,
+    0, 0x00cf9a000000ffffull, 0x00cf92000000ffffull, 0x0040920000000fffull, 0x00009a000000ffffull,
+    0x000092000000ffffull, 0x00209a0000000000ull, 0x0040920000001fffull,
 };
+
+static uint64_t data_descriptor(uint32_t base, uint32_t limit)
+{
+    return (uint64_t)(limit & 0xffff) | (uint64_t)(base & 0xffffff) << 16 | 0x92ull << 40 |
+           (uint64_t)((limit >> 16) & 0xf) << 48 | 0x40ull << 48 | (uint64_t)(base >> 24) << 56;
+}
+
+/* FS of a 32-bit program: its TEB (entry 3), and the 64-bit TEB's low alias (entry 7) */
+void arch_w32_set_teb(uint32_t base)
+{
+    gdt[3] = data_descriptor(base, 0xfff);
+}
+
+void arch_w64_set_teb(uint32_t base)
+{
+    gdt[7] = data_descriptor(base, 0x1fff);
+}
+
+void arch_load_teb_selector(void)
+{
+    __asm__ volatile("mov %0, %%fs" : : "r"(0x18) : "memory");
+}
 static struct idt_entry idt[256] __attribute__((aligned(16)));
 static struct table_ptr idt_ptr;
 static arch_fault_fn fault_handler;

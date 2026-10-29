@@ -14,7 +14,6 @@
 #define KERNEL_MAGIC 0x4b4e5953u
 #define DISK_DATA_LBA 16384u
 
-#define PACK_ADDR 0x400000u
 #define PACK_MAGIC 0x4b505953u
 extern char kernel_end[];
 
@@ -326,7 +325,7 @@ void hal_poweroff(void)
 
 static void setup_heap(struct boot_info *bi)
 {
-    uintptr_t start = ALIGN_UP((uintptr_t)kernel_end, 4096);
+    uintptr_t start = ALIGN_UP((uintptr_t)kernel_end - KERNEL_OFFSET, 4096);
     uint64_t low_end = 0, best_base = 0, best_end = 0, total = 0;
     const struct e820_entry *map = (const struct e820_entry *)(uintptr_t)bootinfo->mmap_addr;
     for (uint32_t i = 0; i < bootinfo->mmap_count; i++) {
@@ -347,12 +346,12 @@ static void setup_heap(struct boot_info *bi)
         best_base = start;
         best_end = low_end;
     }
-    const uint32_t *pack = (const uint32_t *)PACK_ADDR;
+    const uint32_t *pack = (const uint32_t *)(uintptr_t)PACK_LOCATION;
     uint32_t pack_bytes = pack[0] == PACK_MAGIC ? ALIGN_UP(pack[1] + 8u, 4096u) : 0;
     if (pack_bytes) {
-        uint64_t at = ALIGN_UP(MAX(best_base, (uint64_t)PACK_ADDR), 2u << 20);
+        uint64_t at = ALIGN_UP(MAX(best_base, (uint64_t)PACK_LOCATION), 2u << 20);
         if (at + pack_bytes + (4u << 20) <= best_end) {
-            if (at != PACK_ADDR)
+            if (at != PACK_LOCATION)
                 memmove((void *)(uintptr_t)at, pack, pack_bytes);
             best_base = at;
         } else {

@@ -445,6 +445,7 @@ static float m_ceilf(float x) { return (float)m_ceil(x); }
 static float m_fmodf(float x, float y) { return (float)m_fmod(x, y); }
 static float m_fabsf(float x) { return x < 0 ? -x : x; }
 
+#ifndef __x86_64__
 __asm__(".intel_syntax noprefix\n"
         ".text\n"
         "crt_ftol:\n"
@@ -494,9 +495,94 @@ CI_UNARY(crt_ci_tanh, m_tanh_ci);
 CI_BINARY(crt_ci_pow, m_pow_ci);
 CI_BINARY(crt_ci_fmod, m_fmod_ci);
 CI_BINARY(crt_ci_atan2, m_atan2_ci);
+#else
+/* The 64-bit kernel: these stay 32-bit code the program runs itself; the operands go on to the C functions through
+   the call gate, whose stub addresses w32_math_gates fills in. */
+__asm__(".section .text32,\"ax\"\n"
+        ".code32\n"
+        ".intel_syntax noprefix\n"
+        "crt_ftol:\n"
+        "  sub esp, 12\n"
+        "  fnstcw [esp]\n"
+        "  mov ax, [esp]\n"
+        "  or ax, 0x0c00\n"
+        "  mov [esp+2], ax\n"
+        "  fldcw [esp+2]\n"
+        "  fistp qword ptr [esp+4]\n"
+        "  fldcw [esp]\n"
+        "  mov eax, [esp+4]\n"
+        "  mov edx, [esp+8]\n"
+        "  add esp, 12\n"
+        "  ret\n"
+        "crt_ci_unary:\n"
+        "  sub esp, 8\n"
+        "  fstp qword ptr [esp]\n"
+        "  call [ecx]\n"
+        "  add esp, 8\n"
+        "  ret\n"
+        "crt_ci_binary:\n"
+        "  sub esp, 16\n"
+        "  fstp qword ptr [esp+8]\n"
+        "  fstp qword ptr [esp]\n"
+        "  call [ecx]\n"
+        "  add esp, 16\n"
+        "  ret\n"
+        "crt_sse2_unary:\n"
+        "  sub esp, 12\n"
+        "  movsd qword ptr [esp], xmm0\n"
+        "  call [ecx]\n"
+        "  fstp qword ptr [esp]\n"
+        "  movsd xmm0, qword ptr [esp]\n"
+        "  add esp, 12\n"
+        "  ret\n"
+        "crt_sse2_binary:\n"
+        "  sub esp, 20\n"
+        "  movsd qword ptr [esp], xmm0\n"
+        "  movsd qword ptr [esp+8], xmm1\n"
+        "  call [ecx]\n"
+        "  fstp qword ptr [esp]\n"
+        "  movsd xmm0, qword ptr [esp]\n"
+        "  add esp, 20\n"
+        "  ret\n"
+        ".att_syntax\n"
+        ".code64\n"
+        ".text\n");
 
+#define CI_GATE(name, fn, common)                                                                                  \
+    uint32_t fn##_gate;                                                                                            \
+    __asm__(".section .text32,\"ax\"\n.code32\n" #name ":\n\tmovl $" #fn "_gate, %ecx\n\tjmp " #common     \
+            "\n.code64\n.text\n")
+#define CI_UNARY(name, fn) CI_GATE(name, fn, crt_ci_unary)
+#define CI_BINARY(name, fn) CI_GATE(name, fn, crt_ci_binary)
+#define SSE_UNARY(name, fn) CI_GATE(name, fn##_sse, crt_sse2_unary)
+#define SSE_BINARY(name, fn) CI_GATE(name, fn##_sse, crt_sse2_binary)
+
+CI_UNARY(crt_ci_sin, m_sin_ci);
+CI_UNARY(crt_ci_cos, m_cos_ci);
+CI_UNARY(crt_ci_tan, m_tan_ci);
+CI_UNARY(crt_ci_sqrt, m_sqrt_ci);
+CI_UNARY(crt_ci_exp, m_exp_ci);
+CI_UNARY(crt_ci_log, m_log_ci);
+CI_UNARY(crt_ci_log10, m_log10_ci);
+CI_UNARY(crt_ci_asin, m_asin_ci);
+CI_UNARY(crt_ci_acos, m_acos_ci);
+CI_UNARY(crt_ci_atan, m_atan_ci);
+CI_UNARY(crt_ci_sinh, m_sinh_ci);
+CI_UNARY(crt_ci_cosh, m_cosh_ci);
+CI_UNARY(crt_ci_tanh, m_tanh_ci);
+CI_BINARY(crt_ci_pow, m_pow_ci);
+CI_BINARY(crt_ci_fmod, m_fmod_ci);
+CI_BINARY(crt_ci_atan2, m_atan2_ci);
+#define CI_STUBS64
+#endif
+
+#ifdef __x86_64__
+#define CI_WRAP1(f) __attribute__((used)) double f##_ci(double x) { return f(x); } W32_GATE(f##_ci);
+#define CI_WRAP2(f) __attribute__((used)) double f##_ci(double x, double y) { return f(x, y); } W32_GATE(f##_ci);
+#else
 #define CI_WRAP1(f) __attribute__((used)) double f##_ci(double x) { return f(x); }
 #define CI_WRAP2(f) __attribute__((used)) double f##_ci(double x, double y) { return f(x, y); }
+#endif
 
 CI_WRAP1(m_sin)
 CI_WRAP1(m_cos)
@@ -650,6 +736,7 @@ static double m_except1(uint32_t flags, int op, double arg, double res, uint32_t
     return res;
 }
 
+#ifndef __x86_64__
 __asm__(".intel_syntax noprefix\n"
         ".text\n"
         "crt_sse2_unary:\n"
@@ -686,6 +773,34 @@ SSE_UNARY(crt_sse2_acos, m_acos_ci);
 SSE_UNARY(crt_sse2_atan, m_atan_ci);
 SSE_BINARY(crt_sse2_pow, m_pow_ci);
 SSE_BINARY(crt_sse2_atan2, m_atan2_ci);
+#else
+SSE_UNARY(crt_sse2_sin, m_sin_ci);
+SSE_UNARY(crt_sse2_cos, m_cos_ci);
+SSE_UNARY(crt_sse2_tan, m_tan_ci);
+SSE_UNARY(crt_sse2_sqrt, m_sqrt_ci);
+SSE_UNARY(crt_sse2_exp, m_exp_ci);
+SSE_UNARY(crt_sse2_log, m_log_ci);
+SSE_UNARY(crt_sse2_log10, m_log10_ci);
+SSE_UNARY(crt_sse2_asin, m_asin_ci);
+SSE_UNARY(crt_sse2_acos, m_acos_ci);
+SSE_UNARY(crt_sse2_atan, m_atan_ci);
+SSE_BINARY(crt_sse2_pow, m_pow_ci);
+SSE_BINARY(crt_sse2_atan2, m_atan2_ci);
+
+/* the stubs' targets: the gate entries of the C functions behind them */
+void w32_math_gates(void);
+void w32_math_gates(void)
+{
+#define G(fn) fn##_gate = (uint32_t)(uintptr_t)w32_guest_addr((const void *)fn), fn##_sse_gate = fn##_gate
+    G(m_sin_ci); G(m_cos_ci); G(m_tan_ci); G(m_sqrt_ci); G(m_exp_ci); G(m_log_ci); G(m_log10_ci);
+    G(m_asin_ci); G(m_acos_ci); G(m_atan_ci); G(m_pow_ci); G(m_atan2_ci);
+#undef G
+    m_sinh_ci_gate = (uint32_t)(uintptr_t)w32_guest_addr((const void *)m_sinh_ci);
+    m_cosh_ci_gate = (uint32_t)(uintptr_t)w32_guest_addr((const void *)m_cosh_ci);
+    m_tanh_ci_gate = (uint32_t)(uintptr_t)w32_guest_addr((const void *)m_tanh_ci);
+    m_fmod_ci_gate = (uint32_t)(uintptr_t)w32_guest_addr((const void *)m_fmod_ci);
+}
+#endif
 
 extern char crt_sse2_sin[], crt_sse2_cos[], crt_sse2_tan[], crt_sse2_sqrt[], crt_sse2_exp[], crt_sse2_log[],
     crt_sse2_log10[], crt_sse2_asin[], crt_sse2_acos[], crt_sse2_atan[], crt_sse2_pow[], crt_sse2_atan2[];

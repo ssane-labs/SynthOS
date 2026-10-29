@@ -130,6 +130,16 @@ struct regs {
 };
 #endif
 
+#ifdef __x86_64__
+/* the 64-bit kernel runs at its physical address + KERNEL_OFFSET; the ramdisk pack waits where entry.asm put it */
+#define KERNEL_OFFSET 0xb0000000u
+extern uint32_t boot_pack;
+#define PACK_LOCATION boot_pack
+#else
+#define KERNEL_OFFSET 0u
+#define PACK_LOCATION 0x400000u
+#endif
+
 struct x86_bootinfo {
     uint32_t magic;
     uint32_t drive;

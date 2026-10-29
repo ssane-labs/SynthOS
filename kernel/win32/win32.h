@@ -7,8 +7,17 @@
 #include <synth/path.h>
 #include <synth/vfs.h>
 
+#ifdef __x86_64__
+/* the 64-bit kernel runs 32-bit programs: the pointers they see and store stay 4 bytes (clang __ptr32), and their
+   calls reach these functions through a gate that turns stack arguments into register ones */
+#define GPTR __ptr32 __uptr
+#define WINAPI
+#define WINAPIV
+#else
+#define GPTR
 #define WINAPI __attribute__((stdcall))
 #define WINAPIV __attribute__((cdecl))
+#endif
 
 typedef uint8_t BYTE;
 typedef uint16_t WORD;
@@ -19,16 +28,16 @@ typedef int32_t BOOL;
 typedef uint32_t UINT;
 typedef int32_t INT;
 typedef uint16_t WCHAR;
-typedef void *HANDLE;
-typedef void *HMODULE;
+typedef void *GPTR HANDLE;
+typedef void *GPTR HMODULE;
 typedef uint32_t SIZE_T;
 typedef uint32_t ULONG_PTR;
 typedef int64_t LONGLONG;
 typedef uint64_t ULONGLONG;
-typedef WCHAR *LPWSTR;
-typedef const WCHAR *LPCWSTR;
-typedef char *LPSTR;
-typedef const char *LPCSTR;
+typedef WCHAR *GPTR LPWSTR;
+typedef const WCHAR *GPTR LPCWSTR;
+typedef char *GPTR LPSTR;
+typedef const char *GPTR LPCSTR;
 
 #define TRUE 1
 #define FALSE 0
@@ -532,6 +541,46 @@ bool w32_is_pe64(const uint8_t *file, size_t size);
 void *w64_stub(const char *module, const char *symbol, uint32_t ordinal);
 void *w64_lookup(const char *module, const char *symbol, uint32_t ordinal, bool create_missing);
 void *w32_builtin_lookup(const char *module, const char *symbol);
+
+/* What a 32-bit program may call: a built-in function's address as the program sees it. On the 64-bit kernel that
+   is a stub into the call gate (w32gate.c), described by the generated signature tables; otherwise the function. */
+struct w32_sig {
+    const void *fn;
+    uint16_t pop;
+    uint8_t ret;
+    uint8_t nargs;
+    const char *args;
+};
+#ifdef __x86_64__
+void *w32_guest_addr(const void *fn);
+bool w32_native_code(const void *fn);
+void w32_gate_init(void);
+/* functions only assembly or the kernel hands to programs get a gate entry too */
+#define W32_GATE(fn) static const void *const w32_gate_ref_##fn __attribute__((used)) = (const void *)fn
+/* a 32-bit program's va_list: a pointer to its arguments in i386 layout; a variadic built-in gets it from the gate
+   as its only native variadic argument */
+typedef uint32_t w32_va_list;
+#define W32_VA_SLOT(T) ((sizeof(T) + 3u) & ~3u)
+#define w32_va_arg(ap, T) (*(T *)(uintptr_t)(((ap) += W32_VA_SLOT(T)) - W32_VA_SLOT(T)))
+#define w32_va_copy(d, s) ((d) = (s))
+#define w32_va_end(ap) ((void)(ap))
+#define w32_va_start(ap, last)                                                                                     \
+    do {                                                                                                           \
+        va_list native_;                                                                                           \
+        va_start(native_, last);                                                                                   \
+        (ap) = va_arg(native_, uint32_t);                                                                          \
+        va_end(native_);                                                                                           \
+    } while (0)
+#else
+#define w32_guest_addr(fn) ((void *)(fn))
+#define w32_native_code(fn) false
+#define W32_GATE(fn) _Static_assert(1, "")
+typedef va_list w32_va_list;
+#define w32_va_arg va_arg
+#define w32_va_copy va_copy
+#define w32_va_end va_end
+#define w32_va_start va_start
+#endif
 bool w32_is_system_dll(const char *name);
 const char *w32_builtin_ordinal_name(const char *module, uint32_t ordinal);
 

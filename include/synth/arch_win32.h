@@ -3,6 +3,16 @@
 
 #include <synth/types.h>
 
+#ifdef __x86_64__
+struct w32_jump {
+    uint64_t rbx, rbp, r12, r13, r14, r15, rsp, rip;
+    uint32_t active;
+};
+
+/* 64-bit kernel: calls into 32-bit program code (compatibility mode) and back. The program's stack is the current
+   one unless stack is given; ebp and ecx are what funclets and thiscall methods expect. Returns edx:eax. */
+uint64_t arch_w32_enter(uint32_t fn, int argc, const uint32_t *args, uint32_t stack, uint32_t ebp, uint32_t ecx);
+#else
 struct w32_jump {
     uint32_t ebx;
     uint32_t esi;
@@ -12,6 +22,7 @@ struct w32_jump {
     uint32_t eip;
     uint32_t active;
 };
+#endif
 
 typedef void (*arch_fault_fn)(int vector, uint32_t eip, uint32_t address);
 

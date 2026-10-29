@@ -6,9 +6,10 @@
 #include "win32.h"
 
 typedef uint32_t COLORREF;
-typedef intptr_t LRESULT;
-typedef uintptr_t WPARAM;
-typedef intptr_t LPARAM;
+/* message parameters are 32-bit values for the 32-bit programs both kernels run */
+typedef int32_t LRESULT;
+typedef uint32_t WPARAM;
+typedef int32_t LPARAM;
 typedef LRESULT WINAPI (*WNDPROC)(HANDLE, UINT, WPARAM, LPARAM);
 
 typedef struct {
