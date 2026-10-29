@@ -70,7 +70,7 @@ struct dc_state {
 struct w32_dc {
     uint32_t magic;
     struct w32_window *win;
-    bool memory;
+    bool memory, live;
     struct rect visible;
     struct dc_state s;
     int x, y;
@@ -261,6 +261,16 @@ HANDLE w32_window_dc(struct w32_window *w, struct rect visible)
     return d;
 }
 
+/* GetDC: the window's whole visible area at the time of each drawing call, as on Windows, so a DC kept from when
+   the window was small still reaches all of it after a resize */
+HANDLE w32_window_dc_live(struct w32_window *w)
+{
+    struct w32_dc *d = w32_window_dc(w, w32_visible_area(w));
+    if (d)
+        d->live = true;
+    return d;
+}
+
 HANDLE w32_screen_dc(void)
 {
     struct w32_dc *d = w32_zalloc(sizeof(*d));
@@ -302,6 +312,10 @@ static bool target_of(struct w32_dc *d, struct target *t)
             return false;
         t->c = &top->wm->surface;
         struct rect a = w32_area(d->win);
+        if (d->live) {
+            struct rect v = w32_visible_area(d->win);
+            d->visible = (struct rect){v.x - a.x, v.y - a.y, v.w, v.h};
+        }
         t->ox = a.x;
         t->oy = a.y;
         t->clip = rect_intersect((struct rect){a.x + d->visible.x, a.y + d->visible.y, d->visible.w, d->visible.h},

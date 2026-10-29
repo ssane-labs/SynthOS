@@ -223,6 +223,7 @@ struct w32_window *w32_focus(void);
 void w32_gui_cleanup(void);
 
 HANDLE w32_window_dc(struct w32_window *w, struct rect clip);
+HANDLE w32_window_dc_live(struct w32_window *w);
 void w32_free_dc(HANDLE dc);
 uint32_t w32_rgb(COLORREF c);
 COLORREF w32_syscolor(int index);

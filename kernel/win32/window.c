@@ -1918,7 +1918,7 @@ static HANDLE WINAPI GetDC(HANDLE h)
         extern HANDLE w32_screen_dc(void);
         return w32_screen_dc();
     }
-    return w32_window_dc(w, w32_visible_area(w));
+    return w32_window_dc_live(w);
 }
 
 static HANDLE WINAPI GetDCEx(HANDLE h, HANDLE rgn, DWORD flags)
