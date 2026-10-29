@@ -11,14 +11,14 @@ enum {
 struct stream;
 
 struct stream_ops {
-    long (*read)(struct stream *s, void *buf, size_t n);
-    long (*write)(struct stream *s, const void *buf, size_t n);
-    void (*close)(struct stream *s);
+    K64(long (*read)(struct stream *s, void *buf, size_t n));
+    K64(long (*write)(struct stream *s, const void *buf, size_t n));
+    K64(void (*close)(struct stream *s));
 };
 
 struct stream {
-    const struct stream_ops *ops;
-    void *ctx;
+    K64(const struct stream_ops *ops);
+    K64(void *ctx);
     unsigned flags;
 };
 

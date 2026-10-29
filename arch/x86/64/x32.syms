@@ -1,0 +1,14 @@
+vfs_open x32k_vfs_open
+vfs_read_all x32k_vfs_read_all
+vfs_seek x32k_vfs_seek
+str_to_long x32k_str_to_long
+str_parse_long x32k_str_parse_long
+inflate_into x32k_inflate_into
+vmm_map_pages x32k_vmm_map_pages
+ksnprintf x32_ksnprintf
+kvsnprintf x32_kvsnprintf
+fmt_format x32_fmt_format
+fmt_size x32_fmt_size
+w32_start x32_w32_start
+msiexec_main x32_msiexec_main
+winshell_split x32_winshell_split

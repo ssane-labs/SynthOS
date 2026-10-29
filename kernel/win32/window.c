@@ -315,7 +315,7 @@ LRESULT w32_send(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (!w || w->destroyed || !w->proc)
         return 0;
-    return w->proc(w, msg, wp, lp);
+    return W32_CALL(WNDPROC, w->proc, w, msg, wp, lp);
 }
 
 void w32_invalidate(struct w32_window *w, const struct rect *r, bool erase)
@@ -1266,7 +1266,7 @@ static BOOL WINAPI EnumChildWindows(HANDLE parent, void *fn, LPARAM lp)
     struct w32_window *p = w32_win(parent);
     typedef BOOL WINAPI (*enum_fn)(HANDLE, LPARAM);
     for (struct w32_window *c = p ? p->child : NULL; c; c = c->sibling)
-        if (!((enum_fn)fn)(c, lp))
+        if (!W32_CALL(enum_fn, fn, c, lp))
             break;
     return TRUE;
 }
@@ -1275,7 +1275,7 @@ static BOOL WINAPI EnumWindows(void *fn, LPARAM lp)
 {
     typedef BOOL WINAPI (*enum_fn)(HANDLE, LPARAM);
     for (struct w32_window *w = windows; w; w = w->next_all)
-        if (!w->destroyed && !is_child(w) && !((enum_fn)fn)(w, lp))
+        if (!w->destroyed && !is_child(w) && !W32_CALL(enum_fn, fn, w, lp))
             break;
     return TRUE;
 }
@@ -1417,7 +1417,7 @@ static LRESULT WINAPI DefWindowProcW(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 
 static LRESULT WINAPI CallWindowProcA(WNDPROC proc, HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
-    return proc ? proc(h, msg, wp, lp) : 0;
+    return proc ? W32_CALL(WNDPROC, proc, h, msg, wp, lp) : 0;
 }
 
 /* comctl32 window subclassing: the newest subclass runs first, DefSubclassProc passes to the next one. */
@@ -1438,10 +1438,10 @@ static LRESULT subclass_chain(struct w32_window *w, int i, UINT msg, WPARAM wp, 
 {
     struct subclasses *s = w->subs;
     if (i >= s->count)
-        return s->original ? s->original(w, msg, wp, lp) : 0;
+        return s->original ? W32_CALL(WNDPROC, s->original, w, msg, wp, lp) : 0;
     s->level = i + 1;
     int at = s->count - 1 - i;
-    return s->entry[at].proc(w, msg, wp, lp, s->entry[at].id, s->entry[at].data);
+    return W32_CALL(SUBCLASSPROC, s->entry[at].proc, w, msg, wp, lp, s->entry[at].id, s->entry[at].data);
 }
 
 static LRESULT WINAPI subclass_thunk(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
@@ -1462,7 +1462,7 @@ static LRESULT WINAPI DefSubclassProc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
     if (!w)
         return 0;
     if (!w->subs)
-        return w->proc ? w->proc(h, msg, wp, lp) : 0;
+        return w->proc ? W32_CALL(WNDPROC, w->proc, h, msg, wp, lp) : 0;
     int saved = w->subs->level;
     LRESULT r = subclass_chain(w, saved, msg, wp, lp);
     w->subs->level = saved;
@@ -2173,7 +2173,7 @@ static DWORD WINAPI MsgWaitForMultipleObjects(DWORD count, const HANDLE *handles
             typedef DWORD WINAPI (*wait_fn)(DWORD, const HANDLE *, BOOL, DWORD);
             struct w32_image *k = w32_find_module("kernel32.dll");
             wait_fn wait = k ? (wait_fn)w32_get_proc(k, "WaitForMultipleObjects", 0) : NULL;
-            DWORD r = wait ? wait(count, handles, all, 0) : 0x102;
+            DWORD r = wait ? W32_CALL(wait_fn, wait, count, handles, all, 0) : 0x102;
             if (r != 0x102) {
                 w32_wait_done();
                 return r;
@@ -2207,7 +2207,7 @@ LRESULT WINAPI w32_dispatch(const MSG *msg)
 {
     if (msg->message == WM_TIMER && msg->lParam) {
         typedef void WINAPI (*timer_fn)(HANDLE, UINT, uintptr_t, DWORD);
-        ((timer_fn)msg->lParam)(msg->hwnd, WM_TIMER, msg->wParam, msg->time);
+        W32_CALL(timer_fn, msg->lParam, msg->hwnd, WM_TIMER, msg->wParam, msg->time);
         return 0;
     }
     struct w32_window *w = w32_win(msg->hwnd);

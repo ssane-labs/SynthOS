@@ -8,9 +8,9 @@
 #include <synth/vfs.h>
 
 #ifdef __x86_64__
-/* the 64-bit kernel runs 32-bit programs: the pointers they see and store stay 4 bytes (clang __ptr32), and their
-   calls reach these functions through a gate that turns stack arguments into register ones */
-#define GPTR __ptr32 __uptr
+/* on the 64-bit kernel this is x32 code (4-byte pointers, as 32-bit programs have them); their calls reach these
+   functions through a gate that turns stack arguments into register ones */
+#define GPTR
 #define WINAPI
 #define WINAPIV
 #else
@@ -19,6 +19,8 @@
 #define WINAPIV __attribute__((cdecl))
 #endif
 
+/* a function address in a program's memory (tables of them, callbacks stored by programs) */
+typedef uint32_t GADDR;
 typedef uint8_t BYTE;
 typedef uint16_t WORD;
 typedef uint32_t DWORD;
@@ -550,11 +552,13 @@ struct w32_sig {
     uint8_t ret;
     uint8_t nargs;
     const char *args;
-};
+} __attribute__((aligned(8)));
 #ifdef __x86_64__
 void *w32_guest_addr(const void *fn);
 bool w32_native_code(const void *fn);
 void w32_gate_init(void);
+/* the built-in COM objects' method tables: programs call through them, so they hold gate stubs (w32_gate_init) */
+#define W32_VTABLE __attribute__((section("w32vtbl"), aligned(8)))
 /* functions only assembly or the kernel hands to programs get a gate entry too */
 #define W32_GATE(fn) static const void *const w32_gate_ref_##fn __attribute__((used)) = (const void *)fn
 /* a 32-bit program's va_list: a pointer to its arguments in i386 layout; a variadic built-in gets it from the gate
@@ -571,7 +575,44 @@ typedef uint32_t w32_va_list;
         (ap) = va_arg(native_, uint32_t);                                                                          \
         va_end(native_);                                                                                           \
     } while (0)
+/* A call to a function pointer that may hold a program's code: the program's code runs in compatibility mode with
+   its arguments on its stack (32-bit values; edx:eax back), a built-in function (or its gate stub) is called as is. */
+bool w32_guest_code(const void *fn);
+const void *w32_native_fn(const void *fn);
+uint64_t w32_call_guest(const void *fn, int argc, const uint64_t *args, const uint8_t *sizes);
+#define W32_ARG_(x) ((uint64_t)(x))
+#define W32_SIZE_(x) ((uint8_t)sizeof(x))
+#define W32_MAP_(m, ...) W32_MAPN_(W32_NARGS(__VA_ARGS__), m, __VA_ARGS__)
+#define W32_MAPN_(n, m, ...) W32_MAPX_(n, m, __VA_ARGS__)
+#define W32_MAPX_(n, m, ...) W32_MAP##n##_(m, __VA_ARGS__)
+#define W32_MAP0_(m, ...)
+#define W32_MAP1_(m, a) m(a)
+#define W32_MAP2_(m, a, ...) m(a), W32_MAP1_(m, __VA_ARGS__)
+#define W32_MAP3_(m, a, ...) m(a), W32_MAP2_(m, __VA_ARGS__)
+#define W32_MAP4_(m, a, ...) m(a), W32_MAP3_(m, __VA_ARGS__)
+#define W32_MAP5_(m, a, ...) m(a), W32_MAP4_(m, __VA_ARGS__)
+#define W32_MAP6_(m, a, ...) m(a), W32_MAP5_(m, __VA_ARGS__)
+#define W32_MAP7_(m, a, ...) m(a), W32_MAP6_(m, __VA_ARGS__)
+#define W32_MAP8_(m, a, ...) m(a), W32_MAP7_(m, __VA_ARGS__)
+#define W32_MAP9_(m, a, ...) m(a), W32_MAP8_(m, __VA_ARGS__)
+#define W32_MAP10_(m, a, ...) m(a), W32_MAP9_(m, __VA_ARGS__)
+#define W32_MAP11_(m, a, ...) m(a), W32_MAP10_(m, __VA_ARGS__)
+#define W32_MAP12_(m, a, ...) m(a), W32_MAP11_(m, __VA_ARGS__)
+#define W32_MAP13_(m, a, ...) m(a), W32_MAP12_(m, __VA_ARGS__)
+#define W32_MAP14_(m, a, ...) m(a), W32_MAP13_(m, __VA_ARGS__)
+#define W32_MAP15_(m, a, ...) m(a), W32_MAP14_(m, __VA_ARGS__)
+#define W32_MAP16_(m, a, ...) m(a), W32_MAP15_(m, __VA_ARGS__)
+#define W32_NARGS(...) W32_NARGS_(0, ##__VA_ARGS__, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+#define W32_NARGS_(z, a, b, c, d, e, f, g, h, i, j, k, l, m, n_, o, p, n, ...) n
+#define W32_CALL(type, fn, ...)                                                                                    \
+    (w32_guest_code((const void *)(uintptr_t)(fn))                                                                \
+         ? (__typeof__(((type)0)(__VA_ARGS__)))w32_call_guest(                                                    \
+               (const void *)(uintptr_t)(fn), W32_NARGS(__VA_ARGS__), (const uint64_t[]){W32_MAP_(W32_ARG_, ##__VA_ARGS__)}, \
+               (const uint8_t[]){W32_MAP_(W32_SIZE_, ##__VA_ARGS__)})                                              \
+         : ((type)w32_native_fn((const void *)(uintptr_t)(fn)))(__VA_ARGS__))
 #else
+#define W32_VTABLE
+#define W32_CALL(type, fn, ...) (((type)(uintptr_t)(fn))(__VA_ARGS__))
 #define w32_guest_addr(fn) ((void *)(fn))
 #define w32_native_code(fn) false
 #define W32_GATE(fn) _Static_assert(1, "")

@@ -21,6 +21,7 @@ struct gate_ret {
 };
 
 extern const struct w32_sig __start_w32sigs[], __stop_w32sigs[];
+extern uint32_t __start_w32vtbl[], __stop_w32vtbl[];
 extern char __start_text32[], __stop_text32[], __text_start[], w32_gate32[];
 uint32_t crt_cxx_frame_gate;
 
@@ -78,6 +79,9 @@ void w32_gate_init(void)
         s[5] = 0xe9;
         memcpy(s + 6, &rel, 4);
     }
+    for (uint32_t *e = __start_w32vtbl; e < __stop_w32vtbl; e++)
+        if (*e)
+            *e = (uint32_t)(uintptr_t)w32_guest_addr((const void *)(uintptr_t)*e);
     extern int cxx_frame_handler();
     extern void w32_math_gates(void);
     crt_cxx_frame_gate = (uint32_t)(uintptr_t)w32_guest_addr((const void *)cxx_frame_handler);
@@ -193,6 +197,31 @@ uint32_t w32_gate_dispatch(uint32_t index, uint32_t args, struct gate_ret *r)
     }
     }
     return s->pop;
+}
+
+bool w32_guest_code(const void *fn)
+{
+    return ((uintptr_t)fn >= VMM_USER_START && (uintptr_t)fn < VMM_USER_END) || w32_native_code(fn);
+}
+
+const void *w32_native_fn(const void *fn)
+{
+    const void *target = w32_gate_target((uint32_t)(uintptr_t)fn);
+    return target ? target : fn;
+}
+
+uint64_t w32_call_guest(const void *fn, int argc, const uint64_t *args, const uint8_t *sizes)
+{
+    uint32_t words[32];
+    int n = 0;
+    for (int i = 0; i < argc && n < 31; i++) {
+        words[n++] = (uint32_t)args[i];
+        if (sizes[i] == 8)
+            words[n++] = (uint32_t)(args[i] >> 32);
+    }
+    if (!w32->jump.active)
+        return arch_w32_call((void *)fn, n, words, w32->stack + w32->stack_size - 16, &w32->jump);
+    return arch_w32_enter((uint32_t)(uintptr_t)fn, n, words, 0, 0, 0);
 }
 
 /* calls from the kernel into a program's (or a stub's) code with 32-bit arguments */

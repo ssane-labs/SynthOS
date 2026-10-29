@@ -27,9 +27,9 @@ struct out {
 static W32_STATE int exponent_digits = 3;
 int crt_slots64;
 
-#define ARG_INT(ap) (crt_slots64 ? (int)va_arg(*(ap), uint64_t) : va_arg(*(ap), int))
-#define ARG_UINT(ap) (crt_slots64 ? (unsigned)va_arg(*(ap), uint64_t) : va_arg(*(ap), unsigned))
-#define ARG_PTR(ap) (crt_slots64 ? (void *)(uintptr_t)va_arg(*(ap), uint64_t) : va_arg(*(ap), void *))
+#define ARG_INT(ap) (crt_slots64 ? (int)w32_va_arg(*(ap), uint64_t) : w32_va_arg(*(ap), int))
+#define ARG_UINT(ap) (crt_slots64 ? (unsigned)w32_va_arg(*(ap), uint64_t) : w32_va_arg(*(ap), unsigned))
+#define ARG_PTR(ap) (crt_slots64 ? (void *)(uintptr_t)w32_va_arg(*(ap), uint64_t) : w32_va_arg(*(ap), void *))
 
 static void out_chars(struct out *o, const char *s, size_t n)
 {
@@ -455,7 +455,7 @@ static void emit_text(struct out *o, const char *s, const WCHAR *w, int prec, in
         out_pad(o, ' ', width - (int)n);
 }
 
-static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *ap)
+static int format_core(struct out *o, const void *fmt, bool wide_fmt, w32_va_list *ap)
 {
     const uint8_t *nf = fmt;
     const WCHAR *wf = fmt;
@@ -560,7 +560,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
         switch (conv) {
         case 'd':
         case 'i': {
-            int64_t v = len == L_LL ? va_arg(*ap, int64_t) : (int64_t)ARG_INT(ap);
+            int64_t v = len == L_LL ? w32_va_arg(*ap, int64_t) : (int64_t)ARG_INT(ap);
             if (len == L_H)
                 v = (short)v;
             else if (len == L_HH)
@@ -572,7 +572,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
         case 'o':
         case 'x':
         case 'X': {
-            uint64_t v = len == L_LL ? va_arg(*ap, uint64_t) : (uint64_t)ARG_UINT(ap);
+            uint64_t v = len == L_LL ? w32_va_arg(*ap, uint64_t) : (uint64_t)ARG_UINT(ap);
             if (len == L_H)
                 v = (uint16_t)v;
             else if (len == L_HH)
@@ -582,9 +582,9 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
         }
         case 'p':
             if (crt_slots64)
-                emit_int(o, va_arg(*ap, uint64_t), false, 16, 'X', 16, width, flags & ~F_ALT);
+                emit_int(o, w32_va_arg(*ap, uint64_t), false, 16, 'X', 16, width, flags & ~F_ALT);
             else
-                emit_int(o, (uintptr_t)va_arg(*ap, void *), false, 16, 'X', 8, width, flags & ~F_ALT);
+                emit_int(o, (uintptr_t)w32_va_arg(*ap, void *), false, 16, 'X', 8, width, flags & ~F_ALT);
             break;
         case 'c':
         case 'C': {
@@ -624,7 +624,7 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
         case 'G':
         case 'a':
         case 'A':
-            emit_float(o, va_arg(*ap, double), (char)conv, prec, width, flags);
+            emit_float(o, w32_va_arg(*ap, double), (char)conv, prec, width, flags);
             break;
         case 'n': {
             void *p = ARG_PTR(ap);
@@ -651,23 +651,23 @@ static int format_core(struct out *o, const void *fmt, bool wide_fmt, va_list *a
     return o->count;
 }
 
-int crt_vformat(crt_sink sink, void *ctx, const char *fmt, va_list ap)
+int crt_vformat(crt_sink sink, void *ctx, const char *fmt, w32_va_list ap)
 {
     struct out o = {sink, NULL, ctx, 0};
-    va_list copy;
-    va_copy(copy, ap);
+    w32_va_list copy;
+    w32_va_copy(copy, ap);
     int n = format_core(&o, fmt, false, &copy);
-    va_end(copy);
+    w32_va_end(copy);
     return n;
 }
 
-int crt_vwformat(crt_wsink sink, void *ctx, const WCHAR *fmt, va_list ap)
+int crt_vwformat(crt_wsink sink, void *ctx, const WCHAR *fmt, w32_va_list ap)
 {
     struct out o = {NULL, sink, ctx, 0};
-    va_list copy;
-    va_copy(copy, ap);
+    w32_va_list copy;
+    w32_va_copy(copy, ap);
     int n = format_core(&o, fmt, true, &copy);
-    va_end(copy);
+    w32_va_end(copy);
     return n;
 }
 
@@ -694,7 +694,7 @@ static void wstr_sink(void *ctx, const WCHAR *s, size_t n)
             b->wbuf[b->len] = s[i];
 }
 
-static int vsn(char *buf, size_t cap, const char *fmt, va_list ap, bool c99)
+static int vsn(char *buf, size_t cap, const char *fmt, w32_va_list ap, bool c99)
 {
     struct strbuf b = {buf, NULL, cap, 0};
     int n = crt_vformat(str_sink, &b, fmt, ap);
@@ -709,7 +709,7 @@ static int vsn(char *buf, size_t cap, const char *fmt, va_list ap, bool c99)
     return n;
 }
 
-static int vswn(WCHAR *buf, size_t cap, const WCHAR *fmt, va_list ap, bool c99)
+static int vswn(WCHAR *buf, size_t cap, const WCHAR *fmt, w32_va_list ap, bool c99)
 {
     struct strbuf b = {NULL, buf, cap, 0};
     int n = crt_vwformat(wstr_sink, &b, fmt, ap);
@@ -724,49 +724,49 @@ static int vswn(WCHAR *buf, size_t cap, const WCHAR *fmt, va_list ap, bool c99)
     return n;
 }
 
-static int crt_vsprintf(char *buf, const char *fmt, va_list ap)
+static int crt_vsprintf(char *buf, const char *fmt, w32_va_list ap)
 {
     return vsn(buf, (size_t)INT32_MAX, fmt, ap, true);
 }
 
 static int crt_sprintf(char *buf, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vsprintf(buf, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vsnprintf_ms(char *buf, size_t cap, const char *fmt, va_list ap)
+static int crt_vsnprintf_ms(char *buf, size_t cap, const char *fmt, w32_va_list ap)
 {
     return vsn(buf, cap, fmt, ap, false);
 }
 
 static int crt_snprintf_ms(char *buf, size_t cap, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = vsn(buf, cap, fmt, ap, false);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap)
+static int crt_vsnprintf(char *buf, size_t cap, const char *fmt, w32_va_list ap)
 {
     return vsn(buf, cap, fmt, ap, true);
 }
 
 static int crt_snprintf(char *buf, size_t cap, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = vsn(buf, cap, fmt, ap, true);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vsprintf_s(char *buf, size_t cap, const char *fmt, va_list ap)
+static int crt_vsprintf_s(char *buf, size_t cap, const char *fmt, w32_va_list ap)
 {
     int n = vsn(buf, cap, fmt, ap, false);
     if (n < 0 && cap)
@@ -776,14 +776,14 @@ static int crt_vsprintf_s(char *buf, size_t cap, const char *fmt, va_list ap)
 
 static int crt_sprintf_s(char *buf, size_t cap, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vsprintf_s(buf, cap, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vsnprintf_s(char *buf, size_t cap, size_t count, const char *fmt, va_list ap)
+static int crt_vsnprintf_s(char *buf, size_t cap, size_t count, const char *fmt, w32_va_list ap)
 {
     size_t limit = count == (size_t)-1 ? cap - 1 : MIN(count, cap - 1);
     int n = vsn(buf, limit, fmt, ap, false);
@@ -793,80 +793,80 @@ static int crt_vsnprintf_s(char *buf, size_t cap, size_t count, const char *fmt,
 
 static int crt_snprintf_s(char *buf, size_t cap, size_t count, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vsnprintf_s(buf, cap, count, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vscprintf(const char *fmt, va_list ap)
+static int crt_vscprintf(const char *fmt, w32_va_list ap)
 {
     return vsn(NULL, 0, fmt, ap, true);
 }
 
 static int crt_scprintf(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vscprintf(fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vswprintf_old(WCHAR *buf, const WCHAR *fmt, va_list ap)
+static int crt_vswprintf_old(WCHAR *buf, const WCHAR *fmt, w32_va_list ap)
 {
     return vswn(buf, (size_t)INT32_MAX, fmt, ap, true);
 }
 
 static int crt_swprintf_old(WCHAR *buf, const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vswprintf_old(buf, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vsnwprintf(WCHAR *buf, size_t cap, const WCHAR *fmt, va_list ap)
+static int crt_vsnwprintf(WCHAR *buf, size_t cap, const WCHAR *fmt, w32_va_list ap)
 {
     return vswn(buf, cap, fmt, ap, false);
 }
 
 static int crt_snwprintf(WCHAR *buf, size_t cap, const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = vswn(buf, cap, fmt, ap, false);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vswprintf_s(WCHAR *buf, size_t cap, const WCHAR *fmt, va_list ap)
+static int crt_vswprintf_s(WCHAR *buf, size_t cap, const WCHAR *fmt, w32_va_list ap)
 {
     return vswn(buf, cap, fmt, ap, true);
 }
 
 static int crt_swprintf_s(WCHAR *buf, size_t cap, const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = vswn(buf, cap, fmt, ap, true);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vscwprintf(const WCHAR *fmt, va_list ap)
+static int crt_vscwprintf(const WCHAR *fmt, w32_va_list ap)
 {
     return vswn(NULL, 0, fmt, ap, true);
 }
 
 static int crt_scwprintf(const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vscwprintf(fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
@@ -1154,7 +1154,7 @@ static void store_int(void *p, int len, uint64_t v)
     }
 }
 
-static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_list *ap)
+static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, w32_va_list *ap)
 {
     const uint8_t *nf = fmt;
     const WCHAR *wf = fmt;
@@ -1410,13 +1410,13 @@ static int scan_core(struct scan_src *src, const void *fmt, bool wide_fmt, va_li
     return assigned;
 }
 
-int crt_vscan(int (*get)(void *), void (*unget)(int, void *), void *ctx, const char *fmt, va_list ap)
+int crt_vscan(int (*get)(void *), void (*unget)(int, void *), void *ctx, const char *fmt, w32_va_list ap)
 {
     struct scan_src src = {get, unget, ctx, 0};
-    va_list copy;
-    va_copy(copy, ap);
+    w32_va_list copy;
+    w32_va_copy(copy, ap);
     int n = scan_core(&src, fmt, false, &copy);
-    va_end(copy);
+    w32_va_end(copy);
     return n;
 }
 
@@ -1449,43 +1449,43 @@ static void str_unget(int c, void *ctx)
         s->pos--;
 }
 
-static int crt_vsscanf(const char *str, const char *fmt, va_list ap)
+static int crt_vsscanf(const char *str, const char *fmt, w32_va_list ap)
 {
     struct str_src s = {(const uint8_t *)str, NULL, 0};
     struct scan_src src = {str_get, str_unget, &s, 0};
-    va_list copy;
-    va_copy(copy, ap);
+    w32_va_list copy;
+    w32_va_copy(copy, ap);
     int n = scan_core(&src, fmt, false, &copy);
-    va_end(copy);
+    w32_va_end(copy);
     return n;
 }
 
 static int crt_sscanf(const char *str, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vsscanf(str, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vswscanf(const WCHAR *str, const WCHAR *fmt, va_list ap)
+static int crt_vswscanf(const WCHAR *str, const WCHAR *fmt, w32_va_list ap)
 {
     struct str_src s = {NULL, str, 0};
     struct scan_src src = {str_get, str_unget, &s, 0};
-    va_list copy;
-    va_copy(copy, ap);
+    w32_va_list copy;
+    w32_va_copy(copy, ap);
     int n = scan_core(&src, fmt, true, &copy);
-    va_end(copy);
+    w32_va_end(copy);
     return n;
 }
 
 static int crt_swscanf(const WCHAR *str, const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vswscanf(str, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
@@ -1499,32 +1499,32 @@ static void file_unget(int c, void *ctx)
     crt_ungetc(c, ctx);
 }
 
-static int crt_vfwscanf(CRT_FILE *f, const WCHAR *fmt, va_list ap)
+static int crt_vfwscanf(CRT_FILE *f, const WCHAR *fmt, w32_va_list ap)
 {
     crt_flush_all();
     struct scan_src src = {file_get, file_unget, f, 0};
-    va_list copy;
-    va_copy(copy, ap);
+    w32_va_list copy;
+    w32_va_copy(copy, ap);
     int n = scan_core(&src, fmt, true, &copy);
-    va_end(copy);
+    w32_va_end(copy);
     return n;
 }
 
 static int crt_fwscanf(CRT_FILE *f, const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfwscanf(f, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
 static int crt_wscanf(const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfwscanf(&crt_iob[0], fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 

@@ -397,7 +397,7 @@ void w32_run_atexit(void)
 {
     while (w32->atexit_count > 0) {
         void (*fn)(void) = w32->atexit_fns[--w32->atexit_count];
-        fn();
+        W32_CALL(void (*)(void), fn);
     }
 }
 
@@ -522,7 +522,7 @@ static const char *const chromium_child_switches[] = {"--ipc-connection-timeout=
 static bool has_arg(struct exec_ctx *ctx, const char *arg, size_t n)
 {
     for (int i = 1; i < ctx->argc; i++)
-        if (!strncmp(ctx->argv[i], arg, n))
+        if (!strncmp((const char *)(uintptr_t)ctx->argv[i], arg, n))
             return true;
     return false;
 }
@@ -542,7 +542,7 @@ static int command_args(struct exec_ctx *ctx, const char **list)
         for (size_t i = 0; i < ARRAY_SIZE(chromium_child_switches); i++)
             list[n++] = chromium_child_switches[i];
     for (int i = 1; i < ctx->argc; i++)
-        list[n++] = ctx->argv[i];
+        list[n++] = (const char *)(uintptr_t)ctx->argv[i];
     return n;
 }
 
@@ -1185,7 +1185,7 @@ static void free_process(struct w32_process *p)
     kfree(p->state);
     if (p->spawn_ctx) {
         for (int i = 0; i < p->spawn_ctx->argc; i++)
-            kfree(p->spawn_ctx->argv[i]);
+            kfree((void *)(uintptr_t)p->spawn_ctx->argv[i]);
         kfree(p->spawn_ctx->argv);
         kfree((char *)p->spawn_ctx->path);
         kfree((char *)p->spawn_ctx->env);
@@ -1548,14 +1548,14 @@ int w32_start(struct shell *sh, const char *path, int argc, char **argv, const c
     if (!pristine_state && (pristine_state = kmalloc(state_size())))
         memcpy(pristine_state, __start_w32state, state_size());
     struct exec_ctx *c = kzalloc(sizeof(*c));
-    char **copy = kzalloc(sizeof(char *) * (size_t)(argc + 1));
+    KARR(char *) *copy = kzalloc(sizeof(*copy) * (size_t)(argc + 1));
     if (!c || !copy) {
         kfree(c);
         kfree(copy);
         return E_NOMEM;
     }
     for (int i = 0; i < argc; i++)
-        copy[i] = kstrdup(argv[i]);
+        copy[i] = (KARR(char *))(uintptr_t)kstrdup(argv[i]);
     *c = (struct exec_ctx){sh, kstrdup(path), argc, copy, stream_null(), stream_null(), stream_log(), NULL,
                            kstrdup(cwd ? cwd : sh->cwd), NULL};
     struct w32_child *child = NULL;
@@ -1565,7 +1565,7 @@ int w32_start(struct shell *sh, const char *path, int argc, char **argv, const c
     }
     if (!child) {
         for (int i = 0; i < argc; i++)
-            kfree(copy[i]);
+            kfree((void *)(uintptr_t)copy[i]);
         kfree(copy);
         kfree((char *)c->path);
         kfree((char *)c->cwd);

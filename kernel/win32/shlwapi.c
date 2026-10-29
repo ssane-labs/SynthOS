@@ -371,7 +371,7 @@ static DWORD WINAPI QISearch(void *self, const struct qitab *tab, const uint8_t 
         if (!memcmp(t->iid, iid, 16) || (t == tab && !memcmp(iid, unknown, 16))) {
             void *obj = (uint8_t *)self + t->offset;
             typedef uint32_t WINAPI (*add_ref_fn)(void *);
-            ((add_ref_fn)(*(void ***)obj)[1])(obj);
+            W32_CALL(add_ref_fn, (*(void ***)obj)[1], obj);
             *out = obj;
             return S_OK;
         }

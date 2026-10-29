@@ -87,14 +87,14 @@ static int wsplitpath_s(const WCHAR *path, WCHAR *drive, size_t drive_n, WCHAR *
 }
 
 static int common_vsnwprintf_s(uint64_t options, WCHAR *buf, size_t size, size_t count, const WCHAR *fmt,
-                               void *locale, va_list ap)
+                               void *locale, w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
     if (!buf || !size)
         return -1;
     size_t limit = count == (size_t)-1 ? size - 1 : MIN(count, size - 1);
-    int n = ((int (*)(WCHAR *, size_t, const WCHAR *, va_list))lookup("_vsnwprintf"))(buf, limit, fmt, ap);
+    int n = ((int (*)(WCHAR *, size_t, const WCHAR *, w32_va_list))lookup("_vsnwprintf"))(buf, limit, fmt, ap);
     if (n < 0 || (size_t)n >= limit + (count == (size_t)-1 ? 1 : 0)) {
         buf[limit] = 0;
         return count == (size_t)-1 ? -1 : (n < 0 || (size_t)n > limit ? -1 : n);

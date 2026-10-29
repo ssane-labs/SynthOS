@@ -10,8 +10,13 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
 - `make test-hw` — same image on BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI and i486 (needs `ovmf`), then installs next to a
   GPT "Windows" partition (UEFI, boot-entry registration) and over a whole disk (BIOS), ~4 min
 - `make ARCH=x86_64` — the 64-bit kernel (`build/vga64`, `build/serial64`; any target: `test`, `test-hw`, `usb`);
-  arch code in `arch/x86/64/` replaces cpu.c/paging.c/entry/isr/BIOS and AP start-up; no Win32 subsystem yet
-  (`CONFIG_WIN32=0`, tests skip Windows cases)
+  arch code in `arch/x86/64/` replaces cpu.c/paging.c/entry/isr/BIOS and AP start-up. There `kernel/win32` is x32 code
+  (clang, 4-byte pointers = the layout 32-bit programs use), converted to ELF64; programs run in compatibility mode
+  and reach built-ins through the call gate (`w32gate.c`, signatures from `tools/w32sig.py`). Kernel structures it
+  shares keep the 64-bit layout with `K64(...)`/`KARR(...)` (`synth/types.h`); call program code through
+  `W32_CALL(type, fn, args...)`, COM method tables get `W32_VTABLE`; kernel functions with pointer/size_t
+  out-parameters go through `arch/x86/64/w32abi.c` (`x32.syms`). Win64 programs do not run there yet (`W32=0` leaves
+  the subsystem out)
 - `make usb` — compact USB-stick image `build/synthos-usb.img` (docs/INSTALL.md is the user guide)
 - `make test-crypto` — kernel crypto built for the host, checked against Python `cryptography`
 - `make run-uefi` — boot with OVMF firmware (framebuffer console)

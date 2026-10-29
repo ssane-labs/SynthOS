@@ -400,15 +400,15 @@ static LONG WINAPI UnhandledExceptionFilter(void *info)
 #define SEH_END 0xffffffffu
 
 struct seh_frame {
-    struct seh_frame *prev;
-    void *handler;
+    struct seh_frame *GPTR prev;
+    GADDR handler;
 };
 
 typedef int (*seh_handler)(uint8_t *record, struct seh_frame *frame, uint8_t *context, void *dispatcher);
 
-static struct seh_frame **seh_head(void)
+static struct seh_frame *GPTR *seh_head(void)
 {
-    return (struct seh_frame **)w32->teb;
+    return (struct seh_frame *GPTR *)w32->teb;
 }
 
 static bool seh_valid(struct seh_frame *f)
@@ -447,7 +447,7 @@ static NORETURN void unhandled(uint8_t *rec, uint8_t *ctx)
 static void dispatch_exception(uint8_t *rec, uint8_t *ctx)
 {
     for (struct seh_frame *f = *seh_head(); seh_valid(f); f = f->prev) {
-        int r = ((seh_handler)f->handler)(rec, f, ctx, NULL);
+        int r = W32_CALL(seh_handler, f->handler, rec, f, ctx, NULL);
         DWORD flags;
         memcpy(&flags, rec + 4, 4);
         if (r == 0 && !(flags & EXCEPTION_NONCONTINUABLE))
@@ -480,10 +480,10 @@ static void WINAPI RtlUnwind(struct seh_frame *target, void *ip, uint8_t *rec, v
     memcpy(&flags, rec + 4, 4);
     flags |= target ? EXCEPTION_UNWINDING : EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND;
     memcpy(rec + 4, &flags, 4);
-    struct seh_frame **head = seh_head();
+    struct seh_frame *GPTR *head = seh_head();
     while (seh_valid(*head) && *head != target) {
         struct seh_frame *f = *head;
-        ((seh_handler)f->handler)(rec, f, NULL, NULL);
+        W32_CALL(seh_handler, f->handler, rec, f, NULL, NULL);
         *head = f->prev;
     }
 }
@@ -1175,7 +1175,7 @@ static bool async_target(const char *path)
 static bool spawn_async(struct spawn_args *a, const char *path, int argc, char **argv)
 {
     struct exec_ctx *c = kzalloc(sizeof(*c));
-    char **copy = kzalloc(sizeof(char *) * (size_t)(argc + 1));
+    KARR(char *) *copy = kzalloc(sizeof(*copy) * (size_t)(argc + 1));
     char *p = kstrdup(path);
     if (!c || !copy || !p) {
         kfree(c);
@@ -1184,14 +1184,14 @@ static bool spawn_async(struct spawn_args *a, const char *path, int argc, char *
         return false;
     }
     for (int i = 0; i < argc; i++)
-        copy[i] = kstrdup(argv[i]);
+        copy[i] = (KARR(char *))(uintptr_t)kstrdup(argv[i]);
     *c = (struct exec_ctx){w32->ctx->sh, p, argc, copy, a->in ? a->in : w32->ctx->in, a->out ? a->out : w32->ctx->out,
                            a->err ? a->err : w32->ctx->err, a->env, a->cwd, a->handles};
     unsigned own = (a->in ? 1u : 0) | (a->out ? 2u : 0) | (a->err ? 4u : 0);
     struct w32_child *child = w32_spawn_async(c, own);
     if (!child) {
         for (int i = 0; i < argc; i++)
-            kfree(copy[i]);
+            kfree((void *)(uintptr_t)copy[i]);
         kfree(copy);
         kfree(p);
         kfree(c);
@@ -1317,7 +1317,10 @@ static int spawn_args_run(struct spawn_args *a, int argc, char **argv)
     }
     if (async_target(path) && spawn_async(a, path, argc, argv))
         return 0;
-    struct exec_ctx ctx = {w32->ctx->sh, path, argc, argv, a->in ? a->in : w32->ctx->in,
+    KARR(char *) kargv[argc + 1];
+    for (int i = 0; i <= argc; i++)
+        kargv[i] = (KARR(char *))(uintptr_t)(i < argc ? argv[i] : NULL);
+    struct exec_ctx ctx = {w32->ctx->sh, path, argc, kargv, a->in ? a->in : w32->ctx->in,
                            a->out ? a->out : w32->ctx->out, a->err ? a->err : w32->ctx->err, a->env, a->cwd,
                            a->handles};
     a->handles = NULL;

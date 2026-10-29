@@ -637,7 +637,7 @@ static uint32_t WINAPI strings_get(struct obj *s, UINT index, WCHAR *out, UINT s
 
 TRAPS(strings, 9, 10, 11, 12)
 
-static const void *const strings_vtbl[] = {
+static const void *const strings_vtbl[] W32_VTABLE = {
     query_interface, add_ref, release, strings_count, strings_find, strings_locale_length, strings_locale,
     strings_length, strings_get,
      trap_strings_9, trap_strings_10, trap_strings_11, trap_strings_12,
@@ -653,8 +653,8 @@ static struct obj *new_strings(int face, const char *text)
 
 /* Font files, loader and stream: index = face */
 
-static const void *const fstream_vtbl[];
-static const void *const loader_vtbl[];
+static const void *const fstream_vtbl[] W32_VTABLE;
+static const void *const loader_vtbl[] W32_VTABLE;
 
 static uint32_t WINAPI fstream_read(struct obj *s, const void **start, uint64_t offset, uint64_t size, void **context)
 {
@@ -689,7 +689,7 @@ static uint32_t WINAPI fstream_time(struct obj *s, uint64_t *time)
 
 TRAPS(fstream, 7, 8, 9, 10)
 
-static const void *const fstream_vtbl[] = {
+static const void *const fstream_vtbl[] W32_VTABLE = {
     query_interface, add_ref, release, fstream_read, fstream_release_fragment, fstream_size, fstream_time,
      trap_fstream_7, trap_fstream_8, trap_fstream_9, trap_fstream_10,
 };
@@ -745,7 +745,7 @@ static uint32_t WINAPI loader_time(struct obj *l, const void *key, UINT size, ui
 
 TRAPS(loader, 7, 8, 9, 10)
 
-static const void *const loader_vtbl[] = {
+static const void *const loader_vtbl[] W32_VTABLE = {
     query_interface, add_ref, release, loader_stream, loader_path_length, loader_path, loader_time,
      trap_loader_7, trap_loader_8, trap_loader_9, trap_loader_10,
 };
@@ -778,7 +778,7 @@ static uint32_t WINAPI file_analyze(struct obj *f, BOOL *supported, int *file_ty
 
 TRAPS(file, 6, 7, 8, 9)
 
-static const void *const file_vtbl[] = {
+static const void *const file_vtbl[] W32_VTABLE = {
     query_interface, add_ref, release, file_key, file_loader, file_analyze,
     trap_file_6, trap_file_7, trap_file_8, trap_file_9,
 };
@@ -900,7 +900,7 @@ static uint32_t WINAPI face_outline(struct obj *o, uint32_t em, const uint16_t *
 
 TRAPS(face, 18, 19, 20, 21)
 
-static const void *const face_vtbl[] = {
+static const void *const face_vtbl[] W32_VTABLE = {
     query_interface, add_ref,      release,           face_type,   face_files,         zero1,
     zero1,           zero1,        face_metrics,      face_glyph_count, face_design_metrics, face_indices,
     face_table,      face_release_table, face_outline,     face_rendering_mode, face_gdi_metrics, face_gdi_glyph_metrics,
@@ -972,7 +972,7 @@ static uint32_t WINAPI font_create_face(struct obj *o, void **out)
 
 TRAPS(font, 14, 15, 16, 17)
 
-static const void *const font_vtbl[] = {
+static const void *const font_vtbl[] W32_VTABLE = {
     query_interface, add_ref,        release,           font_family,   font_weight, font_stretch,
     font_style,      font_symbol,    font_face_names,   font_info_strings, zero1,   font_metrics,
     font_has_char,   font_create_face,
@@ -1050,7 +1050,7 @@ static uint32_t WINAPI family_matching_list(struct obj *o, int weight, int stret
 
 TRAPS(family, 9, 10, 11, 12)
 
-static const void *const family_vtbl[] = {
+static const void *const family_vtbl[] W32_VTABLE = {
     query_interface, add_ref, release, family_collection, family_font_count, family_font, family_names,
     family_match,    family_matching_list,
      trap_family_9, trap_family_10, trap_family_11, trap_family_12,
@@ -1116,7 +1116,7 @@ static uint32_t WINAPI collection_from_face(struct obj *o, struct obj *face, voi
 
 TRAPS(collection, 7, 8, 9, 10)
 
-static const void *const collection_vtbl[] = {
+static const void *const collection_vtbl[] W32_VTABLE = {
     query_interface, add_ref, release, collection_count, collection_family, collection_find, collection_from_face,
      trap_collection_7, trap_collection_8, trap_collection_9, trap_collection_10,
 };
@@ -1191,7 +1191,7 @@ static uint32_t WINAPI gdi_face_logfont(void *self, struct obj *face, struct log
 
 TRAPS(gdi, 8, 9, 10, 11)
 
-static const void *const gdi_vtbl[] = {
+static const void *const gdi_vtbl[] W32_VTABLE = {
     query_interface, add_ref,  release,
     gdi_from_logfont,       /* CreateFontFromLOGFONT */
     gdi_font_logfont,       /* ConvertFontToLOGFONT */
@@ -1323,7 +1323,7 @@ static uint32_t WINAPI custom_file_reference(void *self, const void *key, UINT s
         return index < 0 ? E_INVALIDARG : give(out, com_new(file_vtbl, iid_file, NULL, index));
     }
     void **lv = *(void ***)loader, *stream = NULL;
-    uint32_t hr = ((stream_from_key_fn)lv[3])(loader, key, size, &stream);
+    uint32_t hr = W32_CALL(stream_from_key_fn, lv[3], loader, key, size, &stream);
     if (hr || !stream)
         return hr ? hr : E_INVALIDARG;
     void **sv = *(void ***)stream;
@@ -1331,12 +1331,12 @@ static uint32_t WINAPI custom_file_reference(void *self, const void *key, UINT s
     const void *start = NULL;
     void *context = NULL;
     int index = -1;
-    if (!((file_size_fn)sv[5])(stream, &bytes) && bytes && bytes < 64u * 1024 * 1024 &&
-        !((read_fragment_fn)sv[3])(stream, &start, 0, bytes, &context) && start) {
+    if (!W32_CALL(file_size_fn, sv[5], stream, &bytes) && bytes && bytes < 64u * 1024 * 1024 &&
+        !W32_CALL(read_fragment_fn, sv[3], stream, &start, (uint64_t)0, bytes, &context) && start) {
         index = memory_face(start, (uint32_t)bytes);
-        ((release_fragment_fn)sv[4])(stream, context);
+        W32_CALL(release_fragment_fn, sv[4], stream, context);
     }
-    ((com_release_fn)sv[2])(stream);
+    W32_CALL(com_release_fn, sv[2], stream);
     return index < 0 ? 0x88985002u : give(out, com_new(file_vtbl, iid_file, NULL, index));
 }
 
@@ -1395,7 +1395,7 @@ static uint32_t WINAPI analysis_blend(struct obj *self, void *params, uint32_t *
     return S_OK;
 }
 
-static const void *const analysis_vtbl[] = {
+static const void *const analysis_vtbl[] W32_VTABLE = {
     query_interface, add_ref, analysis_release, analysis_bounds, analysis_texture, analysis_blend,
 };
 
@@ -1449,14 +1449,14 @@ static int file_face(struct obj *file)
     void **fv = *(void ***)file, *loader = NULL, *ours = NULL;
     const void *key = NULL;
     UINT size = 0;
-    if (((file_key_fn)fv[3])(file, &key, &size) || ((file_loader_fn)fv[4])(file, &loader) || !loader)
+    if (W32_CALL(file_key_fn, fv[3], file, &key, &size) || W32_CALL(file_loader_fn, fv[4], file, &loader) || !loader)
         return -1;
     int index = -1;
     if (!custom_file_reference(NULL, key, size, loader, &ours) && ours) {
         index = ((struct obj *)ours)->index;
         release(ours);
     }
-    ((com_release_fn)(*(void ***)loader)[2])(loader);
+    W32_CALL(com_release_fn, (*(void ***)loader)[2], loader);
     return index;
 }
 
@@ -1466,7 +1466,7 @@ static uint32_t WINAPI custom_collection(void *self, void *loader, const void *k
     if (!loader)
         return E_INVALIDARG;
     void *files = NULL;
-    uint32_t hr = ((enum_from_key_fn)(*(void ***)loader)[3])(loader, self, key, size, &files);
+    uint32_t hr = W32_CALL(enum_from_key_fn, (*(void ***)loader)[3], loader, self, key, size, &files);
     if (hr || !files)
         return hr ? hr : E_INVALIDARG;
     struct obj *o = new_collection();
@@ -1474,18 +1474,18 @@ static uint32_t WINAPI custom_collection(void *self, void *loader, const void *k
     if (!o || !c) {
         w32_free(o);
         w32_free(c);
-        ((com_release_fn)(*(void ***)files)[2])(files);
+        W32_CALL(com_release_fn, (*(void ***)files)[2], files);
         return E_OUTOFMEMORY;
     }
     o->extra = c;
     void **ev = *(void ***)files;
     BOOL more = FALSE;
-    while (!((move_next_fn)ev[3])(files, &more) && more) {
+    while (!W32_CALL(move_next_fn, ev[3], files, &more) && more) {
         void *file = NULL;
-        if (((current_file_fn)ev[4])(files, &file) || !file)
+        if (W32_CALL(current_file_fn, ev[4], files, &file) || !file)
             continue;
         int face = file_face(file);
-        ((com_release_fn)(*(void ***)file)[2])(file);
+        W32_CALL(com_release_fn, (*(void ***)file)[2], file);
         if (face < 0)
             continue;
         int family = faces[face].family_index, k = 0;
@@ -1494,7 +1494,7 @@ static uint32_t WINAPI custom_collection(void *self, void *loader, const void *k
         if (k == c->count && c->count < MAX_FACES)
             c->family[c->count++] = family;
     }
-    ((com_release_fn)ev[2])(files);
+    W32_CALL(com_release_fn, ev[2], files);
     return give(out, o);
 }
 
@@ -1524,7 +1524,7 @@ static uint32_t WINAPI params_grid(struct obj *self)
     return 0;
 }
 
-static const void *const params_vtbl[] = {
+static const void *const params_vtbl[] W32_VTABLE = {
     query_interface, add_ref, release, dw_params_gamma, dw_params_contrast, dw_params_cleartype, params_geometry,
     params_mode, dw_params_gray, params_grid, params_mode,
 };
@@ -1571,7 +1571,7 @@ static uint32_t WINAPI custom_rendering_params(struct obj *self, uint32_t gamma,
 
 TRAPS(factory, 24, 25, 26, 27)
 
-static const void *const factory_vtbl[] = {
+static const void *const factory_vtbl[] W32_VTABLE = {
     query_interface, add_ref,     release,
     system_collection,      /* GetSystemFontCollection */
     custom_collection,      /* CreateCustomFontCollection */
@@ -1809,10 +1809,10 @@ static uint32_t WINAPI rev_release(struct rev *r)
     return n;
 }
 
-static const void *const rev_file_vtbl[];
-static const void *const rev_file_loader_vtbl[];
-static const void *const rev_stream_vtbl[];
-static const void *const rev_enum_vtbl[];
+static const void *const rev_file_vtbl[] W32_VTABLE;
+static const void *const rev_file_loader_vtbl[] W32_VTABLE;
+static const void *const rev_stream_vtbl[] W32_VTABLE;
+static const void *const rev_enum_vtbl[] W32_VTABLE;
 
 static void *ours_or_rev(uint64_t v, const void *const *vtbl)
 {
@@ -1888,11 +1888,11 @@ static uint32_t WINAPI rev_size(struct rev *r, uint64_t *size)
     return (uint32_t)rev_call(r, 5, 2, args);
 }
 
-static const void *const rev_loader_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_enum_from_key};
-static const void *const rev_enum_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_move_next, rev_current_file};
-static const void *const rev_file_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_file_key, rev_file_loader};
-static const void *const rev_file_loader_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_stream_from_key};
-static const void *const rev_stream_vtbl[] = {rev_query, rev_add_ref, rev_release, rev_read, rev_release_fragment,
+static const void *const rev_loader_vtbl[] W32_VTABLE = {rev_query, rev_add_ref, rev_release, rev_enum_from_key};
+static const void *const rev_enum_vtbl[] W32_VTABLE = {rev_query, rev_add_ref, rev_release, rev_move_next, rev_current_file};
+static const void *const rev_file_vtbl[] W32_VTABLE = {rev_query, rev_add_ref, rev_release, rev_file_key, rev_file_loader};
+static const void *const rev_file_loader_vtbl[] W32_VTABLE = {rev_query, rev_add_ref, rev_release, rev_stream_from_key};
+static const void *const rev_stream_vtbl[] W32_VTABLE = {rev_query, rev_add_ref, rev_release, rev_read, rev_release_fragment,
                                               rev_size};
 
 static void *rev_new(uint64_t target, const void *const *vtbl)

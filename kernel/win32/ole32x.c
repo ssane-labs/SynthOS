@@ -211,14 +211,14 @@ static void com_release(void *obj)
 {
     typedef uint32_t WINAPI (*release_fn)(void *);
     if (obj)
-        ((release_fn)(*(void ***)obj)[2])(obj);
+        W32_CALL(release_fn, (*(void ***)obj)[2], obj);
 }
 
 static void com_add_ref(void *obj)
 {
     typedef uint32_t WINAPI (*add_ref_fn)(void *);
     if (obj)
-        ((add_ref_fn)(*(void ***)obj)[1])(obj);
+        W32_CALL(add_ref_fn, (*(void ***)obj)[1], obj);
 }
 
 static void WINAPI ReleaseStgMedium(uint32_t *medium)

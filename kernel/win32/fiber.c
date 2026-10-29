@@ -95,7 +95,7 @@ static NORETURN void fiber_entry(void)
     struct w32_fiber *f = current_fiber();
     arch_fpu_restore(fpu_of(f));
     typedef void WINAPI (*fiber_fn)(void *);
-    ((fiber_fn)f->start)(f->data);
+    W32_CALL(fiber_fn, f->start, f->data);
     void(WINAPI * exit_thread)(DWORD) = (void(WINAPI *)(DWORD))w32_builtin_lookup("kernel32.dll", "ExitThread");
     exit_thread(0);
     for (;;)

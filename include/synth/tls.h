@@ -6,12 +6,26 @@
 enum x509_key { PK_NONE, PK_RSA, PK_EC_P256, PK_EC_P384 };
 
 struct x509 {
-    const uint8_t *raw, *tbs, *issuer, *subject, *sig, *san;
-    size_t raw_len, tbs_len, issuer_len, subject_len, sig_len, san_len;
+    K64(const uint8_t *raw);
+    K64(const uint8_t *tbs);
+    K64(const uint8_t *issuer);
+    K64(const uint8_t *subject);
+    K64(const uint8_t *sig);
+    K64(const uint8_t *san);
+    K64(size_t raw_len);
+    K64(size_t tbs_len);
+    K64(size_t issuer_len);
+    K64(size_t subject_len);
+    K64(size_t sig_len);
+    K64(size_t san_len);
     int sig_alg;
     enum x509_key key;
-    const uint8_t *rsa_n, *rsa_e, *ec_point;
-    size_t rsa_n_len, rsa_e_len, ec_point_len;
+    K64(const uint8_t *rsa_n);
+    K64(const uint8_t *rsa_e);
+    K64(const uint8_t *ec_point);
+    K64(size_t rsa_n_len);
+    K64(size_t rsa_e_len);
+    K64(size_t ec_point_len);
     int64_t not_before, not_after;
     bool ca;
     char cn[96];

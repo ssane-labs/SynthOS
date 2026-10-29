@@ -672,7 +672,7 @@ static void WINAPI malloc_minimize(void *self)
     UNUSED(self);
 }
 
-static const void *const malloc_vtbl[] = {malloc_qi,   malloc_ref,  malloc_ref, malloc_alloc,   malloc_realloc,
+static const void *const malloc_vtbl[] W32_VTABLE = {malloc_qi,   malloc_ref,  malloc_ref, malloc_alloc,   malloc_realloc,
                                           malloc_free, malloc_size, malloc_did, malloc_minimize};
 static const void *const shell_malloc = malloc_vtbl;
 

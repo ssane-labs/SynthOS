@@ -4,8 +4,8 @@
 usage: w32sig.py SOURCE.c OUT.h CLANG [flags...]
 
 A 32-bit program pushes arguments the way the 32-bit kernel's functions expect them (stdcall or cdecl, i386); the
-64-bit kernel's functions take them in registers (System V). The source is compiled to LLVM IR twice, as i386 and
-as x86-64, and for every function a 32-bit program can reach (stdcall functions and the targets of export tables)
+64-bit kernel's functions (x32 code) take them in registers (System V). The source is compiled to LLVM IR twice, as
+i386 and as x32, and for every function a 32-bit program can reach (stdcall functions and the targets of export tables)
 the header gets a gate entry: where each 64-bit argument comes from on the 32-bit stack, how the result goes back
 and how many bytes the callee pops. The header is included at the end of the source, so static functions count."""
 
@@ -235,7 +235,7 @@ def export_targets(text):
 def main():
     source, out, flags = sys.argv[1], sys.argv[2], sys.argv[3:]
     t32 = ir(source, 'i686-unknown-none-elf', flags)
-    t64 = ir(source, 'x86_64-unknown-none-elf', flags)
+    t64 = ir(source, 'x86_64-linux-gnux32', flags)
     f32, f64 = functions(t32), functions(t64)
     size32, size64 = struct_sizes(t32, 4), struct_sizes(t64, 8)
     wanted = {n for n, f in f32.items() if f['stdcall'] and 'declared' not in f} | export_targets(t32) | \

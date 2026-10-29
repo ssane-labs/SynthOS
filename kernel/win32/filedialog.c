@@ -92,7 +92,7 @@ struct shell_item {
     char path[PATH_MAX_LEN];
 };
 
-static const void *const item_vt[];
+static const void *const item_vt[] W32_VTABLE;
 
 static void *new_item(const char *vfs_path)
 {
@@ -175,7 +175,7 @@ static uint32_t WINAPI item_compare(struct shell_item *i, struct shell_item *oth
     return *order ? 1u : S_OK;
 }
 
-static const void *const item_vt[] = {item_query, item_add_ref, item_release,    item_bind,
+static const void *const item_vt[] W32_VTABLE = {item_query, item_add_ref, item_release,    item_bind,
                                       item_parent, item_name,   item_attributes, item_compare};
 
 /* The path of any IShellItem, ours or the program's: GetDisplayName(SIGDN_FILESYSPATH). */
@@ -185,7 +185,7 @@ static bool item_path(void *item, char *out, size_t cap)
         return false;
     typedef uint32_t(WINAPI * name_fn)(void *, DWORD, WCHAR **);
     WCHAR *w = NULL;
-    if (((name_fn)(*(void ***)item)[5])(item, 0x80058000u, &w) || !w)
+    if (W32_CALL(name_fn, (*(void ***)item)[5], item, 0x80058000u, &w) || !w)
         return false;
     to_vfs(w, out, cap);
     void(WINAPI * task_free)(void *) = (void(WINAPI *)(void *))w32_builtin_lookup("ole32.dll", "CoTaskMemFree");
@@ -271,7 +271,7 @@ static uint32_t WINAPI array_enum(struct item_array *a, void **out)
     return E_NOTIMPL;
 }
 
-static const void *const array_vt[] = {array_query,    array_add_ref, array_release, array_bind, array_notimpl3,
+static const void *const array_vt[] W32_VTABLE = {array_query,    array_add_ref, array_release, array_bind, array_notimpl3,
                                        array_notimpl3, array_notimpl3, array_count,  array_at,   array_enum};
 
 struct file_dialog {
@@ -541,8 +541,8 @@ static uint32_t WINAPI fd_notimpl4(void *p, void *a, void *b, void *c, void *d)
         fd_set_file_name, fd_get_file_name, fd_set_title, fd_set_ok_label, fd_ok1, fd_get_result, fd_ok2,            \
         fd_set_default_ext, fd_ok1, fd_ok1, fd_ok0, fd_ok1
 
-static const void *const open_vt[] = {DIALOG_SLOTS, fd_get_results, fd_get_results};
-static const void *const save_vt[] = {DIALOG_SLOTS, fd_set_save_as_item, fd_ok1, fd_ok2, fd_notimpl1, fd_notimpl4};
+static const void *const open_vt[] W32_VTABLE = {DIALOG_SLOTS, fd_get_results, fd_get_results};
+static const void *const save_vt[] W32_VTABLE = {DIALOG_SLOTS, fd_set_save_as_item, fd_ok1, fd_ok2, fd_notimpl1, fd_notimpl4};
 
 /* IFileOperation: the shell's queue of file operations; Chromium renames every finished download through it. */
 static const uint8_t clsid_file_operation[16] =
@@ -685,7 +685,7 @@ static uint32_t WINAPI fo_aborted(void *p, BOOL *out)
 /* IUnknown, Advise, Unadvise, SetOperationFlags, SetProgressMessage, SetProgressDialog, SetProperties,
    SetOwnerWindow, ApplyPropertiesToItem(s), RenameItem(s), MoveItem(s), CopyItem(s), DeleteItem(s), NewItem,
    PerformOperations, GetAnyOperationsAborted. */
-static const void *const operation_vt[] = {fo_query,   fo_add_ref,  fo_release, fd_advise, fd_ok1, fd_ok1,
+static const void *const operation_vt[] W32_VTABLE = {fo_query,   fo_add_ref,  fo_release, fd_advise, fd_ok1, fd_ok1,
                                            fd_ok1,     fd_ok1,      fd_ok1,     fd_ok1,    fd_ok1, fd_ok1,
                                            fo_rename,  fd_ok2,      fo_move,    fd_ok2,    fo_copy, fd_ok2,
                                            fo_delete,  fd_ok1,      fo_new,     fo_perform, fo_aborted};

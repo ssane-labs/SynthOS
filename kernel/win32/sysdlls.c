@@ -1056,7 +1056,7 @@ static void com_call(void *obj, int slot)
 {
     typedef uint32_t WINAPI (*method_fn)(void *);
     if (obj)
-        ((method_fn)(*(void ***)obj)[slot])(obj);
+        W32_CALL(method_fn, (*(void ***)obj)[slot], obj);
 }
 
 static uint32_t WINAPI VariantClear(uint16_t *v)

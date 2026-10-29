@@ -6,19 +6,36 @@
 typedef int (*command_fn)(struct shell *sh, int argc, char **argv);
 
 struct command {
-    const char *name;
-    const char *aliases;
-    const char *category;
-    const char *usage;
-    const char *summary;
+    K64(const char *name);
+    K64(const char *aliases);
+    K64(const char *category);
+    K64(const char *usage);
+    K64(const char *summary);
     command_fn run;
 };
 
+#ifdef SYNTH_X32
+/* x32 commands get the shell's 8-byte argv entries as an array of their own */
+#define COMMAND(id, ...)                                                           \
+    static int cmd_##id(struct shell *sh, int argc, char **argv);                  \
+    static int cmd64_##id(struct shell *sh, int argc, const uint64_t *argv)        \
+    {                                                                              \
+        char *v[argc + 1];                                                         \
+        for (int i = 0; i < argc; i++)                                             \
+            v[i] = (char *)(uintptr_t)argv[i];                                     \
+        v[argc] = NULL;                                                            \
+        return cmd_##id(sh, argc, v);                                              \
+    }                                                                              \
+    static const struct command cmddef_##id = {#id, __VA_ARGS__, (command_fn)cmd64_##id}; \
+    SYNTH_REGISTER(synth_commands, struct command, cmddef_##id);                  \
+    static int cmd_##id(struct shell *sh, int argc, char **argv)
+#else
 #define COMMAND(id, ...)                                                           \
     static int cmd_##id(struct shell *sh, int argc, char **argv);                  \
     static const struct command cmddef_##id = {#id, __VA_ARGS__, cmd_##id};        \
     SYNTH_REGISTER(synth_commands, struct command, cmddef_##id);                  \
     static int cmd_##id(struct shell *sh, int argc, char **argv)
+#endif
 
 const struct command *command_find(const char *name);
 void command_foreach(void (*fn)(const struct command *cmd, void *ctx), void *ctx);
@@ -26,11 +43,11 @@ int command_usage(struct shell *sh, const struct command *cmd);
 
 struct getopt {
     int argc;
-    char **argv;
+    K64(KARR(char *) *argv);
     int index;
     int pos;
     int opt;
-    const char *arg;
+    K64(const char *arg);
 };
 
 void getopt_init(struct getopt *g, int argc, char **argv);

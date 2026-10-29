@@ -186,18 +186,18 @@ static int crt_set_fmode(int mode)
 typedef void (*vfn)(void);
 typedef int (*ifn)(void);
 
-static void crt_initterm(vfn *start, vfn *end)
+static void crt_initterm(const GADDR *start, const GADDR *end)
 {
     for (; start < end; start++)
         if (*start)
-            (*start)();
+            W32_CALL(vfn, *start);
 }
 
-static int crt_initterm_e(ifn *start, ifn *end)
+static int crt_initterm_e(const GADDR *start, const GADDR *end)
 {
     for (; start < end; start++)
         if (*start) {
-            int r = (*start)();
+            int r = W32_CALL(ifn, *start);
             if (r)
                 return r;
         }
@@ -264,7 +264,7 @@ static void crt_abort(void)
     uintptr_t h = signals[SIGABRT];
     if (h > SIG_IGN && h != SIG_ERR) {
         signals[SIGABRT] = SIG_DFL;
-        ((void (*)(int))h)(SIGABRT);
+        W32_CALL(void (*)(int), h, SIGABRT);
     }
     str_copy(w32->message, "abnormal program termination", sizeof(w32->message));
     w32_exit(3);
@@ -315,7 +315,7 @@ static int crt_raise(int sig)
         w32_exit(sig == SIGINT ? STATUS_CONTROL_C_EXIT : 3);
     }
     signals[sig] = SIG_DFL;
-    ((void (*)(int))h)(sig);
+    W32_CALL(void (*)(int), h, sig);
     return 0;
 }
 
@@ -764,7 +764,7 @@ static DWORD WINAPI begin_trampoline(void *p)
 {
     struct thread_start start = *(struct thread_start *)p;
     w32_free(p);
-    start.fn(start.arg);
+    W32_CALL(void (*)(void *), start.fn, start.arg);
     return 0;
 }
 
@@ -797,7 +797,7 @@ static void crt_endthreadex(unsigned code)
     struct w32_image *k = w32_find_module("kernel32.dll");
     exit_fn fn = k ? (exit_fn)w32_get_proc(k, "ExitThread", 0) : NULL;
     if (fn)
-        fn(code);
+        W32_CALL(exit_fn, fn, code);
 }
 
 static void crt_endthread(void)

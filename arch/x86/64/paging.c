@@ -228,9 +228,12 @@ void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, ui
     heap_bytes = MIN(((uint64_t)end - heap_phys) & ~4095ull, HEAP_LIMIT);
     if (!map_range(HEAP_VIRT, heap_phys, heap_bytes, 0))
         return NULL;
-    /* the start-up code is done with the one-to-one map of the programs' range */
+    /* the start-up code is done with the one-to-one map of the programs' range; page 0 catches null pointers */
     for (uint64_t va = VMM_USER_START; va < VMM_USER_END; va += LARGE)
         boot_pd_low[va >> 30][(va >> 21) & 511] = 0;
+    uint64_t *zero = pte(0, true);
+    if (zero)
+        *zero = 0;
     uint64_t cr0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0 | 0x10000ull) : "memory");

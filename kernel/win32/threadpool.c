@@ -44,11 +44,11 @@ static void tp_run(struct tp_item *it, DWORD result)
     void *instance = it;
     switch (it->kind) {
     case TP_WORK:
-    case TP_TIMER: ((void(WINAPI *)(void *, void *, void *))it->callback)(instance, it->context, it); break;
+    case TP_TIMER: W32_CALL(void(WINAPI *)(void *, void *, void *), it->callback, instance, it->context, it); break;
     case TP_WAIT:
-        ((void(WINAPI *)(void *, void *, void *, DWORD))it->callback)(instance, it->context, it, result);
+        W32_CALL(void(WINAPI *)(void *, void *, void *, DWORD), it->callback, instance, it->context, it, result);
         break;
-    case TP_SIMPLE: ((void(WINAPI *)(void *, void *))it->callback)(instance, it->context); break;
+    case TP_SIMPLE: W32_CALL(void(WINAPI *)(void *, void *), it->callback, instance, it->context); break;
     }
 }
 

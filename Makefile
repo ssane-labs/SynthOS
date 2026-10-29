@@ -19,6 +19,7 @@ ifneq ($(X64),)
 ifneq ($(shell command -v x86_64-elf-gcc 2>/dev/null),)
 CROSS    ?= x86_64-elf-
 endif
+W32 ?= 1
 ifneq ($(W32),1)
 CONFIG_WIN32 := 0
 CONFIG_DEFINES := $(subst -DCONFIG_WIN32=1,-DCONFIG_WIN32=0,$(CONFIG_DEFINES))
@@ -79,7 +80,8 @@ ifneq ($(X64),)
 KERNEL_ASM := arch/x86/64/entry.asm arch/x86/64/isr.asm $(if $(filter 1,$(W32)),arch/x86/64/win32.asm)
 endif
 NASM_OBJ   := $(if $(X64),elf64,elf32)
-KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/biosblob.o
+KERNEL_OBJ := $(KERNEL_SRC:%.c=$(OUT)/obj/%.o) $(KERNEL_ASM:%.asm=$(OUT)/obj/%.o) $(OUT)/obj/biosblob.o \
+              $(if $(and $(X64),$(filter 1,$(W32))),$(OUT)/obj/x32/fmt.o)
 
 SX_SRC   := $(wildcard programs/sx/*.sasm)
 SX_BIN   := $(SX_SRC:programs/sx/%.sasm=$(BUILD)/rootfs/bin/%.sx)
@@ -205,30 +207,38 @@ $(OUT)/kernel.bin: $(OUT)/kernel.elf $(BUILD)/ramdisk.bin $(BUILD)/tools/mkrd
 	@$(OBJCOPY) -O binary $< $(OUT)/image.bin
 	@$(BUILD)/tools/mkrd --kernel $(OUT)/image.bin $(BUILD)/ramdisk.bin $@
 
-$(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/linker.ld
+$(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/$(if $(X64),64/)linker.ld
 	@echo "  LD      $@"
 	@$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
 
 $(OUT)/obj/%_fp.o: CFLAGS += $(if $(X64),-msse -msse2 -mfpmath=sse,-m80387 -mfpmath=387)
-# the Windows subsystem of the 64-bit kernel needs clang (4-byte __ptr32 pointers for 32-bit programs)
+# The 64-bit kernel's Windows subsystem is x32 code (64-bit mode, 4-byte pointers and longs: the structure layouts
+# 32-bit programs use), built by clang and turned into ELF64 objects. Every source gets its call gate signatures
+# (tools/w32sig.py) appended; references to the few kernel functions whose pointer or size_t out-parameters differ
+# go to arch/x86/64/w32abi.c, and formatting uses an x32 copy of kernel/lib/fmt.c.
 ifneq ($(X64),)
-$(OUT)/obj/kernel/win32/%.o: CC = clang
-$(OUT)/obj/kernel/win32/%.o: CFLAGS := --target=x86_64-unknown-none-elf -fms-extensions -Wno-microsoft \
-    $(filter-out -fno-tree-loop-distribute-patterns -march=x86-64 -O2,$(CFLAGS)) -march=x86-64
-$(OUT)/obj/kernel/win32/%_fp.o: CFLAGS += -msse -msse2 -mfpmath=sse -m80387
-$(OUT)/obj/kernel/win32/crt/%_fp.o: CFLAGS += -msse -msse2 -mfpmath=sse -m80387
-# every Windows source of the 64-bit kernel is compiled with its call gate signatures (tools/w32sig.py) appended
+X32CFLAGS := --target=x86_64-linux-gnux32 -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic \
+             -fno-pie -mno-red-zone -mcmodel=small -mno-sse -mno-mmx -mno-80387 -fno-strict-aliasing \
+             -fno-asynchronous-unwind-tables -fno-omit-frame-pointer -ftrivial-auto-var-init=zero -fms-extensions \
+             -Wno-microsoft -Wall -Wextra -Wno-override-init -Wno-unused-parameter -Wno-initializer-overrides \
+             -Wno-missing-braces -Wno-deprecated-non-prototype -Iinclude $(CONFIG_DEFINES) $(if $(SERIAL),-DCONFIG_SERIAL_CONSOLE)
 W32SIG_CC := clang -std=gnu11 -ffreestanding -fno-builtin -fms-extensions -Iinclude $(CONFIG_DEFINES) \
              $(if $(SERIAL),-DCONFIG_SERIAL_CONSOLE)
-$(OUT)/obj/kernel/win32/%.o: kernel/win32/%.c tools/w32sig.py
+$(OUT)/obj/kernel/win32/%_fp.o: X32CFLAGS += -msse -msse2 -mfpmath=sse -m80387
+$(OUT)/obj/kernel/win32/%.o: kernel/win32/%.c tools/w32sig.py arch/x86/64/x32.syms
 	@mkdir -p $(@D)
-	@echo "  CC      $< (gate)"
+	@echo "  CC      $< (x32)"
 	@python3 -I tools/w32sig.py $< $(@:.o=.sig.h) $(W32SIG_CC)
 	@printf '#include "%s"\n#include "%s"\n' "$(abspath $<)" "$(abspath $(@:.o=.sig.h))" > $(@:.o=.wrap.c)
-	@$(CC) $(CFLAGS) -MMD -MP -MT $@ -c $(@:.o=.wrap.c) -o $@
+	@clang $(X32CFLAGS) -MMD -MP -MT $@ -MF $(@:.o=.d) -c $(@:.o=.wrap.c) -o $(@:.o=.x32.o)
+	@objcopy -I elf32-x86-64 -O elf64-x86-64 --redefine-syms=arch/x86/64/x32.syms $(@:.o=.x32.o) $@
+$(OUT)/obj/x32/fmt.o: kernel/lib/fmt.c arch/x86/64/x32.syms
+	@mkdir -p $(@D)
+	@echo "  CC      $< (x32)"
+	@clang $(X32CFLAGS) -MMD -MP -MT $@ -MF $(@:.o=.d) -c $< -o $(@:.o=.x32.o)
+	@objcopy -I elf32-x86-64 -O elf64-x86-64 --redefine-syms=arch/x86/64/x32.syms $(@:.o=.x32.o) $@
 endif
-# clang 18 miscompiles __ptr32 returns at -Os and -O0 (it crashes), so the 64-bit Windows subsystem uses -O2
-$(OUT)/obj/kernel/win32/%.o: CFLAGS += $(if $(X64),-O2,-Os)
+$(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
 
@@ -398,7 +408,7 @@ run-serial:
 
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
-	@$(if $(X64),NO_WIN32=1 )tests/run.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
+	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),NO_WIN64=1,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools
@@ -408,7 +418,7 @@ test-crypto:
 
 test-hw:
 	@$(MAKE) --no-print-directory SERIAL=1
-	@$(if $(X64),NO_WIN32=1 )tests/hw.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
+	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/hw.sh $(BUILD)/serial$(if $(X64),64)/synthos.img
 
 OVMF ?= $(firstword $(wildcard /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/edk2/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd))
 OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd))

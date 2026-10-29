@@ -36,18 +36,23 @@ SECTIONS
         __start_synth_commands = .;
         KEEP(*(synth_commands))
         __stop_synth_commands = .;
+        . = ALIGN(8);
         __start_synth_settings = .;
         KEEP(*(synth_settings))
         __stop_synth_settings = .;
+        . = ALIGN(8);
         __start_synth_binfmts = .;
         KEEP(*(synth_binfmts))
         __stop_synth_binfmts = .;
+        . = ALIGN(8);
         __start_synth_win32 = .;
         KEEP(*(synth_win32))
         __stop_synth_win32 = .;
+        . = ALIGN(8);
         __start_synth_win64 = .;
         KEEP(*(synth_win64))
         __stop_synth_win64 = .;
+        . = ALIGN(8);
         __start_synth_gui_apps = .;
         KEEP(*(synth_gui_apps))
         __stop_synth_gui_apps = .;
@@ -55,9 +60,14 @@ SECTIONS
         __start_w32sigs = .;
         KEEP(*(w32sigs))
         __stop_w32sigs = .;
+        . = ALIGN(8);
         __start_synth_fs = .;
         KEEP(*(synth_fs))
         __stop_synth_fs = .;
+        . = ALIGN(8);
+        __start_w32vtbl = .;
+        KEEP(*(w32vtbl))
+        __stop_w32vtbl = .;
         . = ALIGN(16);
         __start_w32state = .;
         KEEP(*(w32state))

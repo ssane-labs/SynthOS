@@ -20,12 +20,12 @@ union hash_ctx {
 };
 
 struct hash_alg {
-    const char *name;
-    size_t digest;
-    size_t block;
-    void (*init)(union hash_ctx *c);
-    void (*update)(union hash_ctx *c, const void *data, size_t n);
-    void (*final)(union hash_ctx *c, uint8_t *out);
+    K64(const char *name);
+    K64(size_t digest);
+    K64(size_t block);
+    K64(void (*init)(union hash_ctx *c));
+    K64(void (*update)(union hash_ctx *c, const void *data, size_t n));
+    K64(void (*final)(union hash_ctx *c, uint8_t *out));
 };
 
 extern const struct hash_alg hash_sha256, hash_sha384, hash_sha512, hash_sha1, hash_md5;
@@ -37,7 +37,7 @@ void sha512_final(struct sha512 *s, uint8_t *out, size_t digest);
 void hash_digest(const struct hash_alg *h, const void *data, size_t n, uint8_t *out);
 
 struct hmac {
-    const struct hash_alg *alg;
+    K64(const struct hash_alg *alg);
     union hash_ctx inner, outer;
 };
 

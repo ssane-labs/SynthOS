@@ -106,7 +106,7 @@ static HANDLE create_dialog(HANDLE inst, const void *templ, HANDLE owner, DLGPRO
         struct w32_image *g = w32_find_module("gdi32.dll");
         font_fn create = g ? (font_fn)w32_get_proc(g, "CreateFontA", 0) : NULL;
         if (create)
-            font = create(-(points * 96 / 72), 0, 0, 0, weight, 0, 0, 0, 0, 0, 0, 0, 0, face);
+            font = W32_CALL(font_fn, create, -(points * 96 / 72), 0, 0, 0, weight, 0, 0, 0, 0, 0, 0, 0, 0, face);
         w32_free(face);
     }
     HANDLE menu = NULL;
@@ -115,7 +115,7 @@ static HANDLE create_dialog(HANDLE inst, const void *templ, HANDLE owner, DLGPRO
         struct w32_image *u = w32_find_module("user32.dll");
         menu_fn load = u ? (menu_fn)w32_get_proc(u, "LoadMenuA", 0) : NULL;
         if (load)
-            menu = load(inst, menu_name ? menu_name : (LPCSTR)(uintptr_t)menu_ord);
+            menu = W32_CALL(menu_fn, load, inst, menu_name ? menu_name : (LPCSTR)(uintptr_t)menu_ord);
     }
     uint32_t window_style = (style & ~(WS_VISIBLE | WS_CHILD)) | WS_CAPTION;
     if (style & WS_CHILD)
@@ -163,14 +163,14 @@ static HANDLE create_dialog(HANDLE inst, const void *templ, HANDLE owner, DLGPRO
         w32_free(cls);
         w32_free(text);
     }
-    if (proc && proc(dlg, WM_INITDIALOG, (WPARAM)first_tab, param) && first_tab)
+    if (proc && W32_CALL(DLGPROC, proc, dlg, WM_INITDIALOG, (WPARAM)first_tab, param) && first_tab)
         w32_set_focus(w32_win(first_tab));
     if ((style & WS_VISIBLE) || modal) {
         typedef BOOL WINAPI (*show_fn)(HANDLE, int);
         struct w32_image *u = w32_find_module("user32.dll");
         show_fn show = u ? (show_fn)w32_get_proc(u, "ShowWindow", 0) : NULL;
         if (show)
-            show(dlg, 5);
+            W32_CALL(show_fn, show, dlg, 5);
     }
     return dlg;
 }
@@ -183,7 +183,7 @@ LRESULT WINAPI w32_dialog_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
     DLGPROC proc = (DLGPROC)w->dlgproc;
     intptr_t saved = w->dlg_msgresult;
     w->dlg_msgresult = 0;
-    intptr_t handled = proc && msg != WM_NCCREATE && msg != WM_CREATE ? proc(h, msg, wp, lp) : 0;
+    intptr_t handled = proc && msg != WM_NCCREATE && msg != WM_CREATE ? W32_CALL(DLGPROC, proc, h, msg, wp, lp) : 0;
     if (msg >= WM_CTLCOLOREDIT && msg <= WM_CTLCOLORSTATIC && handled)
         return handled;
     intptr_t result = w->dlg_msgresult;
@@ -273,7 +273,7 @@ static intptr_t run_modal(HANDLE dlg, HANDLE owner)
             struct w32_image *u = w32_find_module("user32.dll");
             quit_fn quit = u ? (quit_fn)w32_get_proc(u, "PostQuitMessage", 0) : NULL;
             if (quit)
-                quit((int)m.wParam);
+                W32_CALL(quit_fn, quit, (int)m.wParam);
             break;
         }
         struct w32_window *target = w32_win(m.hwnd);

@@ -49,7 +49,8 @@ struct net_socket_info {
     enum tcp_state state;
     uint32_t local_ip, remote_ip;
     uint16_t local_port, remote_port;
-    size_t queued_rx, queued_tx;
+    K64(size_t queued_rx);
+    K64(size_t queued_tx);
 };
 
 void net_register(struct netdev *dev);

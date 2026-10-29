@@ -4,22 +4,22 @@
 #include <synth/types.h>
 
 struct heap_stats {
-    size_t total;
-    size_t used;
-    size_t free;
-    size_t largest_free;
-    size_t blocks;
-    size_t peak;
+    K64(size_t total);
+    K64(size_t used);
+    K64(size_t free);
+    K64(size_t largest_free);
+    K64(size_t blocks);
+    K64(size_t peak);
 };
 
 #define HEAP_BINS 28
 
 struct heap {
-    uint8_t *start;
-    uint8_t *end;
-    void *bins[HEAP_BINS];
-    size_t used;
-    size_t peak;
+    K64(uint8_t *start);
+    K64(uint8_t *end);
+    KARR(void *) bins[HEAP_BINS];
+    K64(size_t used);
+    K64(size_t peak);
     bool strict;
 };
 

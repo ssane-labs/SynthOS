@@ -18,32 +18,32 @@ enum sh_control {
 };
 
 struct strmap_entry {
-    char *key;
-    char *value;
+    K64(char *key);
+    K64(char *value);
 };
 
 struct strmap {
-    struct strmap_entry *items;
-    size_t count;
-    size_t cap;
+    K64(struct strmap_entry *items);
+    K64(size_t count);
+    K64(size_t cap);
 };
 
 struct sh_function {
-    char *name;
-    char *body;
+    K64(char *name);
+    K64(char *body);
 };
 
 struct history {
-    char **items;
-    size_t count;
-    size_t max;
+    K64(KARR(char *) *items);
+    K64(size_t count);
+    K64(size_t max);
 };
 
 struct shell {
     char cwd[PATH_MAX_LEN];
-    struct stream *in;
-    struct stream *out;
-    struct stream *err;
+    K64(struct stream *in);
+    K64(struct stream *out);
+    K64(struct stream *err);
     int status;
     enum sh_control ctl;
     int loop_depth;
@@ -52,19 +52,19 @@ struct shell {
     bool idle;
     struct strmap vars;
     struct strmap aliases;
-    struct sh_function *funcs;
-    size_t func_count;
+    K64(struct sh_function *funcs);
+    K64(size_t func_count);
     struct history history;
     int argc;
-    char **argv;
+    K64(KARR(char *) *argv);
 };
 
 struct setting {
-    const char *name;
-    const char *values;
-    const char *summary;
-    void (*get)(char *buf, size_t cap);
-    int (*set)(struct shell *sh, const char *value);
+    K64(const char *name);
+    K64(const char *values);
+    K64(const char *summary);
+    K64(void (*get)(char *buf, size_t cap));
+    K64(int (*set)(struct shell *sh, const char *value));
 };
 
 #define SETTING(object) SYNTH_REGISTER(synth_settings, struct setting, object)

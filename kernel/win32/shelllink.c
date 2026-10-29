@@ -33,7 +33,7 @@ static const uint8_t iid_property_store[16] =
 static uint32_t com_call(void *obj, int slot, uint32_t a, uint32_t b, uint32_t c)
 {
     typedef uint32_t(WINAPI * fn3)(void *, uint32_t, uint32_t, uint32_t);
-    return ((fn3)(*(void ***)obj)[slot])(obj, a, b, c);
+    return W32_CALL(fn3, (*(void ***)obj)[slot], obj, a, b, c);
 }
 
 /* Class objects a program registered with CoRegisterClassObject: CoCreateInstance finds them in that process. */
@@ -265,7 +265,7 @@ static uint32_t WINAPI sl_set_path(void *p, const WCHAR *path)
     return S_OK;
 }
 
-static const void *const shell_link_vt[] = {
+static const void *const shell_link_vt[] W32_VTABLE = {
     sl_query,          sl_add_ref,       sl_release,     sl_get_path,     sl_get_id_list,  sl_set_id_list,
     sl_get_description, sl_set_description, sl_get_working_dir, sl_set_working_dir, sl_get_arguments,
     sl_set_arguments,  sl_get_hotkey,    sl_set_hotkey,  sl_get_show,     sl_set_show,     sl_get_icon,
@@ -329,7 +329,7 @@ static uint32_t WINAPI pf_cur_file(void *p, WCHAR **out)
     return S_FALSE;
 }
 
-static const void *const persist_file_vt[] = {pf_query, pf_add_ref, pf_release, pf_class_id, pf_is_dirty,
+static const void *const persist_file_vt[] W32_VTABLE = {pf_query, pf_add_ref, pf_release, pf_class_id, pf_is_dirty,
                                               pf_load,  pf_save,    pf_save_completed, pf_cur_file};
 
 static uint32_t WINAPI ps_query(void *p, const uint8_t *iid, void **out) { return link_query(LINK_OF(p, props_vt), iid, out); }
@@ -397,7 +397,7 @@ static uint32_t WINAPI ps_commit(void *p)
     return S_OK;
 }
 
-static const void *const property_store_vt[] = {ps_query, ps_add_ref, ps_release, ps_count,
+static const void *const property_store_vt[] W32_VTABLE = {ps_query, ps_add_ref, ps_release, ps_count,
                                                 ps_at,    ps_get,     ps_set,     ps_commit};
 
 static uint32_t new_shell_link(const uint8_t *iid, void **out)
@@ -554,7 +554,7 @@ static uint32_t WINAPI ms_set(void *p, const uint8_t *key, const uint16_t *value
     return variant_copy(m->items[i].value, value);
 }
 
-static const void *const memory_store_vt[] = {ms_query, ms_add_ref, ms_release, ms_count,
+static const void *const memory_store_vt[] W32_VTABLE = {ms_query, ms_add_ref, ms_release, ms_count,
                                               ms_at,    ms_get,     ms_set,     ps_commit};
 
 static uint32_t WINAPI PSCreateMemoryPropertyStore(const uint8_t *iid, void **out)

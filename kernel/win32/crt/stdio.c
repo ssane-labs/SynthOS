@@ -1748,42 +1748,42 @@ static CRT_FILE *crt_acrt_iob_func(unsigned i)
     return &crt_iob[i];
 }
 
-int crt_vfprintf_impl(CRT_FILE *f, const char *fmt, va_list ap)
+int crt_vfprintf_impl(CRT_FILE *f, const char *fmt, w32_va_list ap)
 {
     int n = crt_vformat(crt_stream_sink, f, fmt, ap);
     crt_stream_done(f);
     return n;
 }
 
-static int crt_vfprintf(CRT_FILE *f, const char *fmt, va_list ap)
+static int crt_vfprintf(CRT_FILE *f, const char *fmt, w32_va_list ap)
 {
     return crt_vfprintf_impl(f, fmt, ap);
 }
 
 static int crt_fprintf(CRT_FILE *f, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfprintf_impl(f, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vprintf(const char *fmt, va_list ap)
+static int crt_vprintf(const char *fmt, w32_va_list ap)
 {
     return crt_vfprintf_impl(&crt_iob[1], fmt, ap);
 }
 
 static int crt_printf(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfprintf_impl(&crt_iob[1], fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vfwprintf(CRT_FILE *f, const WCHAR *fmt, va_list ap)
+static int crt_vfwprintf(CRT_FILE *f, const WCHAR *fmt, w32_va_list ap)
 {
     int n = crt_vwformat(wide_sink, f, fmt, ap);
     crt_stream_done(f);
@@ -1792,24 +1792,24 @@ static int crt_vfwprintf(CRT_FILE *f, const WCHAR *fmt, va_list ap)
 
 static int crt_fwprintf(CRT_FILE *f, const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfwprintf(f, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vwprintf(const WCHAR *fmt, va_list ap)
+static int crt_vwprintf(const WCHAR *fmt, w32_va_list ap)
 {
     return crt_vfwprintf(&crt_iob[1], fmt, ap);
 }
 
 static int crt_wprintf(const WCHAR *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfwprintf(&crt_iob[1], fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
@@ -1823,7 +1823,7 @@ static void stream_unget(int c, void *ctx)
     crt_ungetc(c, ctx);
 }
 
-static int crt_vfscanf(CRT_FILE *f, const char *fmt, va_list ap)
+static int crt_vfscanf(CRT_FILE *f, const char *fmt, w32_va_list ap)
 {
     crt_flush_all();
     return crt_vscan(stream_get, stream_unget, f, fmt, ap);
@@ -1831,23 +1831,23 @@ static int crt_vfscanf(CRT_FILE *f, const char *fmt, va_list ap)
 
 static int crt_fscanf(CRT_FILE *f, const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfscanf(f, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
 static int crt_scanf(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = crt_vfscanf(&crt_iob[0], fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
-static int crt_vscanf(const char *fmt, va_list ap)
+static int crt_vscanf(const char *fmt, w32_va_list ap)
 {
     return crt_vfscanf(&crt_iob[0], fmt, ap);
 }

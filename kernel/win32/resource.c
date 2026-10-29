@@ -133,7 +133,7 @@ static BOOL enum_names(HANDLE module, const void *type, enum_names_fn fn, intptr
             }
             arg = copy;
         }
-        BOOL go = fn(module, type, arg, param);
+        BOOL go = W32_CALL(__typeof__(fn), fn, module, type, arg, param);
         w32_free(copy);
         if (!go)
             break;
@@ -354,7 +354,8 @@ static int WINAPI TranslateAcceleratorA(HANDLE hwnd, HANDLE table, MSG *msg)
     typedef short WINAPI (*state_fn)(int);
     struct w32_image *u = w32_find_module("user32.dll");
     state_fn state = u ? (state_fn)w32_get_proc(u, "GetKeyState", 0) : NULL;
-    bool shift = state && state(0x10) < 0, ctrl = state && state(0x11) < 0, alt = msg->message == WM_SYSKEYDOWN;
+    bool shift = state && W32_CALL(state_fn, state, 0x10) < 0, ctrl = state && W32_CALL(state_fn, state, 0x11) < 0,
+         alt = msg->message == WM_SYSKEYDOWN;
     for (int i = 0; i < 256; i++) {
         bool virt = a[i].flags & 1;
         if (virt && keydown && a[i].key == msg->wParam && !!(a[i].flags & 4) == shift &&

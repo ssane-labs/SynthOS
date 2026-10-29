@@ -81,9 +81,9 @@ void crt_stream_done(CRT_FILE *f);
 void crt_lock_file(CRT_FILE *f);
 void crt_unlock_file(CRT_FILE *f);
 
-int crt_vformat(crt_sink sink, void *ctx, const char *fmt, va_list ap);
-int crt_vwformat(crt_wsink sink, void *ctx, const WCHAR *fmt, va_list ap);
-int crt_vscan(int (*get)(void *), void (*unget)(int, void *), void *ctx, const char *fmt, va_list ap);
+int crt_vformat(crt_sink sink, void *ctx, const char *fmt, w32_va_list ap);
+int crt_vwformat(crt_wsink sink, void *ctx, const WCHAR *fmt, w32_va_list ap);
+int crt_vscan(int (*get)(void *), void (*unget)(int, void *), void *ctx, const char *fmt, w32_va_list ap);
 
 long crt_strtol(const char *s, char **end, int base);
 unsigned long crt_strtoul(const char *s, char **end, int base);

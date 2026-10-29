@@ -12,7 +12,7 @@ struct rect {
 };
 
 struct canvas {
-    uint32_t *px;
+    K64(uint32_t *px);
     int w, h, stride;
     struct rect clip;
 };
@@ -28,10 +28,10 @@ struct ui_font {
     int height;
     int ascent;
     int count;
-    const struct ui_glyph *glyphs;
-    const uint8_t *lz;
+    K64(const struct ui_glyph *glyphs);
+    K64(const uint8_t *lz);
     uint32_t lz_size, size;
-    const uint8_t **alpha;
+    K64(const KARR(uint8_t *) *alpha);
 };
 
 extern const struct ui_font font_sans, font_bold, font_small, font_title, font_large, font_mono, font_clock, font_display;
@@ -336,14 +336,14 @@ enum window_flags {
 #define MENU_HEADER (-2)
 
 struct menu_item {
-    const char *label;
+    K64(const char *label);
     int key;
-    const char *shortcut;
+    K64(const char *shortcut);
 };
 
 struct app_menu {
-    const char *title;
-    const struct menu_item *items;
+    K64(const char *title);
+    K64(const struct menu_item *items);
     int count;
 };
 
@@ -352,10 +352,10 @@ struct gui_app;
 struct glass;
 
 struct window_ops {
-    void (*paint)(struct window *w, struct canvas *c);
-    void (*event)(struct window *w, struct gui_event *e);
-    bool (*close)(struct window *w);
-    void (*destroy)(struct window *w);
+    K64(void (*paint)(struct window *w, struct canvas *c));
+    K64(void (*event)(struct window *w, struct gui_event *e));
+    K64(bool (*close)(struct window *w));
+    K64(void (*destroy)(struct window *w));
 };
 
 struct window {
@@ -367,20 +367,20 @@ struct window {
     int min_w, min_h;
     struct canvas surface;
     bool dirty;
-    const struct window_ops *ops;
-    void *data;
+    K64(const struct window_ops *ops);
+    K64(void *data);
     uint32_t timer_ms;
     uint64_t next_timer;
-    struct window *owner;
-    struct window *below;
-    struct window *above;
-    const struct gui_app *app;
-    const struct app_menu *menus;
+    K64(struct window *owner);
+    K64(struct window *below);
+    K64(struct window *above);
+    K64(const struct gui_app *app);
+    K64(const struct app_menu *menus);
     int menu_count;
     int toolbar_h;
     int radius;
     int z;
-    struct glass *glass;
+    K64(struct glass *glass);
     struct canvas thumb;
     bool anim_hold;
 };
@@ -513,12 +513,12 @@ void ui_prompt_secret(struct window *owner, const char *title, const char *label
 int ui_wrap_text(struct canvas *c, struct rect r, const struct ui_font *f, const char *s, uint32_t color);
 
 struct gui_app {
-    const char *name;
-    const char *description;
+    K64(const char *name);
+    K64(const char *description);
     enum icon_id icon;
-    void (*launch)(const char *arg);
-    const char *extensions;
-    const struct canvas *picture;
+    K64(void (*launch)(const char *arg));
+    K64(const char *extensions);
+    K64(const struct canvas *picture);
 };
 
 #define GUI_APP(object) SYNTH_REGISTER(synth_gui_apps, struct gui_app, object)
@@ -542,7 +542,11 @@ bool gui_start_command(const char *cmdline);
 /* The open/save panel; done gets the chosen path, or NULL when cancelled. exts: ".png;.jpg" or NULL for any file. */
 struct gui_picker {
     bool save, folders;
-    const char *title, *dir, *name, *exts, *button;
+    K64(const char *title);
+    K64(const char *dir);
+    K64(const char *name);
+    K64(const char *exts);
+    K64(const char *button);
 };
 typedef void (*gui_picker_fn)(void *ctx, const char *path);
 struct window *gui_file_picker(struct window *owner, const struct gui_picker *o, gui_picker_fn done, void *ctx);

@@ -938,7 +938,7 @@ static void swap_bytes(uint8_t *a, uint8_t *b, size_t n)
 
 static void sort_range(uint8_t *base, size_t n, size_t size, cmp_fn cmp, cmp_s_fn cmp_s, void *ctx)
 {
-#define CMP(x, y) (cmp ? cmp((x), (y)) : cmp_s(ctx, (x), (y)))
+#define CMP(x, y) (cmp ? W32_CALL(cmp_fn, cmp, (x), (y)) : W32_CALL(cmp_s_fn, cmp_s, ctx, (x), (y)))
     while (n > 12) {
         uint8_t *mid = base + (n / 2) * size, *last = base + (n - 1) * size;
         if (CMP(mid, base) < 0)
@@ -993,7 +993,7 @@ static void *crt_bsearch(const void *key, const void *base, size_t n, size_t siz
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
         const uint8_t *p = (const uint8_t *)base + mid * size;
-        int r = cmp(key, p);
+        int r = W32_CALL(cmp_fn, cmp, key, p);
         if (!r)
             return (void *)p;
         if (r < 0)
@@ -1007,7 +1007,7 @@ static void *crt_bsearch(const void *key, const void *base, size_t n, size_t siz
 static void *crt_lfind(const void *key, const void *base, unsigned *n, size_t size, cmp_fn cmp)
 {
     for (unsigned i = 0; i < *n; i++)
-        if (!cmp(key, (const uint8_t *)base + i * size))
+        if (!W32_CALL(cmp_fn, cmp, key, (const uint8_t *)base + i * size))
             return (uint8_t *)base + i * size;
     return NULL;
 }

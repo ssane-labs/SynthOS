@@ -43,33 +43,33 @@ struct vfs_dirent {
 };
 
 struct vnode_ops {
-    int (*lookup)(struct vnode *dir, const char *name, struct vnode **out);
-    int (*create)(struct vnode *dir, const char *name, int type, struct vnode **out);
-    int (*unlink)(struct vnode *dir, const char *name);
-    int (*rename)(struct vnode *odir, const char *oname, struct vnode *ndir, const char *nname);
-    int (*readdir)(struct vnode *dir, uint32_t index, struct vfs_dirent *out);
-    int (*lookup_nocase)(struct vnode *dir, const char *name, char *real, size_t cap);
-    long (*read)(struct vnode *vn, uint32_t off, void *buf, size_t n);
-    long (*write)(struct vnode *vn, uint32_t off, const void *buf, size_t n);
-    int (*truncate)(struct vnode *vn, uint32_t size);
-    int (*stat)(struct vnode *vn, struct vstat *st);
-    void (*release)(struct vnode *vn);
+    K64(int (*lookup)(struct vnode *dir, const char *name, struct vnode **out));
+    K64(int (*create)(struct vnode *dir, const char *name, int type, struct vnode **out));
+    K64(int (*unlink)(struct vnode *dir, const char *name));
+    K64(int (*rename)(struct vnode *odir, const char *oname, struct vnode *ndir, const char *nname));
+    K64(int (*readdir)(struct vnode *dir, uint32_t index, struct vfs_dirent *out));
+    K64(int (*lookup_nocase)(struct vnode *dir, const char *name, char *real, size_t cap));
+    K64(long (*read)(struct vnode *vn, uint32_t off, void *buf, size_t n));
+    K64(long (*write)(struct vnode *vn, uint32_t off, const void *buf, size_t n));
+    K64(int (*truncate)(struct vnode *vn, uint32_t size));
+    K64(int (*stat)(struct vnode *vn, struct vstat *st));
+    K64(void (*release)(struct vnode *vn));
 };
 
 struct vnode {
-    const struct vnode_ops *ops;
-    struct mount *mount;
-    void *priv;
+    K64(const struct vnode_ops *ops);
+    K64(struct mount *mount);
+    K64(void *priv);
     int refs;
     uint8_t type;
 };
 
 struct fs_type {
-    const char *name;
-    const char *description;
-    int (*mount)(const char *source, struct vnode **root);
-    int (*statfs)(struct vnode *root, uint64_t *total, uint64_t *free);
-    int (*label)(struct vnode *root, char *out, size_t cap);
+    K64(const char *name);
+    K64(const char *description);
+    K64(int (*mount)(const char *source, struct vnode **root));
+    K64(int (*statfs)(struct vnode *root, uint64_t *total, uint64_t *free));
+    K64(int (*label)(struct vnode *root, char *out, size_t cap));
 };
 
 #define FS_TYPE(object) SYNTH_REGISTER(synth_fs, struct fs_type, object)
@@ -77,19 +77,19 @@ struct fs_type {
 struct mount {
     char path[PATH_MAX_LEN];
     char source[PATH_MAX_LEN];
-    const struct fs_type *fs;
-    struct vnode *root;
-    struct mount *next;
+    K64(const struct fs_type *fs);
+    K64(struct vnode *root);
+    K64(struct mount *next);
 };
 
 struct file {
-    struct vnode *vn;
+    K64(struct vnode *vn);
     uint32_t pos;
     unsigned flags;
 };
 
 struct vdir {
-    struct vnode *vn;
+    K64(struct vnode *vn);
     uint32_t index;
 };
 

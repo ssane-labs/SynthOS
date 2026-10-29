@@ -462,7 +462,10 @@ COMMAND(start, NULL, "system", "start <file|url>", "open a file or a link in the
         if (builtin_program(program)) {
             rc = msiexec_main(sh, n, args);
         } else {
-            struct exec_ctx ctx = {sh, program, n, args, sh->in, sh->out, sh->err, NULL, NULL, NULL};
+            KARR(char *) kargs[64];
+            for (int i = 0; i <= n; i++)
+                kargs[i] = (KARR(char *))(uintptr_t)args[i];
+            struct exec_ctx ctx = {sh, program, n, kargs, sh->in, sh->out, sh->err, NULL, NULL, NULL};
             rc = exec_program(&ctx);
         }
     }

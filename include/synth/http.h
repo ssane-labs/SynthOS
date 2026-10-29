@@ -16,25 +16,25 @@ struct http_url {
 };
 
 struct http_request {
-    const char *method;
-    const char *url;
-    const char *headers;
-    const void *body;
-    size_t body_len;
+    K64(const char *method);
+    K64(const char *url);
+    K64(const char *headers);
+    K64(const void *body);
+    K64(size_t body_len);
     unsigned flags;
-    size_t max_size;
-    bool (*cancelled)(void);
-    void (*progress)(void *ctx, const char *stage, size_t done, size_t total);
-    void *ctx;
+    K64(size_t max_size);
+    K64(bool (*cancelled)(void));
+    K64(void (*progress)(void *ctx, const char *stage, size_t done, size_t total));
+    K64(void *ctx);
     /* When set, the body of a successful response goes here in pieces instead of resp->body. */
-    int (*sink)(void *ctx, const void *data, size_t n);
+    K64(int (*sink)(void *ctx, const void *data, size_t n));
 };
 
 struct http_response {
     int status;
-    char *headers;
-    char *body;
-    size_t length;
+    K64(char *headers);
+    K64(char *body);
+    K64(size_t length);
     char url[HTTP_URL_MAX];
     char tls[96];
 };

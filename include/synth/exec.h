@@ -4,24 +4,24 @@
 #include <synth/shell.h>
 
 struct exec_ctx {
-    struct shell *sh;
-    const char *path;
+    K64(struct shell *sh);
+    K64(const char *path);
     int argc;
-    char **argv;
-    struct stream *in;
-    struct stream *out;
-    struct stream *err;
-    const char *env;
-    const char *cwd;
-    void *handles;
+    K64(KARR(char *) *argv);
+    K64(struct stream *in);
+    K64(struct stream *out);
+    K64(struct stream *err);
+    K64(const char *env);
+    K64(const char *cwd);
+    K64(void *handles);
 };
 
 struct binfmt {
-    const char *name;
-    const char *description;
-    const char *extensions;
-    bool (*probe)(const char *path, const uint8_t *head, size_t n);
-    int (*run)(struct exec_ctx *ctx, uint8_t *image, size_t size);
+    K64(const char *name);
+    K64(const char *description);
+    K64(const char *extensions);
+    K64(bool (*probe)(const char *path, const uint8_t *head, size_t n));
+    K64(int (*run)(struct exec_ctx *ctx, uint8_t *image, size_t size));
 };
 
 #define BINFMT(object) SYNTH_REGISTER(synth_binfmts, struct binfmt, object)

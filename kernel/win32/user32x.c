@@ -89,7 +89,7 @@ static BOOL WINAPI EnumThreadWindows(DWORD tid, void *fn, LPARAM lp)
 {
     typedef BOOL WINAPI (*enum_fn)(HANDLE, LPARAM);
     for (struct w32_window *w = w32_windows(); w; w = w->next_all)
-        if (!w->destroyed && !is_child(w) && w->thread == tid && !((enum_fn)fn)(w, lp))
+        if (!w->destroyed && !is_child(w) && w->thread == tid && !W32_CALL(enum_fn, fn, w, lp))
             break;
     return TRUE;
 }
@@ -310,7 +310,7 @@ static BOOL WINAPI EnumDisplayMonitors(HANDLE dc, const RECT *clip, void *fn, LP
     screen_size(&w, &h);
     RECT r = {0, 0, w, h};
     typedef BOOL WINAPI (*enum_fn)(HANDLE, HANDLE, RECT *, LPARAM);
-    ((enum_fn)fn)(PRIMARY_MONITOR, NULL, &r, lp);
+    W32_CALL(enum_fn, fn, PRIMARY_MONITOR, NULL, &r, lp);
     return TRUE;
 }
 

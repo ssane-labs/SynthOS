@@ -220,7 +220,7 @@ static void buf_sink(void *ctx, const char *s, size_t n)
         b->buf[b->len++] = s[i];
 }
 
-static int WINAPI wvsprintfA(LPSTR out, LPCSTR fmt, va_list ap)
+static int WINAPI wvsprintfA(LPSTR out, LPCSTR fmt, w32_va_list ap)
 {
     struct strbuf b = {out, 0};
     crt_vformat(buf_sink, &b, fmt, ap);
@@ -230,10 +230,10 @@ static int WINAPI wvsprintfA(LPSTR out, LPCSTR fmt, va_list ap)
 
 static int WINAPIV wsprintfA(LPSTR out, LPCSTR fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = wvsprintfA(out, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 
@@ -249,7 +249,7 @@ static void wbuf_sink(void *ctx, const WCHAR *s, size_t n)
         b->buf[b->len++] = s[i];
 }
 
-static int WINAPI wvsprintfW(LPWSTR out, LPCWSTR fmt, va_list ap)
+static int WINAPI wvsprintfW(LPWSTR out, LPCWSTR fmt, w32_va_list ap)
 {
     struct wstrbuf b = {out, 0};
     crt_vwformat(wbuf_sink, &b, fmt, ap);
@@ -259,10 +259,10 @@ static int WINAPI wvsprintfW(LPWSTR out, LPCWSTR fmt, va_list ap)
 
 static int WINAPIV wsprintfW(LPWSTR out, LPCWSTR fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
+    w32_va_list ap;
+    w32_va_start(ap, fmt);
     int n = wvsprintfW(out, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     return n;
 }
 

@@ -1,4 +1,5 @@
 #include <synth/arch_win32.h>
+#include <synth/console.h>
 #include <synth/hal.h>
 #include <synth/log.h>
 #include <synth/string.h>
@@ -222,6 +223,24 @@ uint32_t arch_fault_address_high(void)
     return (uint32_t)(cr2 >> 32);
 }
 
+/* where a fault in the kernel came from: the frame pointer chain */
+static void backtrace(const struct regs *r, bool console)
+{
+    uint64_t fp = r->rbp;
+    if (!console)
+        klog("fault %u at %016llx rax=%llx rdi=%llx rsi=%llx rsp=%llx", (unsigned)r->vector, (unsigned long long)r->rip,
+             (unsigned long long)r->rax, (unsigned long long)r->rdi, (unsigned long long)r->rsi,
+             (unsigned long long)r->rsp);
+    for (int i = 0; i < 12 && fp >= 0x400000 && !(fp & 3) && vmm_mapped((uintptr_t)fp) && vmm_mapped((uintptr_t)fp + 8);
+         i++, fp = *(uint64_t *)(uintptr_t)fp) {
+        unsigned long long at = ((uint64_t *)(uintptr_t)fp)[1];
+        if (console)
+            kprintf("  called from %016llx\n", at);
+        else
+            klog("  called from %016llx", at);
+    }
+}
+
 void x86_interrupt(struct regs *r)
 {
     if (r->vector < 32) {
@@ -235,8 +254,11 @@ void x86_interrupt(struct regs *r)
             return;
         if (fault_handler && r->vector != 8 && r->vector != 18) {
             fault_regs = r;
+            if (r->cs == 0x30)
+                backtrace(r, false);
             fault_handler((int)r->vector, (uint32_t)r->rip, (uint32_t)cr2);
         }
+        backtrace(r, true);
         panic("CPU exception %u (%s) at %016llx err=%x cr2=%016llx rax=%llx rbx=%llx rcx=%llx rdx=%llx rsp=%llx",
               (unsigned)r->vector, exception_names[r->vector] ? exception_names[r->vector] : "reserved",
               (unsigned long long)r->rip, (unsigned)r->error, (unsigned long long)cr2, (unsigned long long)r->rax,

@@ -616,7 +616,7 @@ static void run_tls_callbacks(DWORD reason)
         const struct w32_tls_module *m = &w32->tls_mods[i];
         for (const uint32_t *cb = (const uint32_t *)m->callbacks; cb && *cb; cb++) {
             typedef void WINAPI (*tls_fn)(uint32_t, DWORD, void *);
-            ((tls_fn)*cb)(m->base, reason, NULL);
+            W32_CALL(tls_fn, *cb, m->base, reason, NULL);
         }
     }
 }
@@ -649,7 +649,7 @@ static void thread_entry(void)
     arch_load_teb_selector();
     run_tls_callbacks(2);
     typedef DWORD WINAPI (*start_fn)(void *);
-    finish(((start_fn)t->start)(t->param));
+    finish(W32_CALL(start_fn, t->start, t->param));
 }
 
 static uint8_t *make_teb(struct w32_thread *t)
@@ -1622,7 +1622,7 @@ static BOOL WINAPI InitOnceExecuteOnce(uint32_t *once, void *fn, void *param, vo
         return TRUE;
     void *ctx = NULL;
     typedef BOOL WINAPI (*init_fn)(uint32_t *, void *, void **);
-    BOOL ok = ((init_fn)fn)(once, param, &ctx);
+    BOOL ok = W32_CALL(init_fn, fn, once, param, &ctx);
     once_finish(once, ctx, ok);
     if (ok && context)
         *context = ctx;
@@ -1767,7 +1767,7 @@ static bool reg_fire_one(void)
         w->spent = (w->flags & 8) != 0;
         w->deadline = now + w->ms;
         w->running = true;
-        w->callback(w->context, !ready);
+        W32_CALL(__typeof__(w->callback), w->callback, w->context, !ready);
         w->running = false;
         w32_signal();
         return true;

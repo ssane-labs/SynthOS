@@ -5,9 +5,9 @@
 #define PRINTF_STANDARD_SNPRINTF 2ull
 
 struct onexit_table {
-    void (**first)(void);
-    void (**last)(void);
-    void (**end)(void);
+    GADDR *GPTR first;
+    GADDR *GPTR last;
+    GADDR *GPTR end;
 };
 
 static uint32_t exception_object;
@@ -67,14 +67,14 @@ static int register_onexit_function(struct onexit_table *t, void (*fn)(void))
         return -1;
     if (t->last == t->end) {
         size_t used = (size_t)(t->last - t->first), cap = used ? used * 2 : 16;
-        void (**grown)(void) = w32_realloc(t->first, cap * sizeof(*grown));
+        GADDR *grown = w32_realloc(t->first, cap * sizeof(*grown));
         if (!grown)
             return -1;
         t->first = grown;
         t->last = grown + used;
         t->end = grown + cap;
     }
-    *t->last++ = fn;
+    *t->last++ = (GADDR)(uintptr_t)fn;
     return 0;
 }
 
@@ -83,9 +83,9 @@ static int execute_onexit_table(struct onexit_table *t)
     if (!t)
         return -1;
     while (t->last > t->first && !w32->exiting) {
-        void (*fn)(void) = *--t->last;
+        GADDR fn = *--t->last;
         if (fn)
-            fn();
+            W32_CALL(void (*)(void), fn);
     }
     w32_free(t->first);
     t->first = t->last = t->end = NULL;
@@ -141,46 +141,46 @@ static int ucrt_exponent(int format)
         return result;                                                                                         \
     } while (0)
 
-typedef int (*file_fmt)(void *, const void *, va_list);
-typedef int (*buf_fmt)(void *, size_t, const void *, va_list);
-typedef int (*buf3_fmt)(void *, size_t, size_t, const void *, va_list);
+typedef int (*file_fmt)(void *, const void *, w32_va_list);
+typedef int (*buf_fmt)(void *, size_t, const void *, w32_va_list);
+typedef int (*buf3_fmt)(void *, size_t, size_t, const void *, w32_va_list);
 
-static int common_vfprintf(uint64_t options, void *f, const char *fmt, void *locale, va_list ap)
+static int common_vfprintf(uint64_t options, void *f, const char *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
     UCRT_FORMAT(((file_fmt)lookup("vfprintf"))(f, fmt, ap));
 }
 
-static int common_vfwprintf(uint64_t options, void *f, const WCHAR *fmt, void *locale, va_list ap)
+static int common_vfwprintf(uint64_t options, void *f, const WCHAR *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
     UCRT_FORMAT(((file_fmt)lookup("vfwprintf"))(f, fmt, ap));
 }
 
-static int common_vsprintf(uint64_t options, char *buf, size_t count, const char *fmt, void *locale, va_list ap)
+static int common_vsprintf(uint64_t options, char *buf, size_t count, const char *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(locale);
     if (!buf || !count)
-        UCRT_FORMAT(((int (*)(const void *, va_list))lookup("_vscprintf"))(fmt, ap));
+        UCRT_FORMAT(((int (*)(const void *, w32_va_list))lookup("_vscprintf"))(fmt, ap));
     UCRT_FORMAT(((buf_fmt)lookup(options & PRINTF_STANDARD_SNPRINTF ? "vsnprintf" : "_vsnprintf"))(buf, count, fmt, ap));
 }
 
-static int common_vswprintf(uint64_t options, WCHAR *buf, size_t count, const WCHAR *fmt, void *locale, va_list ap)
+static int common_vswprintf(uint64_t options, WCHAR *buf, size_t count, const WCHAR *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(locale);
     if (!buf || !count)
-        return ((int (*)(const void *, va_list))lookup("_vscwprintf"))(fmt, ap);
+        return ((int (*)(const void *, w32_va_list))lookup("_vscwprintf"))(fmt, ap);
     int n = ((buf_fmt)lookup("_vsnwprintf"))(buf, count, fmt, ap);
     if (n < 0 && (options & PRINTF_STANDARD_SNPRINTF)) {
         buf[count - 1] = 0;
-        return ((int (*)(const void *, va_list))lookup("_vscwprintf"))(fmt, ap);
+        return ((int (*)(const void *, w32_va_list))lookup("_vscwprintf"))(fmt, ap);
     }
     return n;
 }
 
-static int common_vsprintf_s(uint64_t options, char *buf, size_t count, const char *fmt, void *locale, va_list ap)
+static int common_vsprintf_s(uint64_t options, char *buf, size_t count, const char *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
@@ -188,7 +188,7 @@ static int common_vsprintf_s(uint64_t options, char *buf, size_t count, const ch
 }
 
 static int common_vswprintf_s(uint64_t options, WCHAR *buf, size_t count, const WCHAR *fmt, void *locale,
-                              va_list ap)
+                              w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
@@ -196,14 +196,14 @@ static int common_vswprintf_s(uint64_t options, WCHAR *buf, size_t count, const 
 }
 
 static int common_vsnprintf_s(uint64_t options, char *buf, size_t size, size_t count, const char *fmt, void *locale,
-                              va_list ap)
+                              w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
     UCRT_FORMAT(((buf3_fmt)lookup("_vsnprintf_s"))(buf, size, count, fmt, ap));
 }
 
-static int scan_limited(const char *scanner, const void *text, size_t count, size_t unit, const void *fmt, va_list ap)
+static int scan_limited(const char *scanner, const void *text, size_t count, size_t unit, const void *fmt, w32_va_list ap)
 {
     if (count == (size_t)-1)
         return ((file_fmt)lookup(scanner))((void *)text, fmt, ap);
@@ -216,7 +216,7 @@ static int scan_limited(const char *scanner, const void *text, size_t count, siz
     return n;
 }
 
-static int common_vsscanf(uint64_t options, const char *text, size_t count, const char *fmt, void *locale, va_list ap)
+static int common_vsscanf(uint64_t options, const char *text, size_t count, const char *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
@@ -224,21 +224,21 @@ static int common_vsscanf(uint64_t options, const char *text, size_t count, cons
 }
 
 static int common_vswscanf(uint64_t options, const WCHAR *text, size_t count, const WCHAR *fmt, void *locale,
-                           va_list ap)
+                           w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
     return scan_limited("vswscanf", text, count, 2, fmt, ap);
 }
 
-static int common_vfscanf(uint64_t options, void *f, const char *fmt, void *locale, va_list ap)
+static int common_vfscanf(uint64_t options, void *f, const char *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
     return ((file_fmt)lookup("vfscanf"))(f, fmt, ap);
 }
 
-static int common_vfwscanf(uint64_t options, void *f, const WCHAR *fmt, void *locale, va_list ap)
+static int common_vfwscanf(uint64_t options, void *f, const WCHAR *fmt, void *locale, w32_va_list ap)
 {
     UNUSED(options);
     UNUSED(locale);
