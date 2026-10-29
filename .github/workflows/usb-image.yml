@@ -1,0 +1,27 @@
+name: USB image
+
+on:
+  push:
+    branches: ["main", "master", "claude/**"]
+  workflow_dispatch:
+
+jobs:
+  usb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential nasm gcc-mingw-w64-i686 g++-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 dosfstools mtools openssl python3-cryptography
+      - name: Build
+        run: make usb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthos-usb
+          path: |
+            build/synthos-usb.img
+            build/synthos-usb.img.sha256
+          compression-level: 9
+          retention-days: 90
