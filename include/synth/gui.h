@@ -402,6 +402,7 @@ struct window {
     K64(struct glass *glass);
     struct canvas thumb;
     bool anim_hold;
+    int space;
 };
 
 #define TITLE_HEIGHT 28
@@ -433,6 +434,13 @@ enum snap_zone {
     SNAP_RESTORE,
 };
 void wm_snap(struct window *w, enum snap_zone zone);
+#define MAX_SPACES 8
+int wm_space_count(void);
+int wm_space_current(void);
+void wm_space_switch(int space);
+int wm_space_add(void);
+void wm_space_remove(int space);
+void wm_window_to_space(struct window *w, int space);
 enum snap_zone wm_snapped(const struct window *w);
 void wm_set_title(struct window *w, const char *title);
 void wm_set_timer(struct window *w, uint32_t ms);

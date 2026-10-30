@@ -39,6 +39,21 @@ Windows
   Rest the pointer on an app in the Dock to see its windows (dockpreviews).
   Hot corners run Mission Control, the desktop, Launchpad and more
   (Settings > Desktop & Dock, config cornertr mission).
+  Spaces: Mission Control shows the desktops at the top; + adds one, x
+  removes it, drag a window onto another desktop. Win+Ctrl+Left/Right
+  switch desktops, Win+Ctrl+D adds one, Win+Ctrl+F4 closes the current one.
+  The desktops command lists them and does the same:
+  desktops add | go <n> | remove <n> | move <window> <n>.
+
+Desktop icons
+  Icons keep their place on a grid. Drag across the desktop to select
+  several, Ctrl+click adds one; drag them all at once. Right-click the
+  desktop for Clean Up and Sort by Name.
+
+Clipboard
+  It holds text or a picture. Screenshots go on it (shotcopy), Photos and
+  the screenshot editor copy, Paint pastes, Windows programs share it.
+  clip                      show the text; clip set, clip image, clip save
 
 Commands
   launch                    list the apps
@@ -112,9 +127,10 @@ and the timeline in Video. The Dock starts with only Apps, Files, Chromium,
 Terminal and the Trash; drag icons from the desktop onto it, along it or
 off it.
 Widgets sit on a grid: drag one and it settles into the nearest free
-cells. Right-click a widget for its size (small, medium, large, slim) or
-Edit Widget: size, shape (rounded, round, square), style (glass, tinted,
-solid, clear) and its own options (city, photo folder, note, apps).
+cells. In Edit Widgets pull the right edge, the bottom edge or the corner
+to resize it. Right-click a widget for Edit Widget: shape (rounded,
+round, square), style (glass, tinted, solid, clear) and its own options
+(city, photo folder, note, apps; the clock: face, font, color, seconds).
 Double-click the music widget for the Music app, click the weather to
 refresh it, + adds a task, click a photo for the next one.
 

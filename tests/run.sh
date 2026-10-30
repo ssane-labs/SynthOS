@@ -116,6 +116,8 @@ wmstat 1
 desktop is not running
 windows pin 1
 desktop is not running
+desktops add
+desktop is not running
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets

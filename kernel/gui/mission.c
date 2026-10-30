@@ -1,4 +1,5 @@
 #include <synth/error.h>
+#include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
@@ -23,7 +24,93 @@ struct mission {
     uint64_t start;
     bool closing;
     struct window *pick;
+    int pressed, strip_hover;
+    bool dragging;
+    int px, py, mx, my;
 };
+
+/* The row of desktops at the top: a picture of each with its windows outlined, then the + button. */
+#define STRIP_H 132
+#define STRIP_PLUS 1000
+#define STRIP_REMOVE 2000
+
+static struct rect space_rect(int i, int W, int H)
+{
+    int n = wm_space_count(), tw = MIN(190, (W - 160) / MAX(n, 1) - 24), th = tw * H / MAX(W, 1);
+    int total = n * (tw + 24) - 24 + 70;
+    return (struct rect){(W - total) / 2 + i * (tw + 24), 22, tw, th};
+}
+
+static struct rect plus_rect(int W, int H)
+{
+    struct rect last = space_rect(wm_space_count() - 1, W, H);
+    return (struct rect){last.x + last.w + 26, last.y + last.h / 2 - 22, 44, 44};
+}
+
+static int strip_at(int x, int y, int W, int H)
+{
+    if (wm_space_count() < MAX_SPACES && rect_contains(plus_rect(W, H), x, y))
+        return STRIP_PLUS;
+    for (int i = 0; i < wm_space_count(); i++) {
+        struct rect r = space_rect(i, W, H);
+        int dx = x - r.x, dy = y - r.y;
+        if (wm_space_count() > 1 && dx * dx + dy * dy <= 13 * 13)
+            return STRIP_REMOVE + i;
+        if (rect_contains(rect_inset(r, -6), x, y))
+            return i;
+    }
+    return -1;
+}
+
+struct outline_ctx {
+    struct canvas *c;
+    struct rect thumb;
+    int space, sw, sh;
+};
+
+static void outline_window(struct window *w, void *ctx)
+{
+    struct outline_ctx *o = ctx;
+    if (w->space != o->space || (w->flags & (WIN_POPUP | WIN_OVERLAY | WIN_DIALOG | WIN_BARE | WIN_HIDDEN |
+                                              WIN_MINIMIZED)))
+        return;
+    struct rect f = w->frame, t = o->thumb;
+    struct rect r = {t.x + f.x * t.w / MAX(o->sw, 1), t.y + f.y * t.h / MAX(o->sh, 1), f.w * t.w / MAX(o->sw, 1),
+                     f.h * t.h / MAX(o->sh, 1)};
+    struct canvas k = *o->c;
+    k.clip = rect_intersect(o->c->clip, t);
+    gfx_round(&k, r, 3, ALPHA(0xffffffffu, 120));
+    gfx_round(&k, (struct rect){r.x, r.y, r.w, MIN(r.h, 4)}, 2, ALPHA(0xffffffffu, 200));
+}
+
+static void paint_strip(struct canvas *c, struct mission *m, int alpha)
+{
+    int W = c->w, H = c->h;
+    gfx_fill(c, (struct rect){0, 0, W, STRIP_H}, ALPHA(0, alpha * 60 / 255));
+    for (int i = 0; i < wm_space_count(); i++) {
+        struct rect r = space_rect(i, W, H);
+        gfx_scale_fast(c, r, &m->back, alpha);
+        struct outline_ctx o = {c, r, i, W, H};
+        wm_foreach(outline_window, &o);
+        bool cur = i == wm_space_current(), hot = m->strip_hover == i || m->strip_hover == STRIP_REMOVE + i;
+        gfx_round_frame(c, rect_inset(r, -2), 6, cur ? style.accent : ALPHA(0xffffffffu, hot ? 160 : 60));
+        if (cur)
+            gfx_round_frame(c, rect_inset(r, -3), 7, style.accent);
+        char label[24];
+        ksnprintf(label, sizeof(label), "Desktop %d", i + 1);
+        gfx_text_box(c, (struct rect){r.x, r.y + r.h + 6, r.w, 18}, &font_bold, label, ALPHA(0xffffffffu, alpha),
+                     ALIGN_CENTER);
+        if (hot && wm_space_count() > 1) {
+            gfx_circle(c, r.x, r.y, 11, RGB(60, 60, 66));
+            gfx_symbol(c, r.x - 8, r.y - 8, SYM_CLOSE, 16, RGB(255, 255, 255));
+        }
+    }
+    if (wm_space_count() < MAX_SPACES) {
+        struct rect p = plus_rect(W, H);
+        gfx_circle(c, p.x + 22, p.y + 22, 22, ALPHA(0xffffffffu, m->strip_hover == STRIP_PLUS ? 90 : 50));
+        gfx_symbol(c, p.x + 14, p.y + 14, SYM_PLUS, 16, RGB(255, 255, 255));
+    }
+}
 
 static struct window *mission_win;
 
@@ -42,7 +129,7 @@ static struct rect lerp(struct rect a, struct rect b, int t)
 
 static void layout(struct mission *m, struct rect s)
 {
-    struct rect area = {s.x + 48, s.y + 70, s.w - 96, s.h - 170};
+    struct rect area = {s.x + 48, s.y + STRIP_H + 20, s.w - 96, s.h - STRIP_H - 110};
     int n = m->count, cols = 1;
     while (cols * cols * area.h < n * area.w * 3 / 4 && cols < n)
         cols++;
@@ -86,9 +173,10 @@ static void mission_paint(struct window *w, struct canvas *c)
         t = 1024 - t;
     gfx_blit(c, 0, 0, &m->back, (struct rect){0, 0, c->w, c->h});
     gfx_fill(c, (struct rect){0, 0, c->w, c->h}, ALPHA(0, 70 * t / 1024));
+    paint_strip(c, m, 255 * t / 1024);
     bool settled = t == 1024;
     for (int i = 0; i < m->count; i++) {
-        if (!m->snaps[i].px)
+        if (!m->snaps[i].px || (m->dragging && i == m->pressed))
             continue;
         struct rect r = lerp(m->from[i], m->to[i], t);
         if (settled) {
@@ -117,6 +205,11 @@ static void mission_paint(struct window *w, struct canvas *c)
     if (!m->count && settled)
         gfx_text_box(c, (struct rect){0, c->h / 2 - 20, c->w, 40}, &font_title, "No Open Windows",
                      RGB(255, 255, 255), ALIGN_CENTER);
+    if (m->dragging && m->pressed >= 0 && m->fitted[m->pressed].px) {
+        struct canvas *f = &m->fitted[m->pressed];
+        int w = f->w * 6 / 10, h = f->h * 6 / 10;
+        gfx_scale(c, (struct rect){m->mx - w / 2, m->my - h / 2, w, h}, f, 220);
+    }
 }
 
 static void mission_event(struct window *w, struct gui_event *e)
@@ -140,16 +233,73 @@ static void mission_event(struct window *w, struct gui_event *e)
         break;
     case EV_MOUSE_MOVE: {
         int h = m->closing ? -1 : thumb_at(m, e->x, e->y);
-        if (h != m->hover) {
+        int sh = m->closing ? -1 : strip_at(e->x, e->y, w->surface.w, w->surface.h);
+        m->mx = e->x;
+        m->my = e->y;
+        if (m->pressed >= 0 && !m->dragging && (ABS(e->x - m->px) > 6 || ABS(e->y - m->py) > 6))
+            m->dragging = true;
+        if (h != m->hover || sh != m->strip_hover || m->dragging) {
             m->hover = h;
+            m->strip_hover = sh;
             wm_invalidate(w);
         }
         break;
     }
     case EV_MOUSE_DOWN: {
         e->handled = true;
-        int i = thumb_at(m, e->x, e->y);
-        mission_close(w, m, i >= 0 ? m->wins[i] : NULL);
+        if (m->closing)
+            break;
+        int sh = strip_at(e->x, e->y, w->surface.w, w->surface.h);
+        if (sh == STRIP_PLUS) {
+            wm_space_add();
+            wm_invalidate(w);
+        } else if (sh >= STRIP_REMOVE) {
+            wm_destroy(w);
+            wm_space_remove(sh - STRIP_REMOVE);
+            mission_toggle();
+        } else if (sh >= 0) {
+            wm_destroy(w);
+            wm_space_switch(sh);
+        } else {
+            m->pressed = thumb_at(m, e->x, e->y);
+            m->px = m->mx = e->x;
+            m->py = m->my = e->y;
+            m->dragging = false;
+            if (m->pressed < 0)
+                mission_close(w, m, NULL);
+        }
+        return;
+    }
+    case EV_MOUSE_UP: {
+        int i = m->pressed;
+        bool dragged = m->dragging;
+        m->pressed = -1;
+        m->dragging = false;
+        if (i < 0 || m->closing)
+            break;
+        if (!dragged) {
+            mission_close(w, m, m->wins[i]);
+            break;
+        }
+        int sh = strip_at(e->x, e->y, w->surface.w, w->surface.h);
+        if (sh >= 0 && sh < MAX_SPACES && sh != wm_space_current()) {
+            wm_window_to_space(m->wins[i], sh);
+            canvas_free(&m->snaps[i]);
+            canvas_free(&m->fitted[i]);
+            for (int k = i; k + 1 < m->count; k++) {
+                m->wins[k] = m->wins[k + 1];
+                m->snaps[k] = m->snaps[k + 1];
+                m->fitted[k] = m->fitted[k + 1];
+            }
+            m->count--;
+            m->snaps[m->count] = m->fitted[m->count] = (struct canvas){0};
+            for (int k = 0; k < m->count; k++)
+                canvas_free(&m->fitted[k]);
+            layout(m, wm_screen_rect(0));
+            for (int k = 0; k < m->count; k++)
+                m->from[k] = m->to[k];
+        }
+        wm_invalidate(w);
         break;
     }
     case EV_KEY: {
@@ -217,7 +367,7 @@ void mission_toggle(void)
     else
         gfx_clear(&m->back, (struct rect){0, 0, s.w, s.h}, RGB(40, 40, 46));
     layout(m, s);
-    m->hover = -1;
+    m->hover = m->pressed = m->strip_hover = -1;
     m->start = hal_ticks_ms();
     mission_win = wm_popup(s.x, s.y, s.w, s.h, &mission_ops, m, NULL);
     if (!mission_win) {

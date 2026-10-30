@@ -333,9 +333,17 @@ struct rect wm_work_area(int index)
     return a;
 }
 
+/* Spaces: every window lives on one desktop; menus, panels and windows kept on top show on all of them. */
+static int current_space;
+
+static bool on_space(const struct window *w)
+{
+    return (w->flags & (WIN_POPUP | WIN_OVERLAY | WIN_PINNED)) || w->space == current_space;
+}
+
 static bool visible(const struct window *w)
 {
-    return !(w->flags & (WIN_HIDDEN | WIN_MINIMIZED));
+    return !(w->flags & (WIN_HIDDEN | WIN_MINIMIZED)) && on_space(w);
 }
 
 static bool floating(const struct window *w)
@@ -510,6 +518,8 @@ static void damage_title(struct window *w)
 
 void wm_focus(struct window *w)
 {
+    if (w && !on_space(w))
+        wm_space_switch(w->space);
     if (w && !floating(w))
         raise(w);
     if (focus == w)
@@ -925,6 +935,7 @@ struct window *wm_open(const char *title, enum icon_id icon, int cw, int ch, con
     if (flags & WIN_BARE)
         w->min_w = w->min_h = 1;
     w->app = launching_app;
+    w->space = current_space;
     w->toolbar_h = flags & WIN_FULLSIZE ? TITLE_HEIGHT : 0;
     struct rect work = wm_work_area(0);
     int title_h = framed(w) && !(flags & WIN_FULLSIZE) ? TITLE_HEIGHT : 0;
@@ -964,6 +975,7 @@ struct window *wm_popup(int x, int y, int pw, int ph, const struct window_ops *o
     w->data = data;
     w->flags = WIN_POPUP | WIN_GLASS;
     w->owner = owner;
+    w->space = current_space;
     w->radius = 12;
     struct rect s = wm_screen_rect(wm_screen_at(x, y));
     w->frame = (struct rect){CLAMP(x, s.x + 4, MAX(s.x + 4, s.x + s.w - pw - 4)),
@@ -2639,6 +2651,59 @@ uint32_t wm_top_color(int screen)
     return RGB(r / n, g / n, b / n);
 }
 
+int wm_space_current(void)
+{
+    return current_space;
+}
+
+/* Shows another desktop at once: its top window gets the focus. */
+void wm_activate_space(int space)
+{
+    if (space == current_space)
+        return;
+    close_popups(NULL);
+    current_space = space;
+    struct window *f = NULL;
+    for (struct window *w = top; w && !f; w = w->below)
+        if (framed(w) && visible(w))
+            f = w;
+    if (focus && !on_space(focus))
+        focus = NULL;
+    wm_focus(f);
+    wm_damage_all();
+    chrome_changed();
+}
+
+void wm_window_to_space(struct window *w, int space)
+{
+    if (!w || !wm_window_alive(w) || floating(w))
+        return;
+    w->space = space;
+    for (struct window *d = bottom; d; d = d->above)
+        if (d->owner == w)
+            d->space = space;
+    if (focus == w && space != current_space)
+        wm_focus(next_focus(w));
+    wm_damage_all();
+    chrome_changed();
+}
+
+/* Windows of a desktop that goes away move to another one. */
+void wm_spaces_merge(int from, int into)
+{
+    for (struct window *w = bottom; w; w = w->above) {
+        if (w->space == from)
+            w->space = into;
+        else if (w->space > from)
+            w->space--;
+    }
+    if (current_space == from)
+        current_space = into;
+    else if (current_space > from)
+        current_space--;
+    wm_damage_all();
+}
+
 /* No window is still flying open or closed. */
 bool wm_settled(void)
 {
@@ -2679,7 +2744,7 @@ int wm_window_list(struct window **out, int max)
 {
     int n = 0;
     for (struct window *w = bottom; w && n < max; w = w->above)
-        if (framed(w) && !(w->flags & WIN_HIDDEN))
+        if (framed(w) && !(w->flags & WIN_HIDDEN) && on_space(w))
             out[n++] = w;
     return n;
 }

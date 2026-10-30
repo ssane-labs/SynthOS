@@ -148,6 +148,8 @@ void wm_set_cursor_visible(bool on);
 int wm_window_list(struct window **out, int max);
 bool wm_capture(struct rect r, struct canvas *out);
 bool wm_settled(void);
+void wm_activate_space(int space);
+void wm_spaces_merge(int from, int into);
 uint32_t wm_top_color(int screen);
 bool wm_animating(void);
 unsigned wm_mouse_buttons(void);

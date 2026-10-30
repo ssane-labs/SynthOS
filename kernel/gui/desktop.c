@@ -1549,6 +1549,20 @@ static void cmd_key(int key)
         screenshot_start(SHOT_PANEL);
         return;
     }
+    if ((key & KEY_MOD_CTRL) && (base == KEY_LEFT || base == KEY_RIGHT)) {
+        wm_space_switch(wm_space_current() + (base == KEY_RIGHT ? 1 : -1));
+        return;
+    }
+    if (base == KEY_CTRL('d') || base == KEY_CTRL('D')) {
+        int s = wm_space_add();
+        if (s >= 0)
+            wm_space_switch(s);
+        return;
+    }
+    if ((key & KEY_MOD_CTRL) && base == KEY_F4) {
+        wm_space_remove(wm_space_current());
+        return;
+    }
     if (base == KEY_LEFT || base == KEY_RIGHT || base == KEY_UP || base == KEY_DOWN) {
         snap_key(f, base);
         return;
