@@ -75,6 +75,7 @@ enum icon_id {
     ICON_VIDEO,
     ICON_VIEWER,
     ICON_INSTALLER,
+    ICON_SCREENSHOT,
     ICON_COUNT,
 };
 
@@ -153,6 +154,14 @@ enum symbol_id {
     SYM_ACCESS,
     SYM_WINDOW,
     SYM_TEXT,
+    SYM_MUTE,
+    SYM_SCREENSHOT,
+    SYM_CROP,
+    SYM_MISSION,
+    SYM_WIDGETS,
+    SYM_SNAP,
+    SYM_WIFI_OFF,
+    SYM_COPY,
     SYM_COUNT,
 };
 
@@ -331,6 +340,7 @@ enum window_flags {
     WIN_TRANSLUCENT = 1u << 16,
     WIN_NOACTIVATE = 1u << 17,
     WIN_FULLSCREEN = 1u << 18,
+    WIN_TILED = 1u << 19,
 };
 
 #define MENU_HEADER (-2)
@@ -402,6 +412,19 @@ struct window *wm_focused(void);
 void wm_invalidate(struct window *w);
 void wm_set_pinned(struct window *w, bool on);
 void wm_peek_desktop(bool on);
+enum snap_zone {
+    SNAP_NONE,
+    SNAP_LEFT,
+    SNAP_RIGHT,
+    SNAP_FILL,
+    SNAP_TOP_LEFT,
+    SNAP_TOP_RIGHT,
+    SNAP_BOTTOM_LEFT,
+    SNAP_BOTTOM_RIGHT,
+    SNAP_RESTORE,
+};
+void wm_snap(struct window *w, enum snap_zone zone);
+enum snap_zone wm_snapped(const struct window *w);
 void wm_set_title(struct window *w, const char *title);
 void wm_set_timer(struct window *w, uint32_t ms);
 void wm_set_menus(struct window *w, const struct app_menu *menus, int count);
@@ -482,6 +505,7 @@ bool ui_checkbox(struct ui *ui, struct rect r, const char *label, bool *value);
 bool ui_switch(struct ui *ui, struct rect r, bool *value);
 bool ui_radio(struct ui *ui, struct rect r, const char *label, bool selected);
 bool ui_slider(struct ui *ui, struct rect r, int *value, int min, int max);
+bool ui_capsule_slider(struct ui *ui, struct rect r, enum symbol_id sym, int *value, int min, int max);
 bool ui_segmented(struct ui *ui, struct rect r, const char *const *labels, int count, int *selected);
 void ui_label(struct ui *ui, struct rect r, const char *text, const struct ui_font *f, uint32_t color,
               enum text_align align);

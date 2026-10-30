@@ -3,6 +3,7 @@
 #include <synth/inflate.h>
 #include <synth/picture.h>
 #include <synth/string.h>
+#include <synth/zip.h>
 
 static uint32_t be32(const uint8_t *p)
 {
@@ -215,5 +216,69 @@ int png_decode(const uint8_t *data, size_t size, struct picture *out)
         pos += (stride + 1) * (size_t)ph;
     }
     kfree(raw);
+    return 0;
+}
+
+static void chunk(uint8_t *at, const char *type, const uint8_t *data, uint32_t n)
+{
+    for (int k = 0; k < 4; k++)
+        at[k] = (uint8_t)(n >> (24 - 8 * k));
+    memcpy(at + 4, type, 4);
+    if (n)
+        memcpy(at + 8, data, n);
+    uint32_t crc = crc32_update(0, at + 4, n + 4);
+    for (int k = 0; k < 4; k++)
+        at[8 + n + (uint32_t)k] = (uint8_t)(crc >> (24 - 8 * k));
+}
+
+/* 24-bit RGB PNG; every row uses the Sub filter, which suits screenshots. */
+int png_encode(const uint32_t *px, int w, int h, int stride, uint8_t **out, size_t *len)
+{
+    if (w <= 0 || h <= 0)
+        return E_INVAL;
+    size_t row = (size_t)w * 3 + 1, raw_len = row * (size_t)h;
+    uint8_t *raw = kmalloc(raw_len);
+    if (!raw)
+        return E_NOMEM;
+    for (int y = 0; y < h; y++) {
+        uint8_t *r = raw + (size_t)y * row;
+        const uint32_t *s = px + (size_t)y * (size_t)stride;
+        r[0] = 1;
+        uint32_t last = 0;
+        for (int x = 0; x < w; x++) {
+            uint32_t p = s[x];
+            r[1 + x * 3] = (uint8_t)((p >> 16) - (last >> 16));
+            r[2 + x * 3] = (uint8_t)((p >> 8) - (last >> 8));
+            r[3 + x * 3] = (uint8_t)(p - last);
+            last = p;
+        }
+    }
+    uint8_t *z;
+    size_t zn;
+    int err = zlib_deflate_alloc(raw, raw_len, &z, &zn);
+    kfree(raw);
+    if (err)
+        return err;
+    size_t total = 8 + 25 + 12 + zn + 12;
+    uint8_t *png = kmalloc(total);
+    if (!png) {
+        kfree(z);
+        return E_NOMEM;
+    }
+    static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    memcpy(png, sig, 8);
+    uint8_t ihdr[13] = {0};
+    for (int k = 0; k < 4; k++) {
+        ihdr[k] = (uint8_t)((uint32_t)w >> (24 - 8 * k));
+        ihdr[4 + k] = (uint8_t)((uint32_t)h >> (24 - 8 * k));
+    }
+    ihdr[8] = 8;
+    ihdr[9] = 2;
+    chunk(png + 8, "IHDR", ihdr, 13);
+    chunk(png + 33, "IDAT", z, (uint32_t)zn);
+    chunk(png + 45 + zn, "IEND", NULL, 0);
+    kfree(z);
+    *out = png;
+    *len = total;
     return 0;
 }

@@ -1,6 +1,9 @@
 #include <synth/config.h>
+#include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/keys.h>
+#include <synth/net.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/time.h>
 
@@ -28,8 +31,22 @@ enum status_part {
     S_LANG,
     S_SEARCH,
     S_CLOCK,
+    S_SOUND,
+    S_NETWORK,
+    S_DISPLAY,
+    S_FOCUS,
     S_COUNT,
 };
+
+/* The modules that may sit in the menu bar besides Control Center and the clock, as in macOS's Control Center
+   settings. Focus also shows by itself while Do Not Disturb is on. */
+static const char *const extra_names[] = {"sound", "network", "display", "focus", "search"};
+static unsigned extras = 1u << 0 | 1u << 1 | 1u << 4;
+
+static bool extra(int i)
+{
+    return extras & 1u << i;
+}
 
 static struct glass bars[MAX_SCREENS];
 static struct title titles[MAX_TITLES];
@@ -86,12 +103,22 @@ static void layout(void)
     w = gfx_text_width(&font_sans, clock) + 2 * PAD;
     status[S_CLOCK] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
     right -= w;
-    status[S_SEARCH] = (struct rect){right - 32, bar.y, 32, MENUBAR_HEIGHT};
+    status[S_CONTROL] = (struct rect){right - 32, bar.y, 32, MENUBAR_HEIGHT};
     right -= 32;
+    w = extra(4) ? 32 : 0;
+    status[S_SEARCH] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
+    right -= w;
     w = keymap_multi() ? gfx_text_width(&font_sans, keymap_label()) + 14 : 0;
     status[S_LANG] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
     right -= w;
-    status[S_CONTROL] = (struct rect){right - 32, bar.y, 32, MENUBAR_HEIGHT};
+    static const int order[] = {S_FOCUS, S_SOUND, S_NETWORK, S_DISPLAY};
+    static const int bit[] = {3, 0, 1, 2};
+    for (int i = 0; i < 4; i++) {
+        bool on = extra(bit[i]) || (order[i] == S_FOCUS && gui_setting_on("dnd"));
+        w = on ? 30 : 0;
+        status[order[i]] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
+        right -= w;
+    }
 }
 
 static void damage_bars(void)
@@ -151,8 +178,23 @@ void menubar_paint(struct canvas *c, int screen)
     int dx = bar.x + bar.w - (bar_rect(0).x + bar_rect(0).w);
     struct rect clock_r = {status[S_CLOCK].x + dx, status[S_CLOCK].y, status[S_CLOCK].w, status[S_CLOCK].h};
     gfx_text_box(c, clock_r, &font_sans, clock, ink, ALIGN_CENTER);
-    gfx_symbol(c, status[S_SEARCH].x + dx + 8, bar.y + 4, SYM_SEARCH, 16, ink);
+    if (status[S_SEARCH].w)
+        gfx_symbol(c, status[S_SEARCH].x + dx + 8, bar.y + 4, SYM_SEARCH, 16, ink);
     gfx_symbol(c, status[S_CONTROL].x + dx + 8, bar.y + 4, SYM_CONTROL, 16, ink);
+    uint32_t soft = (ink & 0xffffff) | 0x80000000u;
+    if (status[S_SOUND].w) {
+        bool silent = gui_setting_on("mute") || !gui_setting_number("volume", 100);
+        gfx_symbol(c, status[S_SOUND].x + dx + 7, bar.y + 4, silent ? SYM_MUTE : SYM_VOLUME, 16, ink);
+    }
+    if (status[S_NETWORK].w) {
+        bool online = net_enabled() && net_interface_count() && net_interface(0)->configured;
+        gfx_symbol(c, status[S_NETWORK].x + dx + 7, bar.y + 4, net_enabled() ? SYM_WIFI : SYM_WIFI_OFF, 16,
+                   online || !net_enabled() ? ink : soft);
+    }
+    if (status[S_DISPLAY].w)
+        gfx_symbol(c, status[S_DISPLAY].x + dx + 7, bar.y + 4, SYM_SUN, 16, ink);
+    if (status[S_FOCUS].w)
+        gfx_symbol(c, status[S_FOCUS].x + dx + 7, bar.y + 4, SYM_MOON, 16, gui_setting_on("dnd") ? ink : soft);
     if (status[S_LANG].w)
         gfx_text_box(c, (struct rect){status[S_LANG].x + dx, bar.y, status[S_LANG].w, MENUBAR_HEIGHT}, &font_sans,
                      keymap_label(), ink, ALIGN_CENTER);
@@ -439,14 +481,24 @@ void chrome_mouse(int x, int y, unsigned button, bool down, int clicks)
     open_title = -1;
     struct rect s = wm_screen_rect(wm_screen_at(x, y));
     int dx = s.x + s.w - (main.x + main.w);
-    if (rect_contains((struct rect){status[S_SEARCH].x + dx, s.y, status[S_SEARCH].w, MENUBAR_HEIGHT}, x, y))
-        spotlight_toggle();
-    else if (status[S_LANG].w &&
-             rect_contains((struct rect){status[S_LANG].x + dx, s.y, status[S_LANG].w, MENUBAR_HEIGHT}, x, y)) {
+    int part = -1;
+    for (int i = 0; i < S_COUNT; i++)
+        if (status[i].w && rect_contains((struct rect){status[i].x + dx, s.y, status[i].w, MENUBAR_HEIGHT}, x, y))
+            part = i;
+    int top = s.y + MENUBAR_HEIGHT + 6, right = part >= 0 ? status[part].x + dx + status[part].w : 0;
+    switch (part) {
+    case S_SEARCH: spotlight_toggle(); break;
+    case S_LANG:
         keymap_next();
         chrome_changed();
-    } else if (rect_contains((struct rect){status[S_CONTROL].x + dx, s.y, status[S_CONTROL].w, MENUBAR_HEIGHT}, x, y))
-        control_center_toggle(status[S_CONTROL].x + dx + status[S_CONTROL].w);
+        break;
+    case S_CONTROL: control_module_toggle(CONTROL_FULL, right, top); break;
+    case S_SOUND: control_module_toggle(CONTROL_SOUND, right, top); break;
+    case S_NETWORK: control_module_toggle(CONTROL_NETWORK, right, top); break;
+    case S_DISPLAY: control_module_toggle(CONTROL_DISPLAY, right, top); break;
+    case S_FOCUS: control_module_toggle(CONTROL_FOCUS, right, top); break;
+    case S_CLOCK: notification_center_toggle(); break;
+    }
     damage_bars();
 }
 
@@ -505,3 +557,43 @@ void chrome_stop(void)
     panel_stop();
     damage_bars();
 }
+
+static void get_extras(char *buf, size_t cap)
+{
+    buf[0] = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(extra_names); i++)
+        if (extra((int)i)) {
+            if (buf[0])
+                str_append(buf, ",", cap);
+            str_append(buf, extra_names[i], cap);
+        }
+    if (!buf[0])
+        str_copy(buf, "none", cap);
+}
+
+static int set_extras(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    unsigned mask = 0;
+    const char *p = value;
+    while (*p && strcmp(value, "none")) {
+        const char *e = p;
+        while (*e && *e != ',')
+            e++;
+        size_t i = 0;
+        while (i < ARRAY_SIZE(extra_names) &&
+               (strlen(extra_names[i]) != (size_t)(e - p) || strncmp(extra_names[i], p, (size_t)(e - p))))
+            i++;
+        if (i == ARRAY_SIZE(extra_names))
+            return E_INVAL;
+        mask |= 1u << i;
+        p = *e ? e + 1 : e;
+    }
+    extras = mask;
+    chrome_changed();
+    return 0;
+}
+
+static const struct setting s_extras = {"menuextras", "sound,network,display,focus,search|none",
+                                        "modules shown in the menu bar", get_extras, set_extras};
+SETTING(s_extras);

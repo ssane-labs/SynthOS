@@ -36,6 +36,7 @@ enum key_code {
     KEY_RESIZE,
     KEY_EOF,
     KEY_SUPER,
+    KEY_PRINT,
 };
 
 #define KEY_MOD_SHIFT 0x1000

@@ -30,6 +30,7 @@ SYNTH_TABLE_DECLARE(synth_gui_apps, struct gui_app);
 #define MAX_ICONS 24
 #define NOTE_W 340
 #define NOTE_H 72
+#define SETTINGS_FILE "/home/.synth.conf"
 
 struct gui_style style;
 
@@ -155,6 +156,41 @@ static const struct {
     {"orange", RGB(247, 130, 27), RGB(255, 159, 10)},    {"yellow", RGB(230, 168, 0), RGB(255, 204, 0)},
     {"green", RGB(98, 186, 70), RGB(48, 209, 88)},       {"graphite", RGB(140, 140, 140), RGB(152, 152, 157)},
 };
+
+/* Every part of the desktop changes settings through here, so a change made anywhere is kept and shows up
+   everywhere else. */
+int gui_setting(const char *name, const char *value)
+{
+    int err = setting_apply(shell_current(), name, value);
+    if (!err) {
+        settings_save(SETTINGS_FILE);
+        chrome_changed();
+    }
+    return err;
+}
+
+void gui_setting_get(const char *name, char *buf, size_t cap)
+{
+    const struct setting *st = setting_find(name);
+    buf[0] = 0;
+    if (st && st->get)
+        st->get(buf, cap);
+}
+
+bool gui_setting_on(const char *name)
+{
+    char v[16];
+    gui_setting_get(name, v, sizeof(v));
+    return !strcmp(v, "on");
+}
+
+long gui_setting_number(const char *name, long fallback)
+{
+    char v[24];
+    gui_setting_get(name, v, sizeof(v));
+    long n;
+    return str_parse_long(v, &n) ? n : fallback;
+}
 
 bool gui_active(void)
 {
@@ -858,7 +894,7 @@ static bool open_in_browser(const char *target)
 bool gui_open_url(const char *url)
 {
     if (!str_ncasecmp(url, "ms-settings:", 12)) {
-        gui_app_launch(gui_app_find("System Settings"), "windows");
+        gui_app_launch(gui_app_find("System Settings"), "apps");
         return true;
     }
     if (!str_ncasecmp(url, "http:", 5) || !str_ncasecmp(url, "https:", 6) || !str_ncasecmp(url, "file:", 5))
@@ -1063,7 +1099,11 @@ static void note_below(struct window *w, void *ctx)
 
 void gui_notify(const char *title, const char *text)
 {
-    if (!active || do_not_disturb)
+    if (!active)
+        return;
+    if (*text)
+        notify_record(title, text);
+    if (do_not_disturb)
         return;
     struct note *n = kzalloc(sizeof(*n));
     if (!n)
@@ -1086,6 +1126,41 @@ void gui_notify(const char *title, const char *text)
 
 void notify_tick(void)
 {
+}
+
+static bool desktop_shown;
+
+void desktop_show_toggle(void)
+{
+    desktop_shown = !desktop_shown;
+    wm_peek_desktop(desktop_shown);
+}
+
+/* Super+arrows tile the focused window the way Windows does: Left/Right take a half, Up from a half takes the
+   quarter above, Up otherwise fills the screen, Down undoes one step at a time. */
+static void snap_key(struct window *f, int base)
+{
+    if (!f)
+        return;
+    enum snap_zone z = wm_snapped(f);
+    switch (base) {
+    case KEY_LEFT: wm_snap(f, z == SNAP_RIGHT ? SNAP_RESTORE : z == SNAP_TOP_RIGHT ? SNAP_TOP_LEFT
+                              : z == SNAP_BOTTOM_RIGHT ? SNAP_BOTTOM_LEFT : SNAP_LEFT); break;
+    case KEY_RIGHT: wm_snap(f, z == SNAP_LEFT ? SNAP_RESTORE : z == SNAP_TOP_LEFT ? SNAP_TOP_RIGHT
+                               : z == SNAP_BOTTOM_LEFT ? SNAP_BOTTOM_RIGHT : SNAP_RIGHT); break;
+    case KEY_UP: wm_snap(f, z == SNAP_LEFT ? SNAP_TOP_LEFT : z == SNAP_RIGHT ? SNAP_TOP_RIGHT
+                            : z == SNAP_BOTTOM_LEFT ? SNAP_LEFT : z == SNAP_BOTTOM_RIGHT ? SNAP_RIGHT : SNAP_FILL); break;
+    default:
+        if (z == SNAP_LEFT || z == SNAP_RIGHT)
+            wm_snap(f, z == SNAP_LEFT ? SNAP_BOTTOM_LEFT : SNAP_BOTTOM_RIGHT);
+        else if (z == SNAP_TOP_LEFT || z == SNAP_TOP_RIGHT)
+            wm_snap(f, z == SNAP_TOP_LEFT ? SNAP_LEFT : SNAP_RIGHT);
+        else if (z != SNAP_NONE)
+            wm_snap(f, SNAP_RESTORE);
+        else
+            wm_minimize(f);
+        break;
+    }
 }
 
 static void cmd_key(int key)
@@ -1125,7 +1200,31 @@ static void cmd_key(int key)
         return;
     }
     if (base == KEY_TAB) {
-        wm_cycle();
+        switcher_next(KEY_MOD_SUPER, hal_key_modifiers() & KEY_MOD_SHIFT);
+        return;
+    }
+    if (base == '#' || base == KEY_PRINT) {
+        screenshot_start(SHOT_SCREEN);
+        return;
+    }
+    if (base == '$' || base == 'S') {
+        screenshot_start(SHOT_REGION);
+        return;
+    }
+    if (base == '%') {
+        screenshot_start(SHOT_PANEL);
+        return;
+    }
+    if (base == KEY_LEFT || base == KEY_RIGHT || base == KEY_UP || base == KEY_DOWN) {
+        snap_key(f, base);
+        return;
+    }
+    if (base == 'd' || base == 'D') {
+        desktop_show_toggle();
+        return;
+    }
+    if (base == 'e' || base == 'E') {
+        gui_app_launch(gui_app_find("Files"), NULL);
         return;
     }
     if (base == ',') {
@@ -1169,8 +1268,15 @@ static void handle_key(int key)
         return;
     }
     if (key == (KEY_TAB | KEY_MOD_ALT)) {
-        wm_close_popups();
-        wm_cycle();
+        switcher_next(KEY_MOD_ALT, hal_key_modifiers() & KEY_MOD_SHIFT);
+        return;
+    }
+    if (base == KEY_PRINT && !(key & KEY_MOD_SUPER)) {
+        screenshot_start(SHOT_PANEL);
+        return;
+    }
+    if (key == KEY_F3 || key == (KEY_UP | KEY_MOD_CTRL)) {
+        mission_toggle();
         return;
     }
     if (key == (KEY_F4 | KEY_MOD_ALT)) {
@@ -1231,12 +1337,15 @@ static void pump(int timeout_ms)
     if (tick != last_minute) {
         last_minute = tick;
         chrome_changed();
+        display_tick();
     }
     if (now - last_scan > 2000) {
         last_scan = now;
         scan_desktop();
     }
     terminal_flush();
+    screenshot_tick();
+    hotcorner_tick();
     wm_render();
     pumping = false;
     if (autostart_pending && session && session->idle && !gui_locked()) {
@@ -1499,6 +1608,40 @@ static int set_glass(struct shell *sh, const char *value)
 static const struct setting s_glass = {"glass", "liquid|frosted|solid", "transparency of menus, dock and sidebars",
                                        get_glass, set_glass};
 SETTING(s_glass);
+
+static int glass_strength = 70;
+
+int gui_glass_strength(void)
+{
+    return glass_strength;
+}
+
+static void get_strength(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", glass_strength);
+}
+
+static int set_strength(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 0 || v > 100)
+        return E_INVAL;
+    if (glass_strength != (int)v) {
+        glass_strength = (int)v;
+        if (active) {
+            glass_invalidate_all();
+            wm_foreach(invalidate_one, NULL);
+            wm_damage_all();
+        }
+    }
+    return 0;
+}
+
+static const struct setting s_strength = {"glassstrength", "0..100",
+                                          "how strongly Liquid Glass bends and shows what is behind (70 normal)",
+                                          get_strength, set_strength};
+SETTING(s_strength);
 
 static void get_autostart(char *buf, size_t cap)
 {

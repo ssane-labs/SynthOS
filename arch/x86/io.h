@@ -240,6 +240,7 @@ void irq_install(int irq, irq_handler handler);
 void pit_init(uint32_t hz);
 void keyboard_init(void);
 int keyboard_read(void);
+int keyboard_modifiers(void);
 void i8042_drain(void);
 void mouse_init(void);
 void mouse_byte(uint8_t data);

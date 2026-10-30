@@ -67,6 +67,11 @@ int hal_key_read(int timeout_ms)
     }
 }
 
+int hal_key_modifiers(void)
+{
+    return keyboard_modifiers();
+}
+
 uint32_t hal_entropy(void)
 {
     static uint64_t state;

@@ -35,6 +35,11 @@ static int modifiers(void)
            (super ? KEY_MOD_SUPER : 0);
 }
 
+int keyboard_modifiers(void)
+{
+    return modifiers();
+}
+
 static int extended_key(uint8_t code)
 {
     switch (code) {
@@ -50,6 +55,7 @@ static int extended_key(uint8_t code)
     case 0x53: return KEY_DELETE;
     case 0x1c: return KEY_ENTER;
     case 0x35: return '/';
+    case 0x37: return KEY_PRINT;
     default: return KEY_NONE;
     }
 }
@@ -95,6 +101,8 @@ static void handle(uint8_t sc)
         }
         return;
     }
+    if (ext && (code == 0x2a || code == 0x36))
+        return;
     switch (code) {
     case 0x2a: shift_l = !release; return;
     case 0x36: shift_r = !release; return;
@@ -116,6 +124,8 @@ static void handle(uint8_t sc)
             key |= mods;
     } else if (code >= 0x3b && code <= 0x44) {
         key = (KEY_F1 + (code - 0x3b)) | mods;
+    } else if (code == 0x54) {
+        key = KEY_PRINT | mods;
     } else if (code == 0x57 || code == 0x58) {
         key = (KEY_F11 + (code - 0x57)) | mods;
     } else if (code >= 0x47 && code <= 0x53) {

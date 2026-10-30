@@ -143,9 +143,22 @@ void wm_timers(void);
 void wm_close_popups(void);
 struct window *wm_top_popup(void);
 void wm_damage_all(void);
+void wm_set_tint(int brightness, int warmth);
+int gui_glass_strength(void);
+void glass_invalidate_all(void);
+void display_tick(void);
+int display_brightness(void);
+bool display_night(void);
 void wm_damage_z(struct rect r, int z);
 void wm_set_cursor_visible(bool on);
 int wm_window_list(struct window **out, int max);
+bool wm_capture(struct rect r, struct canvas *out);
+bool wm_settled(void);
+unsigned wm_mouse_buttons(void);
+void hotcorner_tick(void);
+void screenshot_tick(void);
+bool wm_window_image(struct window *w, struct canvas *out);
+struct window *wm_window_at_point(int x, int y);
 struct rect wm_compose_screen(void);
 void wm_restore(struct window *w);
 void wm_set_app(const struct gui_app *app);
@@ -175,6 +188,21 @@ int panel_weekday(int y, int m, int d);
 const char *panel_day_name(int i);
 const char *panel_month_name(int i);
 void calendar_toggle(int right, int y);
+void calendar_draw(struct canvas *c, struct rect at);
+void notify_record(const char *title, const char *text);
+int notify_unseen(void);
+void notification_center_toggle(void);
+enum shot_mode {
+    SHOT_PANEL,
+    SHOT_SCREEN,
+    SHOT_WINDOW,
+    SHOT_REGION,
+};
+void screenshot_start(enum shot_mode mode);
+void mission_toggle(void);
+bool mission_active(void);
+void switcher_next(int held, bool back);
+void desktop_show_toggle(void);
 void shell_system_menu(int x, int y);
 void shell_power_menu(bool restart);
 
@@ -269,6 +297,9 @@ const struct gui_app *gui_default_browser(void);
 void chrome_start(void);
 void chrome_stop(void);
 int dock_reserved(void);
+void dock_peek_hover(const struct gui_app *app, struct rect icon, bool beside);
+void dock_peek_tick(void);
+void dock_peek_cancel(void);
 bool dock_hit(int x, int y);
 void dock_mouse(int x, int y, unsigned button, bool down, int clicks);
 void dock_hover(int x, int y);
@@ -280,7 +311,19 @@ void menubar_open_app_menu(void);
 
 void spotlight_toggle(void);
 void launchpad_toggle(void);
-void control_center_toggle(int x);
+void control_center_toggle(int right);
+enum control_module {
+    CONTROL_FULL,
+    CONTROL_SOUND,
+    CONTROL_NETWORK,
+    CONTROL_DISPLAY,
+    CONTROL_FOCUS,
+};
+void control_module_toggle(enum control_module m, int right, int top);
+int gui_setting(const char *name, const char *value);
+void gui_setting_get(const char *name, char *buf, size_t cap);
+bool gui_setting_on(const char *name);
+long gui_setting_number(const char *name, long fallback);
 void notify_tick(void);
 
 int anim_progress(uint64_t start, int ms);

@@ -644,3 +644,30 @@ COMMAND(imginfo, NULL, "files", "imginfo picture...", "decode PNG, JPEG, GIF or 
     }
     return status;
 }
+
+COMMAND(topng, NULL, "files", "topng picture out.png", "convert a PNG, JPEG, GIF or BMP picture to PNG")
+{
+    if (argc != 3)
+        return command_usage(sh, command_find("topng"));
+    char in[PATH_MAX_LEN], out[PATH_MAX_LEN];
+    struct picture p;
+    int err = sh_resolve(sh, argv[1], in, sizeof(in));
+    if (!err)
+        err = sh_resolve(sh, argv[2], out, sizeof(out));
+    if (!err)
+        err = picture_load(in, &p);
+    if (err)
+        return sh_error(sh, "topng", "%s: %s", argv[1], err == E_INVAL ? "not a picture" : err_str(err));
+    uint8_t *png;
+    size_t len;
+    err = png_encode(p.px, p.w, p.h, p.w, &png, &len);
+    picture_free(&p);
+    if (!err) {
+        err = vfs_write_all(out, png, len);
+        kfree(png);
+    }
+    if (err)
+        return sh_error(sh, "topng", "%s: %s", argv[2], err_str(err));
+    sh_printf(sh, "%s: %u bytes\n", argv[2], (unsigned)len);
+    return 0;
+}

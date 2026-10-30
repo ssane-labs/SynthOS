@@ -52,6 +52,12 @@ void glass_invalidate(struct glass *g)
     wm_damage_z((struct rect){r.x - m, r.y - m, r.w + 2 * m, r.h + 2 * m}, g->z);
 }
 
+void glass_invalidate_all(void)
+{
+    for (struct glass *g = glass_list; g; g = g->next)
+        glass_invalidate(g);
+}
+
 void glass_set_frame(struct glass *g, struct rect frame)
 {
     if (g->frame.x == frame.x && g->frame.y == frame.y && g->frame.w == frame.w && g->frame.h == frame.h)
@@ -667,4 +673,21 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         look->brightness = 0;
         break;
     }
+    int k = gui_glass_strength();
+    if (!look->liquid || k == 70)
+        return;
+    if (!k) {
+        look->liquid = false;
+        look->dispersion = false;
+        look->rim = 60;
+        return;
+    }
+    look->refract = look->refract * k / 70;
+    look->band = MAX(4, look->band * (k + 70) / 140);
+    look->rim = MIN(255, look->rim * k / 70);
+    look->pointer_light = MIN(255, look->pointer_light * k / 70);
+    look->dispersion = look->dispersion && k >= 40;
+    unsigned a = look->tint >> 24;
+    a = k < 70 ? a + (255 - a) * (unsigned)(70 - k) / 110 : a * (unsigned)(170 - k) / 100;
+    look->tint = (look->tint & 0xffffffu) | MIN(a, 255u) << 24;
 }

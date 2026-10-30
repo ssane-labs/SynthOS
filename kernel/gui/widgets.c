@@ -1007,6 +1007,19 @@ static void calendar_paint(struct window *w, struct canvas *c)
 {
     UNUSED(w);
     gfx_clear(c, (struct rect){0, 0, c->w, c->h}, 0);
+    calendar_draw(c, (struct rect){0, 0, c->w, c->h});
+}
+
+/* The month with today marked, 66 + 6 * 30 pixels tall. */
+void calendar_draw(struct canvas *c, struct rect at)
+{
+    struct canvas k = *c;
+    k.clip = rect_intersect(c->clip, at);
+    k.px += at.y * c->stride + at.x;
+    k.w = at.w;
+    k.h = at.h;
+    k.clip = (struct rect){k.clip.x - at.x, k.clip.y - at.y, k.clip.w, k.clip.h};
+    c = &k;
     struct rtc_time t;
     time_local(&t);
     int y = (int)t.year, m = CLAMP((int)t.month, 1, 12), d = (int)t.day;

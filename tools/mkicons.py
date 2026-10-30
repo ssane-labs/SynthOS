@@ -68,20 +68,62 @@ def rounded_mask(box, radius):
 BODY = (24, 24, 232, 232)
 
 
+def gradient(size, top, bottom):
+    """A vertical blend from top to bottom."""
+    w, h = size
+    ramp = Image.linear_gradient("L").resize((w, h))
+    a = Image.new("RGBA", size, top)
+    b = Image.new("RGBA", size, bottom)
+    return Image.composite(b, a, ramp)
+
+
+def lighter(c, k):
+    return tuple(int(c[i] + (255 - c[i]) * k) for i in range(3)) + (c[3],)
+
+
+def glassify(layer, mask, strength=1.0):
+    """Liquid Glass: a soft light pooled at the top, a bright rim that fades downwards and a faint second rim
+    where light leaves the bottom edge."""
+    glow = blank()
+    ImageDraw.Draw(glow).ellipse([-10, -90, 230, 110], fill=(255, 255, 255, int(78 * strength)))
+    glow = glow.filter(ImageFilter.GaussianBlur(26))
+    layer.alpha_composite(Image.composite(glow, blank(), mask))
+    rim = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(7))).filter(ImageFilter.GaussianBlur(1.2))
+    shine = gradient((S, S), (255, 255, 255, int(230 * strength)), (255, 255, 255, int(40 * strength)))
+    shine.putalpha(ImageChops.multiply(shine.getchannel("A"), rim))
+    layer.alpha_composite(shine)
+    low = gradient((S, S), (255, 255, 255, 0), (255, 255, 255, int(120 * strength)))
+    inner = ImageChops.subtract(mask.filter(ImageFilter.MinFilter(5)), mask.filter(ImageFilter.MinFilter(9)))
+    low.putalpha(ImageChops.multiply(low.getchannel("A"), inner.filter(ImageFilter.GaussianBlur(1.5))))
+    layer.alpha_composite(low)
+    edge = Image.new("RGBA", (S, S), (0, 0, 0, 255))
+    outer = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(3)))
+    edge.putalpha(outer.point(lambda v: v * 34 // 255))
+    layer.alpha_composite(edge)
+    return layer
+
+
+def lifted(g, mask):
+    """The glyph floats above the glass: a soft blurred shadow under it."""
+    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 255))
+    shadow.putalpha(g.getchannel("A").point(lambda v: v * 70 // 255).filter(ImageFilter.GaussianBlur(7)))
+    out = blank()
+    out.alpha_composite(shadow, (0, 7))
+    out.alpha_composite(g)
+    return Image.composite(out, blank(), mask)
+
+
 def app_base(top, bottom, glyph=None):
-    """Squircle app icon: one flat color and a flat glyph, with a hairline edge so light icons stay visible."""
+    """Squircle app icon of tinted glass: lighter at the top, a little see-through, the glyph lifted on it."""
     mask = squircle_mask(BODY)
     layer = blank()
-    layer.paste(flat((S, S), top, bottom), (0, 0), mask)
+    body = gradient((S, S), lighter(top, 0.18)[:3] + (236,), bottom[:3] + (226,))
+    layer.paste(body, (0, 0), mask)
     if glyph:
         g = blank()
         glyph(g, ImageDraw.Draw(g))
-        layer.alpha_composite(Image.composite(g, blank(), mask))
-    dark = Image.new("RGBA", (S, S), (0, 0, 0, 255))
-    outer = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(3)))
-    dark.putalpha(outer.point(lambda v: v * 30 // 255))
-    layer.alpha_composite(dark)
-    return layer
+        layer.alpha_composite(lifted(g, mask))
+    return glassify(layer, mask)
 
 
 def page_base(emblem=None):
@@ -118,10 +160,10 @@ def folder_base(emblem=None):
     img.paste(back_layer, (0, 0), Image.composite(Image.new("L", (S, S), 255), back, tab))
     img.paste(back_layer, (0, 0), back)
     front_mask = rounded_mask((24, 74, 232, 220), 14)
-    front = flat((S, S), FOLDER_TOP, FOLDER_BOTTOM)
-    img.paste(front, (0, 0), front_mask)
-    d = ImageDraw.Draw(img)
-    d.line([(36, 78), (220, 78)], fill=(190, 228, 255, 255), width=3)
+    front = gradient((S, S), lighter(FOLDER_TOP, 0.2)[:3] + (238,), FOLDER_BOTTOM[:3] + (228,))
+    front_layer = blank()
+    front_layer.paste(front, (0, 0), front_mask)
+    img.alpha_composite(glassify(front_layer, front_mask, 0.8))
     if emblem:
         e = blank()
         emblem(e, ImageDraw.Draw(e))
@@ -462,9 +504,11 @@ def circle_badge(c_top, c_bottom, draw):
     mask = Image.new("L", (S * 4, S * 4), 0)
     ImageDraw.Draw(mask).ellipse([30 * 4, 30 * 4, 226 * 4, 226 * 4], fill=255)
     mask = mask.resize((S, S), Image.LANCZOS)
-    img.paste(flat((S, S), c_top, c_bottom), (0, 0), mask)
-    draw(img, ImageDraw.Draw(img))
-    return img
+    img.paste(gradient((S, S), lighter(c_top, 0.15)[:3] + (240,), c_bottom[:3] + (230,)), (0, 0), mask)
+    g = blank()
+    draw(g, ImageDraw.Draw(g))
+    img.alpha_composite(lifted(g, mask))
+    return glassify(img, mask)
 
 
 def info_icon():
@@ -536,6 +580,18 @@ def trash_icon(full=False):
     return img
 
 
+def screenshot_icon():
+    def glyph(img, d):
+        white = (255, 255, 255, 255)
+        for x0, y0, dx, dy in ((52, 60, 1, 1), (204, 60, -1, 1), (52, 196, 1, -1), (204, 196, -1, -1)):
+            d.line([(x0, y0 + dy * 34), (x0, y0), (x0 + dx * 34, y0)], fill=white, width=11, joint="curve")
+        rr(d, (88, 104, 168, 162), 12, fill=white)
+        rr(d, (112, 94, 144, 108), 5, fill=white)
+        d.ellipse([110, 114, 146, 150], fill=(84, 92, 110, 255))
+        d.ellipse([119, 123, 137, 141], fill=(170, 210, 255, 255))
+    return app_base((168, 174, 188, 255), (74, 80, 96, 255), glyph)
+
+
 def trash_full_icon():
     return trash_icon(True)
 
@@ -553,6 +609,7 @@ ICONS = [
     ("ICON_FOLDER_DESKTOP", desktop_folder_icon), ("ICON_FOLDER_DOWNLOADS", downloads_folder_icon),
     ("ICON_BROWSER", browser_icon), ("ICON_PHOTOS", photos_icon), ("ICON_MUSIC", music_icon),
     ("ICON_VIDEO", video_icon), ("ICON_VIEWER", viewer_icon), ("ICON_INSTALLER", installer_icon),
+    ("ICON_SCREENSHOT", screenshot_icon),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)
@@ -1015,6 +1072,54 @@ def sym_text(d):
     d.line([(116, 58), (116, 110)], fill=255, width=W)
 
 
+def sym_mute(d):
+    d.polygon([(10, 46), (34, 46), (64, 18), (64, 110), (34, 82), (10, 82)], fill=255)
+    d.line([(80, 46), (116, 82)], fill=255, width=W)
+    d.line([(116, 46), (80, 82)], fill=255, width=W)
+
+
+def sym_screenshot(d):
+    for x0, y0, dx, dy in ((10, 18, 1, 1), (118, 18, -1, 1), (10, 110, 1, -1), (118, 110, -1, -1)):
+        d.line([(x0, y0 + dy * 26), (x0, y0), (x0 + dx * 26, y0)], fill=255, width=W, joint="curve")
+    d.ellipse([46, 46, 82, 82], outline=255, width=W - 1)
+
+
+def sym_crop(d):
+    d.line([(34, 8), (34, 94), (120, 94)], fill=255, width=W + 1, joint="curve")
+    d.line([(8, 34), (94, 34), (94, 120)], fill=255, width=W + 1, joint="curve")
+
+
+def sym_mission(d):
+    d.rounded_rectangle([8, 14, 58, 52], radius=7, fill=255)
+    d.rounded_rectangle([70, 14, 120, 52], radius=7, fill=255)
+    d.rounded_rectangle([26, 64, 102, 114], radius=8, outline=255, width=W - 1)
+
+
+def sym_widgets(d):
+    d.rounded_rectangle([8, 8, 60, 60], radius=12, fill=255)
+    d.rounded_rectangle([68, 8, 120, 60], radius=12, outline=255, width=W - 1)
+    d.rounded_rectangle([8, 68, 120, 120], radius=12, outline=255, width=W - 1)
+
+
+def sym_snap(d):
+    d.rounded_rectangle([8, 16, 120, 112], radius=12, outline=255, width=W)
+    d.rounded_rectangle([18, 26, 58, 102], radius=5, fill=255)
+    d.rounded_rectangle([68, 26, 110, 58], radius=5, fill=255)
+    d.rounded_rectangle([68, 70, 110, 102], radius=5, fill=255)
+
+
+def sym_wifi_off(d):
+    sym_wifi(d)
+    d.line([(18, 18), (110, 110)], fill=0, width=W + 8)
+    d.line([(18, 18), (110, 110)], fill=255, width=W)
+
+
+def sym_copy(d):
+    d.rounded_rectangle([40, 10, 116, 86], radius=10, outline=255, width=W)
+    d.rounded_rectangle([12, 42, 88, 118], radius=10, fill=0)
+    d.rounded_rectangle([12, 42, 88, 118], radius=10, outline=255, width=W)
+
+
 SYMBOLS = [
     ("SYM_LOGO", sym_logo), ("SYM_SEARCH", sym_search), ("SYM_CONTROL", sym_control), ("SYM_WIFI", sym_wifi),
     ("SYM_HOME", sym_home), ("SYM_DESKTOP", sym_desktop), ("SYM_DOC", sym_doc), ("SYM_APPS", sym_apps),
@@ -1035,7 +1140,9 @@ SYMBOLS = [
     ("SYM_PREV", sym_prev), ("SYM_NEXT", sym_next), ("SYM_VOLUME", sym_volume), ("SYM_MORE", sym_more),
     ("SYM_WEATHER", sym_weather), ("SYM_CALENDAR", sym_calendar), ("SYM_PIN", sym_pin), ("SYM_GLOBE", sym_globe),
     ("SYM_BELL", sym_bell), ("SYM_HAND", sym_hand), ("SYM_ACCESS", sym_access), ("SYM_WINDOW", sym_window),
-    ("SYM_TEXT", sym_text),
+    ("SYM_TEXT", sym_text), ("SYM_MUTE", sym_mute), ("SYM_SCREENSHOT", sym_screenshot), ("SYM_CROP", sym_crop),
+    ("SYM_MISSION", sym_mission), ("SYM_WIDGETS", sym_widgets), ("SYM_SNAP", sym_snap), ("SYM_WIFI_OFF", sym_wifi_off),
+    ("SYM_COPY", sym_copy),
 ]
 
 

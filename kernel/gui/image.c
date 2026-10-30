@@ -1,6 +1,7 @@
 #include <synth/error.h>
 #include <synth/gui.h>
 #include <synth/heap.h>
+#include <synth/path.h>
 #include <synth/picture.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -34,6 +35,17 @@ bool image_load(const char *path, struct image *out)
 
 int image_save(const char *path, const uint32_t *px, int w, int h, int stride)
 {
+    const char *ext = path_ext(path);
+    if (ext && !str_casecmp(ext, ".png")) {
+        uint8_t *png;
+        size_t len;
+        int err = png_encode(px, w, h, stride, &png, &len);
+        if (!err) {
+            err = vfs_write_all(path, png, len);
+            kfree(png);
+        }
+        return err;
+    }
     uint32_t row = ((uint32_t)w * 3 + 3) & ~3u, size = 54 + row * (uint32_t)h;
     uint8_t *buf = kzalloc(size);
     if (!buf)

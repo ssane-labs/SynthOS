@@ -3,6 +3,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/log.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 
 #include "net.h"
@@ -32,7 +33,7 @@ static int iface_count;
 static struct arp_entry arp[ARP_SIZE];
 static struct loop_packet *loop_queue[LOOP_QUEUE];
 static int loop_head, loop_count;
-static bool polling;
+static bool polling, net_off;
 static uint8_t rx_frame[NET_FRAME + 64];
 
 struct ping_wait {
@@ -171,6 +172,8 @@ static int eth_send(struct net_iface *ifc, const uint8_t *mac, uint16_t type, co
     static uint8_t frame[NET_FRAME];
     if (length > NET_MTU)
         return E_RANGE;
+    if (net_off)
+        return E_UNREACH;
     memcpy(frame, mac, 6);
     memcpy(frame + 6, ifc->dev->mac, 6);
     wr16(frame + 12, type);
@@ -403,7 +406,7 @@ static int poll_frames(void)
                 break;
             frames++;
             activity++;
-            if (n > 0)
+            if (n > 0 && !net_off)
                 eth_input(iface_for(dev), rx_frame, (size_t)n);
         }
     }
@@ -421,6 +424,35 @@ static int poll_frames(void)
     polling = false;
     return frames;
 }
+
+bool net_enabled(void)
+{
+    return !net_off;
+}
+
+static void get_network(char *buf, size_t cap)
+{
+    setting_flag_get(!net_off, buf, cap);
+}
+
+/* Off works like airplane mode: nothing is sent and what arrives is dropped; on asks DHCP for the address again. */
+static int set_network(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    bool on;
+    int err = setting_flag(value, &on);
+    if (err || on == !net_off)
+        return err;
+    net_off = !on;
+    for (int i = 0; on && i < iface_count; i++)
+        if (ifaces[i].dhcp)
+            net_dhcp_start(&ifaces[i]);
+    return 0;
+}
+
+static const struct setting s_network = {"network", "on|off", "networking on, or off like airplane mode", get_network,
+                                         set_network};
+SETTING(s_network);
 
 void net_poll(void)
 {

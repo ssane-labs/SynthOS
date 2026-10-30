@@ -282,6 +282,36 @@ bool ui_slider(struct ui *ui, struct rect r, int *value, int min, int max)
     return changed;
 }
 
+/* The wide slider of Control Center: a capsule that fills from the left, with its symbol inside. */
+bool ui_capsule_slider(struct ui *ui, struct rect r, enum symbol_id sym, int *value, int min, int max)
+{
+    bool clicked;
+    int id = track(ui, r, &clicked);
+    bool changed = false;
+    int rad = r.h / 2, span = MAX(r.w - r.h, 1);
+    if (ui->e && is_active(ui, id) && (ui->e->type == EV_MOUSE_DOWN || ui->e->type == EV_MOUSE_MOVE)) {
+        int v = min + ((ui->e->x - r.x - rad) * (max - min) + span / 2) / span;
+        v = CLAMP(v, min, max);
+        if (v != *value) {
+            *value = v;
+            changed = true;
+            ui->changed = true;
+        }
+    }
+    if (ui->c) {
+        int fill = r.h + (*value - min) * span / MAX(max - min, 1);
+        gfx_round(ui->c, r, rad, style.dark ? ALPHA(0xffffffffu, 34) : ALPHA(0, 22));
+        uint32_t knob = style.dark ? RGB(236, 236, 240) : RGB(255, 255, 255);
+        gfx_round(ui->c, (struct rect){r.x, r.y, fill, r.h}, rad, knob);
+        struct rect k = {r.x + fill - r.h, r.y, r.h, r.h};
+        gfx_drop_shadow(ui->c, k, rad, 4, 60, 1);
+        gfx_circle(ui->c, k.x + rad, k.y + rad, rad, knob);
+        gfx_ring(ui->c, k.x + rad, k.y + rad, rad, ALPHA(0, 26));
+        gfx_symbol(ui->c, r.x + (r.h - 16) / 2 + 1, r.y + (r.h - 16) / 2, sym, 16, RGB(118, 118, 124));
+    }
+    return changed;
+}
+
 bool ui_segmented(struct ui *ui, struct rect r, const char *const *labels, int count, int *selected)
 {
     bool changed = false;

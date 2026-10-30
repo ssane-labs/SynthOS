@@ -117,8 +117,12 @@ bool panel_animate(void)
 
 static void paint_part_icon(struct canvas *c, int i, struct rect r)
 {
-    enum symbol_id sym = i == PART_SEARCH ? SYM_SEARCH : i == PART_WIFI ? SYM_WIFI : i == PART_VOLUME ? SYM_VOLUME : SYM_CONTROL;
-    bool online = net_interface_count() > 0 && net_interface(0)->configured;
+    bool silent = gui_setting_on("mute") || !gui_setting_number("volume", 100);
+    enum symbol_id sym = i == PART_SEARCH   ? SYM_SEARCH
+                         : i == PART_WIFI   ? (net_enabled() ? SYM_WIFI : SYM_WIFI_OFF)
+                         : i == PART_VOLUME ? (silent ? SYM_MUTE : SYM_VOLUME)
+                                            : SYM_CONTROL;
+    bool online = !net_enabled() || (net_interface_count() > 0 && net_interface(0)->configured);
     uint32_t col = i == PART_WIFI && !online ? ink_soft() : ink();
     if (i == part_hover)
         gfx_circle(c, r.x + r.w / 2, r.y + r.h / 2, MIN(r.w, r.h) / 2 - 3, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, 26));
@@ -181,8 +185,9 @@ static void open_part(int part)
     struct rect s = wm_screen_rect(0);
     switch (part) {
     case PART_SEARCH: spotlight_toggle(); break;
-    case PART_CLOCK: calendar_toggle(s.x + s.w - 12, status_bottom() + 8); break;
-    case PART_WIFI: gui_app_launch(gui_app_find("System Settings"), "network"); break;
+    case PART_CLOCK: notification_center_toggle(); break;
+    case PART_WIFI: control_module_toggle(CONTROL_NETWORK, part_r[part].x + part_r[part].w + 60, status_bottom() + 8); break;
+    case PART_VOLUME: control_module_toggle(CONTROL_SOUND, part_r[part].x + part_r[part].w + 60, status_bottom() + 8); break;
     case PART_LANG:
         keymap_next();
         chrome_changed();

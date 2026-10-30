@@ -160,6 +160,40 @@ config volume 40; config mute on; config volume; config mute
 volume = 40
 config mute; config mute off; config volume 100
 mute = on
+config brightness 60; config nightshift auto; config nightwarmth 80; config brightness; config nightshift
+brightness = 60
+config nightshift; config nightshift off; config brightness 100; config nightwarmth 50; config brightness
+brightness = 100
+config brightness 5
+brightness: invalid value '5'
+config menuextras sound,display,focus; config menuextras; config menuextras network,sound,search
+menuextras = sound,display,focus
+config menuextras wifi
+menuextras: invalid value 'wifi'
+config glassstrength 25; config glassstrength; config glassstrength 70
+glassstrength = 25
+config snap off; config snap; config snap on
+snap = off
+config dockpreviews off; config dockpreviews; config dockpreviews on
+dockpreviews = off
+config cornertr mission; config cornerbl lock; config cornertr; config cornertr off; config cornerbl off
+cornertr = mission
+config cornerbr nothing
+cornerbr: invalid value 'nothing'
+config shotfolder pictures; config shotdelay 5; config shotthumb off; config shotdelay; config shotdelay 0
+shotdelay = 5
+config shotfolder; config shotfolder desktop; config shotthumb on
+shotfolder = pictures
+config network off; ping -c 1 10.0.2.2 | grep -c "bytes from"; config network
+network = off
+config network on; sleep 1; ping -c 1 10.0.2.2 | grep from
+64 bytes from 10.0.2.2
+topng /system/samples/Mist.jpg /tmp/mist.png; imginfo /tmp/mist.png
+1024x640, 1 frame, average #a7b0bd
+topng /system/samples/Dune.jpg /tmp/dune.png | grep -c bytes; imginfo /tmp/dune.png; rm /tmp/dune.png /tmp/mist.png
+1024x640, 1 frame, average #c8967d
+screenshot
+screenshot: the desktop is not running
 config termstatus off; config termstatus
 termstatus = off
 config dockapps 'Files|/home/notes.txt|Terminal'; grep mono ~/.dock

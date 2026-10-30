@@ -74,8 +74,8 @@ static int pressed_light = -1;
 static struct spring lights_grow;
 static struct window *more_hover_win, *more_target;
 static uint64_t chrome_tick;
-static struct menu_item more_items[48];
-static int more_action[48];
+static struct menu_item more_items[64];
+static int more_action[64];
 static struct canvas fade_snap;
 static uint64_t stat_frames, stat_pixels, stat_ms;
 static uint64_t fade_start;
@@ -92,7 +92,48 @@ static uint32_t pack(const struct framebuffer *fb, uint32_t c)
     return r << fb->red_shift | g << fb->green_shift | b << fb->blue_shift;
 }
 
+/* Brightness and Night Shift: a table per channel applied while a row goes to the screen; the composed picture and
+   the windows' surfaces keep the true colors. */
+static uint8_t tint[3][256];
+static volatile bool tinted;
+
+void wm_set_tint(int brightness, int warmth)
+{
+    brightness = CLAMP(brightness, 10, 100);
+    warmth = CLAMP(warmth, 0, 100);
+    static const int keep[3] = {100, 78, 42};
+    for (int ch = 0; ch < 3; ch++) {
+        int scale = brightness * (10000 - warmth * (100 - keep[ch])) / 10000;
+        for (int v = 0; v < 256; v++)
+            tint[ch][v] = (uint8_t)(v * scale / 100);
+    }
+    bool was = tinted;
+    tinted = brightness < 100 || warmth > 0;
+    if (tinted || was)
+        wm_damage_all();
+}
+
+static void fb_put(struct screen *s, int x, int y, const uint32_t *src, int w);
+
 static void fb_row(struct screen *s, int x, int y, const uint32_t *src, int w)
+{
+    if (!tinted) {
+        fb_put(s, x, y, src, w);
+        return;
+    }
+    uint32_t row[128];
+    for (int i = 0; i < w; i += 128) {
+        int n = MIN(128, w - i);
+        for (int k = 0; k < n; k++) {
+            uint32_t p = src[i + k];
+            row[k] = (uint32_t)tint[0][p >> 16 & 0xff] << 16 | (uint32_t)tint[1][p >> 8 & 0xff] << 8 |
+                     tint[2][p & 0xff];
+        }
+        fb_put(s, x + i, y, row, n);
+    }
+}
+
+static void fb_put(struct screen *s, int x, int y, const uint32_t *src, int w)
 {
     const struct framebuffer *fb = &s->fb;
     bool native = fb->bpp == 32 && fb->red_shift == 16 && fb->green_shift == 8 && fb->blue_shift == 0;
@@ -1222,6 +1263,142 @@ void wm_toggle_maximize(struct window *w)
 
 /* Full screen: the window takes its whole screen, and while it is in front the menu bar and the Dock step aside
    (the menu bar comes back while the pointer is at the top edge). */
+/* Snap: halves and quarters of the work area, as on Windows. The size before the first snap comes back when the
+   window is restored or dragged away. */
+static bool snapping = true;
+static enum snap_zone snap_zone;
+static struct rect snap_preview;
+
+static struct rect zone_rect(int screen, enum snap_zone z)
+{
+    struct rect a = wm_work_area(screen);
+    int hw = a.w / 2, hh = a.h / 2;
+    switch (z) {
+    case SNAP_LEFT: return (struct rect){a.x, a.y, hw, a.h};
+    case SNAP_RIGHT: return (struct rect){a.x + hw, a.y, a.w - hw, a.h};
+    case SNAP_TOP_LEFT: return (struct rect){a.x, a.y, hw, hh};
+    case SNAP_TOP_RIGHT: return (struct rect){a.x + hw, a.y, a.w - hw, hh};
+    case SNAP_BOTTOM_LEFT: return (struct rect){a.x, a.y + hh, hw, a.h - hh};
+    case SNAP_BOTTOM_RIGHT: return (struct rect){a.x + hw, a.y + hh, a.w - hw, a.h - hh};
+    default: return a;
+    }
+}
+
+static int window_screen(const struct window *w)
+{
+    return wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + 8);
+}
+
+enum snap_zone wm_snapped(const struct window *w)
+{
+    if (w->flags & WIN_MAXIMIZED)
+        return SNAP_FILL;
+    if (!(w->flags & WIN_TILED))
+        return SNAP_NONE;
+    for (int z = SNAP_LEFT; z <= SNAP_BOTTOM_RIGHT; z++) {
+        struct rect r = zone_rect(window_screen(w), (enum snap_zone)z);
+        if (z != SNAP_FILL && r.x == w->frame.x && r.y == w->frame.y && r.w == w->frame.w && r.h == w->frame.h)
+            return (enum snap_zone)z;
+    }
+    return SNAP_NONE;
+}
+
+static void reshape(struct window *w, struct rect to)
+{
+    struct ghost *g = ghosts;
+    morph(w, w->frame);
+    g = ghosts != g && ghosts->kind == ANIM_MORPH ? ghosts : NULL;
+    set_frame(w, to);
+    if (g)
+        g->frame = w->frame;
+}
+
+void wm_snap(struct window *w, enum snap_zone zone)
+{
+    if (!w || !(w->flags & WIN_RESIZABLE) || (w->flags & WIN_FULLSCREEN))
+        return;
+    if (w->flags & WIN_MINIMIZED)
+        wm_restore(w);
+    if (zone == SNAP_FILL) {
+        if (!(w->flags & WIN_MAXIMIZED)) {
+            if (w->flags & WIN_TILED) {
+                w->flags &= ~WIN_TILED;
+                w->flags |= WIN_MAXIMIZED;
+                reshape(w, wm_work_area(window_screen(w)));
+            } else {
+                wm_toggle_maximize(w);
+            }
+        }
+        return;
+    }
+    if (zone == SNAP_RESTORE || zone == SNAP_NONE) {
+        if (w->flags & (WIN_TILED | WIN_MAXIMIZED)) {
+            w->flags &= ~(WIN_TILED | WIN_MAXIMIZED);
+            reshape(w, w->restore);
+        }
+        return;
+    }
+    if (!(w->flags & (WIN_TILED | WIN_MAXIMIZED)))
+        w->restore = w->frame;
+    w->flags &= ~WIN_MAXIMIZED;
+    w->flags |= WIN_TILED;
+    reshape(w, zone_rect(window_screen(w), zone));
+}
+
+static enum snap_zone zone_at(int x, int y)
+{
+    struct rect s = wm_screen_rect(wm_screen_at(x, y));
+    int corner = MAX(60, s.h / 8);
+    bool left = x <= s.x + 2, right = x >= s.x + s.w - 3;
+    if (left || right) {
+        if (y < s.y + corner)
+            return left ? SNAP_TOP_LEFT : SNAP_TOP_RIGHT;
+        if (y > s.y + s.h - corner)
+            return left ? SNAP_BOTTOM_LEFT : SNAP_BOTTOM_RIGHT;
+        return left ? SNAP_LEFT : SNAP_RIGHT;
+    }
+    return y <= s.y + 2 ? SNAP_FILL : SNAP_NONE;
+}
+
+static void set_snap_zone(enum snap_zone z)
+{
+    if (z == snap_zone)
+        return;
+    if (snap_zone)
+        wm_damage(rect_inset(snap_preview, -4));
+    snap_zone = z;
+    if (z) {
+        snap_preview = zone_rect(wm_screen_at(mouse_x, mouse_y), z);
+        wm_damage(rect_inset(snap_preview, -4));
+    }
+}
+
+static void draw_snap_preview(struct canvas *c)
+{
+    struct rect r = rect_inset(snap_preview, 6);
+    gfx_round(c, r, 18, style.dark ? ALPHA(0xffffffffu, 46) : ALPHA(0xffffffffu, 90));
+    gfx_round(c, r, 18, ALPHA(style.accent, 36));
+    gfx_round_frame(c, r, 18, ALPHA(0xffffffffu, 170));
+}
+
+static void get_snap(char *buf, size_t cap)
+{
+    str_copy(buf, snapping ? "on" : "off", cap);
+}
+
+static int set_snap(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "on") && strcmp(value, "off"))
+        return E_INVAL;
+    snapping = !strcmp(value, "on");
+    return 0;
+}
+
+static const struct setting s_snap = {"snap", "on|off", "drag windows to the screen edges to tile them", get_snap,
+                                      set_snap};
+SETTING(s_snap);
+
 void wm_toggle_fullscreen(struct window *w)
 {
     if (!framed(w) || (!(w->flags & WIN_RESIZABLE) && !(w->flags & WIN_FULLSCREEN)))
@@ -1502,9 +1679,12 @@ static void compose(int index, struct rect area)
             from = w;
     if (!from)
         desktop_paint(c, index, c->clip);
-    for (struct window *w = from ? from : bottom; w; w = w->above)
+    for (struct window *w = from ? from : bottom; w; w = w->above) {
+        if (snap_zone && w == drag_win)
+            draw_snap_preview(c);
         if (visible(w) && !w->anim_hold && !floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);
+    }
     if (ghosts)
         draw_ghosts(c, false);
     bool full = index == 0 && wm_fullscreen_front();
@@ -1694,13 +1874,14 @@ enum {
     ACT_FULL,
     ACT_PIN,
     ACT_CLOSE,
+    ACT_SNAP,
 };
 
 static void more_pick(struct window *owner, int index)
 {
     UNUSED(owner);
     struct window *w = more_target;
-    if (!w || !wm_window_alive(w) || index < 0 || index >= 48)
+    if (!w || !wm_window_alive(w) || index < 0 || index >= 64)
         return;
     int act = more_action[index];
     if (act == ACT_MINIMIZE)
@@ -1713,6 +1894,8 @@ static void more_pick(struct window *owner, int index)
         wm_set_pinned(w, !(w->flags & WIN_PINNED));
     else if (act == ACT_CLOSE)
         wm_close(w);
+    else if (act >= ACT_SNAP)
+        wm_snap(w, (enum snap_zone)(act - ACT_SNAP));
     else if (act == ACT_KEY && more_items[index].key > 0) {
         wm_focus(w);
         wm_key(more_items[index].key);
@@ -1745,6 +1928,27 @@ void wm_window_menu(struct window *w, int x, int y)
     if (w->flags & WIN_RESIZABLE) {
         more_action[n] = ACT_ZOOM;
         more_items[n++] = (struct menu_item){w->flags & WIN_MAXIMIZED ? "Restore Size" : "Fill Screen", 0, NULL};
+    }
+    if ((w->flags & WIN_RESIZABLE) && !(w->flags & WIN_FULLSCREEN)) {
+        static const struct {
+            const char *label, *keys;
+            enum snap_zone z;
+        } tiles[] = {{"Tile Left", "\xe2\x8c\x98\xe2\x86\x90", SNAP_LEFT},
+                     {"Tile Right", "\xe2\x8c\x98\xe2\x86\x92", SNAP_RIGHT},
+                     {"Top Left Quarter", NULL, SNAP_TOP_LEFT},
+                     {"Top Right Quarter", NULL, SNAP_TOP_RIGHT},
+                     {"Bottom Left Quarter", NULL, SNAP_BOTTOM_LEFT},
+                     {"Bottom Right Quarter", NULL, SNAP_BOTTOM_RIGHT}};
+        more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
+        for (size_t i = 0; i < ARRAY_SIZE(tiles); i++) {
+            more_action[n] = ACT_SNAP + tiles[i].z;
+            more_items[n++] = (struct menu_item){tiles[i].label, 0, tiles[i].keys};
+        }
+        if (w->flags & WIN_TILED) {
+            more_action[n] = ACT_SNAP + SNAP_RESTORE;
+            more_items[n++] = (struct menu_item){"Return to Previous Size", 0, NULL};
+        }
+        more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
     }
     if (w->flags & (WIN_RESIZABLE | WIN_FULLSCREEN)) {
         more_action[n] = ACT_FULL;
@@ -1859,6 +2063,11 @@ static void mouse_up(unsigned button)
     }
     if (mode == DRAG_CLIENT)
         client_event(w, EV_MOUSE_UP, button, 0, click_count);
+    if ((mode == DRAG_MOVE || mode == DRAG_CLIENT) && snap_zone) {
+        enum snap_zone z = snap_zone;
+        set_snap_zone(SNAP_NONE);
+        wm_snap(w, z);
+    }
 }
 
 static int cursor_for_edges(int edges)
@@ -1877,15 +2086,16 @@ static int cursor_for_edges(int edges)
 static void mouse_moved(void)
 {
     if (drag == DRAG_MOVE && drag_win) {
-        if (drag_win->flags & WIN_MAXIMIZED) {
+        if (drag_win->flags & (WIN_MAXIMIZED | WIN_TILED)) {
             int rel = drag_x * drag_win->restore.w / MAX(drag_win->frame.w, 1);
-            drag_win->flags &= ~WIN_MAXIMIZED;
+            drag_win->flags &= ~(WIN_MAXIMIZED | WIN_TILED);
             set_frame(drag_win, (struct rect){mouse_x - rel, drag_win->frame.y, drag_win->restore.w, drag_win->restore.h});
             drag_x = rel;
         }
         struct rect s = wm_screen_rect(wm_screen_at(mouse_x, mouse_y));
         int y = MAX(mouse_y - drag_y, s.y + menubar_height());
         wm_move(drag_win, mouse_x - drag_x, y);
+        set_snap_zone(snapping && (drag_win->flags & WIN_RESIZABLE) ? zone_at(mouse_x, mouse_y) : SNAP_NONE);
         return;
     }
     if (drag == DRAG_RESIZE && drag_win) {
@@ -2381,6 +2591,47 @@ void wm_stop(void)
         wm_destroy(bottom);
     focus = NULL;
     free_screens();
+}
+
+unsigned wm_mouse_buttons(void)
+{
+    return mouse_buttons;
+}
+
+/* No window is still flying open or closed. */
+bool wm_settled(void)
+{
+    return !ghosts;
+}
+
+/* What the screens show (without the pointer), for screenshots. */
+bool wm_capture(struct rect r, struct canvas *out)
+{
+    if (rect_empty(r) || !canvas_alloc(out, r.w, r.h))
+        return false;
+    memset(out->px, 0, (size_t)r.w * (size_t)r.h * 4);
+    for (int i = 0; i < screen_count; i++) {
+        struct screen *s = &screens[i];
+        struct rect c = rect_intersect(r, s->area);
+        for (int y = c.y; y < c.y + c.h; y++)
+            memcpy(out->px + (y - r.y) * out->stride + (c.x - r.x), s->back.px + y * s->back.stride + c.x,
+                   (size_t)c.w * 4);
+    }
+    return true;
+}
+
+/* A window as if nothing covered it; its rounded corners stay transparent. */
+bool wm_window_image(struct window *w, struct canvas *out)
+{
+    return snapshot(w, out, 0);
+}
+
+struct window *wm_window_at_point(int x, int y)
+{
+    for (struct window *w = top; w; w = w->below)
+        if (framed(w) && visible(w) && rect_contains(w->frame, x, y))
+            return w;
+    return NULL;
 }
 
 int wm_window_list(struct window **out, int max)

@@ -32,7 +32,6 @@
 #define GAP 24
 #define SECTIONS 32
 #define HISTORY 16
-#define SETTINGS_FILE "/home/.synth.conf"
 #define WALLS 11
 #define LOOK_W 140
 #define LOOK_H 88
@@ -59,8 +58,9 @@ enum pane {
     P_NOTIFY,
     P_SOUND,
     P_GENERAL,
-    P_APPEARANCE,
     P_ACCESS,
+    P_APPEARANCE,
+    P_CONTROL,
     P_DOCK,
     P_DISPLAYS,
     P_WALLPAPER,
@@ -69,8 +69,8 @@ enum pane {
     P_USERS,
     P_KEYBOARD,
     P_MOUSE,
+    P_APPS,
     P_TERMINAL,
-    P_WINDOWS,
     P_ABOUT,
     P_STORAGE,
     P_DATETIME,
@@ -82,8 +82,9 @@ static void pane_network(struct page *p);
 static void pane_notify(struct page *p);
 static void pane_sound(struct page *p);
 static void pane_general(struct page *p);
-static void pane_appearance(struct page *p);
 static void pane_access(struct page *p);
+static void pane_appearance(struct page *p);
+static void pane_control(struct page *p);
 static void pane_dock(struct page *p);
 static void pane_displays(struct page *p);
 static void pane_wallpaper(struct page *p);
@@ -92,14 +93,15 @@ static void pane_privacy(struct page *p);
 static void pane_users(struct page *p);
 static void pane_keyboard(struct page *p);
 static void pane_mouse(struct page *p);
+static void pane_apps(struct page *p);
 static void pane_terminal(struct page *p);
-static void pane_windows(struct page *p);
 static void pane_about(struct page *p);
 static void pane_storage(struct page *p);
 static void pane_datetime(struct page *p);
 static void pane_login(struct page *p);
 static void browser_popup(struct page *p);
 
+/* Every setting has one home, the way macOS and Windows arrange them; other panes only link to it. */
 static const struct {
     const char *name;
     const char *key;
@@ -113,8 +115,9 @@ static const struct {
     {"Notifications", "notifications", SYM_BELL, RGB(240, 64, 64), 1, -1, pane_notify},
     {"Sound", "sound", SYM_VOLUME, RGB(236, 64, 112), 1, -1, pane_sound},
     {"General", "general", SYM_GEAR, RGB(142, 142, 148), 2, -1, pane_general},
-    {"Appearance", "appearance", SYM_APPEARANCE, RGB(44, 44, 48), 2, -1, pane_appearance},
     {"Accessibility", "accessibility", SYM_ACCESS, RGB(28, 118, 240), 2, -1, pane_access},
+    {"Appearance", "appearance", SYM_APPEARANCE, RGB(44, 44, 48), 2, -1, pane_appearance},
+    {"Control Center", "control", SYM_CONTROL, RGB(142, 142, 148), 2, -1, pane_control},
     {"Desktop & Dock", "dock", SYM_DOCK, RGB(44, 44, 48), 2, -1, pane_dock},
     {"Displays", "displays", SYM_DISPLAY, RGB(28, 118, 240), 2, -1, pane_displays},
     {"Wallpaper", "wallpaper", SYM_PHOTO, RGB(36, 168, 220), 2, -1, pane_wallpaper},
@@ -123,8 +126,8 @@ static const struct {
     {"Users & Groups", "users", SYM_USERS, RGB(28, 118, 240), 3, -1, pane_users},
     {"Keyboard", "keyboard", SYM_KEYBOARD, RGB(142, 142, 148), 4, -1, pane_keyboard},
     {"Mouse", "mouse", SYM_MOUSE, RGB(142, 142, 148), 4, -1, pane_mouse},
+    {"Apps", "apps", SYM_APPS, RGB(40, 140, 220), 4, -1, pane_apps},
     {"Terminal", "terminal", SYM_TERMINAL, RGB(60, 60, 64), 4, -1, pane_terminal},
-    {"Windows Apps", "windows", SYM_WINDOW, RGB(40, 140, 220), 4, -1, pane_windows},
     {"About", "about", SYM_INFO, RGB(142, 142, 148), 2, P_GENERAL, pane_about},
     {"Storage", "storage", SYM_DISK, RGB(142, 142, 148), 2, P_GENERAL, pane_storage},
     {"Date & Time", "datetime", SYM_CLOCK, RGB(28, 118, 240), 2, P_GENERAL, pane_datetime},
@@ -160,31 +163,29 @@ static struct window *instance;
 
 static void apply(const char *name, const char *value)
 {
-    setting_apply(shell_current(), name, value);
-    settings_save(SETTINGS_FILE);
+    gui_setting(name, value);
 }
 
 static void current(const char *name, char *buf, size_t cap)
 {
-    const struct setting *st = setting_find(name);
-    buf[0] = 0;
-    if (st && st->get)
-        st->get(buf, cap);
+    gui_setting_get(name, buf, cap);
 }
 
 static bool is_on(const char *name)
 {
-    char v[16];
-    current(name, v, sizeof(v));
-    return !strcmp(v, "on");
+    return gui_setting_on(name);
 }
 
 static long number(const char *name, long fallback)
 {
-    char v[16];
-    current(name, v, sizeof(v));
-    long n;
-    return str_parse_long(v, &n) ? n : fallback;
+    return gui_setting_number(name, fallback);
+}
+
+static void apply_number(const char *name, int v)
+{
+    char buf[12];
+    ksnprintf(buf, sizeof(buf), "%d", v);
+    apply(name, buf);
 }
 
 static bool found(const char *query, const char *text)
@@ -550,25 +551,25 @@ static void pane_network(struct page *p)
 static void pane_notify(struct page *p)
 {
     header(p, SYM_BELL, panes[P_NOTIFY].color, "Notifications",
-           "Apps and the system show banners in the top right corner of the screen for a few seconds.");
+           "Banners appear in the top right corner for a few seconds; every notification stays in Notification "
+           "Center, which opens with a click on the clock.");
     section(p, "Focus");
-    toggle_setting(p, "Do Not Disturb", "Banners stay hidden; everything else works as usual", "dnd");
-    end(p, NULL);
+    toggle_setting(p, "Do Not Disturb", "Banners stay hidden; they still land in Notification Center", "dnd");
+    end(p, "Control Center and the moon in the menu bar turn it on and off too.");
     section(p, NULL);
     if (button(p, "See how a notification looks", NULL, "Show Example"))
-        gui_notify("Notifications", is_on("dnd") ? "" : "This is how a notification looks.");
-    end(p, is_on("dnd") ? "Do Not Disturb is on, so the example stays hidden too." : NULL);
+        gui_notify("Notifications", "This is how a notification looks.");
+    if (button(p, "Notifications of this session", NULL, "Open Notification Center"))
+        notification_center_toggle();
+    end(p, NULL);
 }
 
 static void pane_sound(struct page *p)
 {
     section(p, "Output");
     int v = (int)number("volume", 100);
-    if (slider(p, "Output volume", NULL, &v, 0, 100, NULL, NULL)) {
-        char buf[8];
-        ksnprintf(buf, sizeof(buf), "%d", v);
-        apply("volume", buf);
-    }
+    if (slider(p, "Output volume", NULL, &v, 0, 100, NULL, NULL))
+        apply_number("volume", v);
     toggle_setting(p, "Mute", NULL, "mute");
     const char *dev = hal_audio_name();
     info(p, "Output device", dev && *dev ? dev : "Built-in sound (AC'97)");
@@ -864,39 +865,86 @@ static void pane_appearance(struct page *p)
             }
         }
     }
-    static const char *const glass[] = {"Liquid Glass", "Frosted", "Solid"};
-    static const char *const glass_values[] = {"liquid", "frosted", "solid"};
-    choice(p, "Transparency", "Menus, the Dock and sidebars", "glass", glass, glass_values, 3, 280);
     end(p, NULL);
+    section(p, "Glass");
+    static const char *const glass[] = {"Liquid Glass", "Frosted"};
+    static const char *const glass_values[] = {"liquid", "frosted"};
+    choice(p, "Material", "Of menus, the Dock, widgets and sidebars", "glass", glass, glass_values, 2, 240);
+    char material[16];
+    current("glass", material, sizeof(material));
+    if (!strcmp(material, "liquid")) {
+        int k = (int)number("glassstrength", 70);
+        if (slider(p, "Liquid Glass effect", "How strongly the glass bends and shows what lies behind it", &k, 0,
+                   100, "Subtle", "Strong"))
+            apply_number("glassstrength", k);
+    }
+    end(p, !strcmp(material, "solid") ? "Reduce transparency is on in Accessibility, so menus and the Dock are solid."
+                                      : NULL);
 }
 
 static void pane_access(struct page *p)
 {
+    struct settings *s = p->s;
     header(p, SYM_ACCESS, panes[P_ACCESS].color, "Accessibility",
            "Make SynthOS calmer and easier to read and to use with the keyboard and the mouse.");
-    section(p, "Display");
+    section(p, "Vision");
     bool still = !is_on("animations");
     if (toggle(p, "Reduce motion", "Windows, menus and the Dock appear without moving", &still))
         apply("animations", still ? "off" : "on");
     char glass[16];
     current("glass", glass, sizeof(glass));
     bool solid = !strcmp(glass, "solid");
-    if (toggle(p, "Reduce transparency", "Solid colors instead of glass behind menus and the Dock", &solid))
+    if (toggle(p, "Reduce transparency", "Solid colors instead of glass behind menus, the Dock and sidebars", &solid))
         apply("glass", solid ? "solid" : "liquid");
-    static const char *const sizes[] = {"Small", "Medium", "Large"};
-    static const char *const size_values[] = {"small", "medium", "large"};
-    choice(p, "Dock icon size", NULL, "docksize", sizes, size_values, 3, 240);
     end(p, NULL);
-    section(p, "Pointer and Keyboard");
-    int v = (int)number("mousespeed", 5);
-    if (slider(p, "Pointer speed", NULL, &v, 1, 10, "Slow", "Fast")) {
-        char buf[8];
-        ksnprintf(buf, sizeof(buf), "%d", v);
-        apply("mousespeed", buf);
+    section(p, "Motor");
+    if (link(p, panes[P_MOUSE].sym, panes[P_MOUSE].color, "Pointer speed and buttons", "Mouse"))
+        go(s, P_MOUSE);
+    if (link(p, panes[P_KEYBOARD].sym, panes[P_KEYBOARD].color, "Key repeat and shortcuts", "Keyboard"))
+        go(s, P_KEYBOARD);
+    if (link(p, panes[P_DISPLAYS].sym, panes[P_DISPLAYS].color, "Brightness and Night Shift", "Displays"))
+        go(s, P_DISPLAYS);
+    end(p, NULL);
+}
+
+/* ---- Control Center */
+
+static void pane_control(struct page *p)
+{
+    struct settings *s = p->s;
+    header(p, SYM_CONTROL, panes[P_CONTROL].color, "Control Center",
+           "Control Center sits in the menu bar; the modules you pick here sit next to it, each with its own menu.");
+    static const char *const names[] = {"sound", "network", "display", "focus", "search"};
+    static const char *const labels[] = {"Sound", "Network", "Display", "Focus", "Spotlight"};
+    static const char *const descs[] = {"Volume, mute and the output", "Turn the network on or off, see the address",
+                                        "Brightness, Night Shift and Dark Mode", "Do Not Disturb (shows while it is on)",
+                                        "Search apps and files"};
+    char list[64];
+    current("menuextras", list, sizeof(list));
+    section(p, "Show in Menu Bar");
+    for (int i = 0; i < 5; i++) {
+        bool on = strstr(list, names[i]) != NULL;
+        if (toggle(p, labels[i], descs[i], &on)) {
+            char out[64] = "";
+            for (int k = 0; k < 5; k++) {
+                bool want = k == i ? on : strstr(list, names[k]) != NULL;
+                if (want) {
+                    if (out[0])
+                        str_append(out, ",", sizeof(out));
+                    str_append(out, names[k], sizeof(out));
+                }
+            }
+            apply("menuextras", out[0] ? out : "none");
+        }
     }
-    static const char *const delays[] = {"Short", "Normal", "Long"};
-    static const char *const delay_values[] = {"250", "500", "1000"};
-    choice(p, "Delay until a held key repeats", NULL, "keydelay", delays, delay_values, 3, 240);
+    end(p, NULL);
+    section(p, "Menu Bar");
+    static const char *const bars[] = {"Menu Bar", "Floating Pill"};
+    static const char *const bar_values[] = {"menubar", "pill"};
+    choice(p, "Status at the top", "The floating pill belongs to the current look", "statusbar", bars, bar_values,
+           2, 240);
+    if (link(p, panes[P_DATETIME].sym, panes[P_DATETIME].color, "Clock", "Date & Time"))
+        go(s, P_DATETIME);
     end(p, NULL);
 }
 
@@ -931,6 +979,7 @@ static void pane_dock(struct page *p)
     static const char *const sizes[] = {"Small", "Medium", "Large"};
     static const char *const size_values[] = {"small", "medium", "large"};
     choice(p, "Size", NULL, "docksize", sizes, size_values, 3, 240);
+    toggle_setting(p, "Magnification", "Icons grow under the pointer", "magnify");
     static const char *const docks[] = {"Bottom", "Corner", "Side"};
     static const char *const dock_values[] = {"bottom", "corner", "side"};
     choice(p, "Position on screen", NULL, "dockstyle", docks, dock_values, 3, 240);
@@ -939,21 +988,31 @@ static void pane_dock(struct page *p)
     choice(p, "Show the Dock", NULL, "dockmode", modes, mode_values, 3, 240);
     toggle_setting(p, "Animate opening applications", NULL, "dockbounce");
     toggle_setting(p, "Show indicators for open applications", NULL, "dockdots");
+    toggle_setting(p, "Show previews of open windows", "Rest the pointer on an app to see and pick its windows",
+                   "dockpreviews");
     if (button(p, "Icons in the Dock", "Drag icons onto the Dock, along it or off it", "Reset Icons"))
         apply("dockapps", "default");
-    end(p, NULL);
-    section(p, "Menu Bar");
-    static const char *const bars[] = {"Menu Bar", "Floating Pill"};
-    static const char *const bar_values[] = {"menubar", "pill"};
-    choice(p, "Status at the top", NULL, "statusbar", bars, bar_values, 2, 240);
     char title[64];
     ksnprintf(title, sizeof(title), "Start over with the layout of %s", look_current()->title);
-    if (button(p, title, NULL, "Reset Layout"))
+    if (button(p, title, "Each look keeps its own Dock and menu bar", "Reset Layout"))
         look_reset();
-    end(p, "Each look keeps its own Dock and menu bar layout.");
-    section(p, "Desktop");
-    browser_popup(p);
     end(p, NULL);
+    section(p, "Windows");
+    toggle_setting(p, "Tile windows at the screen edges", "Drag a window to a side, a corner or the top; Super+arrows "
+                                                          "do it from the keyboard", "snap");
+    end(p, "The ··· button of every window has Tile Left, Tile Right and the quarters too.");
+    section(p, "Mission Control");
+    static const char *const corners[] = {"Off", "Mission Control", "Desktop", "Launchpad", "Notifications",
+                                          "Lock Screen", "Screenshot"};
+    static const char *const corner_values[] = {"off", "mission", "desktop", "launchpad", "notifications", "lock",
+                                                "screenshot"};
+    static const char *const corner_keys[] = {"cornertl", "cornertr", "cornerbl", "cornerbr"};
+    static const char *const corner_names[] = {"Top left hot corner", "Top right hot corner",
+                                               "Bottom left hot corner", "Bottom right hot corner"};
+    for (int i = 0; i < 4; i++)
+        popup(p, corner_names[i], NULL, corner_keys[i], corners, corner_values, 7);
+    info(p, "Show all windows", "F3 or Ctrl+Up");
+    end(p, "Push the pointer into a corner of the screen to run what it is set to.");
     section(p, "Widgets");
     static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
     static const char *const labels[] = {"Clock", "Weather", "Music", "Calendar", "Visualizer", "Tasks"};
@@ -993,6 +1052,19 @@ static void pick_mode(struct window *owner, int index)
 static void pane_displays(struct page *p)
 {
     int n = wm_screen_count();
+    section(p, "Brightness");
+    int b = (int)number("brightness", 100);
+    if (slider(p, "Brightness", "Dims the picture when the screen has no control of its own", &b, 10, 100, NULL,
+               NULL))
+        apply_number("brightness", b);
+    static const char *const nights[] = {"Off", "On", "Scheduled"};
+    static const char *const night_values[] = {"off", "on", "auto"};
+    choice(p, "Night Shift", "Warmer colors in the evening (21:00 to 7:00)", "nightshift", nights, night_values, 3,
+           300);
+    int warm = (int)number("nightwarmth", 50);
+    if (slider(p, "Color temperature", NULL, &warm, 0, 100, "Less Warm", "More Warm"))
+        apply_number("nightwarmth", warm);
+    end(p, NULL);
     section(p, NULL);
     struct rect g = custom(p, 176, "Arrangement");
     if (!p->measure && p->ui->c) {
@@ -1154,6 +1226,7 @@ static void pane_wallpaper(struct page *p)
 
 static void pane_lock(struct page *p)
 {
+    struct settings *s = p->s;
     static const char *const labels[] = {"Never",      "After 1 minute",   "After 2 minutes", "After 5 minutes",
                                          "After 10 minutes", "After 15 minutes", "After 30 minutes", "After 1 hour"};
     static const char *const values[] = {"0", "1", "2", "5", "10", "15", "30", "60"};
@@ -1168,8 +1241,9 @@ static void pane_lock(struct page *p)
     ksnprintf(title, sizeof(title), "Log in automatically as %s", me->full);
     if (toggle(p, title, "Skip the login screen at boot", &automatic))
         apply("autologin", automatic ? me->name : "off");
-    info(p, "Password", me->has_password ? "Required to unlock" : "Not set - anyone can unlock");
-    end(p, "Set or change the password in Users & Groups.");
+    if (link(p, panes[P_USERS].sym, panes[P_USERS].color, "Password", me->has_password ? "Set" : "Not set"))
+        go(s, P_USERS);
+    end(p, NULL);
     section(p, NULL);
     if (button(p, "Lock the screen now", "Super+L does it too", "Lock Screen")) {
         p->ui->win = NULL;
@@ -1180,6 +1254,7 @@ static void pane_lock(struct page *p)
 
 static void pane_privacy(struct page *p)
 {
+    struct settings *s = p->s;
     header(p, SYM_HAND, panes[P_PRIVACY].color, "Privacy & Security",
            "HTTPS checks every server against trusted root certificates; sites keep cookies only until you turn "
            "the computer off.");
@@ -1196,10 +1271,11 @@ static void pane_privacy(struct page *p)
     if (!p->measure && ui_button(p->ui, ctl(r, 90, 26), "Clear"))
         http_cookies_clear();
     end(p, "To trust another root, put its .pem file in /home/certs and press Reload.");
-    const struct user *me = user_current();
     section(p, "Security");
-    info(p, "Password", me->has_password ? "Set" : "Not set");
-    info(p, "Screen lock", number("locktime", 0) ? "When idle" : "Only when you lock it");
+    if (link(p, panes[P_LOCK].sym, panes[P_LOCK].color, "Screen lock", number("locktime", 0) ? "When idle" : "Manual"))
+        go(s, P_LOCK);
+    if (link(p, panes[P_USERS].sym, panes[P_USERS].color, "Passwords", NULL))
+        go(s, P_USERS);
     end(p, NULL);
 }
 
@@ -1371,14 +1447,36 @@ static void pane_keyboard(struct page *p)
     end(p, NULL);
     section(p, "Keyboard Shortcuts");
     static const char *const keys[][2] = {
-        {"Search and open apps", "Ctrl+Space"},  {"Switch the keyboard layout", "Super+Space"},
-        {"Switch windows", "Super+Tab"},  {"Close the window", "Super+W"},
-        {"Minimize the window", "Super+M"},       {"Quit the app", "Super+Q"},      {"Lock the screen", "Super+L"},
-        {"Open System Settings", "Super+,"},      {"Copy, paste", "Ctrl+C, Ctrl+V"},
+        {"Search and open apps", "Ctrl+Space"},
+        {"Switch the keyboard layout", "Super+Space"},
+        {"Switch windows", "Alt+Tab, Super+Tab"},
+        {"Mission Control", "F3, Ctrl+Up"},
+        {"Show the desktop", "Super+D"},
+        {"Tile the window", "Super+arrows"},
+        {"Close the window", "Super+W"},
+        {"Minimize the window", "Super+M"},
+        {"Quit the app", "Super+Q"},
+        {"Open Files", "Super+E"},
+        {"Lock the screen", "Super+L"},
+        {"Open System Settings", "Super+,"},
+        {"Copy, paste", "Ctrl+C, Ctrl+V"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(keys); i++)
         info(p, keys[i][0], keys[i][1]);
     end(p, "Super is the Windows key (Command on a Mac keyboard).");
+    section(p, "Screenshots");
+    info(p, "Whole screen", "Super+Shift+3, Super+Print Screen");
+    info(p, "An area", "Super+Shift+4, Super+Shift+S");
+    info(p, "Screenshot bar", "Print Screen, Super+Shift+5");
+    static const char *const places[] = {"Desktop", "Pictures"};
+    static const char *const place_values[] = {"desktop", "pictures"};
+    choice(p, "Save to", NULL, "shotfolder", places, place_values, 2, 200);
+    static const char *const timers[] = {"None", "5 s", "10 s"};
+    static const char *const timer_values[] = {"0", "5", "10"};
+    choice(p, "Timer", NULL, "shotdelay", timers, timer_values, 3, 200);
+    toggle_setting(p, "Show floating thumbnail", "A click on it opens the editor: crop and mark up", "shotthumb");
+    toggle_setting(p, "Open the editor after each screenshot", NULL, "shotedit");
+    end(p, NULL);
 }
 
 static void pane_mouse(struct page *p)
@@ -1486,7 +1584,7 @@ static void browser_popup(struct page *p)
     popup(p, "Default web browser", NULL, "browser", browser_labels, browser_values, browser_count);
 }
 
-/* ---- Windows Apps */
+/* ---- Apps */
 
 #if CONFIG_WIN32
 static void program_row(const struct winshell_program *prog, void *ctx)
@@ -1501,10 +1599,14 @@ static void program_row(const struct winshell_program *prog, void *ctx)
 }
 #endif
 
-static void pane_windows(struct page *p)
+static void pane_apps(struct page *p)
 {
-    header(p, SYM_WINDOW, panes[P_WINDOWS].color, "Windows Apps",
-           "SynthOS runs 32- and 64-bit Windows programs: double-click an .exe, or start it from the Terminal.");
+    header(p, SYM_APPS, panes[P_APPS].color, "Apps",
+           "Default apps, the programs you installed and how 32- and 64-bit Windows programs run: double-click an "
+           ".exe, or start it from the Terminal.");
+    section(p, "Default Apps");
+    browser_popup(p);
+    end(p, "Links from every app open in the default browser.");
     struct bundle_info bi;
     const char *chromium = vfs_exists("/home/apps/chromium/chrome.exe") ? "Installed"
                            : bundle_info(&bi)                             ? "Unpacks after login"
@@ -1512,7 +1614,6 @@ static void pane_windows(struct page *p)
     section(p, "Browsers");
     info(p, "Chromium", chromium);
     info(p, "Google Chrome", vfs_exists("/home/apps/chrome/chrome.exe") ? "Installed" : "Not installed");
-    browser_popup(p);
     toggle_setting(p, "Download Google Chrome by itself", "On an image without Chromium, after the first login",
                    "chromeauto");
     end(p, NULL);
@@ -1779,6 +1880,10 @@ static void select_pane(struct settings *s, const char *arg)
     for (int i = 0; i < P_COUNT; i++)
         if (!str_casecmp(arg, panes[i].key) || !str_casecmp(arg, panes[i].name))
             go(s, i);
+    if (!str_casecmp(arg, "windows"))
+        go(s, P_APPS);
+    if (!str_casecmp(arg, "focus"))
+        go(s, P_NOTIFY);
 }
 
 static void launch(const char *arg)

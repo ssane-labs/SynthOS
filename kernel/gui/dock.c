@@ -900,6 +900,7 @@ bool dock_animate(void)
             bounce_app = NULL;
         busy = true;
     }
+    dock_peek_tick();
     if (busy)
         layout();
     return busy;
@@ -1263,6 +1264,7 @@ void dock_mouse(int x, int y, unsigned button, bool down, int clicks)
     UNUSED(clicks);
     int i = item_at(x, y), g = grid_at(x, y);
     if (down) {
+        dock_peek_cancel();
         pressed_item = button == BUTTON_LEFT ? i : -1;
         grid_pressed = button == BUTTON_LEFT ? g : -1;
         dnd.armed = pressed_item >= 0 && (items[i].pin >= 0 || items[i].kind == DI_APP);
@@ -1341,6 +1343,9 @@ void dock_hover(int x, int y)
     } else {
         hl_alpha.target = 0;
     }
+    bool app_open = item >= 0 && items[item].kind == DI_APP && items[item].running;
+    dock_peek_hover(app_open ? items[item].app : NULL, item >= 0 ? items[item].r : (struct rect){0, 0, 0, 0},
+                    kind == DOCK_RAIL);
     int nx = now_over ? x : -1;
     if (nx == hover_x && item == hover_item && gi == grid_hover)
         return;

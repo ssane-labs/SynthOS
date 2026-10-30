@@ -21,5 +21,6 @@ int png_decode(const uint8_t *data, size_t size, struct picture *out);
 int jpeg_decode(const uint8_t *data, size_t size, struct picture *out);
 int gif_decode(const uint8_t *data, size_t size, struct picture *out);
 int bmp_decode(const uint8_t *data, size_t size, struct picture *out);
+int png_encode(const uint32_t *px, int w, int h, int stride, uint8_t **out, size_t *len);
 
 #endif
