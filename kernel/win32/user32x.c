@@ -466,10 +466,153 @@ static int WINAPI GetClipboardFormatNameW(UINT format, WCHAR *out, int max)
     return (int)w32_wcslen(out);
 }
 
+/* The clipboard is the desktop's own (gui_clipboard): text and pictures go both ways between Windows programs and
+   SynthOS apps. A handle GetClipboardData gives stays the clipboard's; the previous one of a format is freed. */
+enum { CF_TEXT = 1, CF_OEMTEXT = 7, CF_DIB = 8, CF_UNICODETEXT = 13, CF_DIBV5 = 17 };
+
+static W32_STATE void *clip_out[3];
+
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static void set_le32(uint8_t *p, uint32_t v)
+{
+    for (int i = 0; i < 4; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
+}
+
+static void clipboard_from_dib(const uint8_t *dib)
+{
+    uint32_t hsize = le32(dib), comp = le32(dib + 16), used = le32(dib + 32);
+    int w = (int)le32(dib + 4), h = (int)le32(dib + 8), bpp = dib[14] | dib[15] << 8;
+    bool bottom_up = h > 0;
+    h = h < 0 ? -h : h;
+    if (w <= 0 || h <= 0 || (bpp != 24 && bpp != 32) || w > 16384 || h > 16384)
+        return;
+    const uint8_t *bits = dib + hsize + (comp == 3 && hsize == 40 ? 12 : 0) + (bpp <= 8 ? (used ? used : 1u << bpp) * 4 : 0);
+    int stride = ((w * bpp + 31) / 32) * 4;
+    uint32_t *px = w32_alloc((size_t)w * (size_t)h * 4);
+    if (!px)
+        return;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *row = bits + (size_t)(bottom_up ? h - 1 - y : y) * (size_t)stride;
+        for (int x = 0; x < w; x++) {
+            const uint8_t *p = row + x * (bpp / 8);
+            px[y * w + x] = 0xff000000u | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0];
+        }
+    }
+    gui_clipboard_set_image(px, w, h, w);
+    w32_free(px);
+}
+
 static HANDLE WINAPI SetClipboardData(UINT format, HANDLE data)
 {
-    UNUSED(format);
+    if (!data)
+        return NULL;
+    if (format == CF_UNICODETEXT) {
+        char *text = w32_narrow(data);
+        if (text)
+            gui_set_clipboard(text, strlen(text));
+        w32_free(text);
+    } else if (format == CF_TEXT || format == CF_OEMTEXT) {
+        gui_set_clipboard(data, strlen(data));
+    } else if (format == CF_DIB || format == CF_DIBV5) {
+        clipboard_from_dib(data);
+    }
     return data;
+}
+
+static BOOL WINAPI EmptyClipboard(void)
+{
+    gui_set_clipboard("", 0);
+    return TRUE;
+}
+
+static bool has_text(void)
+{
+    return gui_clipboard()[0] != 0;
+}
+
+static bool has_image(void)
+{
+    int w, h;
+    return gui_clipboard_image(&w, &h);
+}
+
+static BOOL WINAPI IsClipboardFormatAvailable(UINT format)
+{
+    if (format == CF_TEXT || format == CF_OEMTEXT || format == CF_UNICODETEXT)
+        return has_text();
+    if (format == CF_DIB || format == CF_DIBV5)
+        return has_image();
+    return FALSE;
+}
+
+static UINT WINAPI EnumClipboardFormats(UINT format)
+{
+    UINT list[4];
+    int n = 0;
+    if (has_text())
+        list[n++] = CF_UNICODETEXT, list[n++] = CF_TEXT;
+    if (has_image())
+        list[n++] = CF_DIB;
+    for (int i = 0; i < n; i++)
+        if (!format || (i > 0 && list[i - 1] == format))
+            return list[i];
+    return 0;
+}
+
+static int WINAPI CountClipboardFormats(void)
+{
+    return (has_text() ? 2 : 0) + (has_image() ? 1 : 0);
+}
+
+static HANDLE WINAPI GetClipboardData(UINT format)
+{
+    int slot = format == CF_UNICODETEXT ? 0 : format == CF_DIB || format == CF_DIBV5 ? 2 : 1;
+    void *out = NULL;
+    if ((format == CF_TEXT || format == CF_OEMTEXT) && has_text()) {
+        const char *text = gui_clipboard();
+        if ((out = w32_alloc(strlen(text) + 1)))
+            memcpy(out, text, strlen(text) + 1);
+    } else if (format == CF_UNICODETEXT && has_text()) {
+        WCHAR *wide = w32_widen(gui_clipboard());
+        out = wide;
+    } else if ((format == CF_DIB || format == CF_DIBV5) && has_image()) {
+        int w, h;
+        gui_clipboard_image(&w, &h);
+        uint8_t *dib = w32_alloc(40 + (size_t)w * (size_t)h * 4);
+        uint32_t *px = w32_alloc((size_t)w * (size_t)h * 4);
+        if (dib && px) {
+            memset(dib, 0, 40);
+            set_le32(dib, 40);
+            set_le32(dib + 4, (uint32_t)w);
+            set_le32(dib + 8, (uint32_t)h);
+            dib[12] = 1;
+            dib[14] = 32;
+            set_le32(dib + 20, (uint32_t)(w * h * 4));
+            gui_clipboard_copy_image(px, w);
+            uint32_t *bits = (uint32_t *)(dib + 40);
+            for (int y = 0; y < h; y++)
+                memcpy(bits + (size_t)(h - 1 - y) * (size_t)w, px + (size_t)y * (size_t)w, (size_t)w * 4);
+            out = dib;
+        } else {
+            w32_free(dib);
+        }
+        w32_free(px);
+    }
+    if (out) {
+        w32_free(clip_out[slot]);
+        clip_out[slot] = out;
+    }
+    return out;
+}
+
+static DWORD WINAPI GetClipboardSequenceNumber(void)
+{
+    return gui_clipboard_seq();
 }
 
 static HANDLE WINAPI GetKeyboardLayout(DWORD thread)
@@ -930,15 +1073,16 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(DisplayConfigGetDeviceInfo),
     W32_AS("OpenClipboard", w32_one1),
     W32_AS("CloseClipboard", w32_one0),
-    W32_AS("EmptyClipboard", w32_one0),
-    W32_AS("GetClipboardData", w32_zero1),
+    W32_FN(EmptyClipboard),
+    W32_FN(GetClipboardData),
     W32_FN(SetClipboardData),
-    W32_AS("IsClipboardFormatAvailable", w32_zero1),
-    W32_AS("EnumClipboardFormats", w32_zero1),
+    W32_FN(IsClipboardFormatAvailable),
+    W32_FN(EnumClipboardFormats),
+    W32_FN(CountClipboardFormats),
     W32_FN(GetClipboardFormatNameW),
     W32_AS("RegisterClipboardFormatW", RegisterWindowMessageW),
     W32_AS("RegisterClipboardFormatA", RegisterWindowMessageA),
-    W32_AS("GetClipboardSequenceNumber", w32_one0),
+    W32_FN(GetClipboardSequenceNumber),
     W32_AS("AddClipboardFormatListener", w32_one1),
     W32_AS("RemoveClipboardFormatListener", w32_one1),
     W32_FN(RegisterWindowMessageW),

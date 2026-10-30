@@ -1024,7 +1024,8 @@ static void paint_rail(struct canvas *c)
     struct glass_look look;
     glass_look_for(&look, GLASS_PANEL, PANEL_RADIUS);
     glass_draw(c, &glass, &look);
-    gfx_round_frame(c, dock_rect, PANEL_RADIUS, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
+    if (style.glass != GLASS_LIQUID)
+        gfx_round_frame(c, dock_rect, PANEL_RADIUS, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
     if (hl_alpha.pos > 8) {
         struct rect pill = {dock_rect.x + 8, hl.pos, dock_rect.w - 16, RAIL_ROW - 6};
         gfx_round(c, pill, 14, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, CLAMP(hl_alpha.pos, 0, 1024) * 24 / 1024));

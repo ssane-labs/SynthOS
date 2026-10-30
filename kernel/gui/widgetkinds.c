@@ -393,43 +393,132 @@ void widget_free_kind(struct widget *w)
 
 /* ---- clocks */
 
+/* ---- options kept in the widget as "key=value;key=value" */
+
+int widget_opt_int(const struct widget *w, const char *key, int fallback)
+{
+    size_t n = strlen(key);
+    for (const char *p = w->opt; *p;) {
+        const char *e = strchr(p, ';');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len > n && p[n] == '=' && !strncmp(p, key, n)) {
+            long v;
+            char num[12];
+            size_t k = MIN(len - n - 1, sizeof(num) - 1);
+            memcpy(num, p + n + 1, k);
+            num[k] = 0;
+            return str_parse_long(num, &v) ? (int)v : fallback;
+        }
+        p += len + (e ? 1 : 0);
+    }
+    return fallback;
+}
+
+void widget_opt_set(struct widget *w, const char *key, int value)
+{
+    char out[WIDGET_OPT] = "";
+    size_t n = strlen(key);
+    for (const char *p = w->opt; *p;) {
+        const char *e = strchr(p, ';');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len && !(len > n && p[n] == '=' && !strncmp(p, key, n)) && memchr(p, '=', len)) {
+            size_t o = strlen(out);
+            if (o + len + 2 < sizeof(out)) {
+                if (o)
+                    out[o++] = ';';
+                memcpy(out + o, p, len);
+                out[o + len] = 0;
+            }
+        }
+        p += len + (e ? 1 : 0);
+    }
+    char item[32];
+    ksnprintf(item, sizeof(item), "%s%s=%d", out[0] ? ";" : "", key, value);
+    str_append(out, item, sizeof(out));
+    str_copy(w->opt, out, sizeof(w->opt));
+}
+
+/* ---- clocks */
+
+const struct ui_font *const clock_fonts[CLOCK_FONTS] = {&font_clock, &font_clock_light, &font_clock_heavy,
+                                                       &font_clock_mono, &font_clock_serif};
+const uint32_t clock_colors[CLOCK_COLORS] = {0,
+                                             RGB(255, 255, 255),
+                                             RGB(28, 28, 30),
+                                             1,
+                                             RGB(255, 69, 58),
+                                             RGB(255, 159, 10),
+                                             RGB(255, 214, 10),
+                                             RGB(48, 209, 88),
+                                             RGB(100, 210, 255),
+                                             RGB(10, 132, 255),
+                                             RGB(191, 90, 242),
+                                             RGB(255, 55, 95)};
+
+static uint32_t clock_color(const struct widget *w)
+{
+    int i = CLAMP(widget_opt_int(w, "color", 0), 0, CLOCK_COLORS - 1);
+    return i == 0 ? widget_ink(w) : i == 3 ? style.accent : clock_colors[i];
+}
+
+/* The time in the chosen face, drawn at the font's size and scaled to fill the box, so it suits any widget size. */
+static void big_time(struct canvas *c, const struct widget *w, struct rect box, const char *text, uint32_t col,
+                     enum text_align align)
+{
+    const struct ui_font *f = clock_fonts[CLAMP(widget_opt_int(w, "font", 0), 0, CLOCK_FONTS - 1)];
+    int tw = gfx_text_width(f, text) + 4, th = f->height;
+    struct canvas tmp;
+    if (tw <= 4 || !canvas_alloc(&tmp, tw, th))
+        return;
+    memset(tmp.px, 0, (size_t)tw * (size_t)th * 4);
+    gfx_text(&tmp, 2, 0, f, text, col | 0xff000000u);
+    int scale = MIN(box.w * 1024 / tw, box.h * 1024 / th);
+    int dw = tw * scale / 1024, dh = th * scale / 1024;
+    int x = align == ALIGN_LEFT ? box.x : align == ALIGN_RIGHT ? box.x + box.w - dw : box.x + (box.w - dw) / 2;
+    struct rect dst = {x, box.y + (box.h - dh) / 2, dw, dh};
+    if (w->style == ST_CLEAR) {
+        struct canvas shadow;
+        if (canvas_alloc(&shadow, tw, th)) {
+            memset(shadow.px, 0, (size_t)tw * (size_t)th * 4);
+            gfx_text(&shadow, 2, 0, f, text, ALPHA(0, style.dark ? 150 : 80));
+            gfx_scale_smooth(c, (struct rect){dst.x + 1, dst.y + 3, dst.w, dst.h}, &shadow, 255);
+            canvas_free(&shadow);
+        }
+    }
+    gfx_scale_smooth(c, dst, &tmp, 255);
+    canvas_free(&tmp);
+}
+
+static void paint_analog(struct canvas *c, struct widget *w, struct rect r);
+
 static void paint_clock(struct canvas *c, struct widget *w, struct rect r)
 {
+    if (widget_opt_int(w, "analog", 0)) {
+        paint_analog(c, w, r);
+        return;
+    }
     struct rtc_time t;
     time_local(&t);
     char time[16], date[48];
-    gui_clock_time(&t, time, sizeof(time), false, false);
+    gui_clock_time(&t, time, sizeof(time), widget_opt_int(w, "seconds", 0), false);
     int m = CLAMP((int)t.month, 1, 12);
     ksnprintf(date, sizeof(date), "%s, %u %s", panel_day_name(panel_weekday((int)t.year, m, (int)t.day)), t.day,
               panel_month_name(m - 1));
-    uint32_t ink = widget_ink(w);
-    switch (w->size) {
-    case WS_SLIM:
-        widget_text(c, w, (struct rect){r.x + 20, r.y, r.w / 2, r.h}, &font_large, time, ink, ALIGN_LEFT);
-        widget_text(c, w, (struct rect){r.x + r.w / 2, r.y, r.w / 2 - 20, r.h}, &font_sans, date, widget_soft(w),
-                    ALIGN_RIGHT);
-        break;
-    case WS_SMALL:
-        widget_text(c, w, (struct rect){r.x, r.y + r.h / 2 - 44, r.w, 60}, &font_display, time, ink, ALIGN_CENTER);
-        widget_text(c, w, (struct rect){r.x + 8, r.y + r.h / 2 + 18, r.w - 16, 20}, &font_small, date,
-                    widget_soft(w), ALIGN_CENTER);
-        break;
-    default: {
-        int y = r.y + (r.h - 146) / 2;
-        widget_text(c, w, (struct rect){r.x, y, r.w, 112}, &font_clock, time, ink, ALIGN_CENTER);
-        widget_text(c, w, (struct rect){r.x, y + 112, r.w, 30}, &font_title, date, ALPHA(ink, 230), ALIGN_CENTER);
-        if (w->size == WS_LARGE) {
-            int day = (int)t.hour * 60 + (int)t.minute;
-            struct rect bar = {r.x + 40, r.y + r.h - 50, r.w - 80, 6};
-            gfx_round(c, bar, 3, ALPHA(ink, 40));
-            gfx_round(c, (struct rect){bar.x, bar.y, MAX(bar.w * day / 1440, 6), 6}, 3, style.accent);
-            char left[32];
-            ksnprintf(left, sizeof(left), "%d%% of the day", day * 100 / 1440);
-            widget_text(c, w, (struct rect){bar.x, bar.y + 12, bar.w, 16}, &font_small, left, widget_soft(w),
-                        ALIGN_CENTER);
-        }
+    uint32_t col = clock_color(w);
+    bool show_date = widget_opt_int(w, "date", 1);
+    if (w->size == WS_SLIM) {
+        big_time(c, w, (struct rect){r.x + 16, r.y + 8, show_date ? r.w / 2 : r.w - 32, r.h - 16}, time, col,
+                 show_date ? ALIGN_LEFT : ALIGN_CENTER);
+        if (show_date)
+            widget_text(c, w, (struct rect){r.x + r.w / 2, r.y, r.w / 2 - 18, r.h}, &font_sans, date, ALPHA(col, 200),
+                        ALIGN_RIGHT);
+        return;
     }
-    }
+    int date_h = show_date ? (w->size == WS_SMALL ? 22 : 34) : 0;
+    big_time(c, w, (struct rect){r.x + 10, r.y + 10, r.w - 20, r.h - 20 - date_h}, time, col, ALIGN_CENTER);
+    if (show_date)
+        widget_text(c, w, (struct rect){r.x + 6, r.y + r.h - date_h - 10, r.w - 12, date_h},
+                    w->size == WS_SMALL ? &font_small : &font_title, date, ALPHA(col, 230), ALIGN_CENTER);
 }
 
 static const int16_t sin_t[91] = {
@@ -462,7 +551,7 @@ static void paint_analog(struct canvas *c, struct widget *w, struct rect r)
     struct rtc_time t;
     time_local(&t);
     int cx = r.x + r.w / 2, cy = r.y + r.h / 2, rad = MIN(r.w, r.h) / 2 - 6;
-    uint32_t ink = widget_ink(w);
+    uint32_t ink = clock_color(w);
     if (w->shape != SH_ROUND)
         gfx_circle(c, cx, cy, rad, ALPHA(ink, 20));
     for (int i = 0; i < 60; i++) {
@@ -1205,6 +1294,12 @@ void widget_kinds_tick(void)
     if ((int)t.second != last_second) {
         last_second = (int)t.second;
         damage_kind(WK_ANALOG);
+        int n;
+        struct widget *list = widget_list(&n);
+        for (int i = 0; i < n; i++)
+            if (list[i].used && list[i].kind == WK_CLOCK &&
+                (widget_opt_int(&list[i], "seconds", 0) || widget_opt_int(&list[i], "analog", 0)))
+                widget_damage(&list[i]);
     }
     int n;
     struct widget *ws = widget_list(&n);

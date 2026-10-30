@@ -149,7 +149,7 @@ struct settings {
     char themes[48][24];
     int theme_count;
     struct ui_list theme_list;
-    struct ui_text wallpaper_file, wallpaper_url, login_item, city, computer;
+    struct ui_text wallpaper_file, wallpaper_url, login_item, computer;
     struct canvas thumbs[WALLS];
     bool thumbs_dark;
     const struct gui_look *thumbs_look;
@@ -559,8 +559,6 @@ static void pane_notify(struct page *p)
     section(p, NULL);
     if (button(p, "See how a notification looks", NULL, "Show Example"))
         gui_notify("Notifications", "This is how a notification looks.");
-    if (button(p, "Notifications of this session", NULL, "Open Notification Center"))
-        notification_center_toggle();
     end(p, NULL);
 }
 
@@ -574,10 +572,6 @@ static void pane_sound(struct page *p)
     const char *dev = hal_audio_name();
     info(p, "Output device", dev && *dev ? dev : "Built-in sound (AC'97)");
     end(p, "Music, Video and the built-in songs play through the AC'97 sound card QEMU and many PCs have.");
-    section(p, NULL);
-    if (button(p, "Play the built-in songs", NULL, "Open Music"))
-        gui_app_launch(gui_app_find("Music"), NULL);
-    end(p, NULL);
 }
 
 /* ---- General and its pages */
@@ -956,44 +950,8 @@ static void pane_control(struct page *p)
 
 /* ---- Desktop & Dock */
 
-static const char *const widget_kind_names[] = {"clock", "analog", "worldclock", "weather", "calendar", "tasks",
-                                                "music", "visualizer", "photo", "notes", "system", "apps"};
-static const char *const widget_kind_titles[] = {"Clock", "Analog Clock", "World Clock", "Weather",
-                                                 "Calendar", "Tasks", "Music", "Visualizer",
-                                                 "Photo", "Notes", "System", "Apps"};
-
-static bool widget_on(const char *name)
-{
-    char v[160];
-    current("widgets", v, sizeof(v));
-    size_t n = strlen(name);
-    for (const char *p = v; *p;) {
-        const char *e = strchr(p, ',');
-        size_t len = e ? (size_t)(e - p) : strlen(p);
-        if (len == n && !strncmp(p, name, n))
-            return true;
-        p += len + (e ? 1 : 0);
-    }
-    return false;
-}
-
-static void widget_toggle(const char *name, bool on)
-{
-    char out[160] = "";
-    for (size_t i = 0; i < ARRAY_SIZE(widget_kind_names); i++) {
-        bool want = !strcmp(widget_kind_names[i], name) ? on : widget_on(widget_kind_names[i]);
-        if (want) {
-            if (out[0])
-                str_append(out, ",", sizeof(out));
-            str_append(out, widget_kind_names[i], sizeof(out));
-        }
-    }
-    apply("widgets", out[0] ? out : "none");
-}
-
 static void pane_dock(struct page *p)
 {
-    struct settings *s = p->s;
     section(p, "Dock");
     static const char *const sizes[] = {"Small", "Medium", "Large"};
     static const char *const size_values[] = {"small", "medium", "large"};
@@ -1032,24 +990,6 @@ static void pane_dock(struct page *p)
         popup(p, corner_names[i], NULL, corner_keys[i], corners, corner_values, 7);
     info(p, "Show all windows", "F3 or Ctrl+Up");
     end(p, "Push the pointer into a corner of the screen to run what it is set to.");
-    section(p, "Widgets");
-    for (size_t i = 0; i < ARRAY_SIZE(widget_kind_names); i++) {
-        bool on = widget_on(widget_kind_names[i]);
-        if (toggle(p, widget_kind_titles[i], NULL, &on))
-            widget_toggle(widget_kind_names[i], on);
-    }
-    if (button(p, "Add, move and remove widgets", "Right-click a widget for its size, shape, style and options",
-               "Edit Widgets"))
-        widgets_edit(true);
-    if (!p->measure && !s->city.len && p->ui->st->focus == 0) {
-        char city[48];
-        current("weathercity", city, sizeof(city));
-        if (strcmp(city, "auto"))
-            ui_text_set(&s->city, city);
-    }
-    if (field(p, "Weather city", NULL, &s->city, "By address", 200))
-        apply("weathercity", s->city.len ? s->city.buf : "auto");
-    end(p, NULL);
 }
 
 /* ---- Displays */

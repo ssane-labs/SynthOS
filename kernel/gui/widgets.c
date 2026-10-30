@@ -16,38 +16,42 @@
    freely and it settles into the nearest free cells when it is let go. Each look keeps its own widgets in
    ~/.widgets, one per line: "<look> <kind> <size> <shape> <style> <col> <row> <options>". */
 
-#define S 1u << WS_SMALL
-#define M 1u << WS_MEDIUM
-#define L 1u << WS_LARGE
-#define T 1u << WS_SLIM
-
+/* Each kind: its starting size and how small and large it may be made, in cells. */
 const struct widget_kind_info widget_kinds[WK_COUNT] = {
-    {"clock", "Clock", SYM_CLOCK, WS_MEDIUM, S | M | L | T},
-    {"weather", "Weather", SYM_WEATHER, WS_MEDIUM, S | M | L | T},
-    {"music", "Music", SYM_MUSIC, WS_MEDIUM, S | M | T},
-    {"calendar", "Calendar", SYM_CALENDAR, WS_MEDIUM, S | M | L},
-    {"visualizer", "Visualizer", SYM_VOLUME, WS_MEDIUM, S | M | L | T},
-    {"tasks", "Tasks", SYM_LIST, WS_MEDIUM, S | M | L},
-    {"analog", "Analog Clock", SYM_CLOCK, WS_SMALL, S | L},
-    {"worldclock", "World Clock", SYM_GLOBE, WS_SMALL, S | M | T},
-    {"photo", "Photo", SYM_PHOTO, WS_SMALL, S | M | L},
-    {"notes", "Notes", SYM_PENCIL, WS_SMALL, S | M | L},
-    {"system", "System", SYM_CHIP, WS_SMALL, S | M | T},
-    {"apps", "Apps", SYM_APPS, WS_SMALL, S | M | T},
+    {"clock", "Clock", SYM_CLOCK, 4, 2, 2, 1, 8, 4},
+    {"weather", "Weather", SYM_WEATHER, 4, 2, 2, 1, 6, 4},
+    {"music", "Music", SYM_MUSIC, 4, 2, 2, 1, 6, 2},
+    {"calendar", "Calendar", SYM_CALENDAR, 4, 2, 2, 2, 6, 5},
+    {"visualizer", "Visualizer", SYM_VOLUME, 4, 2, 2, 1, 8, 4},
+    {"tasks", "Tasks", SYM_LIST, 4, 2, 2, 2, 6, 5},
+    {"analog", "Analog Clock", SYM_CLOCK, 2, 2, 2, 2, 5, 5},
+    {"worldclock", "World Clock", SYM_GLOBE, 2, 2, 2, 1, 6, 2},
+    {"photo", "Photo", SYM_PHOTO, 2, 2, 1, 1, 8, 5},
+    {"notes", "Notes", SYM_PENCIL, 2, 2, 2, 2, 6, 5},
+    {"system", "System", SYM_CHIP, 2, 2, 2, 1, 6, 2},
+    {"apps", "Apps", SYM_APPS, 2, 2, 2, 1, 4, 2},
 };
 
-#undef S
-#undef M
-#undef L
-#undef T
-
 static const char *const size_names[WS_COUNT] = {"small", "medium", "large", "slim"};
-static const char *const size_titles[WS_COUNT] = {"Small", "Medium", "Large", "Slim"};
 static const char *const shape_names[SH_COUNT] = {"rounded", "round", "square"};
 static const char *const shape_titles[SH_COUNT] = {"Rounded", "Round", "Square"};
 static const char *const style_names[ST_COUNT] = {"glass", "tinted", "solid", "clear"};
 static const char *const style_titles[ST_COUNT] = {"Glass", "Tinted", "Solid", "Clear"};
 static const int size_cells[WS_COUNT][2] = {{2, 2}, {4, 2}, {4, 4}, {4, 1}};
+
+/* Which of the four layouts a size in cells calls for. */
+static int size_class(int cw, int ch)
+{
+    return ch <= 1 ? WS_SLIM : cw <= 2 ? WS_SMALL : ch <= 2 ? WS_MEDIUM : WS_LARGE;
+}
+
+static void set_cells(struct widget *w, int cw, int ch)
+{
+    const struct widget_kind_info *k = &widget_kinds[w->kind];
+    w->cw = CLAMP(cw, k->min_w, k->max_w);
+    w->ch = CLAMP(ch, k->min_h, k->max_h);
+    w->size = size_class(w->cw, w->ch);
+}
 
 static struct widget ws[MAX_WIDGETS];
 static int loaded_look = -1;
@@ -98,7 +102,7 @@ static struct widget *add_widget(int kind)
             memset(w, 0, sizeof(*w));
             w->used = true;
             w->kind = kind;
-            w->size = widget_kinds[kind].size;
+            set_cells(w, widget_kinds[kind].cw, widget_kinds[kind].ch);
             w->shape = kind == WK_ANALOG ? SH_ROUND : SH_ROUNDED;
             w->style = kind == WK_CLOCK ? ST_CLEAR : ST_GLASS;
             w->col = w->row = -1;
@@ -158,8 +162,21 @@ static void parse_line(char *p, char *end)
         return;
     char *s = next_word(&p, end, &n);
     int v = find_name(size_names, WS_COUNT, s, n);
-    if (v >= 0 && (widget_kinds[id].sizes >> v & 1))
-        w->size = v;
+    char *x = memchr(s, 'x', n);
+    if (v >= 0) {
+        set_cells(w, size_cells[v][0], size_cells[v][1]);
+    } else if (x && x > s) {
+        long cw = 0, ch = 0;
+        char num[8];
+        size_t a = MIN((size_t)(x - s), sizeof(num) - 1), b = MIN((size_t)(s + n - x - 1), sizeof(num) - 1);
+        memcpy(num, s, a);
+        num[a] = 0;
+        str_parse_long(num, &cw);
+        memcpy(num, x + 1, b);
+        num[b] = 0;
+        str_parse_long(num, &ch);
+        set_cells(w, (int)cw, (int)ch);
+    }
     s = next_word(&p, end, &n);
     if ((v = find_name(shape_names, SH_COUNT, s, n)) >= 0)
         w->shape = v;
@@ -245,8 +262,8 @@ static void save(void)
         if (!w->used || w->leaving)
             continue;
         any = true;
-        n += (size_t)ksnprintf(out + n, cap - n, "%s %s %s %s %s %d %d%s%s\n", look, widget_kinds[w->kind].name,
-                               size_names[w->size], shape_names[w->shape], style_names[w->style], w->col, w->row,
+        n += (size_t)ksnprintf(out + n, cap - n, "%s %s %dx%d %s %s %d %d%s%s\n", look, widget_kinds[w->kind].name,
+                               w->cw, w->ch, shape_names[w->shape], style_names[w->style], w->col, w->row,
                                w->opt[0] ? " " : "", w->opt);
     }
     if (!any)
@@ -287,24 +304,22 @@ static int grid_rows(void)
     return MAX(1, (grid_area().h + CELL_GAP) / (CELL + CELL_GAP));
 }
 
-static struct rect cell_rect(int col, int row, int size)
+static struct rect cell_rect(int col, int row, int cw, int ch)
 {
     struct rect a = grid_area();
-    int cw = size_cells[size][0], ch = size_cells[size][1];
     return (struct rect){a.x + col * (CELL + CELL_GAP), a.y + row * (CELL + CELL_GAP), cw * CELL + (cw - 1) * CELL_GAP,
                          ch * CELL + (ch - 1) * CELL_GAP};
 }
 
-static bool fits(int col, int row, int size, const struct widget *except)
+static bool fits(int col, int row, int cw, int ch, const struct widget *except)
 {
-    int cw = size_cells[size][0], ch = size_cells[size][1];
     if (col < 0 || row < 0 || col + cw > grid_cols() || row + ch > grid_rows())
         return false;
     for (int i = 0; i < MAX_WIDGETS; i++) {
         const struct widget *o = &ws[i];
         if (!o->used || o == except || o->leaving || o->col < 0)
             continue;
-        int ow = size_cells[o->size][0], oh = size_cells[o->size][1];
+        int ow = o->cw, oh = o->ch;
         if (col < o->col + ow && o->col < col + cw && row < o->row + oh && o->row < row + ch)
             return false;
     }
@@ -312,12 +327,12 @@ static bool fits(int col, int row, int size, const struct widget *except)
 }
 
 /* The free place nearest to (col, row); new widgets start from the top right corner. */
-static bool nearest_free(int col, int row, int size, const struct widget *except, int *out_col, int *out_row)
+static bool nearest_free(int col, int row, int cw, int ch, const struct widget *except, int *out_col, int *out_row)
 {
     int best = -1, bc = 0, br = 0;
     for (int r = 0; r < grid_rows(); r++)
         for (int c = 0; c < grid_cols(); c++) {
-            if (!fits(c, r, size, except))
+            if (!fits(c, r, cw, ch, except))
                 continue;
             int d = (c - col) * (c - col) * 4 + (r - row) * (r - row) * 5;
             if (best < 0 || d < best)
@@ -332,13 +347,13 @@ static bool nearest_free(int col, int row, int size, const struct widget *except
 
 static bool place(struct widget *w)
 {
-    int cw = size_cells[w->size][0];
+    int cw = w->cw;
     int want_col = w->col >= 0 ? w->col : grid_cols() - cw, want_row = w->row >= 0 ? w->row : 0;
     int c, r;
-    if (fits(want_col, want_row, w->size, w)) {
+    if (fits(want_col, want_row, w->cw, w->ch, w)) {
         w->col = want_col;
         w->row = want_row;
-    } else if (nearest_free(want_col, want_row, w->size, w, &c, &r)) {
+    } else if (nearest_free(want_col, want_row, w->cw, w->ch, w, &c, &r)) {
         w->col = c;
         w->row = r;
     } else {
@@ -397,7 +412,7 @@ void widgets_layout(void)
             continue;
         if (w->col < 0 && !w->leaving)
             place(w);
-        struct rect old = w->r, cell = cell_rect(w->col, w->row, w->size);
+        struct rect old = w->r, cell = cell_rect(w->col, w->row, w->cw, w->ch);
         if (!w->placed) {
             spring_set(&w->ax, cell.x);
             spring_set(&w->ay, cell.y);
@@ -487,17 +502,21 @@ static void card(struct canvas *c, struct widget *w, bool lifted)
         glass_draw(c, &w->glass, &look);
         if (w->style == ST_TINTED)
             gfx_round(c, w->r, rad, ALPHA(style.accent, 150));
-        gfx_round_frame(c, w->r, rad, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
+        if (style.glass != GLASS_LIQUID)
+            gfx_round_frame(c, w->r, rad, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
     }
     }
 }
+
+static void paint_handles(struct canvas *c, const struct widget *w, int k);
+static int resizing = -1;
 
 void widgets_paint(struct canvas *c, struct rect area)
 {
     if (!started)
         return;
     if (dragging && drag >= 0) {
-        struct rect g = cell_rect(drop_col, drop_row, ws[drag].size);
+        struct rect g = cell_rect(drop_col, drop_row, ws[drag].cw, ws[drag].ch);
         if (!rect_empty(rect_intersect(rect_inset(g, -4), area))) {
             int rad = radius_of(&ws[drag]);
             gfx_round(c, g, rad, ALPHA(style.dark ? 0xffffffffu : 0xff000000u, 26));
@@ -518,6 +537,7 @@ void widgets_paint(struct canvas *c, struct rect area)
             widget_paint_kind(&clip, w, content_rect(w));
             int k = CLAMP(edit_pop.pos, 0, 1200);
             if (k > 16 && !w->leaving) {
+                paint_handles(c, w, k);
                 int br = 11 * k / 1024, cx = w->r.x + 10, cy = w->r.y + 10;
                 gfx_circle(c, cx, cy, br, style.dark ? RGB(70, 68, 80) : RGB(60, 58, 64));
                 gfx_fill(c, (struct rect){cx - br / 2, cy - 1, br, 2}, RGB(255, 255, 255));
@@ -571,47 +591,77 @@ static void menu_pick(struct window *owner, int index)
     if (!w || !w->used || index < 0 || index >= 12)
         return;
     int act = menu_size[index];
-    if (act >= 0 && act < WS_COUNT) {
-        w->size = act;
-        if (!fits(w->col, w->row, w->size, w)) {
-            int c, r;
-            if (nearest_free(w->col, w->row, w->size, w, &c, &r))
-                w->col = c, w->row = r;
-        }
-        save();
-        widgets_layout();
-        gui_desktop_changed();
-    } else if (act == 100) {
+    if (act == 100)
         inspector_open(w);
-    } else if (act == 101) {
+    else if (act == 101)
         remove_widget(w);
-    } else if (act == 102) {
+    else if (act == 102)
         widgets_edit(true);
-    }
 }
 
 static void context_menu(struct widget *w, int x, int y)
 {
-    static char labels[WS_COUNT][24];
     int n = 0;
     menu_target = w;
     menu_size[n] = 100;
     menu_items[n++] = (struct menu_item){"Edit Widget…", 0, NULL};
-    menu_size[n] = -1;
-    menu_items[n++] = (struct menu_item){"", 0, NULL};
-    for (int s = 0; s < WS_COUNT; s++)
-        if (widget_kinds[w->kind].sizes >> s & 1) {
-            ksnprintf(labels[s], sizeof(labels[s]), "%s%s", w->size == s ? "✓ " : "    ", size_titles[s]);
-            menu_size[n] = s;
-            menu_items[n++] = (struct menu_item){labels[s], 0, NULL};
-        }
+    menu_size[n] = 102;
+    menu_items[n++] = (struct menu_item){"Edit Widgets…", 0, NULL};
     menu_size[n] = -1;
     menu_items[n++] = (struct menu_item){"", 0, NULL};
     menu_size[n] = 101;
     menu_items[n++] = (struct menu_item){"Remove Widget", 0, NULL};
-    menu_size[n] = 102;
-    menu_items[n++] = (struct menu_item){"Edit Widgets…", 0, NULL};
     ui_menu_items(NULL, x, y, menu_items, n, menu_pick);
+}
+
+/* Edit mode: the right edge, the bottom edge and the corner of a widget pull it wider or taller, cell by cell. */
+enum { EDGE_RIGHT = 1, EDGE_BOTTOM = 2 };
+static int resize_edges;
+
+static int edges_at(const struct widget *w, int x, int y)
+{
+    struct rect r = w->r;
+    if (!rect_contains(rect_inset(r, -8), x, y))
+        return 0;
+    int e = 0;
+    if (x >= r.x + r.w - 12)
+        e |= EDGE_RIGHT;
+    if (y >= r.y + r.h - 12)
+        e |= EDGE_BOTTOM;
+    return e;
+}
+
+static void resize_to(struct widget *w, int x, int y)
+{
+    struct rect a = grid_area();
+    struct rect r = cell_rect(w->col, w->row, w->cw, w->ch);
+    int cw = w->cw, ch = w->ch;
+    if (resize_edges & EDGE_RIGHT)
+        cw = (x - r.x + CELL_GAP + CELL / 2) / (CELL + CELL_GAP);
+    if (resize_edges & EDGE_BOTTOM)
+        ch = (y - r.y + CELL_GAP + CELL / 2) / (CELL + CELL_GAP);
+    const struct widget_kind_info *k = &widget_kinds[w->kind];
+    cw = CLAMP(cw, k->min_w, MIN(k->max_w, (a.x + a.w - r.x + CELL_GAP) / (CELL + CELL_GAP)));
+    ch = CLAMP(ch, k->min_h, MIN(k->max_h, (a.y + a.h - r.y + CELL_GAP) / (CELL + CELL_GAP)));
+    if ((cw == w->cw && ch == w->ch) || !fits(w->col, w->row, cw, ch, w))
+        return;
+    widget_damage(w);
+    set_cells(w, cw, ch);
+    widget_free_kind(w);
+    widgets_layout();
+}
+
+static void paint_handles(struct canvas *c, const struct widget *w, int k)
+{
+    uint32_t col = ALPHA(0xffffffffu, MIN(k, 1024) * 230 / 1024), dark = ALPHA(0, MIN(k, 1024) * 70 / 1024);
+    struct rect r = w->r;
+    struct rect right = {r.x + r.w - 4, r.y + r.h / 2 - 16, 8, 32}, bottom = {r.x + r.w / 2 - 16, r.y + r.h - 4, 32, 8};
+    struct rect corner = {r.x + r.w - 12, r.y + r.h - 12, 16, 16};
+    for (int i = 0; i < 3; i++) {
+        struct rect h = i == 0 ? right : i == 1 ? bottom : corner;
+        gfx_round(c, rect_inset(h, -1), 5, dark);
+        gfx_round(c, h, 4, col);
+    }
 }
 
 bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks)
@@ -621,6 +671,11 @@ bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks)
     if (down) {
         int id = widget_at(x, y);
         if (editing && button == BUTTON_LEFT) {
+            for (int i = MAX_WIDGETS - 1; i >= 0; i--)
+                if (ws[i].used && !ws[i].leaving && (resize_edges = edges_at(&ws[i], x, y))) {
+                    resizing = i;
+                    return true;
+                }
             if (id < 0) {
                 widgets_edit(false);
                 return true;
@@ -647,6 +702,13 @@ bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks)
         press_y = y;
         dragging = false;
         widget_damage(&ws[id]);
+        return true;
+    }
+    if (resizing >= 0) {
+        resizing = -1;
+        save();
+        widgets_layout();
+        gui_desktop_changed();
         return true;
     }
     int id = pressed;
@@ -678,13 +740,18 @@ void desktop_hover(int x, int y, bool over)
     if (desktop_icon_drag(x, y))
         return;
     desktop_icon_hover(x, over ? y : -1);
-    widgets_hover(over || drag >= 0 ? x : -1, y);
+    widgets_hover(over || drag >= 0 || resizing >= 0 ? x : -1, y);
 }
 
 void widgets_hover(int x, int y)
 {
     if (!started)
         return;
+    if (resizing >= 0) {
+        if (x >= 0)
+            resize_to(&ws[resizing], x, y);
+        return;
+    }
     if (drag >= 0 && pressed == drag) {
         struct widget *w = &ws[drag];
         int mx = x - press_x, my = y - press_y;
@@ -697,16 +764,16 @@ void widgets_hover(int x, int y)
         spring_set(&w->ay, ny);
         int col = (nx - a.x + (CELL + CELL_GAP) / 2) / (CELL + CELL_GAP);
         int row = (ny - a.y + (CELL + CELL_GAP) / 2) / (CELL + CELL_GAP);
-        col = CLAMP(col, 0, grid_cols() - size_cells[w->size][0]);
-        row = CLAMP(row, 0, grid_rows() - size_cells[w->size][1]);
+        col = CLAMP(col, 0, grid_cols() - w->cw);
+        row = CLAMP(row, 0, grid_rows() - w->ch);
         int c = col, r = row;
-        if (!fits(col, row, w->size, w) && !nearest_free(col, row, w->size, w, &c, &r))
+        if (!fits(col, row, w->cw, w->ch, w) && !nearest_free(col, row, w->cw, w->ch, w, &c, &r))
             c = w->col, r = w->row;
         if (c != drop_col || r != drop_row) {
-            wm_damage_z(rect_inset(cell_rect(drop_col, drop_row, w->size), -6), Z_DESKTOP);
+            wm_damage_z(rect_inset(cell_rect(drop_col, drop_row, w->cw, w->ch), -6), Z_DESKTOP);
             drop_col = c;
             drop_row = r;
-            wm_damage_z(rect_inset(cell_rect(c, r, w->size), -6), Z_DESKTOP);
+            wm_damage_z(rect_inset(cell_rect(c, r, w->cw, w->ch), -6), Z_DESKTOP);
         }
         widgets_layout();
         return;
@@ -953,9 +1020,9 @@ static const char *const world_values[] = {"Los Angeles|-480", "New York|-300", 
 
 static void changed(struct widget *w)
 {
-    if (!fits(w->col, w->row, w->size, w)) {
+    if (!fits(w->col, w->row, w->cw, w->ch, w)) {
         int c, r;
-        if (nearest_free(w->col, w->row, w->size, w, &c, &r))
+        if (nearest_free(w->col, w->row, w->cw, w->ch, w, &c, &r))
             w->col = c, w->row = r;
     }
     widget_free_kind(w);
@@ -1042,6 +1109,8 @@ static int inspector_height(const struct widget *w)
     case WK_WORLD: extra = 44; break;
     case WK_APPS: extra = 26 * 6 + 10; break;
     case WK_TASKS: extra = 40; break;
+    case WK_CLOCK: extra = 4 * 36 + 2 * 30 + 6; break;
+    case WK_ANALOG: extra = 40; break;
     default: break;
     }
     return 52 + 3 * 36 + extra + 56;
@@ -1068,10 +1137,8 @@ static void inspector_frame(struct ui *ui, void *data)
                      ALIGN_LEFT);
     }
     int y = 52, v;
-    if ((v = segmented_row(ui, y, W, "Size", size_titles, WS_COUNT, w->size, widget_kinds[w->kind].sizes)) >= 0) {
-        w->size = v;
-        changed(w);
-    }
+    ui_label(ui, (struct rect){18, y, W - 36, 26}, "Drag the edges in Edit Widgets to resize", &font_small,
+             style.secondary, ALIGN_LEFT);
     y += 36;
     if ((v = segmented_row(ui, y, W, "Shape", shape_titles, SH_COUNT, w->shape, (1u << SH_COUNT) - 1)) >= 0) {
         w->shape = v;
@@ -1123,6 +1190,62 @@ static void inspector_frame(struct ui *ui, void *data)
                  ALIGN_LEFT);
         struct app_rows a = {ui, w, y + 14, W, 0};
         gui_app_foreach(app_row, &a);
+        break;
+    }
+    case WK_CLOCK: {
+        static const char *const faces[] = {"Digital", "Analog"};
+        static const char *const fonts[] = {"Bold", "Light", "Heavy", "Mono", "Serif"};
+        int analog = widget_opt_int(w, "analog", 0), f = widget_opt_int(w, "font", 0);
+        ui_label(ui, (struct rect){18, y, 90, 26}, "Face", &font_sans, style.text, ALIGN_LEFT);
+        if (ui_segmented(ui, (struct rect){100, y, W - 118, 26}, faces, 2, &analog)) {
+            widget_opt_set(w, "analog", analog);
+            changed(w);
+        }
+        y += 36;
+        ui_label(ui, (struct rect){18, y, 90, 26}, "Font", &font_sans, style.text, ALIGN_LEFT);
+        if (ui_segmented(ui, (struct rect){100, y, W - 118, 26}, fonts, CLOCK_FONTS, &f)) {
+            widget_opt_set(w, "font", f);
+            changed(w);
+        }
+        y += 36;
+        bool sec = widget_opt_int(w, "seconds", 0), date = widget_opt_int(w, "date", 1);
+        ui_label(ui, (struct rect){18, y, 160, 26}, "Seconds", &font_sans, style.text, ALIGN_LEFT);
+        if (ui_switch(ui, (struct rect){W - 54, y + 3, 36, 21}, &sec)) {
+            widget_opt_set(w, "seconds", sec);
+            changed(w);
+        }
+        y += 30;
+        ui_label(ui, (struct rect){18, y, 160, 26}, "Date", &font_sans, style.text, ALIGN_LEFT);
+        if (ui_switch(ui, (struct rect){W - 54, y + 3, 36, 21}, &date)) {
+            widget_opt_set(w, "date", date);
+            changed(w);
+        }
+        y += 36;
+    }
+        /* fall through */
+    case WK_ANALOG: {
+        ui_label(ui, (struct rect){18, y, 90, 26}, "Color", &font_sans, style.text, ALIGN_LEFT);
+        int sel = widget_opt_int(w, "color", 0), step = (W - 118) / CLOCK_COLORS;
+        for (int i = 0; i < CLOCK_COLORS; i++) {
+            int cx = 100 + i * step + step / 2, cy = y + 13, rad = MIN(step / 2 - 2, 10);
+            uint32_t col = i == 0 ? (style.dark ? RGB(240, 240, 244) : RGB(40, 40, 44)) : i == 3 ? style.accent
+                                                                                               : clock_colors[i];
+            if (ui->c) {
+                gfx_circle(ui->c, cx, cy, rad, col);
+                gfx_ring(ui->c, cx, cy, rad, ALPHA(0, 50));
+                if (i == 0)
+                    gfx_text_box(ui->c, (struct rect){cx - rad, cy - rad, 2 * rad, 2 * rad}, &font_small, "A",
+                                 style.dark ? RGB(30, 30, 30) : RGB(250, 250, 250), ALIGN_CENTER);
+                if (i == sel)
+                    gfx_ring(ui->c, cx, cy, rad + 3, style.text);
+            }
+            if (ui->e && ui->e->type == EV_MOUSE_DOWN &&
+                ui_hover(ui, (struct rect){cx - rad - 2, cy - rad - 2, 2 * rad + 4, 2 * rad + 4})) {
+                ui->consumed = true;
+                widget_opt_set(w, "color", i);
+                changed(w);
+            }
+        }
         break;
     }
     case WK_TASKS:

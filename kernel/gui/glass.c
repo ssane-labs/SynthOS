@@ -479,7 +479,7 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
                 int light = (-nx * 181 - ny * 181) >> 8;
                 int dir = light > 0 ? light * light >> 8 : (light * light >> 8) * 5 / 8;
                 spec = rim_lut[i] * (look->rim * (64 + dir * 3 / 4) >> 8) >> 8;
-                if (d < 28)
+                if (d < 28 && look->edge_line)
                     spec += (28 - MAX(d, 0)) * (90 + dir * 2 / 3) / 28;
                 shade = refract_lut[i] * 26 >> 8;
                 if (look->pointer_light) {
@@ -606,6 +606,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
     look->rim = look->liquid ? 210 : 60;
     look->brightness = dark ? -6 : 10;
     look->outline = dark ? ALPHA(0, 110) : ALPHA(0, 26);
+    look->edge_line = kind == GLASS_MENU;
     switch (kind) {
     case GLASS_MENUBAR:
         look->tint = ALPHA(color_mix(dark ? RGB(30, 30, 34) : RGB(250, 250, 252), style.tint | 0xff000000u, dark ? 40 : 30), dark ? 90 : 110);
@@ -621,12 +622,13 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         if (look->liquid) {
             look->scale = 4;
             look->blur = 3;
-            look->band = 22;
-            look->refract = 20;
+            look->band = 30;
+            look->refract = 34;
+            look->rim = 46;
             look->saturation = 300;
             look->dispersion = true;
-            look->pointer_light = 110;
-            look->outline = dark ? ALPHA(0, 90) : 0;
+            look->pointer_light = 80;
+            look->outline = 0;
         }
         break;
     case GLASS_MENU:
@@ -646,11 +648,13 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         look->brightness = dark ? 8 : 16;
         look->solid_color = dark ? RGB(44, 44, 48) : RGB(244, 244, 246);
         look->blur = 3;
-        look->band = 26;
-        look->refract = 24;
+        look->band = 30;
+        look->refract = 32;
         look->dispersion = look->liquid;
-        if (look->liquid)
-            look->outline = dark ? ALPHA(0, 90) : ALPHA(0, 14);
+        if (look->liquid) {
+            look->rim = 46;
+            look->outline = 0;
+        }
         break;
     case GLASS_WINDOW:
         look->tint = 0;

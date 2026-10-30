@@ -359,6 +359,9 @@ static void event(struct window *w, struct gui_event *e)
             command(w, ph, CMD_SLIDESHOW);
         else if (k == KEY_CTRL('o'))
             command(w, ph, CMD_OPEN);
+        else if (k == KEY_CTRL('c') && ph->pic.px)
+            gui_clipboard_set_image(ph->pic.px + (size_t)ph->frame * (size_t)ph->pic.w * (size_t)ph->pic.h, ph->pic.w,
+                                    ph->pic.h, ph->pic.w);
         else if (k == KEY_ESC && ph->slideshow)
             ph->slideshow = false;
         break;

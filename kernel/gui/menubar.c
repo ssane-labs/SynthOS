@@ -138,7 +138,11 @@ void menubar_paint(struct canvas *c, int screen)
     if (rect_empty(rect_intersect(bar, c->clip)))
         return;
     uint32_t ink = style.text;
-    if (style.glass == GLASS_LIQUID) {
+    uint32_t solid = wm_top_color(screen);
+    if (solid) {
+        gfx_fill(c, bar, solid);
+        ink = color_luma(solid) < 140 ? RGB(250, 250, 252) : RGB(24, 24, 28);
+    } else if (style.glass == GLASS_LIQUID) {
         static uint32_t inks[MAX_SCREENS];
         struct rect probe = rect_intersect(bar, c->clip);
         if (probe.w >= bar.w / 2 || !inks[screen]) {

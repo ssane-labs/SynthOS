@@ -134,7 +134,8 @@ static void paint_pill(struct canvas *c)
     struct glass_look look;
     glass_look_for(&look, GLASS_PANEL, pill.h / 2);
     glass_draw(c, &pill_glass, &look);
-    gfx_round_frame(c, pill, pill.h / 2, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
+    if (style.glass != GLASS_LIQUID)
+        gfx_round_frame(c, pill, pill.h / 2, style.dark ? ALPHA(0xffffffffu, 22) : ALPHA(0xffffffffu, 90));
     for (int i = 0; i < PART_LANG; i++)
         paint_part_icon(c, i, part_r[i]);
     if (part_r[PART_LANG].w)

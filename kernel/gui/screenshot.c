@@ -22,11 +22,10 @@
 #define BAR_H 54
 #define THUMB_W 180
 #define UNDO 4
-#define ABS(v) ((v) < 0 ? -(v) : (v))
 
 /* ---- options */
 
-static bool to_pictures, show_thumb = true, open_editor;
+static bool to_pictures, show_thumb = true, open_editor, copy_shot = true;
 static int delay_s;
 
 static void get_folder(char *buf, size_t cap)
@@ -80,6 +79,21 @@ static int set_delay(struct shell *sh, const char *value)
     return 0;
 }
 
+static void get_copy(char *buf, size_t cap)
+{
+    setting_flag_get(copy_shot, buf, cap);
+}
+
+static int set_copy(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return setting_flag(value, &copy_shot);
+}
+
+static const struct setting s_copy = {"shotcopy", "on|off", "put every screenshot on the clipboard too", get_copy,
+                                      set_copy};
+SETTING(s_copy);
+
 static const struct setting s_folder = {"shotfolder", "desktop|pictures", "where screenshots are saved", get_folder,
                                         set_folder};
 static const struct setting s_thumb = {"shotthumb", "on|off", "show a thumbnail after a screenshot", get_thumb,
@@ -121,6 +135,8 @@ static void thumbnail_show(const struct canvas *img, const char *path);
 
 static void finish(struct canvas *img)
 {
+    if (copy_shot)
+        gui_clipboard_set_image(img->px, img->w, img->h, img->stride);
     char path[PATH_MAX_LEN];
     int err = save_shot(img, path, sizeof(path));
     if (err) {
@@ -604,6 +620,7 @@ enum {
     CMD_DELETE,
     CMD_UNDO,
     CMD_CROP,
+    CMD_COPY,
     CMD_NEW,
 };
 
@@ -616,6 +633,7 @@ static const struct menu_item file_items[] = {
 
 static const struct menu_item edit_items[] = {
     {"Undo", KEY_COMMAND(CMD_UNDO), "⌘Z"},
+    {"Copy", KEY_COMMAND(CMD_COPY), "⌘C"},
     {"Crop", KEY_COMMAND(CMD_CROP), "⌘K"},
 };
 
@@ -766,6 +784,10 @@ static void command(struct window *w, struct editor *ed, int cmd)
         ed->crop_r = (struct rect){0, 0, ed->img.w, ed->img.h};
         break;
     case CMD_NEW: screenshot_start(SHOT_PANEL); break;
+    case CMD_COPY:
+        gui_clipboard_set_image(ed->img.px, ed->img.w, ed->img.h, ed->img.stride);
+        gui_notify("Screenshot", "Copied to the clipboard.");
+        break;
     }
     wm_invalidate(w);
 }
@@ -783,7 +805,7 @@ static void editor_frame(struct ui *ui, void *data)
     int W = w->surface.w, H = w->surface.h;
     if (ui->c)
         gfx_clear(ui->c, (struct rect){0, 0, W, H}, style.dark ? RGB(30, 30, 32) : RGB(236, 236, 240));
-    int x = (W - 7 * 36 - 40) / 2, y = (TOOLBAR_HEIGHT - 28) / 2;
+    int x = (W - 8 * 36 - 40) / 2, y = (TOOLBAR_HEIGHT - 28) / 2;
     if (ui_symbol_button(ui, (struct rect){x, y, 28, 28}, SYM_CROP, ed->tool == TOOL_CROP))
         command(w, ed, CMD_CROP);
     x += 36;
@@ -810,6 +832,9 @@ static void editor_frame(struct ui *ui, void *data)
     x += 10;
     if (ui_symbol_button(ui, (struct rect){x, y, 28, 28}, SYM_UNDO, false))
         undo(ed);
+    x += 36;
+    if (ui_symbol_button(ui, (struct rect){x, y, 28, 28}, SYM_COPY, false))
+        command(w, ed, CMD_COPY);
     if (ed->tool == TOOL_CROP) {
         if (ui_button_primary(ui, (struct rect){W - 196, y, 90, 28}, "Crop"))
             apply_crop(ed);
@@ -955,6 +980,10 @@ static void editor_event(struct window *w, struct gui_event *e)
         }
         if (k == KEY_CTRL('z')) {
             command(w, ed, CMD_UNDO);
+            return;
+        }
+        if (k == KEY_CTRL('c')) {
+            command(w, ed, CMD_COPY);
             return;
         }
         if (k == KEY_CTRL('k')) {

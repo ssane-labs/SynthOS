@@ -43,7 +43,6 @@ static char appearance_setting[8] = "auto";
 static char accent_setting[12] = "auto";
 static char glass_setting[10] = "liquid";
 static bool autostart = true;
-static char clipboard[4096];
 static int last_minute = -1;
 static uint64_t last_scan;
 static bool autostart_pending;
@@ -53,6 +52,8 @@ struct desktop_icon {
     char path[PATH_MAX_LEN];
     enum icon_id icon;
     bool volume;
+    int col, row;
+    bool selected;
 };
 
 static struct volume known_volumes[8];
@@ -60,8 +61,9 @@ static int known_count = -1;
 
 static struct desktop_icon icons[MAX_ICONS];
 static int icon_count;
-static int selected_icon = -1;
 static int drag_icon = -1, drag_x, drag_y, hover_icon = -1;
+static bool banding;
+static int band_x0, band_y0, band_x1, band_y1;
 static struct spring icon_lift[MAX_ICONS];
 static uint64_t icon_tick;
 static bool icon_dragging;
@@ -73,6 +75,10 @@ static int display_hal[MAX_SCREENS];
 static int display_count;
 
 static void scan_desktop(void);
+struct desktop_icon;
+static void layout_lookup(const char *path, int *col, int *row);
+static bool place_icons(struct desktop_icon *list, int n);
+static void drop_target(int *tc, int *tr);
 static const struct image *program_icon(const char *path);
 
 int gui_display_hal(int screen)
@@ -425,35 +431,210 @@ static void scan_desktop(void)
         }
         vfs_closedir(&d);
     }
-    if (n == icon_count && !memcmp(fresh, icons, sizeof(fresh[0]) * (size_t)n))
+    for (int i = 0; i < n; i++) {
+        fresh[i].col = fresh[i].row = -1;
+        for (int k = 0; k < icon_count; k++)
+            if (!strcmp(icons[k].path, fresh[i].path)) {
+                fresh[i].col = icons[k].col;
+                fresh[i].row = icons[k].row;
+                fresh[i].selected = icons[k].selected;
+            }
+        if (fresh[i].col < 0)
+            layout_lookup(fresh[i].path, &fresh[i].col, &fresh[i].row);
+    }
+    bool moved = place_icons(fresh, n);
+    if (!moved && n == icon_count && !memcmp(fresh, icons, sizeof(fresh[0]) * (size_t)n))
         return;
     memcpy(icons, fresh, sizeof(fresh[0]) * (size_t)n);
     icon_count = n;
-    if (selected_icon >= n)
-        selected_icon = -1;
-    struct rect s = wm_screen_rect(0);
-    wm_damage_z((struct rect){s.x + s.w - 4 * CELL_W - widgets_right_reserved(), s.y, 4 * CELL_W + widgets_right_reserved(), s.h},
-                Z_DESKTOP);
+    wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
 }
 
-/* Icons fill columns from the right edge and skip the places widgets cover. */
+/* ---- the desktop grid: every icon keeps its cell (~/.desktop-layout); new ones take the first free cell from
+   the top right corner, column by column, and none sits under a widget. */
+
+static struct rect icon_area(void)
+{
+    struct rect s = wm_work_area(0);
+    int top = MAX(s.y + 10, status_bottom() + 10);
+    return (struct rect){s.x + 12, top, s.w - 24, s.y + s.h - top - 6};
+}
+
+static int icon_cols(void)
+{
+    return MAX(1, icon_area().w / CELL_W);
+}
+
+static int icon_rows(void)
+{
+    return MAX(1, icon_area().h / CELL_H);
+}
+
+static struct rect slot_rect(int col, int row)
+{
+    struct rect a = icon_area();
+    return (struct rect){a.x + a.w - (col + 1) * CELL_W, a.y + row * CELL_H, CELL_W, CELL_H - 6};
+}
+
 static struct rect icon_cell(int i)
 {
-    struct rect s = wm_work_area(0), busy[16];
-    int top = MAX(s.y + 10, status_bottom() + 10);
-    int per_column = MAX(1, (s.y + s.h - top - 6) / CELL_H);
-    int right = s.x + s.w - 12, n = widgets_obstacles(busy, 16);
-    struct rect r = {right - CELL_W, top, CELL_W, CELL_H - 6};
-    for (int slot = 0, k = 0; slot < per_column * 12; slot++) {
-        r = (struct rect){right - (slot / per_column + 1) * CELL_W, top + (slot % per_column) * CELL_H, CELL_W,
-                          CELL_H - 6};
-        bool covered = false;
-        for (int b = 0; b < n && !covered; b++)
-            covered = !rect_empty(rect_intersect(rect_inset(r, 4), busy[b]));
-        if (!covered && k++ == i)
-            return r;
+    return slot_rect(MAX(icons[i].col, 0), MAX(icons[i].row, 0));
+}
+
+static bool slot_free(const struct desktop_icon *list, int n, int col, int row, int except)
+{
+    if (col < 0 || row < 0 || col >= icon_cols() || row >= icon_rows())
+        return false;
+    for (int i = 0; i < n; i++)
+        if (i != except && list[i].col == col && list[i].row == row)
+            return false;
+    struct rect busy[16], r = slot_rect(col, row);
+    int b = widgets_obstacles(busy, 16);
+    for (int k = 0; k < b; k++)
+        if (!rect_empty(rect_intersect(rect_inset(r, 4), busy[k])))
+            return false;
+    return true;
+}
+
+static bool nearest_slot(const struct desktop_icon *list, int n, int col, int row, int except, int *oc, int *orow)
+{
+    int best = -1;
+    for (int c = 0; c < icon_cols(); c++)
+        for (int r = 0; r < icon_rows(); r++)
+            if (slot_free(list, n, c, r, except)) {
+                int d = (c - col) * (c - col) + (r - row) * (r - row);
+                if (best < 0 || d < best)
+                    best = d, *oc = c, *orow = r;
+            }
+    return best >= 0;
+}
+
+static bool first_slot(const struct desktop_icon *list, int n, int except, int *oc, int *orow)
+{
+    for (int c = 0; c < icon_cols(); c++)
+        for (int r = 0; r < icon_rows(); r++)
+            if (slot_free(list, n, c, r, except)) {
+                *oc = c;
+                *orow = r;
+                return true;
+            }
+    return false;
+}
+
+/* Gives a cell to icons without one and moves icons a widget now covers; true when any moved. */
+static bool place_icons(struct desktop_icon *list, int n)
+{
+    bool moved = false;
+    for (int i = 0; i < n; i++) {
+        if (list[i].col >= 0 && slot_free(list, n, list[i].col, list[i].row, i))
+            continue;
+        int c = 0, r = 0;
+        bool had = list[i].col >= 0;
+        list[i].col = list[i].row = -1;
+        if (had ? nearest_slot(list, n, list[i].col, list[i].row, i, &c, &r) : first_slot(list, n, i, &c, &r)) {
+            list[i].col = c;
+            list[i].row = r;
+        } else {
+            list[i].col = list[i].row = 0;
+        }
+        moved = true;
     }
-    return r;
+    return moved;
+}
+
+#define LAYOUT_MAX 64
+
+static struct {
+    char path[PATH_MAX_LEN];
+    int col, row;
+} layout[LAYOUT_MAX];
+static int layout_count = -1;
+
+static void layout_file(char *out, size_t cap)
+{
+    path_join(user_home(), ".desktop-layout", out, cap);
+}
+
+static void layout_load(void)
+{
+    layout_count = 0;
+    char path[PATH_MAX_LEN], *data;
+    size_t size;
+    layout_file(path, sizeof(path));
+    if (vfs_read_all(path, &data, &size) != 0)
+        return;
+    for (char *p = data, *end = data + size; p < end && layout_count < LAYOUT_MAX;) {
+        char *nl = memchr(p, '\n', (size_t)(end - p));
+        char *le = nl ? nl : end;
+        char line[PATH_MAX_LEN + 24];
+        size_t n = MIN((size_t)(le - p), sizeof(line) - 1);
+        memcpy(line, p, n);
+        line[n] = 0;
+        char *a = line, *b = strchr(a, ' '), *c = b ? strchr(b + 1, ' ') : NULL;
+        if (b && c) {
+            *b = *c = 0;
+            long col, row;
+            if (str_parse_long(a, &col) && str_parse_long(b + 1, &row)) {
+                str_copy(layout[layout_count].path, c + 1, sizeof(layout[0].path));
+                layout[layout_count].col = (int)col;
+                layout[layout_count++].row = (int)row;
+            }
+        }
+        p = le + 1;
+    }
+    kfree(data);
+}
+
+static void layout_lookup(const char *path, int *col, int *row)
+{
+    if (layout_count < 0)
+        layout_load();
+    for (int i = 0; i < layout_count; i++)
+        if (!strcmp(layout[i].path, path)) {
+            *col = layout[i].col;
+            *row = layout[i].row;
+            return;
+        }
+}
+
+static void layout_save(void)
+{
+    size_t cap = (size_t)icon_count * (PATH_MAX_LEN + 24) + 16, n = 0;
+    char *buf = kmalloc(cap), path[PATH_MAX_LEN];
+    if (!buf)
+        return;
+    layout_count = 0;
+    for (int i = 0; i < icon_count; i++) {
+        n += (size_t)ksnprintf(buf + n, cap - n, "%d %d %s\n", icons[i].col, icons[i].row, icons[i].path);
+        if (layout_count < LAYOUT_MAX) {
+            str_copy(layout[layout_count].path, icons[i].path, sizeof(layout[0].path));
+            layout[layout_count].col = icons[i].col;
+            layout[layout_count++].row = icons[i].row;
+        }
+    }
+    layout_file(path, sizeof(path));
+    vfs_write_all(path, buf, n);
+    kfree(buf);
+}
+
+static int selected_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < icon_count; i++)
+        n += icons[i].selected;
+    return n;
+}
+
+static void select_only(int hit)
+{
+    for (int i = 0; i < icon_count; i++)
+        icons[i].selected = i == hit;
+    wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
+}
+
+static struct rect band_rect(void)
+{
+    return (struct rect){MIN(band_x0, band_x1), MIN(band_y0, band_y1), ABS(band_x1 - band_x0), ABS(band_y1 - band_y0)};
 }
 
 static void icon_label(struct canvas *c, struct rect cell, const char *label, bool selected)
@@ -478,25 +659,45 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
     if (screen != 0)
         return;
     widgets_paint(c, area);
+    int dx = 0, dy = 0, tc = 0, tr = 0;
+    bool moving = drag_icon >= 0 && icon_dragging;
+    if (moving) {
+        dx = mouse_x - drag_x;
+        dy = mouse_y - drag_y;
+        drop_target(&tc, &tr);
+        for (int i = 0; i < icon_count; i++)
+            if (icons[i].selected) {
+                struct rect t = slot_rect(icons[i].col + tc, icons[i].row + tr);
+                if (icons[i].col + tc >= 0 && icons[i].row + tr >= 0)
+                    gfx_round(c, (struct rect){t.x + 10, t.y - 4, t.w - 20, t.h + 2}, 12, ALPHA(0xffffffffu, 34));
+            }
+    }
     for (int i = 0; i < icon_count; i++) {
         struct rect cell = icon_cell(i);
-        if (rect_empty(rect_intersect(cell, c->clip)))
+        bool ghost = moving && icons[i].selected;
+        if (ghost && !(selected_count() == 1 && dock_dragging()))
+            cell = (struct rect){cell.x + dx, cell.y + dy, cell.w, cell.h};
+        else if (ghost)
             continue;
-        if (i == drag_icon && icon_dragging) {
-            icon_label(c, cell, icons[i].label, false);
+        if (rect_empty(rect_intersect(rect_inset(cell, -4), c->clip)))
             continue;
-        }
-        if (i == selected_icon)
-            gfx_round(c, (struct rect){cell.x + 14, cell.y - 2, cell.w - 28, 70}, 8, ALPHA(0, 70));
+        if (icons[i].selected && !ghost)
+            gfx_round(c, (struct rect){cell.x + 14, cell.y - 2, cell.w - 28, 70}, 10, ALPHA(0xffffffffu, 46));
         const struct image *img = program_icon(icons[i].path);
         int lift = i < MAX_ICONS ? CLAMP(icon_lift[i].pos, -200, 1200) : 0;
-        int grow = lift * 8 / 1024, rise = lift * 5 / 1024;
+        int grow = lift * 8 / 1024, rise = lift * 5 / 1024, alpha = ghost ? 190 : 255;
         if (img)
             gfx_scale(c, (struct rect){cell.x + (cell.w - 56 - grow) / 2, cell.y + 6 - rise - grow / 2, 56 + grow, 56 + grow},
-                      &(struct canvas){img->px, img->w, img->h, img->w, {0, 0, img->w, img->h}}, 255);
+                      &(struct canvas){img->px, img->w, img->h, img->w, {0, 0, img->w, img->h}}, alpha);
         else
-            gfx_icon(c, cell.x + (cell.w - 64 - grow) / 2, cell.y + 2 - rise - grow / 2, icons[i].icon, 64 + grow);
-        icon_label(c, cell, icons[i].label, i == selected_icon);
+            gfx_icon_alpha(c, cell.x + (cell.w - 64 - grow) / 2, cell.y + 2 - rise - grow / 2, icons[i].icon, 64 + grow,
+                           alpha);
+        icon_label(c, cell, icons[i].label, icons[i].selected && !ghost);
+    }
+    if (banding) {
+        struct rect b = band_rect();
+        gfx_round(c, b, 4, ALPHA(style.accent, 50));
+        gfx_round_frame(c, b, 4, ALPHA(style.accent, 200));
     }
 }
 
@@ -564,38 +765,112 @@ bool desktop_animate(void)
     return busy;
 }
 
+/* How many cells the dragged icons move: where the one under the pointer would land, as an offset. */
+static void drop_target(int *tc, int *tr)
+{
+    struct rect a = icon_area(), cell = icon_cell(drag_icon);
+    int x = cell.x + mouse_x - drag_x + CELL_W / 2, y = cell.y + mouse_y - drag_y + CELL_H / 2;
+    int col = (a.x + a.w - x) / CELL_W, row = (y - a.y) / CELL_H;
+    *tc = CLAMP(col, 0, icon_cols() - 1) - icons[drag_icon].col;
+    *tr = CLAMP(row, 0, icon_rows() - 1) - icons[drag_icon].row;
+}
+
+static void band_select(void)
+{
+    struct rect b = band_rect();
+    bool add = hal_key_modifiers() & (KEY_MOD_CTRL | KEY_MOD_SHIFT | KEY_MOD_SUPER);
+    for (int i = 0; i < icon_count; i++) {
+        struct rect cell = icon_cell(i);
+        bool in = !rect_empty(rect_intersect(b, (struct rect){cell.x + 14, cell.y, cell.w - 28, cell.h}));
+        if (in)
+            icons[i].selected = true;
+        else if (!add)
+            icons[i].selected = false;
+    }
+}
+
 bool desktop_icon_drag(int x, int y)
 {
+    if (banding) {
+        struct rect old = band_rect();
+        band_x1 = x;
+        band_y1 = y;
+        band_select();
+        wm_damage_z(rect_inset(rect_union(old, band_rect()), -4), Z_DESKTOP);
+        wm_damage_z(icon_area(), Z_DESKTOP);
+        return true;
+    }
     if (drag_icon < 0 || drag_icon >= icon_count)
         return false;
     int dx = x - drag_x, dy = y - drag_y;
     if (!icon_dragging && dx * dx + dy * dy <= 64)
         return true;
-    if (!icon_dragging) {
-        icon_dragging = true;
-        wm_damage_z(icon_cell(drag_icon), Z_DESKTOP);
+    icon_dragging = true;
+    const struct desktop_icon *it = &icons[drag_icon];
+    if (selected_count() == 1 && !it->volume && strcmp(it->path, "/")) {
+        char entry[PATH_MAX_LEN];
+        icon_entry(drag_icon, entry, sizeof(entry));
+        dock_drag_move(entry, x, y);
     }
-    char entry[PATH_MAX_LEN];
-    icon_entry(drag_icon, entry, sizeof(entry));
-    dock_drag_move(entry, x, y);
+    wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
     return true;
 }
 
+/* The selected icons go to the cells the drag points at; a taken cell sends an icon to the nearest free one. */
+static void drop_icons(void)
+{
+    int tc, tr;
+    drop_target(&tc, &tr);
+    if (!tc && !tr)
+        return;
+    struct desktop_icon moved[MAX_ICONS];
+    memcpy(moved, icons, sizeof(icons[0]) * (size_t)icon_count);
+    for (int i = 0; i < icon_count; i++)
+        if (moved[i].selected)
+            moved[i].col = moved[i].row = -2;
+    for (int i = 0; i < icon_count; i++) {
+        if (!icons[i].selected)
+            continue;
+        int c = icons[i].col + tc, r = icons[i].row + tr;
+        if (!slot_free(moved, icon_count, c, r, i) && !nearest_slot(moved, icon_count, c, r, i, &c, &r)) {
+            c = icons[i].col;
+            r = icons[i].row;
+        }
+        moved[i].col = c;
+        moved[i].row = r;
+    }
+    memcpy(icons, moved, sizeof(icons[0]) * (size_t)icon_count);
+    layout_save();
+}
+
+static void file_pick(struct window *owner, int index);
+
 void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
 {
+    if (!down && banding) {
+        banding = false;
+        wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
+        return;
+    }
     if (!down && drag_icon >= 0) {
         int i = drag_icon;
         bool was = icon_dragging;
-        drag_icon = -1;
         icon_dragging = false;
         if (was) {
-            wm_damage_z(icon_cell(i), Z_DESKTOP);
-            if (dock_drag_drop(x, y) && i < icon_count && app_shortcut(icons[i].path)) {
-                vfs_unlink(icons[i].path);
-                scan_desktop();
+            bool single = selected_count() == 1;
+            if (single && dock_dragging() && dock_drag_drop(x, y)) {
+                if (i < icon_count && app_shortcut(icons[i].path)) {
+                    vfs_unlink(icons[i].path);
+                    scan_desktop();
+                }
+            } else {
+                drop_icons();
             }
+            drag_icon = -1;
+            wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
             return;
         }
+        drag_icon = -1;
     }
     if (widgets_mouse(x, y, button, down, clicks) || !down)
         return;
@@ -603,28 +878,81 @@ void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
     for (int i = 0; i < icon_count; i++)
         if (rect_contains(icon_cell(i), x, y))
             hit = i;
-    if (hit != selected_icon) {
-        if (selected_icon >= 0)
-            wm_damage_z(icon_cell(selected_icon), Z_DESKTOP);
-        if (hit >= 0)
-            wm_damage_z(icon_cell(hit), Z_DESKTOP);
-        selected_icon = hit;
+    bool toggle = hal_key_modifiers() & (KEY_MOD_CTRL | KEY_MOD_SHIFT | KEY_MOD_SUPER);
+    if (hit >= 0 && toggle && button == BUTTON_LEFT) {
+        icons[hit].selected = !icons[hit].selected;
+        wm_damage_z(icon_cell(hit), Z_DESKTOP);
+        return;
     }
-    if (hit >= 0 && button == BUTTON_LEFT && clicks >= 2)
+    if (hit >= 0 && !icons[hit].selected)
+        select_only(hit);
+    if (hit >= 0 && button == BUTTON_LEFT && clicks >= 2) {
         gui_open_file(icons[hit].path);
-    else if (hit >= 0 && button == BUTTON_LEFT && !icons[hit].volume && strcmp(icons[hit].path, "/")) {
+    } else if (hit >= 0 && button == BUTTON_LEFT) {
         drag_icon = hit;
         drag_x = x;
         drag_y = y;
+    } else if (hit < 0 && button == BUTTON_LEFT) {
+        if (!toggle)
+            select_only(-1);
+        banding = true;
+        band_x0 = band_x1 = x;
+        band_y0 = band_y1 = y;
     }
     if (button == BUTTON_RIGHT && hit >= 0 && icons[hit].volume) {
         static const char *const items[] = {"Open", "", "Eject"};
         ui_menu(NULL, x, y, items, ARRAY_SIZE(items), volume_pick);
+    } else if (button == BUTTON_RIGHT && hit >= 0) {
+        static const char *const items[] = {"Open", "", "Move to Trash"};
+        ui_menu(NULL, x, y, items, strcmp(icons[hit].path, "/") ? ARRAY_SIZE(items) : 1, file_pick);
     } else if (button == BUTTON_RIGHT) {
-        static const char *const items[] = {"New Folder", "Open Desktop in Files", "", "Change Wallpaper…",
-                                            "Edit Widgets…", "Open Terminal"};
+        static const char *const items[] = {"New Folder", "Open Desktop in Files", "", "Clean Up", "Sort by Name",
+                                            "", "Change Wallpaper…", "Edit Widgets…", "Open Terminal"};
         ui_menu(NULL, x, y, items, ARRAY_SIZE(items), desktop_pick);
     }
+}
+
+static void file_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    for (int i = 0; i < icon_count; i++) {
+        if (!icons[i].selected)
+            continue;
+        if (index == 0) {
+            gui_open_file(icons[i].path);
+        } else if (index == 2 && !icons[i].volume && strcmp(icons[i].path, "/")) {
+            char to[PATH_MAX_LEN];
+            vfs_mkdirs("/home/.Trash");
+            path_join("/home/.Trash", path_basename(icons[i].path), to, sizeof(to));
+            vfs_rename(icons[i].path, to);
+        }
+    }
+    scan_desktop();
+}
+
+/* Clean Up puts every icon back in order from the corner; Sort by Name does it alphabetically. */
+static void arrange_icons(bool by_name)
+{
+    int order[MAX_ICONS];
+    for (int i = 0; i < icon_count; i++)
+        order[i] = i;
+    for (int i = 1; by_name && i < icon_count; i++)
+        for (int k = i; k > 1 && str_casecmp(icons[order[k]].label, icons[order[k - 1]].label) < 0; k--) {
+            int t = order[k];
+            order[k] = order[k - 1];
+            order[k - 1] = t;
+        }
+    for (int i = 0; i < icon_count; i++)
+        icons[i].col = icons[i].row = -2;
+    for (int k = 0; k < icon_count; k++) {
+        int i = order[k], c = 0, r = 0;
+        if (first_slot(icons, icon_count, i, &c, &r)) {
+            icons[i].col = c;
+            icons[i].row = r;
+        }
+    }
+    layout_save();
+    wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
 }
 
 bool gui_eject(const char *path)
@@ -646,10 +974,14 @@ bool gui_eject(const char *path)
 static void volume_pick(struct window *owner, int index)
 {
     UNUSED(owner);
-    if (selected_icon < 0 || selected_icon >= icon_count || !icons[selected_icon].volume)
+    int v = -1;
+    for (int i = 0; i < icon_count; i++)
+        if (icons[i].selected && icons[i].volume)
+            v = i;
+    if (v < 0)
         return;
     char path[PATH_MAX_LEN];
-    str_copy(path, icons[selected_icon].path, sizeof(path));
+    str_copy(path, icons[v].path, sizeof(path));
     if (index == 0)
         gui_open_file(path);
     else if (index == 2)
@@ -676,12 +1008,14 @@ static void desktop_pick(struct window *owner, int index)
         scan_desktop();
     } else if (index == 1) {
         gui_open_file(dir);
-    } else if (index == 3) {
+    } else if (index == 3 || index == 4) {
+        arrange_icons(index == 4);
+    } else if (index == 6) {
         const struct gui_app *settings = gui_app_find("System Settings");
         gui_app_launch(settings, "wallpaper");
-    } else if (index == 4) {
+    } else if (index == 7) {
         widgets_edit(true);
-    } else if (index == 5) {
+    } else if (index == 8) {
         gui_terminal_show();
     }
 }
@@ -984,17 +1318,6 @@ bool gui_open_file(const char *path)
     return true;
 }
 
-const char *gui_clipboard(void)
-{
-    return clipboard;
-}
-
-void gui_set_clipboard(const char *text, size_t n)
-{
-    n = MIN(n, sizeof(clipboard) - 1);
-    memcpy(clipboard, text, n);
-    clipboard[n] = 0;
-}
 
 const char *gui_user(void)
 {
@@ -1440,8 +1763,8 @@ int gui_run(struct shell *sh)
     session = sh;
     quit_action = -1;
     last_minute = -1;
-    selected_icon = -1;
     icon_count = 0;
+    layout_count = -1;
     prepare_home();
     gui_style_refresh();
     gui_wallpaper_refresh();

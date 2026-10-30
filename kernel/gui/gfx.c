@@ -4,6 +4,7 @@
 #include <synth/heap.h>
 #include <synth/lz4.h>
 #include <synth/string.h>
+#include <synth/vfs.h>
 
 #include "internal.h"
 
@@ -782,9 +783,10 @@ void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int 
         }
 }
 
-#define ICON_SIZE 64
+#define ICON_SIZE 96
+#define ICON_LEVELS 4
 
-static uint32_t *icon_px[ICON_COUNT][3];
+static uint32_t *icon_px[ICON_COUNT][ICON_LEVELS];
 static uint8_t *symbol_px[SYM_COUNT];
 
 static uint32_t *half_size(const uint32_t *src, int size)
@@ -799,17 +801,36 @@ static uint32_t *half_size(const uint32_t *src, int size)
     return out;
 }
 
+static const uint8_t *icon_pack_data(void)
+{
+    static uint8_t *data;
+    static bool tried;
+    if (!data && !tried) {
+        tried = true;
+        size_t n;
+        char *buf;
+        if (vfs_read_all("/system/icons.pak", &buf, &n) == 0) {
+            if (n == icon_pack_size)
+                data = (uint8_t *)buf;
+            else
+                kfree(buf);
+        }
+    }
+    return data;
+}
+
 static bool load_icon(enum icon_id id)
 {
     if (icon_px[id][0])
         return true;
-    const struct packed_image *p = &icon_pack[id];
-    if (!p->data)
+    const struct icon_entry *p = &icon_pack[id];
+    const uint8_t *pack = icon_pack_data();
+    if (!pack || !p->length)
         return false;
     size_t raw = (size_t)p->size * p->size * 4;
     uint8_t *planes = kmalloc(raw);
     uint32_t *px = kmalloc(raw);
-    if (!planes || !px || lz4_decode(p->data, p->length, planes, raw) != raw) {
+    if (!planes || !px || lz4_decode(pack + p->offset, p->length, planes, raw) != raw) {
         kfree(planes);
         kfree(px);
         return false;
@@ -817,8 +838,8 @@ static bool load_icon(enum icon_id id)
     unfilter_planes(planes, px, p->size, p->size);
     kfree(planes);
     icon_px[id][0] = px;
-    icon_px[id][1] = half_size(px, ICON_SIZE);
-    icon_px[id][2] = icon_px[id][1] ? half_size(icon_px[id][1], ICON_SIZE / 2) : NULL;
+    for (int level = 1; level < ICON_LEVELS; level++)
+        icon_px[id][level] = icon_px[id][level - 1] ? half_size(icon_px[id][level - 1], ICON_SIZE >> (level - 1)) : NULL;
     return true;
 }
 
@@ -837,7 +858,7 @@ static int scaled_next;
 
 static const uint32_t *icon_at_size(enum icon_id id, int size)
 {
-    for (int level = 0; level < 3; level++)
+    for (int level = 0; level < ICON_LEVELS; level++)
         if (size == ICON_SIZE >> level && icon_px[id][level])
             return icon_px[id][level];
     if (size <= 0 || size > 256)
@@ -852,7 +873,9 @@ static const uint32_t *icon_at_size(enum icon_id id, int size)
         return NULL;
     e->id = (int)id;
     e->size = size;
-    int level = size <= 20 && icon_px[id][2] ? 2 : size <= 40 && icon_px[id][1] ? 1 : 0;
+    int level = 0;
+    while (level + 1 < ICON_LEVELS && icon_px[id][level + 1] && (ICON_SIZE >> (level + 1)) >= size)
+        level++;
     int src = ICON_SIZE >> level;
     struct canvas tmp = canvas_make(e->px, size, size);
     draw_scaled(&tmp, (struct rect){0, 0, size, size}, icon_px[id][level], src, src, src, 255);

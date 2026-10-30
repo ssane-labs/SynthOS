@@ -364,9 +364,15 @@ struct rect wm_client_rect(const struct window *w)
     return (struct rect){w->frame.x, w->frame.y + TITLE_HEIGHT, w->frame.w, w->frame.h - TITLE_HEIGHT};
 }
 
+/* Windows have no shadow; only menus and other floating panels keep a small one. */
+static bool shadowed(const struct window *w)
+{
+    return !(w->flags & WIN_NOSHADOW) && floating(w);
+}
+
 static struct rect outer_rect(const struct window *w)
 {
-    if (w->flags & WIN_NOSHADOW)
+    if (!shadowed(w))
         return w->frame;
     int size = floating(w) ? 8 : SHADOW, dy = floating(w) ? 2 : SHADOW_DY;
     struct rect s = {w->frame.x - size, w->frame.y + dy - size, w->frame.w + 2 * size, w->frame.h + 2 * size};
@@ -570,7 +576,7 @@ static bool snapshot(struct window *w, struct canvas *snap, int margin)
 
 static int ghost_margin(const struct window *w)
 {
-    return w->flags & WIN_NOSHADOW ? 0 : SHADOW + SHADOW_DY;
+    return shadowed(w) ? SHADOW + SHADOW_DY : 0;
 }
 
 /* How long each animation lasts at normal speed; "animspeed" scales them all. */
@@ -1275,6 +1281,7 @@ void wm_toggle_maximize(struct window *w)
     }
     if (g)
         g->frame = w->frame;
+    chrome_changed();
 }
 
 /* Full screen: the window takes its whole screen, and while it is in front the menu bar and the Dock step aside
@@ -1359,6 +1366,7 @@ void wm_snap(struct window *w, enum snap_zone zone)
     w->flags &= ~WIN_MAXIMIZED;
     w->flags |= WIN_TILED;
     reshape(w, zone_rect(window_screen(w), zone));
+    chrome_changed();
 }
 
 static enum snap_zone zone_at(int x, int y)
@@ -1599,13 +1607,8 @@ static void draw_window(struct canvas *c, struct window *w)
 {
     struct rect f = w->frame;
     bool active = w == focus || floating(w);
-    if (!(w->flags & WIN_NOSHADOW)) {
-        if (floating(w))
-            gfx_drop_shadow(c, f, corner(w), 8, style.dark ? 90 : 34, 2);
-        else
-            gfx_drop_shadow(c, f, corner(w), active ? SHADOW : 8, style.dark ? (active ? 130 : 80) : (active ? 46 : 26),
-                            active ? SHADOW_DY : 2);
-    }
+    if (shadowed(w))
+        gfx_drop_shadow(c, f, corner(w), 8, style.dark ? 90 : 34, 2);
     struct rect cr = wm_client_rect(w);
     bool titled = framed(w) && !(w->flags & WIN_FULLSIZE);
     if (w->glass && style.glass != GLASS_SOLID) {
@@ -2107,6 +2110,7 @@ static void mouse_moved(void)
             drag_win->flags &= ~(WIN_MAXIMIZED | WIN_TILED);
             set_frame(drag_win, (struct rect){mouse_x - rel, drag_win->frame.y, drag_win->restore.w, drag_win->restore.h});
             drag_x = rel;
+            chrome_changed();
         }
         struct rect s = wm_screen_rect(wm_screen_at(mouse_x, mouse_y));
         int y = MAX(mouse_y - drag_y, s.y + menubar_height());
@@ -2612,6 +2616,27 @@ void wm_stop(void)
 unsigned wm_mouse_buttons(void)
 {
     return mouse_buttons;
+}
+
+/* The color along the top of a window that fills the screen, for the menu bar to match; 0 when no window does. */
+uint32_t wm_top_color(int screen)
+{
+    struct window *w = focus;
+    while (w && (w->flags & WIN_DIALOG) && w->owner)
+        w = w->owner;
+    if (!w || !visible(w) || !framed(w) || !(w->flags & (WIN_MAXIMIZED | WIN_FULLSCREEN)) ||
+        wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2) != screen)
+        return 0;
+    if (!(w->flags & WIN_FULLSIZE))
+        return style.titlebar | 0xff000000u;
+    if (!w->surface.px || w->surface.w < 4 || w->surface.h < 2)
+        return 0;
+    unsigned r = 0, g = 0, b = 0, n = 0;
+    for (int i = 1; i < 32; i++) {
+        uint32_t p = w->surface.px[w->surface.w * i / 32];
+        r += p >> 16 & 0xff, g += p >> 8 & 0xff, b += p & 0xff, n++;
+    }
+    return RGB(r / n, g / n, b / n);
 }
 
 /* No window is still flying open or closed. */

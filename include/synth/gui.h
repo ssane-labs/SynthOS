@@ -35,6 +35,7 @@ struct ui_font {
 };
 
 extern const struct ui_font font_sans, font_bold, font_small, font_title, font_large, font_mono, font_clock, font_display;
+extern const struct ui_font font_clock_light, font_clock_heavy, font_clock_mono, font_clock_serif;
 
 enum icon_id {
     ICON_FOLDER,
@@ -171,7 +172,15 @@ struct packed_image {
     const uint8_t *data;
 };
 
-extern const struct packed_image icon_pack[ICON_COUNT], symbol_pack[SYM_COUNT];
+/* App icons live in /system/icons.pak: each one is an LZ4 block at an offset. */
+struct icon_entry {
+    uint16_t size;
+    uint32_t length, offset;
+};
+
+extern const struct icon_entry icon_pack[ICON_COUNT];
+extern const uint32_t icon_pack_size;
+extern const struct packed_image symbol_pack[SYM_COUNT];
 
 struct rect rect_make(int x, int y, int w, int h);
 bool rect_empty(struct rect r);
@@ -583,6 +592,10 @@ void gui_style_refresh(void);
 void gui_wallpaper_refresh(void);
 const char *gui_clipboard(void);
 void gui_set_clipboard(const char *text, size_t n);
+void gui_clipboard_set_image(const uint32_t *px, int w, int h, int stride);
+bool gui_clipboard_image(int *w, int *h);
+void gui_clipboard_copy_image(uint32_t *dst, int stride);
+uint32_t gui_clipboard_seq(void);
 void gui_quit(int action);
 const char *gui_user(void);
 void gui_lock(void);

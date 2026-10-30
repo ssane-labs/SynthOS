@@ -77,6 +77,7 @@ struct glass_look {
     int brightness;
     int pointer_light;
     bool dispersion;
+    bool edge_line;
     bool liquid;
     bool solid;
     gfx_cover_fn shape;
@@ -135,6 +136,9 @@ struct window *wm_top_popup(void);
 void wm_damage_all(void);
 void wm_set_tint(int brightness, int warmth);
 int gui_glass_strength(void);
+#ifndef ABS
+#define ABS(v) ((v) < 0 ? -(v) : (v))
+#endif
 void glass_invalidate_all(void);
 void display_tick(void);
 int display_brightness(void);
@@ -144,6 +148,7 @@ void wm_set_cursor_visible(bool on);
 int wm_window_list(struct window **out, int max);
 bool wm_capture(struct rect r, struct canvas *out);
 bool wm_settled(void);
+uint32_t wm_top_color(int screen);
 bool wm_animating(void);
 unsigned wm_mouse_buttons(void);
 void hotcorner_tick(void);

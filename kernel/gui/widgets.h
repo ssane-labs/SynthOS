@@ -51,6 +51,7 @@ enum widget_style {
 
 struct widget {
     int kind, size, shape, style;
+    int cw, ch;
     int col, row;
     char opt[WIDGET_OPT];
     struct rect r;
@@ -65,8 +66,8 @@ struct widget {
 struct widget_kind_info {
     const char *name, *title;
     enum symbol_id sym;
-    int size;
-    unsigned sizes;
+    int cw, ch;
+    int min_w, min_h, max_w, max_h;
 };
 
 extern const struct widget_kind_info widget_kinds[WK_COUNT];
@@ -87,7 +88,12 @@ void widget_free_kind(struct widget *w);
 void widget_default_opt(struct widget *w);
 bool widget_kind_animating(void);
 struct widget *widget_list(int *n);
+int widget_opt_int(const struct widget *w, const char *key, int fallback);
+void widget_opt_set(struct widget *w, const char *key, int value);
+#define CLOCK_FONTS 5
+#define CLOCK_COLORS 12
+extern const struct ui_font *const clock_fonts[CLOCK_FONTS];
+extern const uint32_t clock_colors[CLOCK_COLORS];
 void widgets_changed(void);
-#define ABS(v) ((v) < 0 ? -(v) : (v))
 
 #endif

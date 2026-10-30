@@ -819,6 +819,35 @@ static void shell_test(void)
     printf("shellexec ok=%d process=%d code=%lu\n", ok, info.hProcess != NULL, code);
 }
 
+/* Text goes in as UTF-16 and comes out as ANSI; a 2x2 picture goes in as a DIB and comes back. */
+static void clipboard_test(void)
+{
+    OpenClipboard(NULL);
+    EmptyClipboard();
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, 32);
+    wcscpy((WCHAR *)GlobalLock(h), L"clip text");
+    GlobalUnlock(h);
+    SetClipboardData(CF_UNICODETEXT, h);
+    CloseClipboard();
+    OpenClipboard(NULL);
+    const char *text = IsClipboardFormatAvailable(CF_TEXT) ? GlobalLock(GetClipboardData(CF_TEXT)) : "";
+    printf("clipboard text=%s formats=%d\n", text, CountClipboardFormats());
+    struct {
+        BITMAPINFOHEADER h;
+        DWORD px[4];
+    } dib = {{sizeof(BITMAPINFOHEADER), 2, 2, 1, 32, BI_RGB}, {0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff}};
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, sizeof(dib));
+    memcpy(GlobalLock(g), &dib, sizeof(dib));
+    GlobalUnlock(g);
+    EmptyClipboard();
+    SetClipboardData(CF_DIB, g);
+    const BITMAPINFOHEADER *back = IsClipboardFormatAvailable(CF_DIB) ? GlobalLock(GetClipboardData(CF_DIB)) : NULL;
+    const DWORD *bits = back ? (const DWORD *)(back + 1) : NULL;
+    printf("clipboard image=%ldx%ld first=%06lx text=%d\n", back ? back->biWidth : 0L, back ? back->biHeight : 0L,
+           bits ? bits[0] & 0xffffff : 0UL, IsClipboardFormatAvailable(CF_TEXT));
+    CloseClipboard();
+}
+
 int main(int argc, char **argv)
 {
     const char *mode = argc > 1 ? argv[1] : "info";
@@ -851,6 +880,8 @@ int main(int argc, char **argv)
     } else if (!strcmp(mode, "opened")) {
         printf("opened %s\n", argc > 2 ? argv[2] : "?");
         return 7;
+    } else if (!strcmp(mode, "clipboard")) {
+        clipboard_test();
     } else if (!strcmp(mode, "registry")) {
         registry_test();
     } else if (!strcmp(mode, "shortcut")) {

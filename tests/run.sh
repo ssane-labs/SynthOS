@@ -119,7 +119,7 @@ desktop is not running
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets
-mono clock medium rounded clear -1 -1
+mono clock 4x2 rounded clear -1 -1
 config widgets all; widgets list | grep -c desktop
 12
 widgets add clock; widgets list | grep clock
@@ -127,7 +127,7 @@ widgets add clock; widgets list | grep clock
 config widgets analog,worldclock,photo,notes,system,apps; config widgets
 analog,worldclock,photo,notes,system,apps
 grep worldclock ~/.widgets
-mono worldclock small rounded glass -1 -1 Tokyo|540
+mono worldclock 2x2 rounded glass -1 -1 Tokyo|540
 widgets add moon
 no widget called moon
 config widgets clock,weather,music; config widgets
@@ -204,6 +204,14 @@ topng /system/samples/Dune.jpg /tmp/dune.png | grep -c bytes; imginfo /tmp/dune.
 1024x640, 1 frame, average #c8967d
 screenshot
 screenshot: the desktop is not running
+clip set hello clipboard; clip; clip info
+text 15 bytes
+clip; clip set two; clip
+hello clipboard
+clip image /system/samples/Mist.jpg; clip info; clip save /tmp/clip.png; imginfo /tmp/clip.png; rm /tmp/clip.png
+1024x640, 1 frame, average #a7b0bd
+clip info
+image 1024x640
 config termstatus off; config termstatus
 termstatus = off
 config dockapps 'Files|/home/notes.txt|Terminal'; grep mono ~/.dock
@@ -300,6 +308,10 @@ wintest compat | grep lstrcmpW
 lstrcmpW null=1,1,1
 wintest compat | grep section
 section read-only=ok write-dup=denied write-view=denied
+wintest clipboard | grep text=
+clipboard text=clip text formats=2
+wintest clipboard | grep image=
+clipboard image=2x2 first=ff0000 text=0
 wintest registry | grep create
 reg create=0 disp=1
 wintest registry | grep ansi

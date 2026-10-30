@@ -221,6 +221,36 @@ static void undo(struct paint *p)
     p->modified = true;
 }
 
+/* A picture from the clipboard goes into the top left corner; the canvas grows to hold it. */
+static void paste(struct paint *p)
+{
+    int w, h;
+    if (!gui_clipboard_image(&w, &h))
+        return;
+    int nw = MAX(p->img.w, w), nh = MAX(p->img.h, h);
+    if (nw != p->img.w || nh != p->img.h) {
+        struct canvas c;
+        if (!canvas_alloc(&c, nw, nh))
+            return;
+        gfx_fill(&c, (struct rect){0, 0, nw, nh}, WHITE);
+        gfx_blit(&c, 0, 0, &p->img, (struct rect){0, 0, p->img.w, p->img.h});
+        canvas_free(&p->img);
+        p->img = c;
+        p->has_undo = false;
+    } else {
+        save_undo(p);
+    }
+    uint32_t *px = kmalloc((size_t)w * (size_t)h * 4);
+    if (!px)
+        return;
+    gui_clipboard_copy_image(px, w);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            p->img.px[y * p->img.stride + x] = px[y * w + x] | 0xff000000u;
+    kfree(px);
+    p->modified = true;
+}
+
 static void update_title(struct window *w, struct paint *p)
 {
     char title[64];
@@ -409,6 +439,8 @@ enum {
     CMD_SAVE,
     CMD_SAVE_AS,
     CMD_UNDO,
+    CMD_COPY,
+    CMD_PASTE,
     CMD_TOOL,
 };
 
@@ -422,6 +454,9 @@ static const struct menu_item file_items[] = {
 
 static const struct menu_item edit_items[] = {
     {"Undo", KEY_COMMAND(CMD_UNDO), "⌘Z"},
+    {"", 0, NULL},
+    {"Copy Picture", KEY_COMMAND(CMD_COPY), "⌘C"},
+    {"Paste", KEY_COMMAND(CMD_PASTE), "⌘V"},
 };
 
 static const struct menu_item tool_items[] = {
@@ -540,6 +575,10 @@ static void keys(struct ui *ui, struct paint *p)
         }
     if (k == KEY_CTRL('z') || k == KEY_COMMAND(CMD_UNDO))
         undo(p);
+    else if (k == KEY_CTRL('v') || k == KEY_COMMAND(CMD_PASTE))
+        paste(p);
+    else if (k == KEY_CTRL('c') || k == KEY_COMMAND(CMD_COPY))
+        gui_clipboard_set_image(p->img.px, p->img.w, p->img.h, p->img.stride);
     else if (k == KEY_CTRL('s') || k == KEY_COMMAND(CMD_SAVE))
         save_or_prompt(ui->win, p);
     else if (k == (KEY_CTRL('s') | KEY_MOD_SHIFT) || k == KEY_COMMAND(CMD_SAVE_AS))
