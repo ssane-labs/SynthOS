@@ -119,9 +119,15 @@ desktop is not running
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets
-mono clock,tasks
+mono clock medium rounded clear -1 -1
 config widgets all; widgets list | grep -c desktop
-6
+12
+widgets add clock; widgets list | grep clock
+2 on the desktop
+config widgets analog,worldclock,photo,notes,system,apps; config widgets
+analog,worldclock,photo,notes,system,apps
+grep worldclock ~/.widgets
+mono worldclock small rounded glass -1 -1 Tokyo|540
 widgets add moon
 no widget called moon
 config widgets clock,weather,music; config widgets
@@ -174,6 +180,10 @@ config glassstrength 25; config glassstrength; config glassstrength 70
 glassstrength = 25
 config snap off; config snap; config snap on
 snap = off
+config animspeed 140; config animspeed; config animspeed 100
+animspeed = 140
+config animspeed 20
+animspeed: invalid value '20'
 config dockpreviews off; config dockpreviews; config dockpreviews on
 dockpreviews = off
 config cornertr mission; config cornerbl lock; config cornertr; config cornertr off; config cornerbl off

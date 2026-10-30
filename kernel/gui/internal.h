@@ -23,16 +23,6 @@ enum status_kind {
     STATUS_PILL,
 };
 
-enum widget_id {
-    WIDGET_CLOCK,
-    WIDGET_WEATHER,
-    WIDGET_MUSIC,
-    WIDGET_CALENDAR,
-    WIDGET_VISUALIZER,
-    WIDGET_TASKS,
-    WIDGET_COUNT,
-};
-
 struct gui_look {
     const char *name;
     const char *title;

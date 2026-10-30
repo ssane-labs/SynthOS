@@ -891,6 +891,12 @@ static void pane_access(struct page *p)
     bool still = !is_on("animations");
     if (toggle(p, "Reduce motion", "Windows, menus and the Dock appear without moving", &still))
         apply("animations", still ? "off" : "on");
+    if (!still) {
+        static const char *const speeds[] = {"Relaxed", "Normal", "Fast", "Fastest"};
+        static const char *const speed_values[] = {"70", "100", "140", "200"};
+        choice(p, "Animation speed", "How quickly windows open, close and move", "animspeed", speeds, speed_values,
+               4, 300);
+    }
     char glass[16];
     current("glass", glass, sizeof(glass));
     bool solid = !strcmp(glass, "solid");
@@ -950,23 +956,36 @@ static void pane_control(struct page *p)
 
 /* ---- Desktop & Dock */
 
+static const char *const widget_kind_names[] = {"clock", "analog", "worldclock", "weather", "calendar", "tasks",
+                                                "music", "visualizer", "photo", "notes", "system", "apps"};
+static const char *const widget_kind_titles[] = {"Clock", "Analog Clock", "World Clock", "Weather",
+                                                 "Calendar", "Tasks", "Music", "Visualizer",
+                                                 "Photo", "Notes", "System", "Apps"};
+
 static bool widget_on(const char *name)
 {
-    char v[96];
+    char v[160];
     current("widgets", v, sizeof(v));
-    return strstr(v, name) != NULL;
+    size_t n = strlen(name);
+    for (const char *p = v; *p;) {
+        const char *e = strchr(p, ',');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len == n && !strncmp(p, name, n))
+            return true;
+        p += len + (e ? 1 : 0);
+    }
+    return false;
 }
 
 static void widget_toggle(const char *name, bool on)
 {
-    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
-    char out[96] = "";
-    for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
-        bool want = !strcmp(names[i], name) ? on : widget_on(names[i]);
+    char out[160] = "";
+    for (size_t i = 0; i < ARRAY_SIZE(widget_kind_names); i++) {
+        bool want = !strcmp(widget_kind_names[i], name) ? on : widget_on(widget_kind_names[i]);
         if (want) {
             if (out[0])
                 str_append(out, ",", sizeof(out));
-            str_append(out, names[i], sizeof(out));
+            str_append(out, widget_kind_names[i], sizeof(out));
         }
     }
     apply("widgets", out[0] ? out : "none");
@@ -1014,14 +1033,13 @@ static void pane_dock(struct page *p)
     info(p, "Show all windows", "F3 or Ctrl+Up");
     end(p, "Push the pointer into a corner of the screen to run what it is set to.");
     section(p, "Widgets");
-    static const char *const names[] = {"clock", "weather", "music", "calendar", "visualizer", "tasks"};
-    static const char *const labels[] = {"Clock", "Weather", "Music", "Calendar", "Visualizer", "Tasks"};
-    for (int i = 0; i < 6; i++) {
-        bool on = widget_on(names[i]);
-        if (toggle(p, labels[i], NULL, &on))
-            widget_toggle(names[i], on);
+    for (size_t i = 0; i < ARRAY_SIZE(widget_kind_names); i++) {
+        bool on = widget_on(widget_kind_names[i]);
+        if (toggle(p, widget_kind_titles[i], NULL, &on))
+            widget_toggle(widget_kind_names[i], on);
     }
-    if (button(p, "Arrange widgets on the desktop", NULL, "Edit Widgets"))
+    if (button(p, "Add, move and remove widgets", "Right-click a widget for its size, shape, style and options",
+               "Edit Widgets"))
         widgets_edit(true);
     if (!p->measure && !s->city.len && p->ui->st->focus == 0) {
         char city[48];

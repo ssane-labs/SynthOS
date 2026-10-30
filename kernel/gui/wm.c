@@ -573,17 +573,21 @@ static int ghost_margin(const struct window *w)
     return w->flags & WIN_NOSHADOW ? 0 : SHADOW + SHADOW_DY;
 }
 
+/* How long each animation lasts at normal speed; "animspeed" scales them all. */
+static int anim_speed = 100;
+
 static int ghost_ms(enum anim_kind kind, unsigned flags)
 {
     bool small = flags & WIN_POPUP && !(flags & WIN_OVERLAY);
+    int ms = 200;
     switch (kind) {
-    case ANIM_OPEN: return small ? 260 : 460;
-    case ANIM_CLOSE: return small ? 160 : 240;
-    case ANIM_MINIMIZE: return 500;
-    case ANIM_RESTORE: return 460;
-    case ANIM_MORPH: return 380;
+    case ANIM_OPEN: ms = small ? 190 : 300; break;
+    case ANIM_CLOSE: ms = small ? 120 : 180; break;
+    case ANIM_MINIMIZE: ms = 380; break;
+    case ANIM_RESTORE: ms = 340; break;
+    case ANIM_MORPH: ms = 260; break;
     }
-    return 200;
+    return ms * 100 / anim_speed;
 }
 
 static struct ghost *ghost_new(enum anim_kind kind, struct window *w)
@@ -2752,6 +2756,25 @@ static int set_animations(struct shell *sh, const char *value)
 static const struct setting s_animations = {"animations", "on|off", "animate windows, menus and the Dock",
                                             get_animations, set_animations};
 SETTING(s_animations);
+
+static void get_speed_anim(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", anim_speed);
+}
+
+static int set_speed_anim(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 50 || v > 200)
+        return E_INVAL;
+    anim_speed = (int)v;
+    return 0;
+}
+
+static const struct setting s_anim_speed = {"animspeed", "50..200", "speed of window animations in percent",
+                                            get_speed_anim, set_speed_anim};
+SETTING(s_anim_speed);
 
 bool wm_animations(void)
 {

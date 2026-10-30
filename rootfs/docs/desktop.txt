@@ -15,9 +15,30 @@ Mouse
 Keyboard
   Win or Ctrl+Esc           Launchpad: all apps, type to filter
   Ctrl+Space                search apps and files
-  Alt+Tab                   next window
+  Alt+Tab, Win+Tab          window switcher: Tab goes on, letting go switches
+  F3 or Ctrl+Up             Mission Control: every window side by side
+  Win+arrows                tile the window: halves, quarters, full screen
+  Win+D                     show the desktop      Win+E  Files
+  Print Screen, Win+Shift+5 screenshot bar: screen, window or area, options
+  Win+Shift+3               screenshot of the whole screen
+  Win+Shift+4, Win+Shift+S  screenshot of an area you drag
   Alt+F4                    close the active window
   Ctrl+C / Ctrl+X / Ctrl+V  clipboard in Files, Notepad, Calculator, text fields
+
+Menu bar
+  Control Center (the two switches): network, Dark Mode, Night Shift, Focus,
+  screenshot, Mission Control, brightness, volume and what is playing.
+  Sound, network, display and focus have their own menus next to it
+  (config menuextras sound,network,display,focus,search). The clock opens
+  Notification Center: the notifications of this session and the month.
+
+Windows
+  Drag a window to the left or right edge for half the screen, to a corner
+  for a quarter, to the top for all of it; drag it away to get its size
+  back. The ... button has Tile Left, Tile Right and the quarters.
+  Rest the pointer on an app in the Dock to see its windows (dockpreviews).
+  Hot corners run Mission Control, the desktop, Launchpad and more
+  (Settings > Desktop & Dock, config cornertr mission).
 
 Commands
   launch                    list the apps
@@ -31,9 +52,18 @@ Commands
   config appearance dark    auto (what the look prefers), light or dark
   config wallpaper sunset   auto, dune, mist, night, sunset, waves, hills,
                             aurora, synthwave, solid or a picture file
-  config widgets all        none by default; clock, weather, music, calendar, visualizer, tasks
+  config widgets all        none by default; clock, analog, worldclock, weather,
+                            calendar, tasks, music, visualizer, photo, notes,
+                            system, apps
   widgets edit              add and remove widgets on the desktop (also:
                             right-click the desktop > Edit Widgets)
+  screenshot -r             take a screenshot (-w window, -r area, -p bar)
+  topng pic.jpg out.png     convert a picture to PNG
+  config brightness 70      dim the screen; nightshift on|off|auto
+  config network off        networking off like airplane mode
+  config glassstrength 90   how strong Liquid Glass is (0..100, 70 normal)
+  config animspeed 140      animation speed in percent (50..200)
+  config snap off           no tiling at the screen edges
   config dockstyle side     bottom, corner or side Dock for this look
   config statusbar pill     menubar or a floating status pill
   config dockapps default   what the Dock holds (or drag icons on and off)
@@ -81,8 +111,12 @@ Files, a pill with previous, zoom, rotate and next in Photos, play, pause
 and the timeline in Video. The Dock starts with only Apps, Files, Chromium,
 Terminal and the Trash; drag icons from the desktop onto it, along it or
 off it.
-Widgets can be dragged; double-click the music
-widget for the Music app, click the weather to refresh it, + adds a task.
+Widgets sit on a grid: drag one and it settles into the nearest free
+cells. Right-click a widget for its size (small, medium, large, slim) or
+Edit Widget: size, shape (rounded, round, square), style (glass, tinted,
+solid, clear) and its own options (city, photo folder, note, apps).
+Double-click the music widget for the Music app, click the weather to
+refresh it, + adds a task, click a photo for the next one.
 
 Apps
   Chromium        the web browser, comes with SynthOS
@@ -101,9 +135,10 @@ Apps
   Paint           pencil, brush, eraser, line, rectangle, ellipse, fill,
                   color picker; opens and saves 24-bit BMP files
   Calculator      keyboard or mouse, %, 1/x, x^2, square root
-  System Settings every setting, like on a Mac: search on the left
-                  (it looks inside every pane), panes in groups, General
-                  with About, Storage, Date & Time and Login Items
+  System Settings every setting in one place, like on a Mac: search on
+                  the left (it looks inside every pane), panes in groups,
+                  General with About, Storage, Date & Time and Login Items
+  Screenshot      the screenshot bar; opens a picture to crop and mark up
   System Monitor  memory graph, disks, open windows (End task), kernel log
   Minesweeper     three levels; left click opens, right click flags
 

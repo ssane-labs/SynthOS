@@ -241,6 +241,10 @@ $(OUT)/obj/x32/fmt.o: kernel/lib/fmt.c arch/x86/64/x32.syms
 	@objcopy -I elf32-x86-64 -O elf64-x86-64 --redefine-syms=arch/x86/64/x32.syms $(@:.o=.x32.o) $@
 endif
 $(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
+# desktop code that runs on clicks, not per frame: small rather than fast (the 32-bit kernel must stay below 3.5 MiB)
+GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.o screenshot.o mission.o notify.o \
+             dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o)
+$(OUT)/obj/kernel/gui/apps/%.o $(GUI_SMALL): CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
 

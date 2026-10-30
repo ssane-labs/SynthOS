@@ -436,13 +436,24 @@ static void scan_desktop(void)
                 Z_DESKTOP);
 }
 
+/* Icons fill columns from the right edge and skip the places widgets cover. */
 static struct rect icon_cell(int i)
 {
-    struct rect s = wm_work_area(0);
+    struct rect s = wm_work_area(0), busy[16];
     int top = MAX(s.y + 10, status_bottom() + 10);
     int per_column = MAX(1, (s.y + s.h - top - 6) / CELL_H);
-    int right = s.x + s.w - 12 - widgets_right_reserved();
-    return (struct rect){right - (i / per_column + 1) * CELL_W, top + (i % per_column) * CELL_H, CELL_W, CELL_H - 6};
+    int right = s.x + s.w - 12, n = widgets_obstacles(busy, 16);
+    struct rect r = {right - CELL_W, top, CELL_W, CELL_H - 6};
+    for (int slot = 0, k = 0; slot < per_column * 12; slot++) {
+        r = (struct rect){right - (slot / per_column + 1) * CELL_W, top + (slot % per_column) * CELL_H, CELL_W,
+                          CELL_H - 6};
+        bool covered = false;
+        for (int b = 0; b < n && !covered; b++)
+            covered = !rect_empty(rect_intersect(rect_inset(r, 4), busy[b]));
+        if (!covered && k++ == i)
+            return r;
+    }
+    return r;
 }
 
 static void icon_label(struct canvas *c, struct rect cell, const char *label, bool selected)
