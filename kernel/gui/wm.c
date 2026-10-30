@@ -771,6 +771,14 @@ static void draw_ghosts(struct canvas *c, bool above)
     }
 }
 
+static bool animating;
+
+/* Something is moving: the desktop loop then draws frames at an even pace instead of waiting for input. */
+bool wm_animating(void)
+{
+    return animating;
+}
+
 static void wm_animate(void)
 {
     for (struct ghost **pp = &ghosts; *pp;) {
@@ -791,15 +799,19 @@ static void wm_animate(void)
         }
         pp = &g->next;
     }
-    dock_animate();
-    panel_animate();
-    widgets_animate();
-    desktop_animate();
+    bool busy = ghosts != NULL;
+    busy |= dock_animate();
+    busy |= panel_animate();
+    busy |= widgets_animate();
+    busy |= desktop_animate();
     uint64_t now = hal_ticks_ms();
     int dt = chrome_tick ? (int)MIN(now - chrome_tick, 64u) : 16;
     chrome_tick = now;
-    if (spring_step(&lights_grow, 500, 22, dt) && traffic_win && wm_window_alive(traffic_win))
+    if (spring_step(&lights_grow, 500, 22, dt) && traffic_win && wm_window_alive(traffic_win)) {
         damage_title(traffic_win);
+        busy = true;
+    }
+    animating = busy || fade_start;
     if (fade_start) {
         wm_damage_all();
         if (now >= fade_start + FADE_MS) {

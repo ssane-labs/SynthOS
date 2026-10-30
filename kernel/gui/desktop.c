@@ -1367,14 +1367,21 @@ static void pump(int timeout_ms)
     chrome_install_run();
     chromium_run();
     open_queued();
+    /* While something moves, frames start every 16 ms whatever drawing one took; otherwise wait up to 8 ms. */
+    static uint64_t frame_start;
+    uint64_t done = hal_ticks_ms();
+    int nap = timeout_ms > 0 ? MIN(timeout_ms, 8) : 8;
+    if (wm_animating())
+        nap = (int)CLAMP((int64_t)frame_start + 16 - (int64_t)done, 0, 8);
+    frame_start = done + (uint64_t)nap;
 #if CONFIG_WIN32
     if (timeout_ms != 0)
         w32_background();
-    if (!busy && timeout_ms != 0)
-        w32_host_sleep((uint32_t)(timeout_ms > 0 ? MIN(timeout_ms, 8) : 8));
+    if (!busy && timeout_ms != 0 && nap > 0)
+        w32_host_sleep((uint32_t)nap);
 #else
-    if (!busy && timeout_ms != 0)
-        hal_sleep_ms((uint32_t)(timeout_ms > 0 ? MIN(timeout_ms, 8) : 8));
+    if (!busy && timeout_ms != 0 && nap > 0)
+        hal_sleep_ms((uint32_t)nap);
 #endif
 }
 

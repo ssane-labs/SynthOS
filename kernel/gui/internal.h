@@ -144,6 +144,7 @@ void wm_set_cursor_visible(bool on);
 int wm_window_list(struct window **out, int max);
 bool wm_capture(struct rect r, struct canvas *out);
 bool wm_settled(void);
+bool wm_animating(void);
 unsigned wm_mouse_buttons(void);
 void hotcorner_tick(void);
 void screenshot_tick(void);
@@ -190,6 +191,8 @@ enum shot_mode {
 };
 void screenshot_start(enum shot_mode mode);
 void mission_toggle(void);
+void quicklook_toggle(const char *path);
+bool quicklook_open(void);
 bool mission_active(void);
 void switcher_next(int held, bool back);
 void desktop_show_toggle(void);

@@ -940,6 +940,10 @@ static void frame(struct ui *ui, void *data)
         f->search.buf[f->search.len] = 0;
         f->search.cursor = f->search.len;
         ui->changed = true;
+    } else if (key == ' ' && !f->search.len && selected(f)) {
+        char path[PATH_MAX_LEN];
+        child_path(f, selected(f)->name, path);
+        quicklook_toggle(path);
     } else if (key == ' ' && f->search.len) {
         f->search.buf[f->search.len++] = ' ';
         f->search.buf[f->search.len] = 0;

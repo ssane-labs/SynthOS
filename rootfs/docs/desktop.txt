@@ -123,7 +123,8 @@ Apps
   Chrome          Google Chrome; the first start downloads and installs it
   Terminal        the SynthOS shell in a window (closing only hides it)
   Files           browse, open, copy, cut, paste, rename, delete; type to
-                  search, picture thumbnails, sidebar from the ... menu
+                  search, picture thumbnails, sidebar from the ... menu;
+                  Space shows the selected file (Quick Look)
   Notepad         text editor: selection, clipboard, auto-indent; Open and
                   Save As show the file panel (favorites, disks, folders)
   Photos          PNG, JPEG, GIF (animated) and BMP: zoom, rotate,
