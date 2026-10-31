@@ -337,24 +337,37 @@ SynthOS 1.0 «Mirage» — рабочая система:
 Linux здесь нужен **только как среда сборки** (компилятор и ассемблер). Сама SynthOS от него не
 зависит и загружается на голом железе.
 
-### Windows 10/11 (рекомендуется через WSL)
+### Windows 10/11 — только через WSL (или готовые образы)
+
+**Чтобы просто запустить или поставить SynthOS, собирать ничего не нужно**: готовые файлы — в релизе
+**latest** на GitHub (Releases). `synthos-usb.img` из `synthos-usb.zip` запускается и в QEMU для
+Windows: `qemu-system-x86_64 -drive format=raw,file=synthos-usb.img -m 1G` (с UEFI — добавить
+`-bios <путь>\OVMF.fd`).
+
+Собирать нужно в **WSL** (Linux внутри Windows). Инструментами самой Windows (MSYS2, Git Bash,
+clang для Windows, llvm-objcopy) сборка не работает: Windows-подсистема 64-битного ядра — это x32-код,
+которому нужен clang с целью `x86_64-linux-gnux32` и GNU objcopy с форматом `elf32-x86-64`. Собранное
+обходными путями ядро падает при старте (страничная ошибка в коде реестра и перезагрузка по кругу),
+поэтому `make` в такой среде сразу останавливается с подсказкой.
 
 1. В PowerShell от администратора: `wsl --install` → перезагрузка → откроется Ubuntu, задайте имя
    пользователя и пароль.
 2. В терминале Ubuntu:
    ```sh
    sudo apt update
-   sudo apt install -y build-essential nasm qemu-system-x86 git \
-       gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 dosfstools mtools ovmf
+   sudo apt install -y build-essential gcc-multilib clang nasm qemu-system-x86 git \
+       gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+       dosfstools mtools ovmf openssl python3-cryptography
    ```
-   Обязательны только `build-essential nasm`. Остальное: `mingw-w64` — собирать примеры
-   Windows-программ и UEFI-загрузчик (без него берутся готовые файлы из `prebuilt/`),
-   `dosfstools mtools` — добавить в образ раздел UEFI, `qemu-system-x86` и `ovmf` — запуск в эмуляторе.
+   Для 64-битного ядра обязательны `build-essential clang nasm` (32-битному, `make ARCH=i686`, хватит
+   `build-essential nasm`). Остальное: `mingw-w64` — примеры Windows-программ и UEFI-загрузчик (без него
+   берутся готовые файлы из `prebuilt/`), `dosfstools mtools` — раздел UEFI в образе, `openssl
+   python3-cryptography` — подпись для Secure Boot, `qemu-system-x86` и `ovmf` — запуск в эмуляторе.
 3. Скопировать репозиторий внутрь WSL (так сборка быстрее), например:
    `git clone <адрес репозитория> ~/SynthOS` или `cp -r /mnt/c/путь/SynthOS ~/SynthOS`.
 4. QEMU из WSL открывает окно через WSLg (Windows 11 — из коробки). Если окна нет — установите
-   QEMU для Windows (qemu.org) и запускайте образ оттуда:
-   `qemu-system-x86_64 -drive format=raw,file=synthos.img -m 256`.
+   QEMU для Windows (qemu.org) и запускайте собранный образ оттуда:
+   `qemu-system-x86_64 -drive format=raw,file=synthos.img -m 1G`.
 
 ### Linux (Ubuntu / Debian / Mint)
 

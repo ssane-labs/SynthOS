@@ -7,6 +7,10 @@
 #include <synth/path.h>
 #include <synth/vfs.h>
 
+#if defined(__x86_64__) && !defined(__ILP32__)
+#error "kernel/win32 on the 64-bit kernel must be x32 code (clang --target=x86_64-linux-gnux32); build under Linux or WSL"
+#endif
+
 #ifdef __x86_64__
 /* on the 64-bit kernel this is x32 code (4-byte pointers, as 32-bit programs have them); their calls reach these
    functions through a gate that turns stack arguments into register ones */

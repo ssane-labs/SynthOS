@@ -8,6 +8,14 @@
 
 include config.mk
 
+# The build needs a Linux toolchain (ELF binutils, clang's x32 target, GNU objcopy); in Windows that is WSL. Made
+# with Windows tools the 64-bit kernel builds but its Windows subsystem comes out broken.
+ifeq ($(OS),Windows_NT)
+ifneq ($(SYNTH_ALLOW_WINDOWS_HOST),1)
+$(error Build SynthOS in Linux or WSL (wsl --install, then INSTRUCTIONS.md section 2), or download the ready images: Releases -> latest)
+endif
+endif
+
 BUILD    ?= build
 # the 64-bit kernel by default; ARCH=i686 builds the 32-bit one for old PCs (i486 and up: build/vga32, build/serial32,
 # build/synthos-usb32.img)
@@ -251,6 +259,14 @@ X32CFLAGS := --target=x86_64-linux-gnux32 -std=gnu11 -O2 -ffreestanding -fno-bui
              -Wno-missing-braces -Wno-deprecated-non-prototype -Iinclude $(CONFIG_DEFINES) $(if $(SERIAL),-DCONFIG_SERIAL_CONSOLE)
 W32SIG_CC := clang -std=gnu11 -ffreestanding -fno-builtin -fms-extensions -Iinclude $(CONFIG_DEFINES) \
              $(if $(SERIAL),-DCONFIG_SERIAL_CONSOLE)
+ifeq ($(filter 1,$(W32)),1)
+ifeq ($(shell echo 'int x;' | clang --target=x86_64-linux-gnux32 -x c -c -o /dev/null - 2>/dev/null && echo ok),)
+$(error The 64-bit kernel needs clang with the x32 target for its Windows subsystem (or W32=0, or ARCH=i686))
+endif
+ifeq ($(shell objcopy --info 2>/dev/null | grep -c elf32-x86-64),0)
+$(error The 64-bit kernel needs GNU objcopy that knows elf32-x86-64 (binutils), not llvm-objcopy)
+endif
+endif
 $(OUT)/obj/kernel/win32/%_fp.o: X32CFLAGS += -msse -msse2 -mfpmath=sse -m80387
 $(OUT)/obj/kernel/win32/%.o: kernel/win32/%.c tools/w32sig.py arch/x86/64/x32.syms
 	@mkdir -p $(@D)
