@@ -5,7 +5,8 @@
 
 struct blockdev;
 
-#define INSTALL_ESP_SECTORS 8192u
+#define INSTALL_BOOT_SECTORS 8192u
+#define INSTALL_ESP_SECTORS (hal_system_sectors() - INSTALL_BOOT_SECTORS)
 
 enum install_stage {
     INSTALL_PARTITIONS,

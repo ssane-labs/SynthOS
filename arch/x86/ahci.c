@@ -18,6 +18,7 @@ enum {
     HBA_GHC = 0x04,
     HBA_IS = 0x08,
     HBA_PI = 0x0c,
+    HBA_VS = 0x10,
     PORT_BASE = 0x100,
     PORT_SIZE = 0x80,
     P_CLB = 0x00,
@@ -264,15 +265,23 @@ static void probe_port(volatile uint8_t *hba, int index)
 static void probe_controller(const struct pci_device *d, void *ctx)
 {
     UNUSED(ctx);
-    if (d->class_code != 0x01 || d->subclass != 0x06 || d->prog_if != 0x01)
+    /* "RAID" / "Intel RST" in the firmware gives Intel's SATA controller the RAID class; without a RAID volume it
+       is the same AHCI controller underneath. */
+    bool raid = d->class_code == 0x01 && d->subclass == 0x04 && d->vendor == 0x8086 && !pci_is_vmd(d);
+    if (!raid && (d->class_code != 0x01 || d->subclass != 0x06 || d->prog_if != 0x01))
         return;
     uint32_t bar = pci_read(d, 0x24) & ~0xfu;
-    if (!bar)
+    if (!bar || (pci_read(d, 0x24) & 1))
         return;
     pci_write(d, 0x04, pci_read(d, 0x04) | 0x06);
     volatile uint8_t *hba = vmm_map_phys(bar, 0x1100);
     if (!hba)
         return;
+    uint32_t version = *(volatile uint32_t *)(hba + HBA_VS);
+    if (raid && (version >> 16) != 1)
+        return;
+    if (raid)
+        klog("ahci: %04x:%04x in RAID mode, used as AHCI", d->vendor, d->device);
     *(volatile uint32_t *)(hba + HBA_GHC) |= 1u << 31;
     uint32_t implemented = *(volatile uint32_t *)(hba + HBA_PI);
     int first = port_count;
@@ -280,7 +289,7 @@ static void probe_controller(const struct pci_device *d, void *ctx)
         if (implemented & (1u << i))
             probe_port(hba, i);
     uint8_t line = (uint8_t)pci_read(d, 0x3c);
-    if (port_count > first && line > 1 && line < 16 && line != 12 && !use_irq) {
+    if (port_count > first && !d->ecam && line > 1 && line < 16 && line != 12 && !use_irq) {
         irq_install(line, ahci_irq);
         for (int i = first; i < port_count; i++)
             wr(&ports[i], P_IE, IS_TFES | 0x0f);
@@ -292,5 +301,5 @@ static void probe_controller(const struct pci_device *d, void *ctx)
 
 void ahci_init(void)
 {
-    pci_foreach(probe_controller, NULL);
+    pci_foreach_storage(probe_controller, NULL);
 }

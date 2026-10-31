@@ -36,6 +36,15 @@ Windows — 32- и 64-битных, консольных и оконных**. Н
 | **Темы, статус-бар, стиль приглашения** | **DOS-программа рисует в видеопамять** |
 | ![themes](docs/images/themes.png) | ![dos](docs/images/dos.png) |
 
+## Установить на компьютер
+
+Ничего собирать не нужно: в релизе **latest** на GitHub (Releases → «SynthOS (latest build)») лежат
+`synthos-windows.zip` — установка из Windows без флешки (распаковать, запустить
+`Install SynthOS.cmd`, перезагрузиться) и `synthos-usb.zip` — образ для флешки. Настройки BIOS/UEFI
+менять не нужно: Secure Boot остаётся включённым (первый запуск — через shim, подписанный Microsoft,
+и один экран MokManager), SATA может быть и в режиме «RAID / Intel RST». Пошагово — в
+**[docs/INSTALL.md](docs/INSTALL.md)**.
+
 ## Быстрый старт
 
 Нужны: `gcc` (или кросс-компилятор `i686-elf-gcc`), `binutils`, `nasm`, `make`, `qemu-system-x86`;
@@ -45,6 +54,7 @@ Windows — 32- и 64-битных, консольных и оконных**. Н
 ```sh
 make              # собрать загрузочный образ build/vga/synthos.img (BIOS + UEFI)
 make usb          # образ для флешки build/synthos-usb.img (Rufus в режиме DD, balenaEtcher, dd)
+make windows      # build/synthos-windows.zip: установка из Windows без флешки
 make ARCH=i686    # 32-битная сборка для старых ПК (build/vga32, make ARCH=i686 usb → synthos-usb32.img)
 make run          # запустить в QEMU как ПК с BIOS (с сетевой картой)
 make run-uefi     # запустить в QEMU как ПК с UEFI
@@ -54,8 +64,8 @@ make test-crypto  # криптография против эталонных в�
 ```
 
 Запуск на реальном ПК: `make usb`, записать `build/synthos-usb.img` на флешку побайтно
-(Rufus в режиме DD, balenaEtcher или `dd`) и загрузиться с неё — подходит и UEFI (с выключенным
-Secure Boot), и Legacy BIOS/CSM. С флешки можно работать сразу или установить систему на диск:
+(Rufus в режиме DD, balenaEtcher или `dd`) и загрузиться с неё — подходит и UEFI (Secure Boot можно
+не выключать), и Legacy BIOS/CSM. С флешки можно работать сразу или установить систему на диск:
 рядом с Windows в свободное место, вместо ненужного раздела или на весь диск, с меню выбора системы
 при включении и мастером первого запуска — пошагово в **[docs/INSTALL.md](docs/INSTALL.md)**.
 

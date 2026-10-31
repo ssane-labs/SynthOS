@@ -247,5 +247,5 @@ static void probe(const struct pci_device *d, void *ctx)
 
 void nvme_init(void)
 {
-    pci_foreach(probe, NULL);
+    pci_foreach_storage(probe, NULL);
 }

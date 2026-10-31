@@ -118,6 +118,8 @@ windows pin 1
 desktop is not running
 desktops add
 desktop is not running
+sound
+no sound device found
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets

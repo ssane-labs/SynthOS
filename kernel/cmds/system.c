@@ -534,6 +534,51 @@ COMMAND(beep, NULL, "system", "beep [hz] [ms]", "play a tone on the speaker")
     return 0;
 }
 
+COMMAND(sound, "audio", "system", "sound [test [hz] [ms]]", "show the sound device, or play a test tone through it")
+{
+    const char *dev = hal_audio_name();
+    if (!dev)
+        return sh_error(sh, "sound", "no sound device found");
+    sh_printf(sh, "Sound: %s\n", dev);
+    if (argc == 1)
+        return 0;
+    long hz = 440, ms = 1000;
+    if (strcmp(argv[1], "test") || (argc > 2 && !str_parse_long(argv[2], &hz)) ||
+        (argc > 3 && !str_parse_long(argv[3], &ms)) || hz < 20 || hz > 20000 || ms < 1 || ms > 10000)
+        return command_usage(sh, command_find("sound"));
+    int rate = hal_audio_open(44100);
+    if (rate <= 0)
+        return sh_error(sh, "sound", "cannot open %s", dev);
+    int total = (int)(rate * ms / 1000), done = 0, period = MAX(2, (int)(rate / hz));
+    int16_t buf[512 * 2];
+    uint64_t end = hal_ticks_ms() + (uint64_t)ms + 2000;
+    while (done < total && hal_ticks_ms() < end) {
+        int n = MIN(MIN(hal_audio_space(), 512), total - done);
+        if (n <= 0) {
+            hal_sleep_ms(5);
+            continue;
+        }
+        for (int i = 0; i < n; i++) {
+            int phase = (done + i) % period, v = phase * 4 * 12000 / period;
+            int16_t sample = (int16_t)(v < 12000 ? v : v < 36000 ? 24000 - v : v - 48000);
+            buf[i * 2] = buf[i * 2 + 1] = sample;
+        }
+        done += hal_audio_write(buf, n);
+    }
+    int full = hal_audio_space();
+    for (uint64_t drain = hal_ticks_ms() + 1000; hal_ticks_ms() < drain;) {
+        hal_sleep_ms(10);
+        int now = hal_audio_space();
+        if (now <= full)
+            break;
+        full = now;
+    }
+    hal_sleep_ms(400);
+    hal_audio_close();
+    sh_printf(sh, "played %d Hz for %ld ms at %d Hz\n", (int)hz, ms, rate);
+    return 0;
+}
+
 COMMAND(keytest, NULL, "dev", "keytest", "show key codes (Esc to quit)")
 {
     sh_printf(sh, "Press keys, Esc to quit.\n");

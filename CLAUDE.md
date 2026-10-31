@@ -19,7 +19,8 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
   out-parameters go through `arch/x86/64/w32abi.c` (`x32.syms`). Win64 programs run in 64-bit mode and reach the
   same subsystem through `w64.asm` (`w64_gate` → win64.c dispatch, `w64_call32` → the gate's signatures).
   `W32=0` leaves the subsystem out
-- `make usb` — compact USB-stick image `build/synthos-usb.img` (docs/INSTALL.md is the user guide)
+- `make usb` — compact USB-stick image `build/synthos-usb.img` (docs/INSTALL.md is the user guide); `make windows` —
+  `build/synthos-windows.zip`, install from Windows without a stick (`tools/windows/*.ps1`, mirrored by `tests/winsim.py`)
 - `make test-crypto` — kernel crypto built for the host, checked against Python `cryptography`
 - `make run-uefi` — boot with OVMF firmware (framebuffer console)
 - `make run` / `make run-serial` — boot in QEMU (x86_64, 256 MB, e1000 user networking)
@@ -46,7 +47,7 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
 - Network: drivers fill `struct netdev`; HTTP(S) in the kernel goes through `http_fetch` (`synth/http.h`),
   HTML through `html_parse` (`synth/html.h`).
 - The kernel code must stay below 3.5 MiB (`kernel_end < 0x380000`): put big tables on the heap. The ramdisk is a
-  separate pack after the image (`mkrd --kernel`), loaded into the heap; kernel.bin + pack must fit the 4 MiB ESP.
+  separate pack after the image (`mkrd --kernel`), loaded into the heap; kernel.bin + pack + shim must fit the 12 MiB ESP.
 - Commands print via `sh_printf`/`sh_puts` to `sh->out`, colors only via theme roles (`sh_role`).
 - Errors are negative `E_*` codes. C11 (gnu11), 4 spaces, very few comments, `module_action` names.
 - Build must be warning-free; add a test case to `tests/run.sh` for new behavior.

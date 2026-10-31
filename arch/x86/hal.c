@@ -12,7 +12,7 @@
 
 #define BOOT_MAGIC 0x5359424fu
 #define KERNEL_MAGIC 0x4b4e5953u
-#define DISK_DATA_LBA 16384u
+#define BOOT_AREA 8192u
 
 #define PACK_MAGIC 0x4b505953u
 extern char kernel_end[];
@@ -138,9 +138,11 @@ static struct display *framebuffer_display(void)
 
 #define RECORD 416
 #define RECORD_INSTALLED 1u
+#define RECORD_BIG_ESP 2u
 
 static struct blockdev *boot_disk, *system_area;
 static bool installed;
+static uint32_t system_sectors = 4 * BOOT_AREA;
 
 /* The system area starts with a copy of the image's boot sector: the "SynthOS:" marker in the loader code and an
    install record with the id the loaders pass on, so the right copy is found when several disks carry one. */
@@ -167,6 +169,7 @@ static bool is_system_area(struct blockdev *dev, uint32_t base)
     if (magic != KERNEL_MAGIC)
         return false;
     installed = flags & RECORD_INSTALLED;
+    system_sectors = flags & RECORD_BIG_ESP ? 4 * BOOT_AREA : 2 * BOOT_AREA;
     return true;
 }
 
@@ -196,19 +199,21 @@ bool hal_installed(void)
     return installed;
 }
 
+/* The system area is the boot area and the EFI partition: 4 MiB of EFI partition in images made before shim came
+   along, 12 MiB since (the install record says which). */
 uint32_t hal_system_sectors(void)
 {
-    return DISK_DATA_LBA;
+    return system_sectors;
 }
 
 /* A program bundle (tools/mkbundle.py) may sit right after the system area; the data partition follows it. */
 static uint32_t bundle_sectors(struct blockdev *dev)
 {
     static uint8_t sector[BLOCK_SIZE];
-    if (dev->sectors <= DISK_DATA_LBA || block_read(dev, DISK_DATA_LBA, 1, sector) || memcmp(sector, "SYNTHBDL", 8))
+    if (dev->sectors <= system_sectors || block_read(dev, system_sectors, 1, sector) || memcmp(sector, "SYNTHBDL", 8))
         return 0;
     uint32_t n = (uint32_t)sector[12] | (uint32_t)sector[13] << 8 | (uint32_t)sector[14] << 16 | (uint32_t)sector[15] << 24;
-    return n < dev->sectors - DISK_DATA_LBA ? n : 0;
+    return n < dev->sectors - system_sectors ? n : 0;
 }
 
 uint32_t hal_bundle_sectors(void)
@@ -229,14 +234,14 @@ static bool attach_boot_disk(void)
                 if (!(system_area = block_add_partition(dev, "system0", base, n)))
                     return true;
             }
-            if (bootinfo->kernel_lba + bootinfo->kernel_sectors > DISK_DATA_LBA) {
+            if (bootinfo->kernel_lba + bootinfo->kernel_sectors > system_sectors) {
                 klog("disk: kernel image overlaps the data area, persistence disabled");
                 return true;
             }
             struct blockdev *area = system_area;
-            uint32_t data = DISK_DATA_LBA + bundle_sectors(area);
-            if (data > DISK_DATA_LBA)
-                block_add_partition(area, "bundle0", DISK_DATA_LBA, data - DISK_DATA_LBA);
+            uint32_t data = system_sectors + bundle_sectors(area);
+            if (data > system_sectors)
+                block_add_partition(area, "bundle0", system_sectors, data - system_sectors);
             if (area->sectors > data + 256)
                 block_add_partition(area, "data0", data, area->sectors - data);
             klog("disk: system on %s at sector %u%s", dev->name, (unsigned)base, installed ? " (installed)" : "");

@@ -219,11 +219,14 @@ struct pci_device {
     uint8_t bus, dev, fn;
     uint16_t vendor, device;
     uint8_t class_code, subclass, prog_if;
+    volatile uint8_t *ecam;
 };
 
 uint32_t pci_read(const struct pci_device *d, uint8_t offset);
 void pci_write(const struct pci_device *d, uint8_t offset, uint32_t value);
 void pci_foreach(void (*fn)(const struct pci_device *d, void *ctx), void *ctx);
+void pci_foreach_storage(void (*fn)(const struct pci_device *d, void *ctx), void *ctx);
+bool pci_is_vmd(const struct pci_device *d);
 bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *out);
 bool pci_bar_base(const struct pci_device *d, uint8_t offset, uint64_t *out);
 void ahci_init(void);

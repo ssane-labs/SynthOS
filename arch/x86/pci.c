@@ -13,12 +13,18 @@ static uint32_t address(const struct pci_device *d, uint8_t offset)
 
 uint32_t pci_read(const struct pci_device *d, uint8_t offset)
 {
+    if (d->ecam)
+        return *(volatile uint32_t *)(d->ecam + (offset & 0xfc));
     outl(0xcf8, address(d, offset));
     return inl(0xcfc);
 }
 
 void pci_write(const struct pci_device *d, uint8_t offset, uint32_t value)
 {
+    if (d->ecam) {
+        *(volatile uint32_t *)(d->ecam + (offset & 0xfc)) = value;
+        return;
+    }
     outl(0xcf8, address(d, offset));
     outl(0xcfc, value);
 }
@@ -28,7 +34,7 @@ void pci_foreach(void (*fn)(const struct pci_device *d, void *ctx), void *ctx)
     for (unsigned bus = 0; bus < 256; bus++)
         for (uint8_t dev = 0; dev < 32; dev++)
             for (uint8_t f = 0; f < 8; f++) {
-                struct pci_device d = {(uint8_t)bus, dev, f, 0, 0, 0, 0, 0};
+                struct pci_device d = {(uint8_t)bus, dev, f, 0, 0, 0, 0, 0, NULL};
                 uint32_t id = pci_read(&d, 0);
                 if ((id & 0xffff) == 0xffff) {
                     if (f == 0)
@@ -82,7 +88,7 @@ static void collect_bars(const struct pci_device *d, void *ctx)
 
 bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *out)
 {
-    if (d->bus != 0)
+    if (d->bus != 0 || d->ecam)
         return false;
     uint32_t cmd = pci_read(d, 0x04);
     pci_write(d, 0x04, cmd & ~0x6u);

@@ -92,6 +92,23 @@ for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:an
     [ "$cpu" = smp ] && check "$config processors" "$first" "Processors: 4 cores"
     check "$config persistence" "$second" "$tag"
 done
+# Sound: Intel HD Audio (the controller of real PCs, with Realtek and other codecs) plays a test tone; QEMU writes
+# what reaches the codec into a WAV file: 440 Hz for half a second, then silence.
+cp "$image" "$work/disk.img"
+out=$(EXTRA="-audiodev wav,id=snd,path=$work/tone.wav -device intel-hda -device hda-duplex,audiodev=snd" \
+      boot bios ide any "sound test 440 500")
+check "sound: HD Audio found" "$out" "Sound: QEMU HD Audio"
+tone=$(python3 -I -c '
+import struct, sys, wave
+w = wave.open(sys.argv[1])
+rate, data = w.getframerate(), w.readframes(w.getnframes())
+left = struct.unpack("<%dh" % (len(data) // 2), data)[0::2]
+loud = [i for i, v in enumerate(left) if abs(v) > 1000]
+span = (loud[-1] - loud[0]) / rate if loud else 0
+ups = sum(1 for a, b in zip(left[loud[0]:loud[-1]], left[loud[0] + 1:loud[-1] + 1]) if a < 0 <= b) if loud else 0
+print("tone %d Hz %.1f s" % (round(ups / span) if span else 0, span))' "$work/tone.wav" 2>&1)
+check "sound: tone played" "$tone" "tone 440 Hz 0.5 s"
+
 # Installing: next to another system on a GPT disk (UEFI: the stick registers the new system in the firmware boot
 # menu and starts it, then it starts alone), and over a whole disk with BIOS.
 if [ -n "$ovmf_vars" ]; then
@@ -106,12 +123,23 @@ if [ -n "$ovmf_vars" ]; then
     check "install keeps Windows" "$(python3 -I tools/gptcheck.py "$work/target.img")" "1 2048 206847 Windows"
     out=$(boot uefi ide any "dmesg | grep disk:")
     check "install registers in the boot menu" "$out" "found the new installation"
-    check "install starts from the disk" "$out" "system on hdb at sector 215040 (installed)"
+    check "install starts from the disk" "$out" "system on hdb at sector 231424 (installed)"
     mv "$work/target.img" "$work/disk.img"
     EXTRA=""
     out=$(boot uefi ide any "dmesg | grep disk:")
     check "install boots without the stick" "$out" "starting Boot"
     check "install boots without the stick" "$out" "(installed)"
+    # Installing from Windows (tools/windows/install.ps1): the loader sits in the Windows EFI partition behind shim,
+    # the system in a partition cut from C:. The first start comes from the boot entry bcdedit adds (here the
+    # UEFI Shell's startup.nsh), after that from the entry the loader adds itself.
+    cp "$ovmf_vars" "$work/vars.fd"
+    at=$(python3 -I tests/winsim.py "$image" "$work/disk.img")
+    out=$(EXTRA="-nic none" boot uefi ide any "dmesg | grep disk:")
+    check "install from Windows starts" "$out" "${at#system } (installed)"
+    mdel -i "$work/disk.img@@$((2048 * 512))" ::/startup.nsh
+    out=$(EXTRA="-nic none" boot uefi ide any "cat /home/readme.txt | head -n 1")
+    check "install from Windows is in the boot menu" "$out" "\\EFI\\SynthOS\\"
+    check "install from Windows boots again" "$out" "Shell ready"
 else
     echo "  skip  install (no OVMF variable store)"
 fi
@@ -143,7 +171,8 @@ secure_boot() {
 if [ -f "$sb_code" ] && [ -f "$sb_vars" ] && [ -f "$sb_key" ] && python3 -c 'import cryptography' 2>/dev/null; then
     esp="$work/disk.img@@$((8192 * 512))"
     cp "$image" "$work/disk.img"
-    mcopy -o -i "$esp" ::/EFI/BOOT/BOOTX64.EFI "$work/own.efi"
+    mcopy -o -i "$esp" ::/EFI/BOOT/grubx64.efi "$work/own.efi" 2>/dev/null || mcopy -o -i "$esp" ::/EFI/BOOT/BOOTX64.EFI "$work/own.efi"
+    mcopy -o -i "$esp" "$work/own.efi" ::/EFI/BOOT/BOOTX64.EFI
     mcopy -o -i "$esp" ::/SYNTHOS/KERNEL.BIN "$work/kernel.bin"
     check "secure boot: loader not enrolled" "$(secure_boot)" "Access Denied"
     python3 -I tools/sbsign.py --key "$sb_key" --pass snakeoil --cert "$sb_cert" "$work/own.efi" "$work/signed.efi"
@@ -155,6 +184,18 @@ if [ -f "$sb_code" ] && [ -f "$sb_vars" ] && [ -f "$sb_key" ] && python3 -c 'imp
     check "secure boot: changed kernel" "$(secure_boot)" "is not the kernel this loader was signed with"
 else
     echo "  skip  secure boot (no OVMF Secure Boot firmware or python3-cryptography)"
+fi
+# Secure Boot with the keys PCs ship with (Microsoft's): shim starts, does not know the SynthOS key yet and opens
+# MokManager, where the key is enrolled from the stick; after the restart the system comes up.
+ms_code=/usr/share/OVMF/OVMF_CODE_4M.ms.fd
+ms_vars=/usr/share/OVMF/OVMF_VARS_4M.ms.fd
+if [ -f "$ms_code" ] && [ -f "$ms_vars" ] && mdir -i "$image@@$((8192 * 512))" ::/EFI/BOOT/grubx64.efi > /dev/null 2>&1; then
+    cp "$image" "$work/disk.img"
+    cp "$ms_vars" "$work/msvars.fd"
+    out=$(python3 -I tests/mok.py "$ms_code" "$work/msvars.fd" "$work/disk.img")
+    check "secure boot: shim and MokManager" "$out" "Shell ready"
+else
+    echo "  skip  secure boot with shim (no OVMF with Microsoft keys or no shim in the image)"
 fi
 
 echo "hardware tests: $pass passed, $fail failed"

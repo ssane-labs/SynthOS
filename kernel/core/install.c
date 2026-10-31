@@ -247,7 +247,7 @@ static int write_record(struct install_job *job)
         return err;
     memcpy(sector + RECORD, "SYID", 4);
     memcpy(sector + RECORD + 4, job->id, 8);
-    wr32(sector + RECORD + 12, 1);
+    wr32(sector + RECORD + 12, (uint32_t)sector[RECORD + 12] | 1);
     if (job->plan.whole) {
         uint8_t *entry = sector + 446 + 2 * 16;
         entry[4] = 0x7f;

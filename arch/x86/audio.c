@@ -5,9 +5,11 @@
 #include <synth/string.h>
 #include <synth/vmm.h>
 
+#include "audio.h"
 #include "io.h"
 
-/* Intel AC'97 (ICH) sound output: 16-bit stereo PCM through a ring of 32 DMA buffers. */
+/* Sound output: Intel HD Audio (hda.c) where there is one, else Intel AC'97 (ICH, older PCs and VMs) with 16-bit
+   stereo PCM through a ring of 32 DMA buffers. */
 
 #define BUFFERS 32
 #define BUFFER_FRAMES 512
@@ -90,8 +92,20 @@ static bool probe(int rate)
     return true;
 }
 
+static bool use_hda(int rate)
+{
+    static bool tried, found;
+    if (!tried) {
+        tried = true;
+        found = hda_probe(rate);
+    }
+    return found;
+}
+
 int hal_audio_open(int rate)
 {
+    if (use_hda(rate))
+        return hda_open(rate);
     if (!ac.probed && !probe(rate))
         return E_NODEV;
     if (!ac.ready)
@@ -118,6 +132,8 @@ static int queued(void)
 
 int hal_audio_space(void)
 {
+    if (use_hda(44100))
+        return hda_space();
     if (!ac.ready)
         return 0;
     int q = queued();
@@ -146,6 +162,8 @@ static int next_buffer(void)
 
 int hal_audio_write(const int16_t *frames, int count)
 {
+    if (use_hda(44100))
+        return hda_write(frames, count);
     if (!ac.ready)
         return E_NODEV;
     int done = 0;
@@ -169,6 +187,10 @@ int hal_audio_write(const int16_t *frames, int count)
 
 void hal_audio_close(void)
 {
+    if (use_hda(44100)) {
+        hda_close();
+        return;
+    }
     if (!ac.ready)
         return;
     outb(ac.nabm + PO_CR, 0);
@@ -178,6 +200,8 @@ void hal_audio_close(void)
 
 const char *hal_audio_name(void)
 {
+    if (use_hda(44100))
+        return hda_name();
     if (!ac.probed)
         probe(44100);
     return ac.ready ? "Intel AC'97" : NULL;

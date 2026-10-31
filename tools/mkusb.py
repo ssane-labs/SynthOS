@@ -3,11 +3,11 @@
 stick on the first start. usage: mkusb.py synthos.img synthos-usb.img [data-MB]"""
 import hashlib, os, struct, sys
 
-SYSTEM = 16384
 src, dst = sys.argv[1], sys.argv[2]
 data_mb = int(sys.argv[3]) if len(sys.argv) > 3 else 64
 with open(src, "rb") as f:
     mbr = bytearray(f.read(512))
+    SYSTEM = 32768 if mbr[:416 + 4].endswith(b"SYID") and mbr[428] & 2 else 16384
     f.seek(SYSTEM * 512)
     head = f.read(16)
     bundle = struct.unpack_from("<I", head, 12)[0] if head[:8] == b"SYNTHBDL" else 0

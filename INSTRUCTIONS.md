@@ -189,7 +189,7 @@ SynthOS 1.0 «Mirage» — рабочая система:
     `clockdate` (дата в строке меню), `config timezone +03:00` — часовой пояс (часы компьютера идут по UTC;
     пояс прибавляется к часам на столе, экрану блокировки, виджету, `date`, `cal` и приглашению);
   * `config dnd on` — «Не беспокоить»: уведомления не всплывают (но остаются в Центре уведомлений);
-  * звук: `config volume 0..100` и `config mute on|off` (громкость всего, что играет через AC'97);
+  * звук: `config volume 0..100` и `config mute on|off` (громкость всего, что играет через HD Audio или AC'97);
   * клавиатура: `config keyrate 2..30` (повторов в секунду) и `config keydelay 250..1000` (мс до повтора) —
     USB-клавиатуре сразу, PS/2 — командой typematic;
   * мышь: `config doubleclick 150..1500` (мс между щелчками), `config scrollspeed 1..5`,
@@ -198,10 +198,23 @@ SynthOS 1.0 «Mirage» — рабочая система:
     (подскок при запуске);
   * `config browser chromium|chrome` — браузер по умолчанию для `.html` и ссылок;
   * строка состояния терминала теперь `config termstatus on` (`config statusbar` — строка меню или капсула);
-* **звук**: драйвер Intel AC'97 (16 бит, стерео, кольцо DMA-буферов); в QEMU — `-device AC97`
-  (`make run` добавляет его сам), команда `music`;
+* **звук**: драйвер **Intel HD Audio** (`arch/x86/hda.c`) — контроллер почти любого ПК с 2005 года и
+  кодек на нём (**Realtek ALC…**, Conexant, IDT, VIA, Cirrus): команды кодеку через кольца CORB/RIRB,
+  обход виджетов от выходов (динамики, наушники, линейный выход) к ЦАП, включение усилителей и EAPD
+  (внешний усилитель, без которого у Realtek молчат динамики), воспроизведение из кольцевого буфера
+  DMA (сыгранное стирается, поэтому опоздавшая запись даёт тишину, а не эхо); подключённые наушники
+  выключают динамики. На старых платах — Intel AC'97. `sound` — какое устройство найдено, `sound test
+  [Гц] [мс]` — тестовый тон; в QEMU `make run` добавляет `intel-hda`; команда `music`;
 * **установка на компьютер** (подробно — [docs/INSTALL.md](docs/INSTALL.md)): `make usb` даёт образ
-  для флешки (Rufus в режиме DD, balenaEtcher, dd); загрузка с флешки показывает «Try / Install».
+  для флешки (Rufus в режиме DD, balenaEtcher, dd), `make windows` — архив для **установки из Windows
+  без флешки** (`Install SynthOS.cmd`: сжимает C:, пишет систему в новый раздел, кладёт загрузчик в
+  раздел EFI Windows и добавляет пункт меню через `bcdedit`; `tools/windows/`, проверка —
+  `tests/winsim.py` в `make test-hw`). Готовые файлы — в релизе **latest** на GitHub (его обновляет
+  `.github/workflows/usb-image.yml`). **Secure Boot** не нужно выключать: первым стартует shim от
+  Ubuntu, подписанный Microsoft (`make` скачивает пакет и сверяет SHA-256), ключ SynthOS
+  регистрируется один раз в MokManager (`tests/mok.py` проходит этот экран в OVMF с ключами
+  Microsoft). Раздел EFI в образе — 12 МБ. SATA в режиме «RAID / Intel RST» работает как AHCI,
+  NVMe за Intel VMD находит `arch/x86/vmd.c`. Загрузка с флешки показывает «Try / Install».
   Установщик рисует карту диска и ставит систему **рядом с Windows в свободное место**, **вместо
   выбранного раздела** или **на весь диск**, с выбором размера ползунком; таблицы MBR и GPT (обе
   копии GPT с контрольными суммами) правит `kernel/core/parttab.c`, команда `part`. Рядом с другой
@@ -517,6 +530,7 @@ arch/x86/                 entry.asm, isr.asm, linker.ld, cpu.c (GDT/IDT/PIC, CPU
                           профилировщик), paging.c (страницы, PAE), keyboard.c, mouse.c, serial.c,
                           vga.c, vbe.c, display.c, ata.c (PIO и DMA), ahci.c, nvme.c, pci.c,
                           xhci.c, usb.c, usbhub.c, usbhid.c, usbstor.c, e1000.c, realtek.c, audio.c (AC'97),
+                          hda.c (Intel HD Audio), vmd.c (Intel VMD),
                           bios.c + biosthunk.asm, biosdisk.c, win32.asm, hal.c (x86_main + HAL)
 include/synth/            заголовки: hal.h, console.h, theme.h, vfs.h, shell.h, command.h, exec.h,
                           net.h, tls.h, crypto.h, http.h, html.h, gui.h, users.h, vmm.h …
@@ -800,7 +814,7 @@ DOS переносятся без изменений (эмулятор DOS тр�
    MSI-пакетов и службы.
 3. **Windows дальше:** DirectX/OpenGL, COM, реестр с данными, сервисы; драйверы `.sys` не
    поддерживаются (вместо них — свои драйверы в `arch/`).
-4. **Звук дальше:** HDA, MP3/OGG, `PlaySound`/`waveOut` для Windows-программ; видео H.264.
+4. **Звук дальше:** HDMI-звук, микрофон, MP3/OGG, `PlaySound`/`waveOut` для Windows-программ; видео H.264.
 5. **Wi-Fi и IPv6.**
 6. **Язык высокого уровня** для SX (мини-C или свой скриптовый язык) с компилятором внутри ОС.
 7. **Эмулятор DOS:** 386-инструкции, EMS/XMS, мышь INT 33h, графика 13h; эмуляция CMOV на i486

@@ -36,7 +36,7 @@ OBJCOPY   = $(CROSS)objcopy
 NASM     ?= nasm
 HOSTCC   ?= cc
 QEMU     ?= qemu-system-x86_64
-QEMU_SOUND ?= -audiodev none,id=snd -device AC97,audiodev=snd
+QEMU_SOUND ?= -audiodev none,id=snd -device intel-hda -device hda-duplex,audiodev=snd
 
 ifneq ($(X64),)
 ARCH_FLAGS := $(if $(CROSS),,-m64) -march=x86-64 -mno-red-zone -mcmodel=small -mno-sse -mno-mmx -mno-80387
@@ -110,11 +110,12 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs usb
+.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs usb windows
 all: $(IMAGE)
 
 ESP_LBA     := 8192
-ESP_SECTORS := 8192
+ESP_SECTORS := 24576
+SYSTEM_SECTORS := $(shell echo $$(( $(ESP_LBA) + $(ESP_SECTORS) )))
 
 # The desktop image carries Chromium (its own 32-bit Windows snapshot, BSD-licensed) as a bundle after the system
 # area; the first boot unpacks it into /home/apps/chromium. BUNDLE=0 or no network leaves it out.
@@ -122,7 +123,7 @@ CHROMIUM_REV ?= 1721499
 BUNDLE       ?= $(if $(SERIAL),0,1)
 BUNDLE_FILE  := $(if $(filter 1,$(BUNDLE)),$(BUILD)/cache/chromium-$(CHROMIUM_REV).bundle)
 BUNDLE_SECTORS = $(if $(BUNDLE_FILE),$(shell echo $$(( $$(stat -c %s $(BUNDLE_FILE) 2>/dev/null || echo 0) / 512 ))),0)
-DISK_SECTORS   = $(if $(filter 0,$(BUNDLE_SECTORS)),$(IMAGE_SECTORS),$(shell echo $$(( 16384 + $(BUNDLE_SECTORS) + 4194304 ))))
+DISK_SECTORS   = $(if $(filter 0,$(BUNDLE_SECTORS)),$(IMAGE_SECTORS),$(shell echo $$(( $(SYSTEM_SECTORS) + $(BUNDLE_SECTORS) + 4194304 ))))
 
 $(BUILD)/cache/chrome-win-$(CHROMIUM_REV).zip:
 	@mkdir -p $(@D)
@@ -140,7 +141,7 @@ $(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin $(if $(HAVE_ESP)
 	@test $$(( $$(wc -c < $(OUT)/kernel.bin) / 512 + 17 )) -le $(ESP_LBA) || (echo "kernel too large for the disk layout"; exit 1)
 	@cat $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin > $@
 	@dd if=/dev/zero of=$@ bs=512 count=0 seek=$(DISK_SECTORS) 2>/dev/null
-	@if [ -s "$(BUNDLE_FILE)" ]; then dd if=$(BUNDLE_FILE) of=$@ bs=1M oflag=seek_bytes seek=$$((16384 * 512)) conv=notrunc,sparse 2>/dev/null; fi
+	@if [ -s "$(BUNDLE_FILE)" ]; then dd if=$(BUNDLE_FILE) of=$@ bs=1M oflag=seek_bytes seek=$$(($(SYSTEM_SECTORS) * 512)) conv=notrunc,sparse 2>/dev/null; fi
 ifneq ($(HAVE_ESP),)
 	@dd if=$(OUT)/esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
 	@echo "  ready   $@ ($$(( $$(wc -c < $(OUT)/kernel.bin) / 1024 )) KB kernel, BIOS + UEFI)"
@@ -167,12 +168,36 @@ $(OUT)/BOOTX64.EFI: $(BUILD)/efi/BOOTX64.EFI $(OUT)/kernel.bin tools/sbsign.py $
 	@python3 -I tools/sbsign.py $(if $(filter 1,$(SB)),--key $(SB_KEY) --cert $(SB_CERT)) --seal $(OUT)/kernel.bin $< $@
 	@$(if $(filter 1,$(SB)),openssl x509 -in $(SB_CERT) -outform DER -out $(OUT)/SYNTHOS.CER,rm -f $(OUT)/SYNTHOS.CER)
 
-$(OUT)/esp.img: $(OUT)/kernel.bin $(OUT)/BOOTX64.EFI
+# shim: the first stage that firmware with Microsoft's keys starts under Secure Boot (Ubuntu's build, signed by
+# Microsoft, BSD-licensed). It starts the SynthOS loader (grubx64.efi next to it) once the SynthOS key is in its
+# MOK list; MokManager (mmx64.efi) adds the key on the first start, so the firmware settings stay as they are.
+# SHIM=0 or no network: the loader alone is BOOTX64.EFI.
+SHIM_DEB    := shim-signed_1.58+15.8-0ubuntu1_amd64.deb
+SHIM_SHA256 := ba9b5d80e5d886c30664f2bebfb5c2fcce3b9b40f16fc46cba49c19a91c8059c
+SHIM        ?= 1
+SHIM_DIR    := $(BUILD)/cache/shim
+SHIM_FILES  := $(if $(filter 1,$(SHIM)),$(SHIM_DIR)/stamp)
+
+$(SHIM_DIR)/stamp:
+	@mkdir -p $(@D)
+	@echo "  FETCH   shim (Microsoft-signed first stage for Secure Boot)"
+	@if curl -fsSL --retry 3 -o $(@D)/$(SHIM_DEB) http://archive.ubuntu.com/ubuntu/pool/main/s/shim-signed/$(SHIM_DEB) \
+	    && echo "$(SHIM_SHA256)  $(@D)/$(SHIM_DEB)" | sha256sum -c --quiet - \
+	    && python3 -I tools/debfiles.py $(@D)/$(SHIM_DEB) $(@D) usr/lib/shim/shimx64.efi.dualsigned=shimx64.efi \
+	       usr/lib/shim/mmx64.efi usr/share/doc/shim-signed/copyright=SHIM.TXT; then : > $@; \
+	else rm -f $(@D)/shimx64.efi; echo "  SKIP    no shim: Secure Boot needs the key in the firmware"; : > $@; fi
+
+$(OUT)/esp.img: $(OUT)/kernel.bin $(OUT)/BOOTX64.EFI $(SHIM_FILES)
 	@echo "  ESP     $@"
 	@rm -f $@
-	@mkfs.fat -F 12 -n SYNTHOS -C $@ $$(( $(ESP_SECTORS) / 2 )) >/dev/null
+	@mkfs.fat -F 16 -n SYNTHOS -C $@ $$(( $(ESP_SECTORS) / 2 )) >/dev/null
 	@mmd -i $@ ::/EFI ::/EFI/BOOT ::/SYNTHOS
-	@mcopy -i $@ $(OUT)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	@if [ -s $(SHIM_DIR)/shimx64.efi ] && [ -n "$(SHIM_FILES)" ]; then \
+	    mcopy -i $@ $(SHIM_DIR)/shimx64.efi ::/EFI/BOOT/BOOTX64.EFI; \
+	    mcopy -i $@ $(SHIM_DIR)/mmx64.efi ::/EFI/BOOT/mmx64.efi; \
+	    mcopy -i $@ $(OUT)/BOOTX64.EFI ::/EFI/BOOT/grubx64.efi; \
+	    mcopy -i $@ $(SHIM_DIR)/SHIM.TXT ::/SYNTHOS/SHIM.TXT; \
+	else mcopy -i $@ $(OUT)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI; fi
 	@mcopy -i $@ $(OUT)/kernel.bin ::/SYNTHOS/KERNEL.BIN
 	@if [ -f $(OUT)/SYNTHOS.CER ]; then mcopy -i $@ $(OUT)/SYNTHOS.CER ::/SYNTHOS/SYNTHOS.CER; fi
 
@@ -438,6 +463,22 @@ run-uefi: $(IMAGE)
 # the image to write to a USB stick (Rufus in DD mode, balenaEtcher or dd); the data partition grows to the stick
 usb: $(IMAGE)
 	@python3 -I tools/mkusb.py $(IMAGE) $(BUILD)/synthos-usb$(SUFFIX).img
+
+# Install from Windows without a USB stick (tools/windows): the system area and the bundle, the EFI files and the
+# scripts that put them next to Windows.
+WIN_DIR := $(BUILD)/synthos-windows$(SUFFIX)
+windows: $(IMAGE) $(OUT)/esp.img
+	@echo "  WINDOWS $(WIN_DIR).zip"
+	@rm -rf $(WIN_DIR) $(WIN_DIR).zip && mkdir -p $(WIN_DIR)/EFI
+	@dd if=$(IMAGE) of=$(WIN_DIR)/system.img bs=512 count=$$(( $(SYSTEM_SECTORS) + $(BUNDLE_SECTORS) )) 2>/dev/null
+	@cp tools/windows/*.cmd tools/windows/*.ps1 tools/windows/README.txt $(WIN_DIR)/
+	@cp $(OUT)/BOOTX64.EFI $(WIN_DIR)/EFI/grubx64.efi
+	@cp $(OUT)/kernel.bin $(WIN_DIR)/EFI/KERNEL.BIN
+	@if [ -f $(OUT)/SYNTHOS.CER ]; then cp $(OUT)/SYNTHOS.CER $(WIN_DIR)/EFI/; fi
+	@if [ -s $(SHIM_DIR)/shimx64.efi ] && [ -n "$(SHIM_FILES)" ]; then \
+	    cp $(SHIM_DIR)/shimx64.efi $(SHIM_DIR)/mmx64.efi $(SHIM_DIR)/SHIM.TXT $(WIN_DIR)/EFI/; fi
+	@cd $(BUILD) && python3 -I -m zipfile -c $(notdir $(WIN_DIR)).zip $(notdir $(WIN_DIR))
+	@echo "  ready   $(WIN_DIR).zip ($$(( $$(stat -c %s $(WIN_DIR).zip) >> 20 )) MB)"
 
 clean:
 	rm -rf $(BUILD)

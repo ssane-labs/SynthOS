@@ -253,6 +253,11 @@ static const volatile struct {
     u8 sum[32];
 } kernel_seal __attribute__((used)) = {"SynthOSKernelSum", {0}};
 
+/* shim (the Microsoft-signed first stage on the stick) starts only images that carry an SBAT generation list. */
+static const char sbat[] __attribute__((section(".sbat"), used)) =
+    "sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md\n"
+    "synthos,1,SynthOS,synthos,1,https://github.com/ssane-labs/SynthOS\n";
+
 static const u32 sha_k[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
     0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
@@ -653,21 +658,55 @@ static int register_boot(const u8 *path, uintn path_len)
     return !ERROR(st->runtime->set_variable(u"BootOrder", &global_guid, VAR_ATTRS, k * 2, next));
 }
 
-static int register_self(void *image)
+static char16 lower16(char16 c)
+{
+    return c >= 'A' && c <= 'Z' ? (char16)(c + 32) : c;
+}
+
+static int file_exists(struct file *root, const char16 *name)
+{
+    struct file *file;
+    if (!root || ERROR(root->open(root, &file, name, FILE_READ, 0)))
+        return 0;
+    file->close(file);
+    return 1;
+}
+
+/* The menu entry points at this loader, or at shim when shim started it (grubx64.efi next to BOOTX64.EFI or
+   shimx64.efi): under Secure Boot only shim gets past the firmware. */
+static int register_self(void *image, struct file *root)
 {
     struct loaded_image *li;
     if (ERROR(bs->handle_protocol(image, &loaded_image_guid, (void **)&li)) || !li->file_path)
         return 0;
-    u8 *dev;
-    if (ERROR(bs->handle_protocol(li->device, &device_path_guid, (void **)&dev)))
+    const u8 *node = li->file_path;
+    if (node[0] != 4 || node[1] != 4)
         return 0;
-    uintn head = path_size(dev), tail = path_size(li->file_path) + 4;
-    u8 *p;
-    if (ERROR(bs->allocate_pool(LOADER_DATA, head + tail, (void **)&p)))
+    uintn len = (uintn)(node[2] | node[3] << 8);
+    static char16 name[260];
+    uintn n = len > 4 ? (len - 4) / 2 : 0;
+    if (n >= 240)
         return 0;
-    copy(p, dev, head);
-    copy(p + head, li->file_path, tail);
-    return register_boot(p, head + tail);
+    copy(name, node + 4, n * 2);
+    name[n] = 0;
+    n = str16_len(name);
+    uintn base = n;
+    while (base > 0 && name[base - 1] != '\\')
+        base--;
+    static const char16 grub[] = u"grubx64.efi", *const shims[] = {u"BOOTX64.EFI", u"shimx64.efi"};
+    int is_grub = n - base == 11;
+    for (uintn i = 0; is_grub && i < 11; i++)
+        is_grub = lower16(name[base + i]) == grub[i];
+    for (int k = 0; is_grub && k < 2; k++) {
+        copy(name + base, shims[k], (str16_len(shims[k]) + 1) * 2);
+        if (file_exists(root, name))
+            break;
+        if (k == 1)
+            return 0;
+    }
+    uintn size;
+    u8 *path = file_path(li->device, name, &size);
+    return path && register_boot(path, size);
 }
 
 /* The boot stick finds a fresh installation by its SYSTEM.CFG, registers its loader and starts it right away. */
@@ -883,7 +922,7 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     struct file *root = open_root(li->device);
     struct config cfg;
     if (read_config(root, &cfg)) {
-        if (cfg.reg && register_self(image))
+        if (cfg.reg && register_self(image, root))
             clear_register(root, &cfg);
         boot_menu(cfg.timeout);
     } else {

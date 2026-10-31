@@ -5,6 +5,9 @@ on:
     branches: ["main", "master", "claude/**"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   usb:
     runs-on: ubuntu-24.04
@@ -15,8 +18,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential gcc-multilib clang nasm gcc-mingw-w64-i686 g++-mingw-w64-i686 \
             gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 dosfstools mtools openssl python3-cryptography
+      # The same Secure Boot key for every build when the repository has the secrets SB_KEY and SB_CERT (PEM);
+      # otherwise each build makes its own key and the MOK step comes back after an update.
+      - name: Secure Boot key
+        env:
+          SB_KEY: ${{ secrets.SB_KEY }}
+          SB_CERT: ${{ secrets.SB_CERT }}
+        run: |
+          if [ -n "$SB_KEY" ] && [ -n "$SB_CERT" ]; then
+            mkdir -p keys && printf '%s\n' "$SB_KEY" > keys/db.key && printf '%s\n' "$SB_CERT" > keys/db.crt
+            chmod 600 keys/db.key
+          fi
       - name: Build
-        run: make usb && make ARCH=i686 usb
+        run: make usb && make windows && make ARCH=i686 usb
+      - name: Pack
+        run: |
+          cd build
+          python3 -m zipfile -c synthos-usb.zip synthos-usb.img synthos-usb.img.sha256
+          python3 -m zipfile -c synthos-usb32.zip synthos-usb32.img synthos-usb32.img.sha256
+          sha256sum synthos-windows.zip synthos-usb.zip synthos-usb32.zip > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: synthos-usb
@@ -27,9 +47,25 @@ jobs:
           retention-days: 90
       - uses: actions/upload-artifact@v4
         with:
+          name: synthos-windows
+          path: build/synthos-windows/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
           name: synthos-usb32
           path: |
             build/synthos-usb32.img
             build/synthos-usb32.img.sha256
           compression-level: 9
           retention-days: 90
+      # Downloads without logging in to Actions: the release "latest" always carries the newest build of the
+      # default branch (github.com/<owner>/<repo>/releases/latest/download/synthos-windows.zip).
+      - name: Release
+        if: github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest --target "$GITHUB_SHA" --latest --title "SynthOS (latest build)" --notes \
+            "Newest build of ${GITHUB_SHA::7}. synthos-windows.zip: install from Windows without a USB stick (Install SynthOS.cmd). synthos-usb.zip: image for a USB stick (Rufus in DD mode or balenaEtcher). synthos-usb32.zip: 32-bit system for old PCs. Guide: docs/INSTALL.md." \
+            build/synthos-windows.zip build/synthos-usb.zip build/synthos-usb32.zip build/SHA256SUMS
