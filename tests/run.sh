@@ -682,8 +682,8 @@ config keyboard us,ru; config keyboard
 us,ru
 config keyboard us,xx
 invalid value
-fetch | grep Mirage
-SynthOS 1.0 "Mirage"
+fetch | grep "Black Hole"
+SynthOS 1.1 "Black Hole"
 music list
 2  Better Days - SynthOS Lofi
 music play 3; music status

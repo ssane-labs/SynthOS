@@ -447,7 +447,7 @@ static void render_rows(void *ctx, int from, int to)
                     continue;
                 }
                 int inner = MIN(MIN(cp[-2], cp[2]), MIN(cp[-2 * cw], cp[2 * cw]));
-                shape_rim = (256 - inner) * (y < f.y + f.h / 2 ? 80 : 44) >> 8;
+                shape_rim = (256 - inner) * (y < f.y + f.h / 2 ? 50 : 28) >> 8;
             } else if (look->shape) {
                 row[x] = 0;
                 continue;
@@ -495,8 +495,11 @@ static void render_rows(void *ctx, int from, int to)
                 int light = (-nx * 181 - ny * 181) >> 8;
                 int dir = light > 0 ? light * light >> 8 : (light * light >> 8) * 5 / 8;
                 spec = rim_lut[i] * (look->rim * (64 + dir * 3 / 4) >> 8) >> 8;
-                if (d < 28 && look->edge_line)
-                    spec += (28 - MAX(d, 0)) * (90 + dir * 2 / 3) / 28;
+                if (look->edge_line && d > -8 && d < 34) {
+                    int line = 21 - (d > 13 ? d - 13 : 13 - d);
+                    if (line > 0)
+                        spec += line * (46 + dir / 3) / 21;
+                }
                 shade = refract_lut[i] * 26 >> 8;
                 if (look->pointer_light) {
                     int mx = mouse_x - x, my = mouse_y - y;
@@ -664,7 +667,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
     look->saturation = look->liquid ? 330 : 420;
     look->band = 16;
     look->refract = 14;
-    look->rim = look->liquid ? 210 : 60;
+    look->rim = look->liquid ? 140 : 40;
     look->brightness = dark ? -6 : 10;
     look->outline = dark ? ALPHA(0, 110) : ALPHA(0, 26);
     look->edge_line = kind == GLASS_MENU;
@@ -685,7 +688,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
             look->blur = 3;
             look->band = 30;
             look->refract = 34;
-            look->rim = 46;
+            look->rim = 30;
             look->saturation = 300;
             look->dispersion = true;
             look->pointer_light = 80;
@@ -713,7 +716,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         look->refract = 32;
         look->dispersion = look->liquid;
         if (look->liquid) {
-            look->rim = 46;
+            look->rim = 30;
             look->outline = 0;
         }
         break;
@@ -744,7 +747,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
     if (!k) {
         look->liquid = false;
         look->dispersion = false;
-        look->rim = 60;
+        look->rim = 40;
         return;
     }
     look->refract = look->refract * k / 70;

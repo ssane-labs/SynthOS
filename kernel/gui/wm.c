@@ -1737,10 +1737,10 @@ static void draw_window(struct canvas *c, struct window *w)
         if (has_more(w))
             draw_more(c, w);
     }
-    if (!(w->flags & (WIN_OVERLAY | WIN_BARE))) {
-        gfx_round_frame(c, f, corner(w), style.dark ? ALPHA(0, 230) : ALPHA(0, 44));
+    if (!(w->flags & (WIN_OVERLAY | WIN_BARE | WIN_FULLSCREEN | WIN_MAXIMIZED))) {
+        gfx_round_frame(c, f, corner(w), style.dark ? ALPHA(0, 200) : ALPHA(0, 36));
         if (style.dark)
-            gfx_round_frame_gradient(c, rect_inset(f, 1), MAX(corner(w) - 1, 0), ALPHA(0xffffffffu, 40), ALPHA(0xffffffffu, 12));
+            gfx_round_frame_gradient(c, rect_inset(f, 1), MAX(corner(w) - 1, 0), ALPHA(0xffffffffu, 24), ALPHA(0xffffffffu, 7));
     }
 }
 

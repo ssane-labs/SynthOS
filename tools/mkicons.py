@@ -689,26 +689,88 @@ def user_icon():
 
 
 def trash_icon(full=False):
+    """A tapered frosted-glass bin seen slightly from above: an oval rim with the dark opening, ribs that follow
+    the taper, a soft cylinder light; when full, crumpled paper shows over the rim."""
+    k = 4
+
+    def mask(draw):
+        m = Image.new("L", (S * k, S * k), 0)
+        draw(ImageDraw.Draw(m))
+        return m.resize((S, S), Image.LANCZOS)
+
+    def sc(pts):
+        return [(x * k, y * k) for x, y in pts]
+
+    top_l, top_r, bot_l, bot_r, top_y, bot_y = 58, 198, 80, 176, 72, 224
+    body = mask(lambda d: (d.polygon(sc([(top_l, top_y), (top_r, top_y), (bot_r, bot_y - 8), (bot_l, bot_y - 8)]), fill=255),
+                           d.ellipse([bot_l * k, (bot_y - 20) * k, bot_r * k, (bot_y + 6) * k], fill=255)))
     img = blank()
-    body = Image.new("L", (S * 4, S * 4), 0)
-    ImageDraw.Draw(body).rounded_rectangle([64 * 4, 62 * 4, 192 * 4, 234 * 4], radius=22 * 4, fill=255)
-    body = body.resize((S, S), Image.LANCZOS)
-    glass = flat((S, S), (236, 244, 252, 170), (188, 204, 222, 170))
-    img.paste(glass, (0, 0), body)
-    d = ImageDraw.Draw(img)
+    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 255))
+    shadow.putalpha(mask(lambda d: d.ellipse([70 * k, 214 * k, 186 * k, 240 * k], fill=255))
+                    .point(lambda v: v * 70 // 255).filter(ImageFilter.GaussianBlur(6)))
+    img.alpha_composite(shadow)
+    glass = gradient((S, S), (238, 243, 250, 214), (186, 198, 216, 228))
+    side = Image.linear_gradient("L").rotate(90).resize((S, S))
+    side = side.point(lambda v: int(abs(v - 128) * 0.9))
+    shade = Image.new("RGBA", (S, S), (70, 84, 108, 255))
+    shade.putalpha(side.point(lambda v: v * 90 // 255))
+    layer = blank()
+    layer.paste(glass, (0, 0), body)
+    layer.alpha_composite(Image.composite(shade, blank(), body))
+    light = Image.new("RGBA", (S, S), (255, 255, 255, 255))
+    light.putalpha(mask(lambda d: d.polygon(sc([(92, 80), (112, 80), (118, 214), (100, 214)]), fill=255))
+                   .filter(ImageFilter.GaussianBlur(5)).point(lambda v: v * 120 // 255))
+    layer.alpha_composite(Image.composite(light, blank(), body))
+    ribs = blank()
+    rd = ImageDraw.Draw(ribs)
+    n = 6
+    for i in range(1, n):
+        x0 = top_l + (top_r - top_l) * i / n
+        x1 = bot_l + (bot_r - bot_l) * i / n
+        rd.line([(x0, top_y + 14), (x1, bot_y - 10)], fill=(255, 255, 255, 110), width=3)
+    ribs = ribs.filter(ImageFilter.GaussianBlur(0.6))
+    layer.alpha_composite(Image.composite(ribs, blank(), body))
+    edge = ImageChops.subtract(body, body.filter(ImageFilter.MinFilter(3)))
+    ring = Image.new("RGBA", (S, S), (70, 82, 104, 255))
+    ring.putalpha(edge.point(lambda v: v * 110 // 255))
+    layer.alpha_composite(ring)
+    img.alpha_composite(layer)
+    rim_box = (50, 52, 206, 92)
+    hole_box = (62, 58, 194, 84)
+    rim = mask(lambda d: d.ellipse([v * k for v in rim_box], fill=255))
+    hole = mask(lambda d: d.ellipse([v * k for v in hole_box], fill=255))
+    img.paste(gradient((S, S), (250, 252, 255, 255), (206, 214, 228, 255)), (0, 0), rim)
+    img.paste(gradient((S, S), (44, 50, 62, 255), (96, 106, 124, 255)), (0, 0), hole)
     if full:
-        for (x, y, c) in [(80, 118, (255, 255, 255)), (112, 96, (250, 240, 210)), (134, 130, (220, 236, 255)),
-                          (92, 160, (240, 240, 246))]:
-            rr(d, (x, y, x + 50, y + 44), 6, fill=c + (235,))
-    for i in range(5):
-        x = 88 + i * 20
-        d.line([(x, 84), (x, 214)], fill=(255, 255, 255, 120), width=6)
-    outline = Image.new("RGBA", (S, S), (90, 100, 120, 255))
-    outline.putalpha(ImageChops.subtract(body, body.filter(ImageFilter.MinFilter(3))).point(lambda v: v * 90 // 255))
-    img.alpha_composite(outline)
-    rr(d, (52, 46, 204, 68), 11, fill=(226, 232, 242, 245))
-    rr(d, (52, 46, 204, 56), 9, fill=(250, 252, 255, 255))
-    rr(d, (106, 34, 150, 48), 6, fill=(214, 222, 234, 255))
+        paper = Image.new("RGBA", (S * k, S * k), (0, 0, 0, 0))
+        pd = Scaled(ImageDraw.Draw(paper))
+        balls = [(98, 62, 24, (255, 255, 255, 255), 1), (134, 52, 28, (246, 240, 226, 255), 2),
+                 (168, 64, 22, (228, 238, 252, 255), 3)]
+        for cx, cy, r, c, seed in balls:
+            pts = []
+            for i in range(14):
+                a = math.tau * i / 14
+                jit = 0.78 + 0.22 * ((i * 7 + seed * 5) % 5) / 4
+                pts.append((cx + math.cos(a) * r * jit, cy + math.sin(a) * r * jit * 0.9))
+            pd.polygon(pts, fill=c)
+            pd.line(pts + [pts[0]], fill=(150, 160, 178, 255), width=2)
+            for i in range(3):
+                a = math.tau * (i * 0.31 + seed * 0.17)
+                x0, y0 = cx + math.cos(a) * r * 0.55, cy + math.sin(a) * r * 0.5
+                pd.line([(x0, y0), (cx + math.cos(a + 2.2) * r * 0.2, cy + math.sin(a + 2.2) * r * 0.2)],
+                        fill=(176, 184, 198, 255), width=2)
+        paper = paper.resize((S, S), Image.LANCZOS)
+        clip = mask(lambda d: (d.rectangle([0, 0, S * k, 72 * k], fill=255),
+                               d.ellipse([v * k for v in hole_box], fill=255)))
+        img.alpha_composite(Image.composite(paper, blank(), clip))
+    front = ImageChops.subtract(rim, hole)
+    lower = mask(lambda d: d.rectangle([0, 71 * k, S * k, S * k], fill=255))
+    front = ImageChops.multiply(front, lower)
+    img.paste(gradient((S, S), (250, 252, 255, 255), (214, 222, 234, 255)), (0, 0), front)
+    rim_edge = ImageChops.subtract(rim, rim.filter(ImageFilter.MinFilter(3)))
+    ring = Image.new("RGBA", (S, S), (80, 92, 114, 255))
+    ring.putalpha(rim_edge.point(lambda v: v * 120 // 255))
+    img.alpha_composite(ring)
     return img
 
 
