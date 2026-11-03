@@ -52,4 +52,7 @@ Read `INSTRUCTIONS.md` first (Russian, the full guide), then `docs/ARCHITECTURE.
 - Errors are negative `E_*` codes. C11 (gnu11), 4 spaces, very few comments, `module_action` names.
 - Build must be warning-free; add a test case to `tests/run.sh` for new behavior.
 - Measure before and after when optimizing (`time`, `prof`, `winbench`).
+- Big pure loops (pixels on kernel heap/framebuffer) can use all cores through `hal_parallel` (fn gets a row range;
+  no allocation, locks, logging or program memory inside); in `gfx.c` large blits go parallel while `gfx_parallel`
+  is set by `wm_render`. `wmbench` with `QEMU_EXTRA=-smp 4` shows the effect.
 - User-facing docs are in Russian; in-OS text is English (the VGA font is CP437).

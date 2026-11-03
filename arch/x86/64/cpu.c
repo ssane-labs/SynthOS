@@ -172,6 +172,12 @@ void cpu_init(void)
     cpu_local_init();
 }
 
+void cpu_set_gate(int vector, uintptr_t handler)
+{
+    uint64_t a = handler;
+    idt[vector] = (struct idt_entry){(uint16_t)a, 0x30, 0, 0x8e, (uint16_t)(a >> 16), (uint32_t)(a >> 32), 0};
+}
+
 void cpu_ap_init(int index)
 {
     UNUSED(index);

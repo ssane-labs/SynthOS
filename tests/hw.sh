@@ -102,9 +102,10 @@ if [ -n "$ovmf" ]; then
     out=$(boot uefi ide smp "recovery")
     check "recovery: safe mode after failed starts" "$out" "Safe mode: on"
     check "recovery: counter reset" "$out" "Start counter: 0"
-    out=$(boot uefi ide smp "recovery")
+    out=$(boot uefi ide smp "recovery" "parcheck")
     check "recovery: normal start again" "$out" "Safe mode: off"
     check "recovery: normal start again" "$out" "Processors: 4 cores"
+    check "processors share work" "$out" "parallel work: ok on 4 processors"
 fi
 # Sound: Intel HD Audio (the controller of real PCs, with Realtek and other codecs) plays a test tone; QEMU writes
 # what reaches the codec into a WAV file: 440 Hz for half a second, then silence.

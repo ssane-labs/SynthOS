@@ -196,6 +196,7 @@ struct cpu_info {
 #define MAX_CPUS 64
 
 void cpu_ap_init(int index);
+void cpu_set_gate(int vector, uintptr_t handler);
 void *vmm_map_uncached(uint64_t phys, size_t size);
 
 void cpu_init(void);

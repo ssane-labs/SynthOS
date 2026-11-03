@@ -52,6 +52,7 @@ bool spring_step(struct spring *s, int stiffness, int damping, int dt);
 bool spring_busy(const struct spring *s);
 
 extern int mouse_x, mouse_y;
+extern bool gfx_parallel;
 
 
 enum glass_kind {

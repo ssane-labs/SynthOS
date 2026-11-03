@@ -528,23 +528,52 @@ void gfx_thick_line(struct canvas *c, int x0, int y0, int x1, int y1, int width,
     }
 }
 
-void gfx_blit(struct canvas *c, int x, int y, const struct canvas *src, struct rect from)
+/* Set by the window manager while it composes and copies a frame: everything drawn then is kernel memory every
+   processor sees, so big pixel loops are shared out with hal_parallel (the kernel is never preempted there). */
+bool gfx_parallel;
+
+#define PAR_PIXELS 24576
+
+static void rows_split(void (*fn)(void *ctx, int from, int to), void *ctx, int rows, int width)
 {
-    struct rect dst = rect_intersect((struct rect){x, y, from.w, from.h}, c->clip);
-    for (int row = 0; row < dst.h; row++) {
-        const uint32_t *s = src->px + (from.y + dst.y - y + row) * src->stride + from.x + dst.x - x;
-        memcpy(c->px + (dst.y + row) * c->stride + dst.x, s, (size_t)dst.w * 4);
+    if (gfx_parallel && rows > 1 && (int64_t)rows * width >= 2 * PAR_PIXELS)
+        hal_parallel(fn, ctx, rows, MAX(1, PAR_PIXELS / MAX(width, 1)));
+    else
+        fn(ctx, 0, rows);
+}
+
+struct blit_job {
+    struct canvas *c;
+    const struct canvas *src;
+    struct rect dst, from;
+    int x, y, alpha, radius;
+    bool blend;
+};
+
+static void blit_rows(void *ctx, int r0, int r1)
+{
+    const struct blit_job *j = ctx;
+    for (int row = r0; row < r1; row++) {
+        const uint32_t *s = j->src->px + (j->from.y + j->dst.y - j->y + row) * j->src->stride + j->from.x + j->dst.x - j->x;
+        memcpy(j->c->px + (j->dst.y + row) * j->c->stride + j->dst.x, s, (size_t)j->dst.w * 4);
     }
 }
 
-void gfx_blit_alpha(struct canvas *c, int x, int y, const struct canvas *src, struct rect from, int alpha)
+void gfx_blit(struct canvas *c, int x, int y, const struct canvas *src, struct rect from)
 {
-    struct rect dst = rect_intersect((struct rect){x, y, from.w, from.h}, c->clip);
-    for (int row = 0; row < dst.h; row++) {
-        const uint32_t *s = src->px + (from.y + dst.y - y + row) * src->stride + from.x + dst.x - x;
-        uint32_t *d = c->px + (dst.y + row) * c->stride + dst.x;
-        for (int i = 0; i < dst.w; i++) {
-            unsigned a = (s[i] >> 24) * (unsigned)alpha / 255;
+    struct blit_job j = {c, src, rect_intersect((struct rect){x, y, from.w, from.h}, c->clip), from, x, y, 255, 0, false};
+    if (j.dst.w > 0 && j.dst.h > 0)
+        rows_split(blit_rows, &j, j.dst.h, j.dst.w / 2);
+}
+
+static void blit_alpha_rows(void *ctx, int r0, int r1)
+{
+    const struct blit_job *j = ctx;
+    for (int row = r0; row < r1; row++) {
+        const uint32_t *s = j->src->px + (j->from.y + j->dst.y - j->y + row) * j->src->stride + j->from.x + j->dst.x - j->x;
+        uint32_t *d = j->c->px + (j->dst.y + row) * j->c->stride + j->dst.x;
+        for (int i = 0; i < j->dst.w; i++) {
+            unsigned a = (s[i] >> 24) * (unsigned)j->alpha / 255;
             if (a >= 255)
                 d[i] = s[i];
             else if (a)
@@ -553,11 +582,22 @@ void gfx_blit_alpha(struct canvas *c, int x, int y, const struct canvas *src, st
     }
 }
 
-void gfx_blit_round(struct canvas *c, struct rect dst, const struct canvas *src, int radius, bool blend_alpha)
+void gfx_blit_alpha(struct canvas *c, int x, int y, const struct canvas *src, struct rect from, int alpha)
 {
-    struct rect area = rect_intersect(dst, c->clip);
-    radius = MIN(radius, MIN(dst.w, dst.h) / 2);
-    for (int y = area.y; y < area.y + area.h; y++) {
+    struct blit_job j = {c, src, rect_intersect((struct rect){x, y, from.w, from.h}, c->clip), from, x, y, alpha, 0, false};
+    if (j.dst.w > 0 && j.dst.h > 0)
+        rows_split(blit_alpha_rows, &j, j.dst.h, j.dst.w);
+}
+
+static void blit_round_rows(void *ctx, int r0, int r1)
+{
+    const struct blit_job *j = ctx;
+    struct canvas *c = j->c;
+    const struct canvas *src = j->src;
+    struct rect dst = j->dst, area = j->from;
+    int radius = j->radius;
+    bool blend_alpha = j->blend;
+    for (int y = area.y + r0; y < area.y + r1; y++) {
         int sy = y - dst.y;
         if (sy >= src->h)
             break;
@@ -590,6 +630,15 @@ void gfx_blit_round(struct canvas *c, struct rect dst, const struct canvas *src,
                 d[x] = over(d[x], p, a);
         }
     }
+}
+
+void gfx_blit_round(struct canvas *c, struct rect dst, const struct canvas *src, int radius, bool blend_alpha)
+{
+    struct rect area = rect_intersect(dst, c->clip);
+    if (rect_empty(area))
+        return;
+    struct blit_job j = {c, src, dst, area, 0, 0, 255, MIN(radius, MIN(dst.w, dst.h) / 2), blend_alpha};
+    rows_split(blit_round_rows, &j, area.h, blend_alpha ? area.w : area.w / 2);
 }
 
 static uint32_t sample_bilinear(const uint32_t *px, int w, int h, int stride, int fx, int fy)
@@ -704,11 +753,47 @@ static inline uint32_t mix_px(uint32_t a, uint32_t b, unsigned f)
 
 #define SMOOTH_MAX 4096
 
+struct smooth_job {
+    struct canvas *c;
+    struct rect dst, area;
+    const struct canvas *src;
+    int32_t sy, ymax;
+    int alpha;
+};
+
+static uint16_t col_i[SMOOTH_MAX];
+static uint8_t col_f[SMOOTH_MAX];
+
+static void smooth_rows(void *ctx, int from, int to)
+{
+    const struct smooth_job *j = ctx;
+    struct canvas *c = j->c;
+    struct rect dst = j->dst, area = j->area;
+    const struct canvas *src = j->src;
+    int32_t sy = j->sy, ymax = j->ymax;
+    int alpha = j->alpha;
+    for (int y = area.y + from; y < area.y + to; y++) {
+        int32_t fy = CLAMP((y - dst.y) * sy + sy / 2 - 32768, 0, ymax);
+        int r = fy >> 16;
+        unsigned wy = (unsigned)(fy >> 8 & 0xff);
+        const uint32_t *r0 = src->px + r * src->stride, *r1 = r0 + (r + 1 < src->h ? src->stride : 0);
+        uint32_t *d = c->px + y * c->stride;
+        for (int i = 0; i < area.w; i++) {
+            int k = col_i[i], k1 = MIN(k + 1, src->w - 1);
+            unsigned wx = col_f[i];
+            uint32_t p = mix_px(mix_px(r0[k], r0[k1], wx), mix_px(r1[k], r1[k1], wx), wy);
+            unsigned a = (p >> 24) * (unsigned)alpha / 255;
+            if (a >= 254)
+                d[area.x + i] = p | 0xff000000u;
+            else if (a)
+                d[area.x + i] = over(d[area.x + i], p, a);
+        }
+    }
+}
+
 /* Bilinear scaling for animations: the picture moves without the shimmer of dropped rows and columns. */
 void gfx_scale_smooth(struct canvas *c, struct rect dst, const struct canvas *src, int alpha)
 {
-    static uint16_t col_i[SMOOTH_MAX];
-    static uint8_t col_f[SMOOTH_MAX];
     if (dst.w <= 0 || dst.h <= 0 || alpha <= 0)
         return;
     if (dst.w > SMOOTH_MAX || src->w > SMOOTH_MAX || src->w < 2 || src->h < 2 ||
@@ -726,23 +811,8 @@ void gfx_scale_smooth(struct canvas *c, struct rect dst, const struct canvas *sr
         col_i[x - area.x] = (uint16_t)(fx >> 16);
         col_f[x - area.x] = (uint8_t)(fx >> 8);
     }
-    for (int y = area.y; y < area.y + area.h; y++) {
-        int32_t fy = CLAMP((y - dst.y) * sy + sy / 2 - 32768, 0, ymax);
-        int r = fy >> 16;
-        unsigned wy = (unsigned)(fy >> 8 & 0xff);
-        const uint32_t *r0 = src->px + r * src->stride, *r1 = r0 + (r + 1 < src->h ? src->stride : 0);
-        uint32_t *d = c->px + y * c->stride;
-        for (int i = 0; i < area.w; i++) {
-            int k = col_i[i], k1 = MIN(k + 1, src->w - 1);
-            unsigned wx = col_f[i];
-            uint32_t p = mix_px(mix_px(r0[k], r0[k1], wx), mix_px(r1[k], r1[k1], wx), wy);
-            unsigned a = (p >> 24) * (unsigned)alpha / 255;
-            if (a >= 254)
-                d[area.x + i] = p | 0xff000000u;
-            else if (a)
-                d[area.x + i] = over(d[area.x + i], p, a);
-        }
-    }
+    struct smooth_job j = {c, dst, area, src, sy, ymax, alpha};
+    rows_split(smooth_rows, &j, area.h, area.w);
 }
 
 /* Gives fully clear pixels the color of a neighbour, so smooth scaling does not pull dark seams in at the edges. */

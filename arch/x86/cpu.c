@@ -229,6 +229,12 @@ static struct gdt_entry ap_gdt[MAX_CPUS][8];
 
 /* An application processor's own GDT (it will hold that processor's TEB segments), the shared IDT, its control
    registers. */
+void cpu_set_gate(int vector, uintptr_t handler)
+{
+    uint32_t addr = (uint32_t)handler;
+    idt[vector] = (struct idt_entry){(uint16_t)(addr & 0xffff), 0x08, 0, 0x8e, (uint16_t)(addr >> 16)};
+}
+
 void cpu_ap_init(int index)
 {
     memcpy(ap_gdt[index], gdt, sizeof(gdt));

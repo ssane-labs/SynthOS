@@ -220,13 +220,25 @@ static void hw_cursor_sync(void)
     hal_irq_restore(flags);
 }
 
+struct flush_job {
+    struct screen *s;
+    struct rect r;
+};
+
+static void flush_rows(void *ctx, int from, int to)
+{
+    const struct flush_job *j = ctx;
+    for (int y = j->r.y + from; y < j->r.y + to; y++)
+        fb_row(j->s, j->r.x, y, j->s->back.px + y * j->s->back.stride + j->r.x, j->r.w);
+}
+
 static void flush(struct screen *s, struct rect r)
 {
     r = rect_intersect(r, s->area);
     if (rect_empty(r))
         return;
-    for (int y = 0; y < r.h; y++)
-        fb_row(s, r.x, r.y + y, s->back.px + (r.y + y) * s->back.stride + r.x, r.w);
+    struct flush_job j = {s, r};
+    hal_parallel(flush_rows, &j, r.h, MAX(4, 16384 / r.w));
     struct rect c = rect_intersect(r, hw_drawn);
     if (!rect_empty(c))
         fb_compose(s, c);
@@ -667,11 +679,11 @@ static int ghost_ms(enum anim_kind kind, unsigned flags)
     bool small = flags & WIN_POPUP && !(flags & WIN_OVERLAY);
     int ms = 200;
     switch (kind) {
-    case ANIM_OPEN: ms = small ? 190 : 300; break;
-    case ANIM_CLOSE: ms = small ? 120 : 180; break;
-    case ANIM_MINIMIZE: ms = 380; break;
-    case ANIM_RESTORE: ms = 340; break;
-    case ANIM_MORPH: ms = 260; break;
+    case ANIM_OPEN: ms = small ? 150 : 220; break;
+    case ANIM_CLOSE: ms = small ? 100 : 140; break;
+    case ANIM_MINIMIZE: ms = 300; break;
+    case ANIM_RESTORE: ms = 270; break;
+    case ANIM_MORPH: ms = 220; break;
     }
     return ms * 100 / anim_speed;
 }
@@ -1828,6 +1840,7 @@ void wm_render(void)
         memcpy(list, s->dirty, sizeof(struct rect) * (size_t)count);
         s->dirty_count = 0;
         uint64_t t0 = hal_ticks_ms();
+        gfx_parallel = true;
         for (int k = 0; k < count; k++) {
             compose(i, list[k]);
             stat_pixels += (uint64_t)MAX(list[k].w, 0) * (uint64_t)MAX(list[k].h, 0);
@@ -1838,6 +1851,7 @@ void wm_render(void)
         fb_busy = true;
         for (int k = 0; k < count; k++)
             flush(s, list[k]);
+        gfx_parallel = false;
         fb_busy = false;
     }
     if (hw_dirty)
@@ -3052,11 +3066,13 @@ COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redr
         c.clip = screens[0].area;
         struct rect f = w->frame;
         t0 = hal_ticks_ms();
+        gfx_parallel = true;
         for (long i = 0; i < frames; i++) {
             int k = 940 + (int)(i % 8) * 10;
             gfx_scale_smooth(&c, (struct rect){f.x + f.w * (1024 - k) / 2048, f.y + f.h * (1024 - k) / 2048,
                                                f.w * k / 1024, f.h * k / 1024}, &snap, 230);
         }
+        gfx_parallel = false;
         zoom = hal_ticks_ms() - t0;
         canvas_free(&snap);
         wm_damage_all();
@@ -3067,5 +3083,6 @@ COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redr
     if (anim)
         sh_printf(sh, "front window area: %u ms per frame\nfront window zoom: %u ms per frame\n",
                   (unsigned)(part / (uint64_t)anim), (unsigned)(zoom / (uint64_t)anim));
+    sh_printf(sh, "processors drawing: %d\n", hal_parallel_cpus());
     return 0;
 }

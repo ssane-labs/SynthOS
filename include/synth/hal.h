@@ -134,6 +134,10 @@ uint32_t hal_boot_nonce(void);
 void hal_delay_ms(uint32_t ms);
 int hal_guard(void (*fn)(void *ctx), void *ctx);
 int hal_cpu_count(void);
+/* runs fn over [0, count) split into ranges of at least grain items on every processor; fn must only touch memory
+   all address spaces share and call nothing that locks, sleeps or allocates */
+void hal_parallel(void (*fn)(void *ctx, int from, int to), void *ctx, int count, int grain);
+int hal_parallel_cpus(void);
 NORETURN void hal_reboot(void);
 NORETURN void hal_poweroff(void);
 

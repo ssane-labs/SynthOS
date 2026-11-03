@@ -161,3 +161,39 @@ COMMAND(faulttest, NULL, "system", "faulttest", "check that a crash in desktop a
     sh_printf(sh, vector ? "contained: CPU exception %d, the system goes on\n" : "no fault\n", vector);
     return vector ? 0 : 1;
 }
+
+struct par_check {
+    uint32_t *out;
+};
+
+static void par_fill(void *ctx, int from, int to)
+{
+    const struct par_check *p = ctx;
+    for (int i = from; i < to; i++)
+        p->out[i] += (uint32_t)i * 2654435761u + 1;
+}
+
+COMMAND(parcheck, NULL, "system", "parcheck", "check that work shared between the processors is done once")
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    enum { N = 200000 };
+    uint32_t *out = kzalloc(N * sizeof(uint32_t));
+    if (!out)
+        return sh_error(sh, "parcheck", "out of memory");
+    struct par_check p = {out};
+    int bad = 0;
+    for (int round = 0; round < 50 && !bad; round++) {
+        hal_parallel(par_fill, &p, N, 1000 + round * 37);
+        for (int i = 0; i < N; i++)
+            if (out[i] != ((uint32_t)i * 2654435761u + 1) * (uint32_t)(round + 1)) {
+                bad = i + 1;
+                break;
+            }
+    }
+    kfree(out);
+    if (bad)
+        return sh_error(sh, "parcheck", "part %d was lost or done twice", bad - 1);
+    sh_printf(sh, "parallel work: ok on %d processor%s\n", hal_parallel_cpus(), hal_parallel_cpus() == 1 ? "" : "s");
+    return 0;
+}

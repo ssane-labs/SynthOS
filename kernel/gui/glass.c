@@ -1,3 +1,4 @@
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/string.h>
 
@@ -148,8 +149,36 @@ void glass_freeze(bool on)
     no_capture = on;
 }
 
+#define LINE_MAX 1024
+
+struct blur_job {
+    struct canvas *cv;
+    int blur;
+    bool rows;
+};
+
+static void blur_lines(void *ctx, int from, int to)
+{
+    const struct blur_job *j = ctx;
+    uint32_t tmp[LINE_MAX];
+    struct canvas *cv = j->cv;
+    if (j->rows)
+        box_pass(cv->px + from * cv->w, cv->w, to - from, cv->w, 1, 0, j->blur, tmp);
+    else
+        box_pass(cv->px + from, to - from, cv->h, cv->w, 0, 1, j->blur, tmp);
+}
+
 static void blur_canvas(struct canvas *cv, int blur, int passes)
 {
+    if (cv->w <= LINE_MAX && cv->h <= LINE_MAX) {
+        for (int pass = 0; pass < passes; pass++) {
+            struct blur_job r = {cv, blur, true}, c = {cv, blur, false};
+            int grain = MAX(1, 8192 / MAX(cv->w, cv->h));
+            hal_parallel(blur_lines, &r, cv->h, grain);
+            hal_parallel(blur_lines, &c, cv->w, grain);
+        }
+        return;
+    }
     uint32_t *tmp = kmalloc((size_t)MAX(cv->w, cv->h) * 4);
     if (!tmp)
         return;
@@ -365,48 +394,35 @@ static inline int clamp8(int v)
     return v < 0 ? 0 : v > 255 ? 255 : v;
 }
 
-static void render(struct glass *g, const struct glass_look *look, struct rect f, uint32_t *dst, int stride)
+struct render_job {
+    struct glass *g;
+    const struct glass_look *look;
+    struct rect f;
+    uint32_t *dst;
+    int stride, radius, band, band16, refract, inner, lift, cw;
+    unsigned tint_a, sat;
+    bool sdf;
+    const struct geo *geo;
+    const struct tap *cols, *rows;
+    const uint16_t *cover;
+};
+
+static void render_rows(void *ctx, int from, int to)
 {
-    int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
-    unsigned tint_a = look->tint >> 24, sat = (unsigned)look->saturation;
-    const void *ctx = look->shape_ctx;
-    bool sdf = look->shape && look->shape_sdf && look->liquid;
-    int band = look->liquid && (!look->shape || sdf) ? MIN(look->band, MIN(f.w, f.h) / 2) : 0;
-    int band16 = MAX(band, 1) * 16;
-    int refract = look->refract * 256;
-    int inner = band + radius;
-    int lift = look->brightness;
-    if (look->tint && !style.dark && g->luma < 150)
-        lift += (150 - g->luma) * 3 / 4;
-    else if (look->tint && style.dark && g->luma > 120)
-        lift -= (g->luma - 120) * 2 / 3;
-    const struct geo *geo = band && !look->shape ? geometry(g, f, radius) : NULL;
-    struct tap *cols = kmalloc(sizeof(struct tap) * (size_t)(f.w + f.h));
-    if (!cols)
-        return;
-    struct tap *rows = cols + f.w;
-    taps(cols, f.x, f.w, g->src.x, g->scale, g->small.w);
-    taps(rows, f.y, f.h, g->src.y, g->scale, g->small.h);
-    int cw = f.w + 4;
-    uint16_t *cover = look->shape && !sdf ? kmalloc(sizeof(uint16_t) * (size_t)cw * (size_t)(f.h + 4)) : NULL;
-    if (cover)
-        for (int y = 0; y < f.h + 4; y++) {
-            int x0 = 0, x1 = 0;
-            if (look->shape_span && look->shape_span(f.y + y - 2, look->shape_ctx, &x0, &x1)) {
-                x0 = CLAMP(x0 - f.x + 2, 0, cw);
-                x1 = CLAMP(x1 - f.x + 2, x0, cw);
-            }
-            for (int x = 0; x < cw; x++) {
-                if (x == x0 && x1 > x0) {
-                    for (; x < x1; x++)
-                        cover[y * cw + x] = 256;
-                    if (x == cw)
-                        break;
-                }
-                cover[y * cw + x] = (uint16_t)CLAMP(look->shape(f.x + x - 2, f.y + y - 2, look->shape_ctx), 0, 256);
-            }
-        }
-    for (int y = f.y; y < f.y + f.h; y++) {
+    const struct render_job *j = ctx;
+    struct glass *g = j->g;
+    const struct glass_look *look = j->look;
+    struct rect f = j->f;
+    uint32_t *dst = j->dst;
+    int stride = j->stride, radius = j->radius, band = j->band, band16 = j->band16, refract = j->refract, inner = j->inner, lift = j->lift;
+    int cw = j->cw;
+    unsigned tint_a = j->tint_a, sat = j->sat;
+    bool sdf = j->sdf;
+    const struct geo *geo = j->geo;
+    const struct tap *cols = j->cols, *rows = j->rows;
+    const uint16_t *cover = j->cover;
+    const void *shape_ctx = look->shape_ctx;
+    for (int y = f.y + from; y < f.y + to; y++) {
         uint32_t *row = dst + (y - f.y) * stride - f.x;
         int plain_x = INT32_MIN;
         const struct tap *ry = &rows[y - f.y];
@@ -416,7 +432,7 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
             int cov = 256, d = band16, nx = 0, ny = 0;
             int shape_rim = 0;
             if (sdf) {
-                d = look->shape_sdf(x, y, ctx, &nx, &ny);
+                d = look->shape_sdf(x, y, shape_ctx, &nx, &ny);
                 if (d <= -8) {
                     row[x] = 0;
                     continue;
@@ -513,6 +529,51 @@ static void render(struct glass *g, const struct glass_look *look, struct rect f
             row[x] = out | (uint32_t)(cov >= 256 ? 255 : cov * 255 / 256) << 24;
         }
     }
+}
+
+static void render(struct glass *g, const struct glass_look *look, struct rect f, uint32_t *dst, int stride)
+{
+    int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
+    unsigned tint_a = look->tint >> 24, sat = (unsigned)look->saturation;
+    bool sdf = look->shape && look->shape_sdf && look->liquid;
+    int band = look->liquid && (!look->shape || sdf) ? MIN(look->band, MIN(f.w, f.h) / 2) : 0;
+    int band16 = MAX(band, 1) * 16;
+    int refract = look->refract * 256;
+    int inner = band + radius;
+    int lift = look->brightness;
+    if (look->tint && !style.dark && g->luma < 150)
+        lift += (150 - g->luma) * 3 / 4;
+    else if (look->tint && style.dark && g->luma > 120)
+        lift -= (g->luma - 120) * 2 / 3;
+    const struct geo *geo = band && !look->shape ? geometry(g, f, radius) : NULL;
+    struct tap *cols = kmalloc(sizeof(struct tap) * (size_t)(f.w + f.h));
+    if (!cols)
+        return;
+    struct tap *rows = cols + f.w;
+    taps(cols, f.x, f.w, g->src.x, g->scale, g->small.w);
+    taps(rows, f.y, f.h, g->src.y, g->scale, g->small.h);
+    int cw = f.w + 4;
+    uint16_t *cover = look->shape && !sdf ? kmalloc(sizeof(uint16_t) * (size_t)cw * (size_t)(f.h + 4)) : NULL;
+    if (cover)
+        for (int y = 0; y < f.h + 4; y++) {
+            int x0 = 0, x1 = 0;
+            if (look->shape_span && look->shape_span(f.y + y - 2, look->shape_ctx, &x0, &x1)) {
+                x0 = CLAMP(x0 - f.x + 2, 0, cw);
+                x1 = CLAMP(x1 - f.x + 2, x0, cw);
+            }
+            for (int x = 0; x < cw; x++) {
+                if (x == x0 && x1 > x0) {
+                    for (; x < x1; x++)
+                        cover[y * cw + x] = 256;
+                    if (x == cw)
+                        break;
+                }
+                cover[y * cw + x] = (uint16_t)CLAMP(look->shape(f.x + x - 2, f.y + y - 2, look->shape_ctx), 0, 256);
+            }
+        }
+    struct render_job j = {g, look, f, dst, stride, radius, band, band16, refract, inner, lift, cw, tint_a, sat, sdf, geo, cols, rows,
+                           cover};
+    hal_parallel(render_rows, &j, f.h, MAX(2, 8192 / MAX(f.w, 1)));
     kfree(cover);
     kfree(cols);
 }

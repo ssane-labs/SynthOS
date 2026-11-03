@@ -126,6 +126,8 @@ recovery safe
 this start did not come from the UEFI loader
 faulttest; echo still running
 contained: CPU exception 14, the system goes on
+parcheck
+parallel work: ok on 1 processor
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets
