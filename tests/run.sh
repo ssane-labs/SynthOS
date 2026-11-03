@@ -452,6 +452,8 @@ wininst | grep poll
 poll child exit=7 done=1
 wininst | grep enumdelete
 enumdelete seen=12 removed=1
+for i in 1 2 3 4 5 6 7 8; wininst | grep -c i >> /tmp/wi.txt; end; grep -c 7 /tmp/wi.txt; rm /tmp/wi.txt
+8
 wininst | grep wow
 wow64=1 native=9 machine=14c host=8664 env=AMD64 copyex=1/0
 config w32wow64 off; wininst | grep wow; config w32wow64 on

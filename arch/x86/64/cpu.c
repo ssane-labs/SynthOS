@@ -282,7 +282,7 @@ void x86_interrupt(struct regs *r)
             outb(0xa0, 0x20);
         outb(0x20, 0x20);
         if (irq == 0 && tick_hook)
-            tick_hook((uint32_t)r->rip);
+            tick_hook(r->rip >> 32 ? VMM_USER_START : (uint32_t)r->rip);
         interrupt_depth--;
     }
 }

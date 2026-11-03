@@ -476,7 +476,7 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
 static void on_tick(uint32_t eip)
 {
     static unsigned ticks;
-    if (!w32 || !w32->jump.active || eip < VMM_USER_START || eip >= 0xc0000000u)
+    if (!w32 || !w32->jump.active || eip < VMM_USER_START || eip >= VMM_USER_END)
         return;
     ticks++;
     if (w32->current)
