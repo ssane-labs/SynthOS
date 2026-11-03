@@ -219,6 +219,9 @@ uint64_t w32_call_guest(const void *fn, int argc, const uint64_t *args, const ui
         if (sizes[i] == 8)
             words[n++] = (uint32_t)(args[i] >> 32);
     }
+    uint64_t r;
+    if (w64_thunk_call(fn, words, n, &r))
+        return r;
     if (!w32->jump.active)
         return arch_w32_call((void *)fn, n, words, w32->stack + w32->stack_size - 16, &w32->jump);
     return arch_w32_enter((uint32_t)(uintptr_t)fn, n, words, 0, 0, 0);

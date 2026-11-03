@@ -543,6 +543,96 @@ static long WINAPI SHGetStockIconInfo(int id, UINT flags, uint32_t *info)
     return 0;
 }
 
+/* PE (with the subsystem version for windowed programs) or 0 for anything that is not a program */
+static DWORD exe_type(const char *path)
+{
+    struct file *f;
+    uint8_t h[512];
+    if (vfs_open(path, VFS_READ, &f))
+        return 0;
+    long n = vfs_read(f, h, sizeof(h));
+    vfs_close(f);
+    if (n < 64 || h[0] != 'M' || h[1] != 'Z')
+        return 0;
+    uint32_t pe = (uint32_t)h[60] | (uint32_t)h[61] << 8;
+    if (pe + 24 + 72 > (uint32_t)n || memcmp(h + pe, "PE\0\0", 4))
+        return 0x5a4d;
+    const uint8_t *opt = h + pe + 24;
+    uint16_t subsystem = (uint16_t)(opt[68] | opt[69] << 8);
+    uint16_t major = (uint16_t)(opt[48] | opt[49] << 8), minor = (uint16_t)(opt[50] | opt[51] << 8);
+    return subsystem == 3 ? 0x4550 : 0x4550 | (uint32_t)(major << 8 | minor) << 16;
+}
+
+/* SHFILEINFOW: hIcon, iIcon, dwAttributes, szDisplayName[260], szTypeName[80] */
+static uintptr_t WINAPI SHGetFileInfoW(const WCHAR *file, DWORD attrs, uint32_t *info, UINT size, UINT flags)
+{
+    enum { ICON = 0x100, NAME = 0x200, TYPE = 0x400, ATTRS = 0x800, EXETYPE = 0x2000, SYSINDEX = 0x4000,
+           PIDL = 0x8, USE_ATTRS = 0x10 };
+    const WCHAR *w = flags & PIDL ? pidl_path(file) : file;
+    char *name = w ? w32_narrow(w) : NULL, path[PATH_MAX_LEN];
+    bool known = name && w32_path(name, path, sizeof(path)) == 0 && vfs_exists(path);
+    if (!name || (!known && !(flags & USE_ATTRS))) {
+        w32_free(name);
+        return 0;
+    }
+    bool dir = flags & USE_ATTRS && !known ? (attrs & 0x10) != 0 : vfs_is_dir(path);
+    if (flags & EXETYPE) {
+        DWORD t = known && !dir ? exe_type(path) : 0;
+        w32_free(name);
+        return t;
+    }
+    const char *base = name;
+    for (const char *p = name; *p; p++)
+        if ((*p == '\\' || *p == '/') && p[1])
+            base = p + 1;
+    const char *dot = strrchr(base, '.');
+    if (info && size >= 692) {
+        if (flags & ICON) {
+            HANDLE(WINAPI * load)(HANDLE, const char *) = w32_builtin_lookup("user32.dll", "LoadIconA");
+            info[0] = (uint32_t)(uintptr_t)(load ? load(NULL, (const char *)(uintptr_t)(dir ? 32516 : 32512)) : NULL);
+        }
+        if (flags & (ICON | SYSINDEX))
+            info[1] = dir ? 3 : dot && !str_casecmp(dot, ".exe") ? 2 : 0;
+        if (flags & ATTRS)
+            info[2] = 0x40000000u | 0x33u | (dir ? 0x30000000u : 0);
+        if (flags & NAME)
+            w32_cp_to_wide(base, -1, (WCHAR *)(info + 3), 260, 0);
+        if (flags & TYPE) {
+            char type[80];
+            if (dir)
+                str_copy(type, "File folder", sizeof(type));
+            else if (dot && !str_casecmp(dot, ".exe"))
+                str_copy(type, "Application", sizeof(type));
+            else if (dot && dot[1]) {
+                size_t i = 0;
+                for (const char *c = dot + 1; *c && i < 16; c++)
+                    type[i++] = *c >= 'a' && *c <= 'z' ? (char)(*c - 32) : *c;
+                str_copy(type + i, " File", sizeof(type) - i);
+            } else
+                str_copy(type, "File", sizeof(type));
+            w32_cp_to_wide(type, -1, (WCHAR *)((uint8_t *)info + 532), 80, 0);
+        }
+    }
+    w32_free(name);
+    return flags & SYSINDEX ? 0x5359534c : 1;
+}
+
+static uintptr_t WINAPI SHGetFileInfoA(const char *file, DWORD attrs, uint8_t *info, UINT size, UINT flags)
+{
+    WCHAR wide[PATH_MAX_LEN];
+    if (file && !(flags & 0x8))
+        w32_cp_to_wide(file, -1, wide, PATH_MAX_LEN, 0);
+    uint32_t winfo[173] = {0};
+    uintptr_t r = SHGetFileInfoW(file && !(flags & 0x8) ? wide : (const WCHAR *)file, attrs, info ? winfo : NULL,
+                                 info ? sizeof(winfo) : 0, flags);
+    if (r && info && size >= 352) {
+        memcpy(info, winfo, 12);
+        w32_wide_to_cp((const WCHAR *)(winfo + 3), -1, (char *)info + 12, 260, 0);
+        w32_wide_to_cp((const WCHAR *)((uint8_t *)winfo + 532), -1, (char *)info + 272, 80, 0);
+    }
+    return r;
+}
+
 /* "Show in folder": opens the folder in Files; with no items the PIDL names the item itself, so its parent opens */
 static long WINAPI SHOpenFolderAndSelectItems(const void *folder, UINT count, const void **items, DWORD flags)
 {
@@ -918,7 +1008,7 @@ static const struct w32_export shell32_exports[] = {
     W32_FN(SHGetSpecialFolderLocation), W32_FN(SHGetFolderLocation), W32_FN(SHGetKnownFolderIDList),
     W32_FN(SHGetPathFromIDListW), W32_FN(SHGetPathFromIDListA), W32_FN(SHGetPathFromIDListEx),
     W32_FN(SHParseDisplayName), W32_FN(ILCreateFromPathA), W32_FN(ILClone), W32_FN(ILGetSize),
-    W32_FN(SHOpenFolderAndSelectItems), W32_AS("SHGetFileInfoW", w32_zero5),
+    W32_FN(SHOpenFolderAndSelectItems), W32_FN(SHGetFileInfoW), W32_FN(SHGetFileInfoA),
     W32_AS("SHAppBarMessage", w32_zero2), W32_FN(SHGetStockIconInfo),
     W32_AS("SHGetPropertyStoreForWindow", shell_notimpl3), W32_AS("SetCurrentProcessExplicitAppUserModelID", w32_zero1),
     W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("DragQueryFileW", w32_zero4),

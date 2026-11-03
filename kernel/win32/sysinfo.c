@@ -493,8 +493,6 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_AS("SetProcessInformation", w32_one4),
     W32_FN(GetSystemPowerStatus),
     W32_FN(GetThreadGroupAffinity),
-    W32_AS("GetVolumeNameForVolumeMountPointW", w32_fail3),
-    W32_AS("QueryDosDeviceW", w32_zero3),
     W32_AS("HeapLock", w32_one1),
     W32_AS("HeapUnlock", w32_one1),
     W32_FN(HeapWalk),

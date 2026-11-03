@@ -120,6 +120,32 @@ static uint32_t to32(uint64_t fn, int argc)
     return self;
 }
 
+#ifdef __x86_64__
+/* The thunk is 32-bit code a 32-bit caller jumps through; the kernel's own calls go straight to its bridge. */
+bool w64_thunk_call(const void *fn, const uint32_t *w, int n, uint64_t *ret)
+{
+    if (!w32 || !w32->w64)
+        return false;
+    struct thunk *t = w32->w64_thunks;
+    while (t && (const void *)t != fn)
+        t = t->next;
+    if (!t)
+        return false;
+    uint32_t a[4] = {0};
+    for (int i = 0; i < n && i < 4; i++)
+        a[i] = w[i];
+    if (t->argc == 1)
+        *ret = bridge1(t, a[0]);
+    else if (t->argc == 2)
+        *ret = bridge2(t, a[0], a[1]);
+    else if (t->argc == ENUM4)
+        *ret = bridge_enum4(t, a[0], a[1], a[2], a[3]);
+    else
+        *ret = bridge4(t, a[0], a[1], a[2], a[3]);
+    return true;
+}
+#endif
+
 static uint64_t to64(uint32_t fn)
 {
     if (!fn)
@@ -372,6 +398,57 @@ static uint64_t h_get_object(uint64_t *a, const uint64_t *f, void *t)
     return r;
 }
 
+static uint64_t h_point1(uint64_t *a, const uint64_t *f, void *t)
+{
+    return w64_ret((uint32_t)T32(t, U(P(a[0])), (uint32_t)a[1], (uint32_t)(a[1] >> 32), (uint32_t)a[2]));
+}
+
+/* TRACKMOUSEEVENT: the window handle is 8 bytes (24 bytes instead of 16) */
+static uint64_t h_track_mouse(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint8_t *m = a[0] ? P(a[0]) : NULL;
+    if (!m || rd32(m) < 24)
+        return w64_ret((uint32_t)T32(t, 0u));
+    uint32_t e[4] = {16, rd32(m + 4), rdp(m + 8), rd32(m + 16)};
+    uint32_t r = (uint32_t)T32(t, U(e));
+    if (r && (rd32(m + 4) & 0x40000000u)) {
+        put32(m + 4, e[1]);
+        put64(m + 8, w64_ret(e[2]));
+        put32(m + 16, e[3]);
+    }
+    return r;
+}
+
+/* MENUITEMINFO: pointers and handles grow to 8 bytes from hSubMenu on (80 bytes instead of 48) */
+static uint64_t h_menu_item(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint8_t *m = a[3] ? P(a[3]) : NULL;
+    uint32_t info[12] = {48};
+    if (m) {
+        for (int i = 1; i < 5; i++)
+            info[i] = rd32(m + i * 4);
+        info[5] = rd64(m + 24) ? rdp(m + 24) : 0;
+        info[8] = (uint32_t)rd64(m + 48);
+        info[9] = rd64(m + 56) ? rdp(m + 56) : 0;
+        info[10] = rd32(m + 64);
+    }
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), (uint32_t)a[1], (uint32_t)a[2], m ? U(info) : 0);
+    if (m && r) {
+        for (int i = 2; i < 5; i++)
+            memcpy(m + i * 4, &info[i], 4);
+        put64(m + 24, info[5]);
+        memcpy(m + 64, &info[10], 4);
+    }
+    return w64_ret(r);
+}
+
+static uint64_t h_time_event(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t flags = (uint32_t)a[4];
+    uint32_t proc = (flags & 0x30) ? (uint32_t)a[2] : to32(a[2], 4);
+    return T32(t, (uint32_t)a[0], (uint32_t)a[1], proc, U(P(a[3])), flags | 0x80000000u);
+}
+
 static const struct w64_export user32_exports[] = {
     W64_FN("RegisterClassA", h_register_class),
     W64_FN("RegisterClassW", h_register_class),
@@ -422,8 +499,25 @@ static const struct w64_export user32_exports[] = {
     W64_FN("EnumChildWindows", h_enum_children),
     W64_FN("EnumDisplayMonitors", h_enum_monitors),
     W64_FN("MsgWaitForMultipleObjects", h_msg_wait),
+    W64_FLAG("WindowFromPoint", W64F_SPLIT0),
+    W64_FLAG("MonitorFromPoint", W64F_SPLIT0),
+    W64_FN("ChildWindowFromPoint", h_point1),
+    W64_FN("ChildWindowFromPointEx", h_point1),
+    W64_FN("RealChildWindowFromPoint", h_point1),
+    W64_FN("GetMenuItemInfoA", h_menu_item),
+    W64_FN("GetMenuItemInfoW", h_menu_item),
+    W64_FN("SetMenuItemInfoA", h_menu_item),
+    W64_FN("SetMenuItemInfoW", h_menu_item),
+    W64_FN("InsertMenuItemA", h_menu_item),
+    W64_FN("InsertMenuItemW", h_menu_item),
+    W64_FN("TrackMouseEvent", h_track_mouse),
 };
 W64_EXPORTS(user32_module, "user32.dll", user32_exports);
+
+static const struct w64_export winmm_exports[] = {
+    W64_FN("timeSetEvent", h_time_event),
+};
+W64_EXPORTS(winmm_module, "winmm.dll", winmm_exports);
 
 /* arrays of handles: 8 bytes each */
 static const struct w64_export wait_exports[] = {

@@ -584,6 +584,7 @@ typedef uint32_t w32_va_list;
 bool w32_guest_code(const void *fn);
 const void *w32_native_fn(const void *fn);
 uint64_t w32_call_guest(const void *fn, int argc, const uint64_t *args, const uint8_t *sizes);
+bool w64_thunk_call(const void *fn, const uint32_t *w, int n, uint64_t *ret);
 #define W32_ARG_(x) ((uint64_t)(x))
 #define W32_SIZE_(x) ((uint8_t)sizeof(x))
 #define W32_MAP_(m, ...) W32_MAPN_(W32_NARGS(__VA_ARGS__), m, __VA_ARGS__)

@@ -33,7 +33,17 @@ enum {
     SW_SHOWNOACTIVATE = 4,
     SW_SHOWMINNOACTIVE = 7,
     SW_SHOWNA = 8,
+    SW_SHOWNORMAL = 1,
     SW_FORCEMINIMIZE = 11,
+};
+
+enum {
+    SC_SIZE = 0xf000,
+    SC_MOVE = 0xf010,
+    SC_MINIMIZE = 0xf020,
+    SC_MAXIMIZE = 0xf030,
+    SC_CLOSE = 0xf060,
+    SC_RESTORE = 0xf120,
 };
 
 enum {
@@ -95,6 +105,10 @@ static W32_STATE int mouse_x, mouse_y;
 static W32_STATE unsigned key_mods;
 static W32_STATE unsigned mouse_buttons;
 static W32_STATE struct w32_window *hover;
+static W32_STATE struct w32_window *track_leave, *track_hover;
+static W32_STATE uint32_t hover_time;
+static W32_STATE uint64_t hover_due;
+static W32_STATE int hover_x, hover_y;
 static W32_STATE struct gui_app *process_app;
 
 struct process_app {
@@ -589,6 +603,19 @@ static uint32_t mods_to_mk(void)
            (mouse_buttons & 4 ? MK_MBUTTON : 0);
 }
 
+/* the pointer left w: controls always hear it, other windows when they asked with TrackMouseEvent */
+static void mouse_left(struct w32_window *w, bool always)
+{
+    if (!w || !w32_win(w))
+        return;
+    if (always || w->control || track_leave == w)
+        w32_post(w, WM_MOUSELEAVE, 0, 0);
+    if (track_leave == w)
+        track_leave = NULL;
+    if (track_hover == w)
+        track_hover = NULL;
+}
+
 typedef struct {
     void *lpCreateParams;
     HANDLE hInstance;
@@ -785,6 +812,10 @@ static void destroy_tree(struct w32_window *w)
         capture = NULL;
     if (hover == w)
         hover = NULL;
+    if (track_leave == w)
+        track_leave = NULL;
+    if (track_hover == w)
+        track_hover = NULL;
     if (active == w)
         active = NULL;
     for (struct w32_window *it = windows; it; it = it->next_all)
@@ -1352,6 +1383,8 @@ static LRESULT text_message(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp
     return text_length(w, unicode);
 }
 
+static void system_menu(struct w32_window *w, int x, int y);
+
 static LRESULT def_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp, bool unicode)
 {
     struct w32_window *w = w32_win(h);
@@ -1392,9 +1425,34 @@ static LRESULT def_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp, bool unicode)
     case WM_GETFONT: return (LRESULT)w->font;
     case WM_NCHITTEST: return 1;
     case WM_MOUSEACTIVATE: return 1;
+    case WM_RBUTTONUP: {
+        int sx, sy;
+        client_origin(w, &sx, &sy);
+        int x = (short)(lp & 0xffff) + sx, y = (short)(lp >> 16 & 0xffff) + sy;
+        w32_send(w, WM_CONTEXTMENU, (WPARAM)w, (LPARAM)((uint32_t)(uint16_t)x | (uint32_t)(uint16_t)y << 16));
+        return 0;
+    }
+    case WM_KEYUP:
+        if (wp == 0x5d)
+            w32_send(w, WM_CONTEXTMENU, (WPARAM)w, (LPARAM)-1);
+        return 0;
+    case WM_CONTEXTMENU: return is_child(w) && w->parent ? w32_send(w->parent, WM_CONTEXTMENU, wp, lp) : 0;
     case WM_SYSCOMMAND:
-        if ((wp & 0xfff0) == 0xf060)
-            w32_post(w, WM_CLOSE, 0, 0);
+        switch (wp & 0xfff0) {
+        case SC_CLOSE: w32_post(w, WM_CLOSE, 0, 0); break;
+        case SC_MINIMIZE: show(w, SW_MINIMIZE); break;
+        case SC_MAXIMIZE: show(w, SW_SHOWMAXIMIZED); break;
+        case SC_RESTORE:
+            if (w->wm && (w->wm->flags & WIN_MAXIMIZED))
+                wm_toggle_maximize(w->wm);
+            else
+                show(w, SW_SHOWNORMAL);
+            break;
+        }
+        return 0;
+    case WM_NCRBUTTONUP:
+        if (wp == 2)
+            system_menu(w, (int16_t)(lp & 0xffff), (int16_t)((uint32_t)lp >> 16));
         return 0;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
@@ -2091,6 +2149,20 @@ static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
                 return true;
             }
         }
+    if (track_hover && track_hover->thread == me && hal_ticks_ms() >= hover_due) {
+        struct w32_window *w = track_hover;
+        int x, y;
+        client_origin(w, &x, &y);
+        MSG m = {w, WM_MOUSEHOVER, mods_to_mk(),
+                 (LPARAM)((uint32_t)(uint16_t)(mouse_x - x) | (uint32_t)(uint16_t)(mouse_y - y) << 16), message_time(),
+                 {mouse_x, mouse_y}};
+        if (in_filter(&m, hwnd, lo, hi)) {
+            if (remove)
+                track_hover = NULL;
+            *msg = m;
+            return true;
+        }
+    }
     if ((!lo && !hi) || (WM_TIMER >= lo && WM_TIMER <= hi)) {
         uint64_t now = hal_ticks_ms();
         for (int i = 0; timers && i < MAX_TIMERS; i++) {
@@ -2123,6 +2195,8 @@ static void wait_messages(uint64_t deadline)
         if (t->used && (!t->win || t->win->thread == me) && (!deadline || t->due < deadline))
             deadline = MAX(t->due, (uint64_t)1);
     }
+    if (track_hover && track_hover->thread == me && (!deadline || hover_due < deadline))
+        deadline = MAX(hover_due, (uint64_t)1);
     w32_wait_process(deadline, false, NULL, NULL);
 }
 
@@ -2137,18 +2211,23 @@ static BOOL get_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi)
     }
 }
 
+static W32_STATE POINT message_pos;
+
 static BOOL WINAPI GetMessageA(MSG *msg, HANDLE hwnd, UINT lo, UINT hi)
 {
-    return get_message(msg, hwnd, lo, hi);
+    BOOL r = get_message(msg, hwnd, lo, hi);
+    message_pos = msg->pt;
+    return r;
 }
 
 static BOOL WINAPI PeekMessageA(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, UINT flags)
 {
-    if (next_message(msg, hwnd, lo, hi, flags & 1))
+    if (next_message(msg, hwnd, lo, hi, flags & 1) || (w32_idle(0), w32_yield(), next_message(msg, hwnd, lo, hi, flags & 1))) {
+        if (flags & 1)
+            message_pos = msg->pt;
         return TRUE;
-    w32_idle(0);
-    w32_yield();
-    return next_message(msg, hwnd, lo, hi, flags & 1);
+    }
+    return FALSE;
 }
 
 static BOOL WINAPI WaitMessage(void)
@@ -2707,6 +2786,468 @@ static int WINAPI GetMenuItemCount(HANDLE h)
     return m ? m->count : -1;
 }
 
+#define MF_BYPOSITION 0x0400
+#define MF_DEFAULT 0x1000
+#define MENU_TYPE_BITS (MF_SEPARATOR | 0x0200 | 0x0100 | 0x0004 | 0x0020 | 0x0040)
+#define MENU_STATE_BITS (MF_GRAYED | MF_DISABLED | MF_CHECKED | MF_DEFAULT | 0x0080)
+
+static struct w32_menu *locate(struct w32_menu *m, UINT item, UINT flags, int *at)
+{
+    if (!m)
+        return NULL;
+    if (flags & MF_BYPOSITION) {
+        *at = (int)item;
+        return item < (UINT)m->count ? m : NULL;
+    }
+    for (int i = 0; i < m->count; i++) {
+        if (!m->items[i].sub && m->items[i].id == item) {
+            *at = i;
+            return m;
+        }
+        struct w32_menu *in = locate(m->items[i].sub, item, flags, at);
+        if (in)
+            return in;
+    }
+    return NULL;
+}
+
+static void set_item(struct w32_menu_item *it, UINT flags, uintptr_t id, const char *text)
+{
+    it->flags = flags & ~(unsigned)MF_BYPOSITION;
+    it->sub = (flags & MF_POPUP) ? menu_of((HANDLE)id) : NULL;
+    it->id = (flags & MF_POPUP) ? 0 : id;
+    if (flags & MF_SEPARATOR)
+        it->text[0] = 0;
+    else if (text && (uintptr_t)text >= 0x10000)
+        str_copy(it->text, text, sizeof(it->text));
+}
+
+static BOOL WINAPI InsertMenuW(HANDLE h, UINT pos, UINT flags, uintptr_t id, LPCWSTR text)
+{
+    char *n = text && (uintptr_t)text >= 0x10000 && !(flags & (MF_SEPARATOR | 0x0104)) ? w32_narrow(text) : NULL;
+    struct w32_menu *m = menu_of(h);
+    int at = -1;
+    if (m && !(flags & MF_BYPOSITION) && !locate(m, pos, 0, &at))
+        at = -1;
+    struct w32_menu *in = m && at >= 0 && !(flags & MF_BYPOSITION) ? locate(m, pos, 0, &at) : m;
+    BOOL ok = insert_item(in, (flags & MF_BYPOSITION) ? (pos == 0xffffffffu ? -1 : (int)pos) : at, flags & ~0x400u, id, n);
+    w32_free(n);
+    return ok;
+}
+
+static BOOL modify(HANDLE h, UINT pos, UINT flags, uintptr_t id, const char *text)
+{
+    int at;
+    struct w32_menu *m = locate(menu_of(h), pos, flags, &at);
+    if (!m)
+        return FALSE;
+    set_item(&m->items[at], flags, id, text);
+    return TRUE;
+}
+
+static BOOL WINAPI ModifyMenuA(HANDLE h, UINT pos, UINT flags, uintptr_t id, LPCSTR text)
+{
+    return modify(h, pos, flags, id, (flags & 0x0104) ? NULL : text);
+}
+
+static BOOL WINAPI ModifyMenuW(HANDLE h, UINT pos, UINT flags, uintptr_t id, LPCWSTR text)
+{
+    char *n = text && (uintptr_t)text >= 0x10000 && !(flags & (MF_SEPARATOR | 0x0104)) ? w32_narrow(text) : NULL;
+    BOOL ok = modify(h, pos, flags, id, n);
+    w32_free(n);
+    return ok;
+}
+
+static BOOL remove_item(HANDLE h, UINT pos, UINT flags, bool destroy)
+{
+    int at;
+    struct w32_menu *m = locate(menu_of(h), pos, flags, &at);
+    if (!m) {
+        w32_set_error(1456);
+        return FALSE;
+    }
+    if (destroy && m->items[at].sub)
+        m->items[at].sub->magic = 0;
+    memmove(&m->items[at], &m->items[at + 1], sizeof(m->items[0]) * (size_t)(m->count - at - 1));
+    m->count--;
+    return TRUE;
+}
+
+static BOOL WINAPI RemoveMenu(HANDLE h, UINT pos, UINT flags)
+{
+    return remove_item(h, pos, flags, false);
+}
+
+static BOOL WINAPI DeleteMenu(HANDLE h, UINT pos, UINT flags)
+{
+    return remove_item(h, pos, flags, true);
+}
+
+static UINT WINAPI GetMenuItemID(HANDLE h, int pos)
+{
+    struct w32_menu *m = menu_of(h);
+    if (!m || pos < 0 || pos >= m->count || m->items[pos].sub)
+        return 0xffffffffu;
+    return (UINT)m->items[pos].id;
+}
+
+static int WINAPI GetMenuStringA(HANDLE h, UINT item, char *out, int max, UINT flags)
+{
+    int at;
+    struct w32_menu *m = locate(menu_of(h), item, flags, &at);
+    if (!m)
+        return 0;
+    const char *t = m->items[at].text;
+    if (!out || max <= 0)
+        return (int)strlen(t);
+    str_copy(out, t, (size_t)max);
+    return (int)strlen(out);
+}
+
+static int WINAPI GetMenuStringW(HANDLE h, UINT item, WCHAR *out, int max, UINT flags)
+{
+    int at;
+    struct w32_menu *m = locate(menu_of(h), item, flags, &at);
+    if (!m)
+        return 0;
+    const char *t = m->items[at].text;
+    if (!out || max <= 0)
+        return (int)w32_cp_to_wide(t, (int)strlen(t), NULL, 0, 1);
+    size_t n = w32_cp_to_wide(t, (int)strlen(t), out, (size_t)max - 1, 1);
+    n = MIN(n, (size_t)max - 1);
+    out[n] = 0;
+    return (int)n;
+}
+
+static BOOL WINAPI CheckMenuRadioItem(HANDLE h, UINT first, UINT last, UINT check, UINT flags)
+{
+    struct w32_menu *m = menu_of(h);
+    bool found = false;
+    for (UINT k = first; m && k <= last; k++) {
+        int at;
+        struct w32_menu *in = locate(m, k, flags, &at);
+        if (!in)
+            continue;
+        struct w32_menu_item *it = &in->items[at];
+        it->flags &= ~(unsigned)MF_CHECKED;
+        if (k == check) {
+            it->flags |= MF_CHECKED | 0x0200;
+            found = true;
+        }
+        if (k == 0xffffffffu)
+            break;
+    }
+    return found;
+}
+
+static BOOL WINAPI SetMenuDefaultItem(HANDLE h, UINT item, UINT by_pos)
+{
+    struct w32_menu *m = menu_of(h);
+    if (!m)
+        return FALSE;
+    for (int i = 0; i < m->count; i++)
+        m->items[i].flags &= ~(unsigned)MF_DEFAULT;
+    if (item == 0xffffffffu)
+        return TRUE;
+    int at;
+    struct w32_menu *in = locate(m, item, by_pos ? MF_BYPOSITION : 0, &at);
+    if (in != m)
+        return FALSE;
+    m->items[at].flags |= MF_DEFAULT;
+    return TRUE;
+}
+
+static UINT WINAPI GetMenuDefaultItem(HANDLE h, UINT by_pos, UINT flags)
+{
+    UNUSED(flags);
+    struct w32_menu *m = menu_of(h);
+    for (int i = 0; m && i < m->count; i++)
+        if (m->items[i].flags & MF_DEFAULT)
+            return by_pos ? (UINT)i : (UINT)m->items[i].id;
+    return 0xffffffffu;
+}
+
+/* MENUITEMINFO: cbSize, fMask, fType, fState, wID, hSubMenu, hbmpChecked, hbmpUnchecked, dwItemData, dwTypeData, cch */
+enum { MII_MASK = 1, MII_TYPE, MII_STATE, MII_ID, MII_SUB, MII_DATA = 8, MII_TEXT, MII_CCH };
+
+static void info_text(uint32_t *info, const char *text, bool wide)
+{
+    if (!info[MII_TEXT] || !info[MII_CCH]) {
+        info[MII_CCH] = (uint32_t)(wide ? w32_cp_to_wide(text, (int)strlen(text), NULL, 0, 1) : strlen(text));
+        return;
+    }
+    size_t cap = info[MII_CCH], n;
+    if (wide) {
+        WCHAR *out = (WCHAR *)(uintptr_t)info[MII_TEXT];
+        n = MIN(w32_cp_to_wide(text, (int)strlen(text), out, cap - 1, 1), cap - 1);
+        out[n] = 0;
+    } else {
+        char *out = (char *)(uintptr_t)info[MII_TEXT];
+        str_copy(out, text, cap);
+        n = strlen(out);
+    }
+    info[MII_CCH] = (uint32_t)n;
+}
+
+static BOOL get_item_info(HANDLE h, UINT item, BOOL by_pos, uint32_t *info, bool wide)
+{
+    int at;
+    struct w32_menu *m = info ? locate(menu_of(h), item, by_pos ? MF_BYPOSITION : 0, &at) : NULL;
+    if (!m) {
+        w32_set_error(1456);
+        return FALSE;
+    }
+    struct w32_menu_item *it = &m->items[at];
+    uint32_t mask = info[MII_MASK];
+    if (mask & 0x111)
+        info[MII_TYPE] = it->flags & MENU_TYPE_BITS;
+    if (mask & 1)
+        info[MII_STATE] = it->flags & MENU_STATE_BITS;
+    if (mask & 2)
+        info[MII_ID] = (uint32_t)it->id;
+    if (mask & 4)
+        info[MII_SUB] = (uint32_t)(uintptr_t)it->sub;
+    if (mask & 0x50)
+        info_text(info, it->text, wide);
+    return TRUE;
+}
+
+static BOOL WINAPI GetMenuItemInfoW(HANDLE h, UINT item, BOOL by_pos, uint32_t *info)
+{
+    return get_item_info(h, item, by_pos, info, true);
+}
+
+static BOOL WINAPI GetMenuItemInfoA(HANDLE h, UINT item, BOOL by_pos, uint32_t *info)
+{
+    return get_item_info(h, item, by_pos, info, false);
+}
+
+static void apply_item_info(struct w32_menu_item *it, const uint32_t *info, bool wide)
+{
+    uint32_t mask = info[MII_MASK];
+    if (mask & 0x110)
+        it->flags = (it->flags & ~(unsigned)MENU_TYPE_BITS) | (info[MII_TYPE] & MENU_TYPE_BITS);
+    if (mask & 1)
+        it->flags = (it->flags & ~(unsigned)MENU_STATE_BITS) | (info[MII_STATE] & MENU_STATE_BITS);
+    if (mask & 2)
+        it->id = info[MII_ID];
+    if (mask & 4) {
+        it->sub = menu_of((HANDLE)(uintptr_t)info[MII_SUB]);
+        it->flags = it->sub ? it->flags | MF_POPUP : it->flags & ~(unsigned)MF_POPUP;
+    }
+    bool text = (mask & 0x40) || ((mask & 0x10) && !(info[MII_TYPE] & 0x904));
+    if (text && info[MII_TEXT] >= 0x10000) {
+        if (wide) {
+            char *n = w32_narrow((const WCHAR *)(uintptr_t)info[MII_TEXT]);
+            if (n)
+                str_copy(it->text, n, sizeof(it->text));
+            w32_free(n);
+        } else {
+            str_copy(it->text, (const char *)(uintptr_t)info[MII_TEXT], sizeof(it->text));
+        }
+    }
+    if (it->flags & MF_SEPARATOR)
+        it->text[0] = 0;
+}
+
+static BOOL set_item_info(HANDLE h, UINT item, BOOL by_pos, const uint32_t *info, bool wide)
+{
+    int at;
+    struct w32_menu *m = info ? locate(menu_of(h), item, by_pos ? MF_BYPOSITION : 0, &at) : NULL;
+    if (!m) {
+        w32_set_error(1456);
+        return FALSE;
+    }
+    apply_item_info(&m->items[at], info, wide);
+    return TRUE;
+}
+
+static BOOL WINAPI SetMenuItemInfoW(HANDLE h, UINT item, BOOL by_pos, const uint32_t *info)
+{
+    return set_item_info(h, item, by_pos, info, true);
+}
+
+static BOOL WINAPI SetMenuItemInfoA(HANDLE h, UINT item, BOOL by_pos, const uint32_t *info)
+{
+    return set_item_info(h, item, by_pos, info, false);
+}
+
+static BOOL insert_item_info(HANDLE h, UINT item, BOOL by_pos, const uint32_t *info, bool wide)
+{
+    struct w32_menu *m = menu_of(h);
+    if (!m || !info)
+        return FALSE;
+    int at = by_pos ? (item >= (UINT)m->count ? -1 : (int)item) : -1;
+    struct w32_menu *in = m;
+    if (!by_pos && !(in = locate(m, item, 0, &at))) {
+        in = m;
+        at = -1;
+    }
+    if (!insert_item(in, at, 0, 0, NULL))
+        return FALSE;
+    apply_item_info(&in->items[at < 0 ? in->count - 1 : at], info, wide);
+    return TRUE;
+}
+
+static BOOL WINAPI InsertMenuItemW(HANDLE h, UINT item, BOOL by_pos, const uint32_t *info)
+{
+    return insert_item_info(h, item, by_pos, info, true);
+}
+
+static BOOL WINAPI InsertMenuItemA(HANDLE h, UINT item, BOOL by_pos, const uint32_t *info)
+{
+    return insert_item_info(h, item, by_pos, info, false);
+}
+
+/* Popup menus open as desktop menus; the call waits for a pick like Windows' modal menu loop. */
+struct popup_result {
+    volatile bool done;
+    volatile int index;
+};
+
+static W32_STATE struct popup_result *popup_wait;
+
+static void popup_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    if (popup_wait) {
+        popup_wait->index = index;
+        popup_wait->done = true;
+    }
+    w32_kick_all();
+}
+
+#define POPUP_MAX 48
+
+static struct w32_menu_item *popup_track(struct w32_menu *m, int x, int y, struct w32_window *owner)
+{
+    if (!m || !m->count || !gui_active())
+        return NULL;
+    if (owner)
+        w32_send(owner, WM_INITMENUPOPUP, (WPARAM)m, 0);
+    struct menu_item *items = kzalloc(sizeof(*items) * POPUP_MAX);
+    char(*labels)[2][64] = kzalloc(sizeof(*labels) * POPUP_MAX);
+    if (!items || !labels) {
+        kfree(items);
+        kfree(labels);
+        return NULL;
+    }
+    int n = MIN(m->count, POPUP_MAX);
+    for (int i = 0; i < n; i++) {
+        struct w32_menu_item *it = &m->items[i];
+        if (it->flags & MF_SEPARATOR) {
+            items[i] = (struct menu_item){"", 0, NULL};
+            continue;
+        }
+        char text[64];
+        label_of(it->text, text, sizeof(text), labels[i][1], sizeof(labels[i][1]));
+        ksnprintf(labels[i][0], sizeof(labels[i][0]), "%s%s%s", (it->flags & MF_CHECKED) ? "* " : "", text,
+                 it->sub ? "  >" : "");
+        items[i].label = labels[i][0];
+        items[i].key = (it->flags & (MF_GRAYED | MF_DISABLED)) ? -1 : i;
+        items[i].shortcut = labels[i][1][0] ? labels[i][1] : NULL;
+    }
+    struct popup_result result = {false, -1};
+    struct popup_result *saved = popup_wait;
+    popup_wait = &result;
+    struct window *menu = ui_menu_items(NULL, x, y, items, n, popup_pick);
+    while (menu && !result.done && wm_window_alive(menu)) {
+        MSG msg;
+        if (!next_message(&msg, NULL, 0, 0, true)) {
+            w32_block();
+            continue;
+        }
+        if (msg.message == WM_QUIT) {
+            PostQuitMessage((int)msg.wParam);
+            break;
+        }
+        bool input = (msg.message >= WM_KEYDOWN && msg.message <= WM_SYSCHAR) ||
+                     (msg.message >= WM_MOUSEMOVE && msg.message <= WM_MOUSEWHEEL);
+        if (!input) {
+            extern LRESULT WINAPI w32_dispatch(const MSG *msg);
+            w32_dispatch(&msg);
+        }
+    }
+    popup_wait = saved;
+    if (menu && wm_window_alive(menu))
+        wm_destroy(menu);
+    kfree(items);
+    kfree(labels);
+    if (result.index < 0 || result.index >= m->count)
+        return NULL;
+    struct w32_menu_item *it = &m->items[result.index];
+    return it->sub ? popup_track(it->sub, x + 24, y + 12, owner) : it;
+}
+
+static BOOL WINAPI TrackPopupMenuEx(HANDLE h, UINT flags, int x, int y, HANDLE hwnd, const void *params)
+{
+    UNUSED(params);
+    struct w32_menu *m = menu_of(h);
+    struct w32_window *owner = w32_win(hwnd);
+    if (!m) {
+        w32_set_error(1401);
+        return FALSE;
+    }
+    struct w32_menu_item *it = popup_track(m, x, y, (flags & 0x80) ? NULL : owner);
+    UINT id = it ? (UINT)it->id : 0;
+    if (flags & 0x100)
+        return (BOOL)id;
+    if (it && owner && !(flags & 0x80))
+        w32_post(owner, WM_COMMAND, id & 0xffff, 0);
+    return it != NULL;
+}
+
+static BOOL WINAPI TrackPopupMenu(HANDLE h, UINT flags, int x, int y, int reserved, HANDLE hwnd, const void *rect)
+{
+    UNUSED(reserved);
+    return TrackPopupMenuEx(h, flags, x, y, hwnd, rect);
+}
+
+/* the window menu: Restore, Move, Size, Minimize, Maximize, Close; programs add to it or gray items out */
+static HANDLE WINAPI GetSystemMenu(HANDLE h, BOOL revert)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w)
+        return NULL;
+    if (revert) {
+        if (w->sysmenu)
+            DestroyMenu(w->sysmenu);
+        w->sysmenu = NULL;
+        return NULL;
+    }
+    if (!w->sysmenu && (w->sysmenu = CreateMenu())) {
+        struct w32_menu *m = menu_of(w->sysmenu);
+        insert_item(m, -1, 0, SC_RESTORE, "&Restore");
+        insert_item(m, -1, 0, SC_MOVE, "&Move");
+        insert_item(m, -1, 0, SC_SIZE, "&Size");
+        insert_item(m, -1, 0, SC_MINIMIZE, "Mi&nimize");
+        insert_item(m, -1, 0, SC_MAXIMIZE, "Ma&ximize");
+        insert_item(m, -1, MF_SEPARATOR, 0, NULL);
+        insert_item(m, -1, 0, SC_CLOSE, "&Close\tAlt+F4");
+    }
+    return w->sysmenu;
+}
+
+static void system_menu(struct w32_window *w, int x, int y)
+{
+    struct w32_menu *m = menu_of(GetSystemMenu(w, FALSE));
+    if (!m)
+        return;
+    bool max = w->wm && (w->wm->flags & WIN_MAXIMIZED);
+    for (int i = 0; i < m->count; i++) {
+        struct w32_menu_item *it = &m->items[i];
+        bool off = (it->id == SC_RESTORE && !max) || ((it->id == SC_MAXIMIZE || it->id == SC_SIZE) && max) ||
+                   it->id == SC_MOVE || (it->id == SC_SIZE && !(w->style & WS_THICKFRAME)) ||
+                   (it->id == SC_MAXIMIZE && !(w->style & WS_MAXIMIZEBOX)) ||
+                   (it->id == SC_MINIMIZE && !(w->style & WS_MINIMIZEBOX));
+        if (it->id >= SC_SIZE && !(it->flags & MF_SEPARATOR))
+            it->flags = (it->flags & ~(unsigned)MF_GRAYED) | (off ? MF_GRAYED : 0);
+    }
+    struct w32_menu_item *it = popup_track(m, x, y, w);
+    if (it && w32_win(w))
+        w32_post(w, WM_SYSCOMMAND, it->id, (LPARAM)((uint32_t)(uint16_t)x | (uint32_t)(uint16_t)y << 16));
+}
+
 struct box_result {
     volatile bool done;
     volatile int choice;
@@ -2867,9 +3408,14 @@ static void mouse_message(struct w32_window *top, struct gui_event *e)
     default: return;
     }
     if (msg == WM_MOUSEMOVE && hover != target) {
-        if (hover && w32_win(hover) && hover->control)
-            w32_post(hover, WM_MOUSELEAVE, 0, 0);
+        mouse_left(hover, false);
         hover = target;
+    }
+    if (msg == WM_MOUSEMOVE && track_hover == target &&
+        (mouse_x - hover_x > 2 || hover_x - mouse_x > 2 || mouse_y - hover_y > 2 || hover_y - mouse_y > 2)) {
+        hover_x = mouse_x;
+        hover_y = mouse_y;
+        hover_due = hal_ticks_ms() + hover_time;
     }
     w32_post(target, msg, mods_to_mk(), lp);
 }
@@ -2906,6 +3452,128 @@ static struct w32_window *bridged(struct window *wm)
 {
     struct w32_bridge *b = wm->data;
     return b && b->process == w32 && w32 ? b->win : NULL;
+}
+
+static HANDLE WINAPI WindowFromPoint(LONG px, LONG py)
+{
+    POINT p = {px, py};
+    struct window *wm = wm_window_at(p.x, p.y);
+    struct w32_window *top = wm ? bridged(wm) : NULL;
+    if (!top || !top->visible)
+        return NULL;
+    struct rect cr = wm_client_rect(wm);
+    struct w32_window *c = window_at(top, p.x - cr.x, p.y - cr.y);
+    return c ? c : top;
+}
+
+static HANDLE WINAPI ChildWindowFromPointEx(HANDLE h, LONG px, LONG py, UINT skip)
+{
+    POINT p = {px, py};
+    struct w32_window *w = w32_win(h);
+    if (!w)
+        return NULL;
+    struct rect a = w32_area(w);
+    if (p.x < 0 || p.y < 0 || p.x >= a.w || p.y >= a.h)
+        return NULL;
+    for (struct w32_window *c = w->child; c; c = c->sibling) {
+        if (c->destroyed || ((skip & 1) && !c->visible) || ((skip & 2) && !c->enabled) ||
+            ((skip & 4) && (c->exstyle & 0x20)))
+            continue;
+        if (rect_contains(w32_area(c), a.x + p.x, a.y + p.y))
+            return c;
+    }
+    return w;
+}
+
+static HANDLE WINAPI ChildWindowFromPoint(HANDLE h, LONG x, LONG y)
+{
+    return ChildWindowFromPointEx(h, x, y, 0);
+}
+
+static HANDLE WINAPI RealChildWindowFromPoint(HANDLE h, LONG x, LONG y)
+{
+    return ChildWindowFromPointEx(h, x, y, 1);
+}
+
+static DWORD WINAPI GetMessagePos(void)
+{
+    return (uint32_t)(uint16_t)message_pos.x | (uint32_t)(uint16_t)message_pos.y << 16;
+}
+
+static UINT queue_bits(void)
+{
+    MSG m;
+    if (!next_message(&m, NULL, 0, 0, false))
+        return 0;
+    if (m.message >= WM_KEYDOWN && m.message <= WM_SYSCHAR)
+        return 1;
+    if (m.message == WM_MOUSEMOVE)
+        return 2;
+    if (m.message > WM_MOUSEMOVE && m.message <= WM_MOUSEWHEEL)
+        return 4;
+    if (m.message == WM_TIMER)
+        return 0x10;
+    if (m.message == WM_PAINT)
+        return 0x20;
+    return 8;
+}
+
+static DWORD WINAPI GetQueueStatus(UINT flags)
+{
+    UINT bits = queue_bits() & flags;
+    return bits << 16 | bits;
+}
+
+static BOOL WINAPI GetInputState(void)
+{
+    return (queue_bits() & 7) != 0;
+}
+
+#define TME_HOVER 0x1
+#define TME_LEAVE 0x2
+#define TME_QUERY 0x40000000u
+#define TME_CANCEL 0x80000000u
+
+/* TRACKMOUSEEVENT: cbSize, dwFlags, hwndTrack, dwHoverTime */
+static BOOL WINAPI TrackMouseEvent(uint32_t *t)
+{
+    if (!t || t[0] < 16) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (t[1] & TME_QUERY) {
+        struct w32_window *w = track_hover ? track_hover : track_leave;
+        t[1] = (track_hover ? TME_HOVER : 0) | (track_leave ? TME_LEAVE : 0);
+        t[2] = (uint32_t)(uintptr_t)w;
+        t[3] = track_hover ? hover_time : 0;
+        return TRUE;
+    }
+    struct w32_window *w = w32_win((HANDLE)(uintptr_t)t[2]);
+    if (!w) {
+        w32_set_error(1400);
+        return FALSE;
+    }
+    if (t[1] & TME_CANCEL) {
+        if ((t[1] & TME_LEAVE) && track_leave == w)
+            track_leave = NULL;
+        if ((t[1] & TME_HOVER) && track_hover == w)
+            track_hover = NULL;
+        return TRUE;
+    }
+    if (t[1] & TME_LEAVE) {
+        if (hover == w)
+            track_leave = w;
+        else
+            w32_post(w, WM_MOUSELEAVE, 0, 0);
+    }
+    if (t[1] & TME_HOVER) {
+        track_hover = w;
+        hover_time = t[3] == 0xffffffffu || !t[3] ? 400 : t[3];
+        hover_due = hal_ticks_ms() + hover_time;
+        hover_x = mouse_x;
+        hover_y = mouse_y;
+    }
+    return TRUE;
 }
 
 /* Desktop events can arrive while another process runs: they wait here for the window's own process. */
@@ -3004,10 +3672,11 @@ static void bridge_dispatch(struct window *wm, struct gui_event *e)
             mouse_buttons |= e->button;
         else if (e->type == EV_MOUSE_UP)
             mouse_buttons &= ~e->button;
-        if (hover && w32_win(hover))
-            w32_post(hover, WM_MOUSELEAVE, 0, 0);
+        mouse_left(hover, true);
         hover = NULL;
         e->handled = e->type == EV_MOUSE_DOWN;
+        if (e->type == EV_MOUSE_UP && e->button == BUTTON_RIGHT)
+            w32_post(w, WM_NCRBUTTONUP, 2, (LPARAM)((uint32_t)(uint16_t)mouse_x | (uint32_t)(uint16_t)mouse_y << 16));
         return;
     }
     switch (e->type) {
@@ -3049,8 +3718,7 @@ static void bridge_dispatch(struct window *wm, struct gui_event *e)
         break;
     }
     case EV_LEAVE:
-        if (hover && w32_win(hover))
-            w32_post(hover, WM_MOUSELEAVE, 0, 0);
+        mouse_left(hover, true);
         hover = NULL;
         break;
     default: break;
@@ -3102,7 +3770,7 @@ void w32_gui_cleanup(void)
     queue = NULL;
     timers = NULL;
     quit_posted = false;
-    capture = active = hover = NULL;
+    capture = active = hover = track_leave = track_hover = NULL;
     next_atom = 0;
     box = NULL;
     if (process_app) {
@@ -3164,6 +3832,13 @@ static const struct w32_export window_exports[] = {
     W32_AS("CreatePopupMenu", CreateMenu), W32_FN(DestroyMenu), W32_FN(AppendMenuA), W32_FN(AppendMenuW),
     W32_FN(InsertMenuA), W32_FN(SetMenu), W32_FN(GetMenu), W32_FN(DrawMenuBar), W32_FN(GetSubMenu),
     W32_FN(CheckMenuItem), W32_FN(EnableMenuItem), W32_FN(GetMenuItemCount), W32_FN(GetMenuState), W32_FN(IsMenu),
+    W32_FN(InsertMenuW), W32_FN(ModifyMenuA), W32_FN(ModifyMenuW), W32_FN(RemoveMenu), W32_FN(DeleteMenu),
+    W32_FN(GetMenuItemID), W32_FN(GetMenuStringA), W32_FN(GetMenuStringW), W32_FN(CheckMenuRadioItem),
+    W32_FN(SetMenuDefaultItem), W32_FN(GetMenuDefaultItem), W32_FN(GetMenuItemInfoW), W32_FN(GetMenuItemInfoA),
+    W32_FN(SetMenuItemInfoW), W32_FN(SetMenuItemInfoA), W32_FN(InsertMenuItemW), W32_FN(InsertMenuItemA),
+    W32_FN(TrackPopupMenu), W32_FN(TrackPopupMenuEx), W32_FN(WindowFromPoint), W32_FN(TrackMouseEvent), W32_FN(GetSystemMenu), W32_FN(ChildWindowFromPoint),
+    W32_FN(ChildWindowFromPointEx), W32_FN(RealChildWindowFromPoint), W32_FN(GetMessagePos), W32_FN(GetQueueStatus),
+    W32_FN(GetInputState),
     W32_FN(CopyImage),
 };
 

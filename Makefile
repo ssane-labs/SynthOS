@@ -355,7 +355,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win32/%.c
 ifneq ($(W32CC),)
 	@echo "  W32CC   $<"
 	@$(if $(wildcard programs/win32/$*.rc),$(W32CC:%gcc=%windres) -O coff -o $(BUILD)/$*.res.o programs/win32/$*.rc)
-	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -lshell32 -lshlwapi -lcomdlg32 -lbcrypt -lsecur32
+	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -lshell32 -lshlwapi -lcomdlg32 -lbcrypt -lsecur32 -lwinmm
 	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"
@@ -405,7 +405,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win64/%.c
 	@mkdir -p $(@D)
 ifneq ($(W64CC),)
 	@echo "  W64CC   $<"
-	@$(W64CC) -O2 -s -o $@ $< -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon
+	@$(W64CC) -O2 -s -o $@ $< -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lwinmm
 	@mkdir -p programs/win64/prebuilt && cp $@ programs/win64/prebuilt/
 else
 	@echo "  COPY    programs/win64/prebuilt/$(@F)"

@@ -938,17 +938,6 @@ static LRESULT WINAPI SendMessageTimeoutW(HANDLE h, UINT msg, WPARAM wp, LPARAM 
     return 1;
 }
 
-static BOOL WINAPI InsertMenuItemW(HANDLE menu, UINT item, BOOL by_position, const uint32_t *info)
-{
-    UNUSED(item);
-    UNUSED(by_position);
-    uint32_t mask = info[1], type = info[2], id = info[5];
-    char *text = (mask & 0x40) || ((mask & 0x10) && !(type & 0x800)) ? w32_narrow((const WCHAR *)info[9]) : NULL;
-    bool ok = w32_menu_append(menu, (type & 0x800) ? 0x800 : 0, id, text ? text : "");
-    w32_free(text);
-    return ok;
-}
-
 static HANDLE WINAPI CreateIconIndirect(void *info)
 {
     UNUSED(info);
@@ -1044,17 +1033,10 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("GetLayeredWindowAttributes", w32_zero4),
     W32_AS("PrintWindow", w32_zero3),
     W32_AS("WindowFromDC", w32_zero1),
-    W32_AS("WindowFromPoint", w32_zero2),
     W32_AS("FlashWindowEx", w32_zero1),
-    W32_AS("GetSystemMenu", w32_zero2),
     W32_AS("IsWindowArranged", w32_zero1),
     W32_AS("GetMenuInfo", w32_zero2),
     W32_AS("SetMenuInfo", w32_one2),
-    W32_AS("GetMenuItemInfoW", w32_zero4),
-    W32_AS("SetMenuItemInfoW", w32_one4),
-    W32_FN(InsertMenuItemW),
-    W32_AS("SetMenuDefaultItem", w32_one3),
-    W32_AS("TrackPopupMenu", w32_zero7),
     W32_AS("DrawFrameControl", w32_one4),
     W32_AS("DrawIconEx", w32_one9),
     W32_FN(CreateIconIndirect),
@@ -1104,15 +1086,12 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(GetCaretBlinkTime),
     W32_FN(GetDoubleClickTime),
     W32_AS("GetMessageExtraInfo", w32_zero0),
-    W32_AS("GetMessagePos", w32_zero0),
     W32_FN(GetMessageTime),
-    W32_AS("GetQueueStatus", w32_zero1),
     W32_FN(GetCursorInfo),
     W32_AS("ClipCursor", w32_one1),
     W32_FN(SendInput),
     W32_AS("RegisterHotKey", w32_one4),
     W32_AS("UnregisterHotKey", w32_one2),
-    W32_AS("TrackMouseEvent", w32_one1),
     W32_AS("RegisterRawInputDevices", w32_one3),
     W32_AS("GetRawInputData", raw_input_fail5),
     W32_AS("GetRawInputDeviceInfoW", raw_input_fail4),

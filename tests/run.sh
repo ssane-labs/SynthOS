@@ -540,6 +540,40 @@ wingdi | grep bpp
 bitmap 64x64 32bpp
 winwindow
 needs the SynthOS desktop
+winmenu | grep "menu count"
+menu count=5 item=Print id=40 state=3 cch=5
+winmenu | grep "menu string"
+menu string=Close all id1=16 sub=-1
+winmenu | grep radio
+menu radio=010
+winmenu | grep "menu default"
+menu default=-1 submenu=1 left=3 gone=1
+winmenu | grep point
+point child=1 outside=1 empty=1 hidden=1/1
+winmenu | grep queue
+queue before=0 after=8 got=1 pos=1
+menu64 | grep -c "=1"
+4
+wintime | grep periodic
+mmtimer periodic=1 user=1 id=1 stopped=1
+wintime | grep event
+mmtimer event=1 delay=1 kill=0 bad=11
+time64 | grep -c "=1 "
+2
+config w32headless on; proc64; config w32headless off
+proc64 create=1 custom=1 r=42 enum=1 timer=1
+winshell2 | grep volume
+volume ok=1 prefix=1 same=1 next=0/18 paths=1 C:\ need=5
+winshell2 | grep dosdevice
+dosdevice \Device\HarddiskVolume1 n=25 list=C: bad=0
+winshell2 | grep "fileinfo r"
+fileinfo r=1 name=Windows type=File folder folder=1
+winshell2 | grep "fileinfo type"
+fileinfo type=TXT File icon=1 exe=PE missing=0
+config w32headless on; winshell2 | grep sysmenu; config w32headless off
+sysmenu count=7 close=&Close same=1 reverted=7
+config w32headless on; winshell2 | grep track; config w32headless off
+track ok=1 leave=1 hover=1 query=0
 windialog | head -n 1
 strings: Greeter / Hello from a string table
 windialog | grep resource
@@ -798,12 +832,12 @@ if [ "$KERNEL64" = 1 ]; then
 fi
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
         "$work/cases" | sed -e 's|^1  /tmp/auto.txt$|  /tmp/auto.txt|' > "$work/cases.native" &&
         mv "$work/cases.native" "$work/cases"
 elif [ "$NO_WIN64" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|winnet64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|winnet64|menu64|time64|proc64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
         "$work/cases" > "$work/cases.native" && mv "$work/cases.native" "$work/cases"
 fi
 

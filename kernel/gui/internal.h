@@ -243,7 +243,6 @@ void widgets_user_changed(void);
 int widgets_right_reserved(void);
 void widgets_edit(bool on);
 void wm_animate_ghosts(void);
-struct window *wm_window_at(int x, int y);
 int wallpaper_download(const char *source, char *saved, size_t cap, char *title, size_t title_cap,
                        void (*progress)(void *ctx, const char *stage, size_t done, size_t total), void *ctx);
 void wallpaper_fetch(const char *source);

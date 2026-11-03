@@ -380,12 +380,122 @@ static BOOL WINAPI GetVolumePathNameW(const WCHAR *path, WCHAR *out, DWORD len)
     return TRUE;
 }
 
+/* one volume, C:, under a fixed GUID name */
+static const char volume_name[] = "\\\\?\\Volume{5f3a0c1e-5359-4e54-8f53-100000000001}\\";
+
+static bool put_wide(WCHAR *out, DWORD len, const char *s, size_t n)
+{
+    if (!out || len < n) {
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return false;
+    }
+    for (size_t i = 0; i < n; i++)
+        out[i] = (WCHAR)(uint8_t)s[i];
+    return true;
+}
+
+static bool is_volume(const WCHAR *v)
+{
+    char n[64];
+    size_t i = 0;
+    for (; v && v[i] && i + 1 < sizeof(n); i++)
+        n[i] = v[i] >= 'A' && v[i] <= 'Z' ? (char)(v[i] + 32) : (char)v[i];
+    n[i] = 0;
+    char want[64];
+    str_copy(want, volume_name, sizeof(want));
+    for (char *c = want; *c; c++)
+        *c = *c >= 'A' && *c <= 'Z' ? (char)(*c + 32) : *c;
+    return v && !strcmp(n, want);
+}
+
 static HANDLE WINAPI FindFirstVolumeW(WCHAR *name, DWORD len)
 {
+    if (!put_wide(name, len, volume_name, sizeof(volume_name)))
+        return INVALID_HANDLE_VALUE;
+    return w32_zalloc(4);
+}
+
+static BOOL WINAPI FindNextVolumeW(HANDLE h, WCHAR *name, DWORD len)
+{
+    UNUSED(h);
     UNUSED(name);
     UNUSED(len);
     w32_set_error(ERROR_NO_MORE_FILES);
-    return INVALID_HANDLE_VALUE;
+    return FALSE;
+}
+
+static BOOL WINAPI FindVolumeClose(HANDLE h)
+{
+    w32_free(h);
+    return TRUE;
+}
+
+static BOOL WINAPI GetVolumeNameForVolumeMountPointW(const WCHAR *mount, WCHAR *name, DWORD len)
+{
+    if (!mount || (mount[0] | 32) != 'c' || mount[1] != ':' || mount[2] != '\\' || mount[3]) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    return put_wide(name, len, volume_name, sizeof(volume_name));
+}
+
+static BOOL WINAPI GetVolumePathNamesForVolumeNameW(const WCHAR *volume, WCHAR *names, DWORD len, DWORD *needed)
+{
+    if (!is_volume(volume)) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (needed)
+        *needed = 5;
+    if (len < 5) {
+        w32_set_error(234);
+        return FALSE;
+    }
+    return put_wide(names, len, "C:\\\0", 5);
+}
+
+static DWORD WINAPI QueryDosDeviceW(const WCHAR *device, WCHAR *target, DWORD max)
+{
+    static const char all[] = "C:\0NUL\0CON\0";
+    const char *t = NULL;
+    size_t n = 0;
+    if (!device) {
+        t = all;
+        n = sizeof(all);
+    } else if ((device[0] | 32) == 'c' && device[1] == ':' && !device[2]) {
+        t = "\\Device\\HarddiskVolume1\0";
+        n = 25;
+    } else if (((device[0] | 32) == 'n' && (device[1] | 32) == 'u' && (device[2] | 32) == 'l' && !device[3])) {
+        t = "\\Device\\Null\0";
+        n = 14;
+    } else {
+        w32_set_error(ERROR_FILE_NOT_FOUND);
+        return 0;
+    }
+    if (!put_wide(target, max, t, n))
+        return 0;
+    return (DWORD)n;
+}
+
+static DWORD WINAPI QueryDosDeviceA(const char *device, char *target, DWORD max)
+{
+    WCHAR dev[8] = {0}, out[64];
+    for (int i = 0; device && device[i] && i < 7; i++)
+        dev[i] = (WCHAR)(uint8_t)device[i];
+    if (device && strlen(device) > 7) {
+        w32_set_error(ERROR_FILE_NOT_FOUND);
+        return 0;
+    }
+    DWORD n = QueryDosDeviceW(device ? dev : NULL, out, 64);
+    if (!n)
+        return 0;
+    if (!target || max < n) {
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    for (DWORD i = 0; i < n; i++)
+        target[i] = (char)out[i];
+    return n;
 }
 
 static uint32_t WINAPI CopyFile2(const WCHAR *from, const WCHAR *to, const void *params)
@@ -700,11 +810,6 @@ static BOOL WINAPI not_implemented5(uint32_t a, uint32_t b, uint32_t c, uint32_t
     return FALSE;
 }
 
-static BOOL WINAPI not_implemented4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
-{
-    return not_implemented5(a, b, c, d, 0);
-}
-
 static BOOL WINAPI not_implemented3(uint32_t a, uint32_t b, uint32_t c)
 {
     return not_implemented5(a, b, c, 0, 0);
@@ -900,9 +1005,12 @@ static const struct w32_export vista_exports[] = {
     W32_FN(GetLogicalDriveStringsW),
     W32_FN(GetVolumePathNameW),
     W32_FN(FindFirstVolumeW),
-    W32_AS("FindNextVolumeW", not_implemented3),
-    W32_AS("FindVolumeClose", w32_one1),
-    W32_AS("GetVolumePathNamesForVolumeNameW", not_implemented4),
+    W32_FN(FindNextVolumeW),
+    W32_FN(FindVolumeClose),
+    W32_FN(GetVolumeNameForVolumeMountPointW),
+    W32_FN(GetVolumePathNamesForVolumeNameW),
+    W32_FN(QueryDosDeviceW),
+    W32_FN(QueryDosDeviceA),
     W32_AS("LockFile", w32_one5),
     W32_AS("UnlockFile", w32_one5),
     W32_AS("LockFileEx", w32_one6),

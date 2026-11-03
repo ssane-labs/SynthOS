@@ -462,6 +462,7 @@ int wm_screen_at(int x, int y);
 void wm_damage(struct rect r);
 void wm_damage_client(struct window *w, struct rect r);
 bool wm_window_alive(const struct window *w);
+struct window *wm_window_at(int x, int y);
 void wm_foreach(void (*fn)(struct window *w, void *ctx), void *ctx);
 
 struct ui_state {

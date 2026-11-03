@@ -122,6 +122,19 @@ static LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         break;
+    case WM_CONTEXTMENU: {
+        POINT at = {(short)LOWORD(lp), (short)HIWORD(lp)};
+        if (lp == -1)
+            GetCursorPos(&at);
+        HMENU menu = CreatePopupMenu();
+        AppendMenuA(menu, MF_STRING, ID_COUNT, "&Count a click");
+        AppendMenuA(menu, MF_STRING, ID_FILE_RESET, "&Reset");
+        AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+        AppendMenuA(menu, MF_STRING, ID_HELP_ABOUT, "&About");
+        TrackPopupMenu(menu, TPM_RIGHTBUTTON, at.x, at.y, 0, hwnd, NULL);
+        DestroyMenu(menu);
+        return 0;
+    }
     case WM_TIMER:
         if (IsDlgButtonChecked(hwnd, ID_ANIMATE)) {
             phase++;

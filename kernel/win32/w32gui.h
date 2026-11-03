@@ -100,10 +100,13 @@ enum {
     WM_LBUTTONDBLCLK = 0x0203,
     WM_RBUTTONDOWN = 0x0204,
     WM_RBUTTONUP = 0x0205,
+    WM_CONTEXTMENU = 0x007b,
     WM_RBUTTONDBLCLK = 0x0206,
     WM_MBUTTONDOWN = 0x0207,
     WM_MBUTTONUP = 0x0208,
     WM_MOUSEWHEEL = 0x020a,
+    WM_NCRBUTTONUP = 0x00a5,
+    WM_MOUSEHOVER = 0x02a1,
     WM_MOUSELEAVE = 0x02a3,
     WM_USER = 0x0400,
 };
@@ -112,6 +115,8 @@ enum {
     WS_OVERLAPPED = 0x00000000u,
     WS_TABSTOP = 0x00010000u,
     WS_GROUP = 0x00020000u,
+    WS_MAXIMIZEBOX = 0x00010000u,
+    WS_MINIMIZEBOX = 0x00020000u,
     WS_THICKFRAME = 0x00040000u,
     WS_SYSMENU = 0x00080000u,
     WS_HSCROLL = 0x00100000u,
@@ -189,6 +194,7 @@ struct w32_window {
     uint32_t thread;
     HANDLE font;
     HANDLE menu;
+    HANDLE sysmenu;
     struct w32_window *focus;
     enum control_kind control;
     bool pressed, hot, checked;
