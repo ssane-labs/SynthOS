@@ -1280,6 +1280,54 @@ static void open_queued(void)
     }
 }
 
+/* Default apps: a kind of file is the list of extensions its built-in app knows; it opens in the app picked for it
+   (System Settings > Apps), the built-in one while nothing else is picked. */
+static struct {
+    const char *setting, *owner;
+    char app[48];
+} open_kinds[] = {{"opentext", "Notepad", ""}, {"openimage", "Photos", ""}, {"openmusic", "Music", ""},
+                  {"openvideo", "Video", ""}};
+
+static const struct gui_app *picked_app(const char *ext)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(open_kinds); i++) {
+        const struct gui_app *owner = gui_app_find(open_kinds[i].owner);
+        if (open_kinds[i].app[0] && owner && extension_listed(owner->extensions, ext))
+            return gui_app_find(open_kinds[i].app);
+    }
+    return NULL;
+}
+
+static void get_open(int i, char *buf, size_t cap)
+{
+    str_copy(buf, open_kinds[i].app[0] ? open_kinds[i].app : open_kinds[i].owner, cap);
+}
+
+static int set_open(int i, const char *value)
+{
+    const struct gui_app *app = strcmp(value, "default") ? gui_app_find(value) : NULL;
+    if (strcmp(value, "default") && !app)
+        return E_INVAL;
+    str_copy(open_kinds[i].app, app && strcmp(app->name, open_kinds[i].owner) ? app->name : "",
+             sizeof(open_kinds[i].app));
+    return 0;
+}
+
+#define OPEN_SETTING(n, i, name, help)                                                                             \
+    static void get_##n(char *buf, size_t cap) { get_open(i, buf, cap); }                                          \
+    static int set_##n(struct shell *sh, const char *value)                                                        \
+    {                                                                                                              \
+        UNUSED(sh);                                                                                                \
+        return set_open(i, value);                                                                                 \
+    }                                                                                                              \
+    static const struct setting s_##n = {name, "default|<app>", help, get_##n, set_##n};                          \
+    SETTING(s_##n)
+
+OPEN_SETTING(opentext, 0, "opentext", "the app that opens text files");
+OPEN_SETTING(openimage, 1, "openimage", "the app that opens pictures");
+OPEN_SETTING(openmusic, 2, "openmusic", "the app that opens sound files");
+OPEN_SETTING(openvideo, 3, "openvideo", "the app that opens videos");
+
 bool gui_open_file(const char *path)
 {
     if (vfs_is_dir(path)) {
@@ -1294,6 +1342,11 @@ bool gui_open_file(const char *path)
     const char *ext = path_ext(path);
     if (extension_listed(".html;.htm;.xhtml;.url", ext) && open_in_browser(path))
         return true;
+    const struct gui_app *picked = picked_app(ext);
+    if (picked) {
+        gui_app_launch(picked, path);
+        return true;
+    }
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
         if (extension_listed(app->extensions, ext)) {
             gui_app_launch(app, path);

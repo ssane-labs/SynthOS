@@ -55,51 +55,50 @@ typedef void (*pane_fn)(struct page *p);
 
 enum pane {
     P_NETWORK,
-    P_NOTIFY,
     P_SOUND,
     P_GENERAL,
     P_ACCESS,
     P_APPEARANCE,
-    P_CONTROL,
     P_DOCK,
     P_DISPLAYS,
-    P_WALLPAPER,
     P_LOCK,
     P_PRIVACY,
     P_USERS,
-    P_KEYBOARD,
-    P_MOUSE,
+    P_DEVICES,
+    P_LANGUAGE,
     P_APPS,
-    P_TERMINAL,
     P_ABOUT,
     P_STORAGE,
     P_DATETIME,
-    P_LOGIN,
+    P_KEYBOARD,
+    P_MOUSE,
+    P_TERMINAL,
+    P_SCREENSHOT,
     P_COUNT,
 };
 
 static void pane_network(struct page *p);
-static void pane_notify(struct page *p);
 static void pane_sound(struct page *p);
 static void pane_general(struct page *p);
 static void pane_access(struct page *p);
 static void pane_appearance(struct page *p);
-static void pane_control(struct page *p);
 static void pane_dock(struct page *p);
 static void pane_displays(struct page *p);
-static void pane_wallpaper(struct page *p);
 static void pane_lock(struct page *p);
 static void pane_privacy(struct page *p);
 static void pane_users(struct page *p);
+static void pane_devices(struct page *p);
+static void pane_language(struct page *p);
 static void pane_keyboard(struct page *p);
 static void pane_mouse(struct page *p);
 static void pane_apps(struct page *p);
 static void pane_terminal(struct page *p);
+static void pane_screenshot(struct page *p);
 static void pane_about(struct page *p);
 static void pane_storage(struct page *p);
 static void pane_datetime(struct page *p);
-static void pane_login(struct page *p);
 static void browser_popup(struct page *p);
+static void wallpaper_sections(struct page *p);
 
 /* Every setting has one home, the way macOS and Windows arrange them; other panes only link to it. */
 static const struct {
@@ -112,26 +111,25 @@ static const struct {
     pane_fn fn;
 } panes[P_COUNT] = {
     {"Network", "network", SYM_WIFI, RGB(28, 118, 240), 0, -1, pane_network},
-    {"Notifications", "notifications", SYM_BELL, RGB(240, 64, 64), 1, -1, pane_notify},
-    {"Sound", "sound", SYM_VOLUME, RGB(236, 64, 112), 1, -1, pane_sound},
+    {"Sound & Notifications", "sound", SYM_VOLUME, RGB(240, 64, 88), 1, -1, pane_sound},
     {"General", "general", SYM_GEAR, RGB(142, 142, 148), 2, -1, pane_general},
     {"Accessibility", "accessibility", SYM_ACCESS, RGB(28, 118, 240), 2, -1, pane_access},
     {"Appearance", "appearance", SYM_APPEARANCE, RGB(44, 44, 48), 2, -1, pane_appearance},
-    {"Control Center", "control", SYM_CONTROL, RGB(142, 142, 148), 2, -1, pane_control},
     {"Desktop & Dock", "dock", SYM_DOCK, RGB(44, 44, 48), 2, -1, pane_dock},
     {"Displays", "displays", SYM_DISPLAY, RGB(28, 118, 240), 2, -1, pane_displays},
-    {"Wallpaper", "wallpaper", SYM_PHOTO, RGB(36, 168, 220), 2, -1, pane_wallpaper},
     {"Lock Screen", "lock", SYM_LOCK, RGB(44, 44, 48), 3, -1, pane_lock},
     {"Privacy & Security", "privacy", SYM_HAND, RGB(28, 118, 240), 3, -1, pane_privacy},
     {"Users & Groups", "users", SYM_USERS, RGB(28, 118, 240), 3, -1, pane_users},
-    {"Keyboard", "keyboard", SYM_KEYBOARD, RGB(142, 142, 148), 4, -1, pane_keyboard},
-    {"Mouse", "mouse", SYM_MOUSE, RGB(142, 142, 148), 4, -1, pane_mouse},
+    {"Devices", "devices", SYM_USB, RGB(142, 142, 148), 4, -1, pane_devices},
+    {"Language & Region", "language", SYM_GLOBE, RGB(28, 118, 240), 4, -1, pane_language},
     {"Apps", "apps", SYM_APPS, RGB(40, 140, 220), 4, -1, pane_apps},
-    {"Terminal", "terminal", SYM_TERMINAL, RGB(60, 60, 64), 4, -1, pane_terminal},
     {"About", "about", SYM_INFO, RGB(142, 142, 148), 2, P_GENERAL, pane_about},
     {"Storage", "storage", SYM_DISK, RGB(142, 142, 148), 2, P_GENERAL, pane_storage},
     {"Date & Time", "datetime", SYM_CLOCK, RGB(28, 118, 240), 2, P_GENERAL, pane_datetime},
-    {"Login Items", "login", SYM_LIST, RGB(142, 142, 148), 2, P_GENERAL, pane_login},
+    {"Keyboard", "keyboard", SYM_KEYBOARD, RGB(142, 142, 148), 4, P_DEVICES, pane_keyboard},
+    {"Mouse", "mouse", SYM_MOUSE, RGB(142, 142, 148), 4, P_DEVICES, pane_mouse},
+    {"Terminal", "terminal", SYM_TERMINAL, RGB(60, 60, 64), 4, P_APPS, pane_terminal},
+    {"Screenshot", "screenshot", SYM_SCREENSHOT, RGB(142, 142, 148), 4, P_APPS, pane_screenshot},
 };
 
 static const char *const wall_names[WALLS] = {"From the look", "Mono", "Dune", "Mist", "Night", "Sunset",
@@ -149,7 +147,7 @@ struct settings {
     char themes[48][24];
     int theme_count;
     struct ui_list theme_list;
-    struct ui_text wallpaper_file, wallpaper_url, login_item, computer;
+    struct ui_text wallpaper_file, wallpaper_url, computer, lang_filter;
     struct canvas thumbs[WALLS];
     bool thumbs_dark;
     const struct gui_look *thumbs_look;
@@ -158,6 +156,8 @@ struct settings {
     char popup_key[24];
     const char *const *popup_values;
 };
+
+SYNTH_TABLE_DECLARE(synth_gui_apps, struct gui_app);
 
 static struct window *instance;
 
@@ -546,21 +546,7 @@ static void pane_network(struct page *p)
     }
 }
 
-/* ---- Notifications and Sound */
-
-static void pane_notify(struct page *p)
-{
-    header(p, SYM_BELL, panes[P_NOTIFY].color, "Notifications",
-           "Banners appear in the top right corner for a few seconds; every notification stays in Notification "
-           "Center, which opens with a click on the clock.");
-    section(p, "Focus");
-    toggle_setting(p, "Do Not Disturb", "Banners stay hidden; they still land in Notification Center", "dnd");
-    end(p, "Control Center and the moon in the menu bar turn it on and off too.");
-    section(p, NULL);
-    if (button(p, "See how a notification looks", NULL, "Show Example"))
-        gui_notify("Notifications", "This is how a notification looks.");
-    end(p, NULL);
-}
+/* ---- Sound & Notifications: one place for what you hear and what interrupts you */
 
 static void pane_sound(struct page *p)
 {
@@ -570,8 +556,17 @@ static void pane_sound(struct page *p)
         apply_number("volume", v);
     toggle_setting(p, "Mute", NULL, "mute");
     const char *dev = hal_audio_name();
-    info(p, "Output device", dev && *dev ? dev : "Built-in sound (AC'97)");
-    end(p, "Music, Video and the built-in songs play through the AC'97 sound card QEMU and many PCs have.");
+    info(p, "Output device", dev && *dev ? dev : "Built-in sound");
+    end(p, "Music, Video and the built-in songs play through Intel HD Audio or AC'97.");
+    section(p, "Focus");
+    toggle_setting(p, "Do Not Disturb", "Banners stay hidden; they still land in Notification Center", "dnd");
+    end(p, "Control Center and the moon in the menu bar turn it on and off too.");
+    section(p, "Notifications");
+    info(p, "Banners", "Top right, for a few seconds");
+    info(p, "Notification Center", "A click on the clock");
+    if (button(p, "See how a notification looks", NULL, "Show Example"))
+        gui_notify("Notifications", "This is how a notification looks.");
+    end(p, NULL);
 }
 
 /* ---- General and its pages */
@@ -580,9 +575,9 @@ static void pane_general(struct page *p)
 {
     struct settings *s = p->s;
     header(p, SYM_GEAR, panes[P_GENERAL].color, "General",
-           "The name of this computer, its storage, date and time, and what opens when you log in.");
+           "The name of this computer, its storage, and the date and time.");
     section(p, NULL);
-    static const int pages[] = {P_ABOUT, P_STORAGE, P_DATETIME, P_LOGIN};
+    static const int pages[] = {P_ABOUT, P_STORAGE, P_DATETIME};
     for (size_t i = 0; i < ARRAY_SIZE(pages); i++)
         if (link(p, panes[pages[i]].sym, panes[pages[i]].color, panes[pages[i]].name, NULL))
             go(s, pages[i]);
@@ -715,51 +710,6 @@ static void pane_datetime(struct page *p)
     end(p, NULL);
 }
 
-static void pane_login(struct page *p)
-{
-    struct settings *s = p->s;
-    static char items[AUTOSTART_MAX][AUTOSTART_LEN];
-    int n = autostart_items(items, AUTOSTART_MAX);
-    section(p, "Open at Login");
-    if (!n)
-        row(p, "Nothing opens at login yet", NULL, 0, 0);
-    for (int i = 0; i < n; i++) {
-        const struct gui_app *app = gui_app_find(items[i]);
-        bool is_app = app && !str_casecmp(app->name, items[i]);
-        const char *name = items[i][0] == '!' ? items[i] + 1 : items[i];
-        struct rect r = row(p, NULL, NULL, 44, 0);
-        if (p->query && found(p->query, name))
-            p->hits += p->measure;
-        if (p->measure)
-            continue;
-        if (p->ui->c) {
-            gfx_icon(p->ui->c, r.x + 12, r.y + 8, is_app ? app->icon : items[i][0] == '!' ? ICON_TERMINAL : ICON_FILE,
-                     28);
-            gfx_text_box(p->ui->c, (struct rect){r.x + 50, r.y, r.w - 110, r.h}, &font_sans, name, style.text,
-                         ALIGN_LEFT);
-        }
-        if (ui_symbol_button(p->ui, ctl(r, 26, 26), SYM_MINUS, false))
-            autostart_remove(i);
-    }
-    end(p, NULL);
-    section(p, "Add");
-    bool go_add = field(p, "App, file or !command", NULL, &s->login_item, "Music, /home/notes.txt, !date", 220);
-    if (go_add && s->login_item.len) {
-        autostart_add(s->login_item.buf);
-        ui_text_set(&s->login_item, "");
-    }
-    static const char *const quick[] = {"Music", "Notepad", "Files", "Photos", "Terminal"};
-    struct rect r = row(p, NULL, NULL, 48, 0);
-    for (size_t i = 0; i < ARRAY_SIZE(quick) && !p->measure; i++) {
-        struct rect b = {r.x + 14 + (int)i * 94, r.y + 10, 86, 28};
-        if (b.x + b.w > r.x + r.w - 10)
-            break;
-        if (ui_button(p->ui, b, quick[i]))
-            autostart_add(quick[i]);
-    }
-    end(p, "These open one after another a moment after you log in.");
-}
-
 /* ---- Appearance */
 
 static void make_look_thumbs(struct settings *s)
@@ -874,6 +824,7 @@ static void pane_appearance(struct page *p)
     }
     end(p, !strcmp(material, "solid") ? "Reduce transparency is on in Accessibility, so menus and the Dock are solid."
                                       : NULL);
+    wallpaper_sections(p);
 }
 
 static void pane_access(struct page *p)
@@ -907,18 +858,24 @@ static void pane_access(struct page *p)
     end(p, NULL);
 }
 
-/* ---- Control Center */
+/* ---- Desktop & Dock */
 
-static void pane_control(struct page *p)
+/* Control Center and the menu bar now live with the Dock: both are the frame of the desktop. */
+static void control_sections(struct page *p)
 {
     struct settings *s = p->s;
-    header(p, SYM_CONTROL, panes[P_CONTROL].color, "Control Center",
-           "Control Center sits in the menu bar; the modules you pick here sit next to it, each with its own menu.");
     static const char *const names[] = {"sound", "network", "display", "focus", "search"};
     static const char *const labels[] = {"Sound", "Network", "Display", "Focus", "Spotlight"};
     static const char *const descs[] = {"Volume, mute and the output", "Turn the network on or off, see the address",
                                         "Brightness, Night Shift and Dark Mode", "Do Not Disturb (shows while it is on)",
                                         "Search apps and files"};
+    section(p, "Control Center");
+    if (button(p, "Controls and their places", "Move, resize, remove and add the tiles of Control Center",
+               "Edit Control Center..."))
+        control_center_edit();
+    if (button(p, "Start over with the standard tiles", NULL, "Reset"))
+        apply("ccitems", "default");
+    end(p, "Edit Controls at the bottom of Control Center does the same.");
     char list[64];
     current("menuextras", list, sizeof(list));
     section(p, "Show in Menu Bar");
@@ -937,8 +894,6 @@ static void pane_control(struct page *p)
             apply("menuextras", out[0] ? out : "none");
         }
     }
-    end(p, NULL);
-    section(p, "Menu Bar");
     static const char *const bars[] = {"Menu Bar", "Floating Pill"};
     static const char *const bar_values[] = {"menubar", "pill"};
     choice(p, "Status at the top", "The floating pill belongs to the current look", "statusbar", bars, bar_values,
@@ -947,8 +902,6 @@ static void pane_control(struct page *p)
         go(s, P_DATETIME);
     end(p, NULL);
 }
-
-/* ---- Desktop & Dock */
 
 static void pane_dock(struct page *p)
 {
@@ -990,6 +943,7 @@ static void pane_dock(struct page *p)
         popup(p, corner_names[i], NULL, corner_keys[i], corners, corner_values, 7);
     info(p, "Show all windows", "F3 or Ctrl+Up");
     end(p, "Push the pointer into a corner of the screen to run what it is set to.");
+    control_sections(p);
 }
 
 /* ---- Displays */
@@ -1111,7 +1065,7 @@ static void make_thumbs(struct settings *s)
     s->thumbs_look = look_current();
 }
 
-static void pane_wallpaper(struct page *p)
+static void wallpaper_sections(struct page *p)
 {
     struct settings *s = p->s;
     char value[PATH_MAX_LEN];
@@ -1120,7 +1074,7 @@ static void pane_wallpaper(struct page *p)
     for (int i = 0; i < WALLS; i++)
         if (!strcmp(value, wall_values[i]))
             shown = wall_names[i];
-    section(p, NULL);
+    section(p, "Wallpaper");
     struct rect r = custom(p, 132, "Current wallpaper");
     if (!p->measure && p->ui->c) {
         const struct canvas *wp = desktop_wallpaper(0);
@@ -1354,6 +1308,169 @@ static void pane_users(struct page *p)
     end(p, "Every user has their own /home folder, desktop, Dock and settings.");
 }
 
+/* ---- Devices: everything plugged in, each with its own page */
+
+static const char *lang_summary(char *buf, size_t cap)
+{
+    int list[32], n = keymap_order(list, 32);
+    buf[0] = 0;
+    for (int i = 0; i < n; i++) {
+        const char *title;
+        keymap_layout_name(list[i], &title);
+        if (i)
+            str_append(buf, ", ", cap);
+        str_append(buf, title, cap);
+    }
+    return buf;
+}
+
+static void pane_devices(struct page *p)
+{
+    struct settings *s = p->s;
+    header(p, SYM_USB, panes[P_DEVICES].color, "Devices",
+           "The keyboard, the mouse, sound, displays and what is plugged into USB.");
+    section(p, "Input");
+    char langs[96], speed[24];
+    if (link(p, SYM_KEYBOARD, panes[P_KEYBOARD].color, "Keyboard", lang_summary(langs, sizeof(langs))))
+        go(s, P_KEYBOARD);
+    ksnprintf(speed, sizeof(speed), "Speed %ld of 10", number("mousespeed", 5));
+    if (link(p, SYM_MOUSE, panes[P_MOUSE].color, "Mouse", speed))
+        go(s, P_MOUSE);
+    end(p, "PS/2 and USB keyboards and mice work the same.");
+    section(p, "Sound");
+    const char *dev = hal_audio_name();
+    info(p, "Speakers and headphones", dev && *dev ? dev : "None found");
+    info(p, "Microphone", "Recording is not supported yet");
+    if (link(p, panes[P_SOUND].sym, panes[P_SOUND].color, "Volume and alerts", "Sound & Notifications"))
+        go(s, P_SOUND);
+    end(p, "Sound plays through Intel HD Audio (Realtek and other codecs) and AC'97.");
+    section(p, "Displays");
+    for (int i = 0; i < wm_screen_count(); i++) {
+        struct rect a = wm_screen_rect(i);
+        char size[32];
+        ksnprintf(size, sizeof(size), "%d x %d", a.w, a.h);
+        const char *name = hal_screen_name(gui_display_hal(i));
+        info(p, name && *name ? name : "Display", size);
+    }
+    if (link(p, panes[P_DISPLAYS].sym, panes[P_DISPLAYS].color, "Resolution, brightness, Night Shift", "Displays"))
+        go(s, P_DISPLAYS);
+    end(p, NULL);
+    section(p, "USB");
+    static struct usb_info usb[16];
+    int n = hal_usb_devices(usb, (int)ARRAY_SIZE(usb));
+    if (n <= 0)
+        row(p, "Nothing is plugged into USB", NULL, 0, 0);
+    for (int i = 0; i < n; i++) {
+        char detail[48];
+        ksnprintf(detail, sizeof(detail), "%s · %04x:%04x", usb[i].driver[0] ? usb[i].driver : "no driver",
+                  usb[i].vendor, usb[i].product);
+        info(p, usb[i].name[0] ? usb[i].name : "USB device", detail);
+    }
+    end(p, "Keyboards, mice and flash drives work over USB 1.1, 2.0 and 3.x.");
+    section(p, NULL);
+    if (link(p, panes[P_STORAGE].sym, panes[P_STORAGE].color, "Disks", "Storage"))
+        go(s, P_STORAGE);
+    end(p, NULL);
+}
+
+/* ---- Language & Region: the input languages in order (the first is primary) and the regional formats */
+
+static void set_languages(const int *list, int n)
+{
+    char out[256] = "";
+    for (int i = 0; i < n; i++) {
+        if (i)
+            str_append(out, ",", sizeof(out));
+        str_append(out, keymap_layout_name(list[i], NULL), sizeof(out));
+    }
+    apply("keyboard", out);
+    chrome_changed();
+}
+
+static void pane_language(struct page *p)
+{
+    struct settings *s = p->s;
+    int list[32], n = keymap_order(list, 32);
+    section(p, "Preferred Languages");
+    for (int i = 0; i < n; i++) {
+        const char *title;
+        keymap_layout_name(list[i], &title);
+        struct rect r = row(p, NULL, NULL, 48, 0);
+        if (p->query && (found(p->query, title) || found(p->query, keymap_native(list[i]))))
+            p->hits += p->measure;
+        if (p->measure)
+            continue;
+        if (p->ui->c) {
+            struct rect badge = {r.x + 12, r.y + 12, 30, 24};
+            gfx_round(p->ui->c, badge, 6, i ? style.control : style.accent);
+            gfx_text_box(p->ui->c, badge, &font_bold, keymap_short(list[i]), i ? style.text : RGB(255, 255, 255),
+                         ALIGN_CENTER);
+            gfx_text_box(p->ui->c, (struct rect){r.x + 54, r.y + 6, r.w - 200, 18}, &font_sans, keymap_native(list[i]),
+                         style.text, ALIGN_LEFT);
+            gfx_text_box(p->ui->c, (struct rect){r.x + 54, r.y + 25, r.w - 200, 16}, &font_small,
+                         i ? title : "Primary", style.secondary, ALIGN_LEFT);
+            if (list[i] == keymap_active() && n > 1)
+                gfx_text_box(p->ui->c, (struct rect){r.x + r.w - 300, r.y, 120, r.h}, &font_small, "Typing now",
+                             style.accent, ALIGN_RIGHT);
+        }
+        struct rect up = ctl(r, 26, 26);
+        up.x -= 64;
+        if (i && ui_symbol_button(p->ui, up, SYM_UP, false)) {
+            int t = list[i - 1];
+            list[i - 1] = list[i];
+            list[i] = t;
+            set_languages(list, n);
+            return;
+        }
+        struct rect down = up;
+        down.x += 32;
+        if (i + 1 < n && ui_symbol_button(p->ui, down, SYM_DOWN, false)) {
+            int t = list[i + 1];
+            list[i + 1] = list[i];
+            list[i] = t;
+            set_languages(list, n);
+            return;
+        }
+        if (n > 1 && ui_symbol_button(p->ui, ctl(r, 26, 26), SYM_MINUS, false)) {
+            memmove(&list[i], &list[i + 1], (size_t)(n - i - 1) * sizeof(list[0]));
+            set_languages(list, n - 1);
+            return;
+        }
+    }
+    end(p, "You type in the first language after you log in; Super+Space or the letters in the menu bar move to the "
+           "next one. The arrows change the order.");
+    section(p, "Add a Language");
+    field(p, "Search", NULL, &s->lang_filter, "Language", 220);
+    int shown = 0;
+    for (int i = 0; i < keymap_count(); i++) {
+        const char *title, *name = keymap_layout_name(i, &title);
+        const char *native = keymap_native(i);
+        if (keymap_enabled(i) || (s->lang_filter.len && !found(s->lang_filter.buf, title) &&
+                                  !found(s->lang_filter.buf, native) && str_casecmp(s->lang_filter.buf, name)))
+            continue;
+        shown++;
+        char label[64];
+        ksnprintf(label, sizeof(label), strcmp(title, native) ? "%s  (%s)" : "%s", title, native);
+        if (button(p, label, NULL, "Add") && n < 32) {
+            list[n++] = i;
+            set_languages(list, n);
+            ui_text_set(&s->lang_filter, "");
+            return;
+        }
+    }
+    if (!shown)
+        row(p, "No other language matches", NULL, 0, 0);
+    end(p, "SynthOS itself speaks English; these languages are for typing. Each one comes with its usual keyboard "
+           "layout.");
+    section(p, "Region");
+    popup(p, "Time zone", NULL, "timezone", zone_labels, zone_values, (int)ARRAY_SIZE(zone_values));
+    toggle_setting(p, "24-hour time", NULL, "clock24");
+    static const char *const sets[] = {"437 Western", "866 Cyrillic"};
+    static const char *const set_values[] = {"437", "866"};
+    choice(p, "Text console characters", "The screen before the desktop starts", "codepage", sets, set_values, 2, 240);
+    end(p, NULL);
+}
+
 /* ---- Keyboard, Mouse, Terminal */
 
 static void pane_keyboard(struct page *p)
@@ -1377,26 +1494,12 @@ static void pane_keyboard(struct page *p)
         apply("keydelay", buf);
     }
     end(p, NULL);
-    section(p, "Input Sources");
-    char list[64] = "";
-    bool changed = false;
-    for (int i = 0; i < keymap_count(); i++) {
-        const char *title, *name = keymap_layout_name(i, &title);
-        bool on = keymap_enabled(i);
-        if (i && toggle(p, title, NULL, &on))
-            changed = true;
-        if (on || !i) {
-            if (list[0])
-                str_append(list, ",", sizeof(list));
-            str_append(list, name, sizeof(list));
-        }
-    }
-    if (changed) {
-        apply("keyboard", list);
-        chrome_changed();
-    }
-    end(p, "English (US) is always on. With more than one layout, Super+Space or the letters in the status bar switch "
-           "between them.");
+    section(p, "Input Languages");
+    char langs[96];
+    if (link(p, panes[P_LANGUAGE].sym, panes[P_LANGUAGE].color, "Languages and layouts",
+             lang_summary(langs, sizeof(langs))))
+        go(p->s, P_LANGUAGE);
+    end(p, "Super+Space or the letters in the menu bar switch between layouts.");
     section(p, "Text Input");
     static const char *const sets[] = {"437 Western", "866 Cyrillic"};
     static const char *const set_values[] = {"437", "866"};
@@ -1422,19 +1525,6 @@ static void pane_keyboard(struct page *p)
     for (size_t i = 0; i < ARRAY_SIZE(keys); i++)
         info(p, keys[i][0], keys[i][1]);
     end(p, "Super is the Windows key (Command on a Mac keyboard).");
-    section(p, "Screenshots");
-    info(p, "Whole screen", "Super+Shift+3, Super+Print Screen");
-    info(p, "An area", "Super+Shift+4, Super+Shift+S");
-    info(p, "Screenshot bar", "Print Screen, Super+Shift+5");
-    static const char *const places[] = {"Desktop", "Pictures"};
-    static const char *const place_values[] = {"desktop", "pictures"};
-    choice(p, "Save to", NULL, "shotfolder", places, place_values, 2, 200);
-    static const char *const timers[] = {"None", "5 s", "10 s"};
-    static const char *const timer_values[] = {"0", "5", "10"};
-    choice(p, "Timer", NULL, "shotdelay", timers, timer_values, 3, 200);
-    toggle_setting(p, "Show floating thumbnail", "A click on it opens the editor: crop and mark up", "shotthumb");
-    toggle_setting(p, "Open the editor after each screenshot", NULL, "shotedit");
-    end(p, NULL);
 }
 
 static void pane_mouse(struct page *p)
@@ -1507,6 +1597,28 @@ static void pane_terminal(struct page *p)
     end(p, NULL);
 }
 
+static void pane_screenshot(struct page *p)
+{
+    header(p, SYM_SCREENSHOT, panes[P_SCREENSHOT].color, "Screenshot",
+           "Capture the whole screen, a window or an area, then crop it and mark it up.");
+    section(p, "Shortcuts");
+    info(p, "Whole screen", "Super+Shift+3, Super+Print Screen");
+    info(p, "An area", "Super+Shift+4, Super+Shift+S");
+    info(p, "Screenshot bar", "Print Screen, Super+Shift+5");
+    end(p, NULL);
+    section(p, "Options");
+    static const char *const places[] = {"Desktop", "Pictures"};
+    static const char *const place_values[] = {"desktop", "pictures"};
+    choice(p, "Save to", NULL, "shotfolder", places, place_values, 2, 200);
+    static const char *const timers[] = {"None", "5 s", "10 s"};
+    static const char *const timer_values[] = {"0", "5", "10"};
+    choice(p, "Timer", NULL, "shotdelay", timers, timer_values, 3, 200);
+    toggle_setting(p, "Show floating thumbnail", "A click on it opens the editor: crop and mark up", "shotthumb");
+    toggle_setting(p, "Open the editor after each screenshot", NULL, "shotedit");
+    toggle_setting(p, "Copy to the clipboard too", "Paste the picture right away", "shotcopy");
+    end(p, NULL);
+}
+
 /* the built-in browsers and every browser an installer registered (Firefox, Brave, Opera, ...) */
 #define MAX_BROWSERS 16
 static const char *browser_labels[MAX_BROWSERS], *browser_values[MAX_BROWSERS];
@@ -1544,6 +1656,78 @@ static void browser_popup(struct page *p)
 
 /* ---- Apps */
 
+static const struct gui_app *login_apps[24];
+
+static void login_pick(struct window *owner, int index)
+{
+    autostart_add(login_apps[index]->name);
+    if (wm_window_alive(owner))
+        wm_invalidate(owner);
+}
+
+static void login_file(void *ctx, const char *path)
+{
+    if (!path)
+        return;
+    autostart_add(path);
+    if (wm_window_alive(ctx))
+        wm_invalidate(ctx);
+}
+
+/* What opens after login: apps from a menu, files from the open panel; no typing. */
+static void login_items(struct page *p)
+{
+    static char items[AUTOSTART_MAX][AUTOSTART_LEN];
+    int n = autostart_items(items, AUTOSTART_MAX);
+    section(p, "Open at Login");
+    if (!n)
+        row(p, "Nothing opens at login", NULL, 0, 0);
+    for (int i = 0; i < n; i++) {
+        const struct gui_app *app = gui_app_find(items[i]);
+        bool is_app = app && !str_casecmp(app->name, items[i]);
+        const char *name = items[i][0] == '!' ? items[i] + 1 : items[i];
+        struct rect r = row(p, NULL, NULL, 44, 0);
+        if (p->query && found(p->query, name))
+            p->hits += p->measure;
+        if (p->measure)
+            continue;
+        if (p->ui->c) {
+            gfx_icon(p->ui->c, r.x + 12, r.y + 8, is_app ? app->icon : items[i][0] == '!' ? ICON_TERMINAL : ICON_FILE,
+                     28);
+            gfx_text_box(p->ui->c, (struct rect){r.x + 50, r.y, r.w - 110, r.h}, &font_sans, name, style.text,
+                         ALIGN_LEFT);
+        }
+        if (ui_symbol_button(p->ui, ctl(r, 26, 26), SYM_MINUS, false))
+            autostart_remove(i);
+    }
+    struct rect r = row(p, NULL, NULL, 48, 0);
+    if (!p->measure && n < AUTOSTART_MAX) {
+        struct rect a = {r.x + 14, r.y + 10, 110, 28}, f = {a.x + a.w + 10, a.y, 110, 28};
+        if (ui_button(p->ui, a, "Add App...")) {
+            int count = 0;
+            SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app) {
+                if (count == (int)ARRAY_SIZE(login_apps))
+                    break;
+                bool listed = false;
+                for (int i = 0; i < n; i++)
+                    listed = listed || !str_casecmp(items[i], app->name);
+                if (listed || !strcmp(app->name, "System Settings"))
+                    continue;
+                login_apps[count] = app;
+                popup_items[count] = (struct menu_item){app->name, 0, NULL};
+                count++;
+            }
+            if (count)
+                ui_menu_items(p->ui->win, a.x, a.y + a.h + 2, popup_items, count, login_pick);
+        }
+        if (ui_button(p->ui, f, "Add File...")) {
+            struct gui_picker o = {.title = "Open at Login", .dir = "/home", .button = "Add"};
+            gui_file_picker(p->ui->win, &o, login_file, p->ui->win);
+        }
+    }
+    end(p, "These open one after another a moment after you log in.");
+}
+
 #if CONFIG_WIN32
 static void program_row(const struct winshell_program *prog, void *ctx)
 {
@@ -1559,12 +1743,32 @@ static void program_row(const struct winshell_program *prog, void *ctx)
 
 static void pane_apps(struct page *p)
 {
+    struct settings *s = p->s;
     header(p, SYM_APPS, panes[P_APPS].color, "Apps",
-           "Default apps, the programs you installed and how 32- and 64-bit Windows programs run: double-click an "
-           ".exe, or start it from the Terminal.");
+           "What opens your files and links, what starts when you log in, the settings of each app and the Windows "
+           "programs you installed.");
     section(p, "Default Apps");
     browser_popup(p);
-    end(p, "Links from every app open in the default browser.");
+    static const char *const text_apps[] = {"Notepad", "Viewer"};
+    static const char *const image_apps[] = {"Photos", "Viewer"};
+    static const char *const music_apps[] = {"Music", "Viewer"};
+    static const char *const video_apps[] = {"Video", "Viewer"};
+    popup(p, "Text files", ".txt, .md, .c, .json, .ini and more", "opentext", text_apps, text_apps, 2);
+    popup(p, "Pictures", "PNG, JPEG, GIF and BMP", "openimage", image_apps, image_apps, 2);
+    popup(p, "Sound files", "WAV", "openmusic", music_apps, music_apps, 2);
+    popup(p, "Videos", "AVI", "openvideo", video_apps, video_apps, 2);
+    end(p, "Links from every app open in the default browser; a double-click on a file opens it in the app picked here.");
+    login_items(p);
+    section(p, "App Settings");
+    char theme[32];
+    current("theme", theme, sizeof(theme));
+    if (link(p, panes[P_TERMINAL].sym, panes[P_TERMINAL].color, "Terminal", theme))
+        go(s, P_TERMINAL);
+    if (link(p, panes[P_SCREENSHOT].sym, panes[P_SCREENSHOT].color, "Screenshot", NULL))
+        go(s, P_SCREENSHOT);
+    if (link(p, panes[P_DATETIME].sym, panes[P_DATETIME].color, "Clock", "Date & Time"))
+        go(s, P_DATETIME);
+    end(p, NULL);
     struct bundle_info bi;
     const char *chromium = vfs_exists("/home/apps/chromium/chrome.exe") ? "Installed"
                            : bundle_info(&bi)                             ? "Unpacks after login"
@@ -1838,10 +2042,14 @@ static void select_pane(struct settings *s, const char *arg)
     for (int i = 0; i < P_COUNT; i++)
         if (!str_casecmp(arg, panes[i].key) || !str_casecmp(arg, panes[i].name))
             go(s, i);
-    if (!str_casecmp(arg, "windows"))
-        go(s, P_APPS);
-    if (!str_casecmp(arg, "focus"))
-        go(s, P_NOTIFY);
+    static const struct {
+        const char *key;
+        int pane;
+    } moved[] = {{"windows", P_APPS},     {"login", P_APPS},       {"focus", P_SOUND},     {"notifications", P_SOUND},
+                 {"control", P_DOCK},     {"wallpaper", P_APPEARANCE}, {"input", P_LANGUAGE}, {"region", P_LANGUAGE}};
+    for (size_t i = 0; i < ARRAY_SIZE(moved); i++)
+        if (!str_casecmp(arg, moved[i].key))
+            go(s, moved[i].pane);
 }
 
 static void launch(const char *arg)

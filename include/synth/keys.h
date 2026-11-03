@@ -63,6 +63,10 @@ int keymap_count(void);
 const char *keymap_layout_name(int index, const char **title);
 bool keymap_enabled(int index);
 int keymap_set_enabled(const char *list);
+const char *keymap_native(int index);
+const char *keymap_short(int index);
+int keymap_order(int *out, int max);
+int keymap_active(void);
 
 const char *key_name(int key, char *buf, int cap);
 

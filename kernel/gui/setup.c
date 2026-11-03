@@ -57,7 +57,7 @@ struct setup {
     struct spring slide;
     uint64_t tick;
     struct canvas backdrop;
-    bool layouts[8];
+    bool layouts[32];
     int zone;
     bool clock24;
     struct ui_text full, name, pass, pass2;
@@ -233,8 +233,8 @@ static void region_page(struct ui *ui, struct setup *s)
 {
     struct rect r = body(ui, s);
     title(ui, r, "Keyboard and region", "The system speaks English; you can type in these languages:");
-    int n = keymap_count(), cols = 3, y = r.y + 66;
-    for (int i = 0; i < n; i++) {
+    int n = MIN(keymap_count(), 32), shown = MIN(n, 9), cols = 3, y = r.y + 66;
+    for (int i = 0; i < shown; i++) {
         const char *name;
         keymap_layout_name(i, &name);
         struct rect cb = {r.x + (i % cols) * (r.w / cols), y + (i / cols) * 28, r.w / cols, 24};
@@ -244,8 +244,9 @@ static void region_page(struct ui *ui, struct setup *s)
             s->layouts[0] = true;
         (void)before;
     }
-    y += ((n + cols - 1) / cols) * 28 + 4;
-    ui_label(ui, (struct rect){r.x, y, r.w, 16}, "Win+Space or the letters in the status bar switch the layout.",
+    y += ((shown + cols - 1) / cols) * 28 + 4;
+    ui_label(ui, (struct rect){r.x, y, r.w, 16},
+             "Win+Space switches the layout; Language & Region in System Settings has many more.",
              &font_small, style.tertiary, ALIGN_LEFT);
     y += 34;
     ui_label(ui, (struct rect){r.x, y, r.w, 18}, "Time zone", &font_bold, style.text, ALIGN_LEFT);
@@ -274,7 +275,7 @@ static void region_page(struct ui *ui, struct setup *s)
     ui_switch(ui, (struct rect){g.x + g.w - 50, g.y + 11, 36, 22}, &s->clock24);
     bool back;
     if (nav(ui, s, "Continue", &back)) {
-        char list[64] = "";
+        char list[160] = "";
         for (int i = 0; i < n; i++)
             if (s->layouts[i]) {
                 if (list[0])
@@ -581,7 +582,7 @@ static void open_setup(enum page first)
     if (!s)
         return;
     s->page = first;
-    for (int i = 0; i < keymap_count() && i < 8; i++)
+    for (int i = 0; i < keymap_count() && i < 32; i++)
         s->layouts[i] = keymap_enabled(i);
     s->zone = current_zone();
     s->clock24 = true;

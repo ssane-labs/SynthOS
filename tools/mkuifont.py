@@ -18,7 +18,8 @@ INTER = "/usr/share/fonts/opentype/inter/"
 DEJAVU = "/usr/share/fonts/truetype/dejavu/"
 
 SYMBOLS = ("−√⌫∞π•–—…←↑→↓↔✓✔✕✖×÷±≤≥≠°€№™©®▲▼◀▶■□●○★☆♪⌂☰⚙⌘⌥⇧⌃⏎⎋⇥›‹«»“”‘’·")
-TEXT = sorted(set(list(range(0x20, 0x7F)) + list(range(0xA0, 0x100)) + list(range(0x400, 0x460)) +
+TEXT = sorted(set(list(range(0x20, 0x7F)) + list(range(0xA0, 0x180)) + list(range(0x386, 0x3CF)) +
+                  list(range(0x400, 0x460)) + [0x490, 0x491] +
                   [ord(c) for c in SYMBOLS]))
 BOX = list(range(0x2500, 0x2580)) + list(range(0x2580, 0x25A0))
 GREEK = [ord(c) for c in "ΓΘΣΦΩαβδεπστφµ∙∩≡≈ⁿ²⌠⌡"]

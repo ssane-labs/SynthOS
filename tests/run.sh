@@ -190,6 +190,12 @@ config menuextras sound,display,focus; config menuextras; config menuextras netw
 menuextras = sound,display,focus
 config menuextras wifi
 menuextras: invalid value 'wifi'
+config ccitems lock:2x1,sound:2x1,media; config ccitems; config ccitems default
+ccitems = lock:2x1,sound:2x1,media:4x1
+config ccitems sound:3x3
+ccitems: invalid value 'sound:3x3'
+config ccitems sound,sound
+ccitems: invalid value 'sound,sound'
 config glassstrength 25; config glassstrength; config glassstrength 70
 glassstrength = 25
 config snap off; config snap; config snap on
@@ -682,6 +688,12 @@ config keyboard us,ru; config keyboard
 us,ru
 config keyboard us,xx
 invalid value
+config keyboard ru,us,gr,ru; config keyboard; config keyboard us
+keyboard = ru,us,gr
+config opentext Viewer; config opentext; config opentext default
+opentext = Viewer
+config openimage nosuchapp
+openimage: invalid value 'nosuchapp'
 fetch | grep "Black Hole"
 SynthOS 1.1 "Black Hole"
 music list

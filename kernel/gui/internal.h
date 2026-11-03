@@ -313,6 +313,7 @@ void menubar_open_app_menu(void);
 void spotlight_toggle(void);
 void launchpad_toggle(void);
 void control_center_toggle(int right);
+void control_center_edit(void);
 enum control_module {
     CONTROL_FULL,
     CONTROL_SOUND,
