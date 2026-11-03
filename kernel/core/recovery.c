@@ -153,10 +153,25 @@ static void bad_access(void *ctx)
     *(volatile uint32_t *)nowhere = 1;
 }
 
-COMMAND(faulttest, NULL, "system", "faulttest", "check that a crash in desktop app code closes only that app")
+/* placed with the desktop apps' code, so the hang watchdog takes it for a stuck app */
+__attribute__((section(".text.apps"), noinline)) static void endless_loop(void *ctx)
 {
-    UNUSED(argc);
-    UNUSED(argv);
+    volatile uint32_t *n = ctx;
+    for (;;)
+        (*n)++;
+}
+
+COMMAND(faulttest, NULL, "system", "faulttest [hang]",
+        "check that a crash (or an endless loop) in desktop app code closes only that app")
+{
+    if (argc > 1 && !strcmp(argv[1], "hang")) {
+        volatile uint32_t spins = 0;
+        uint64_t t0 = hal_ticks_ms();
+        int r = hal_guard(endless_loop, (void *)&spins);
+        sh_printf(sh, r == HAL_GUARD_HUNG ? "contained: the stuck app was stopped after %u s\n" : "not stopped\n",
+                  (unsigned)((hal_ticks_ms() - t0) / 1000));
+        return r == HAL_GUARD_HUNG ? 0 : 1;
+    }
     int vector = hal_guard(bad_access, sh);
     sh_printf(sh, vector ? "contained: CPU exception %d, the system goes on\n" : "no fault\n", vector);
     return vector ? 0 : 1;

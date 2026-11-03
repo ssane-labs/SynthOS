@@ -132,6 +132,8 @@ int hal_start_cpus(void);
 bool hal_safe_mode(void);
 uint32_t hal_boot_nonce(void);
 void hal_delay_ms(uint32_t ms);
+/* runs fn; a CPU fault in it returns the vector, an app stuck in its own code for seconds returns HAL_GUARD_HUNG */
+#define HAL_GUARD_HUNG 256
 int hal_guard(void (*fn)(void *ctx), void *ctx);
 int hal_cpu_count(void);
 /* runs fn over [0, count) split into ranges of at least grain items on every processor; fn must only touch memory

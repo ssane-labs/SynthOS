@@ -133,6 +133,7 @@ void wm_key(int key);
 void wm_cycle(void);
 void wm_timers(void);
 void wm_close_popups(void);
+void wm_close_popups_except(struct window *keep);
 struct window *wm_top_popup(void);
 void wm_damage_all(void);
 void wm_set_tint(int brightness, int warmth);

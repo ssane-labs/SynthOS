@@ -17,6 +17,10 @@ SECTIONS
 
     .text : AT(ADDR(.text) - KOFF) {
         __text_start = .;
+        __apps_text_start = .;
+        *gui/apps/*.o(.text .text.*)
+        *(.text.apps)
+        __apps_text_end = .;
         *(.text .text.*)
         . = ALIGN(16);
         __start_text32 = .;

@@ -554,11 +554,13 @@ static void guarded(struct window *w, void (*fn)(void *), struct app_call *a)
         return;
     }
 #endif
-    if (!hal_guard(fn, a))
+    int r = hal_guard(fn, a);
+    if (!r)
         return;
-    char text[96];
-    ksnprintf(text, sizeof(text), "\"%s\" quit unexpectedly. Its window was closed; the rest of the system is fine.",
-              w->title[0] ? w->title : w->app ? w->app->name : "The app");
+    char text[112];
+    ksnprintf(text, sizeof(text), "\"%s\" %s. Its window was closed; the rest of the system is fine.",
+              w->title[0] ? w->title : w->app ? w->app->name : "The app",
+              r == HAL_GUARD_HUNG ? "stopped responding" : "quit unexpectedly");
     gui_notify("App closed", text);
     if (crashed_count < (int)ARRAY_SIZE(crashed_windows))
         crashed_windows[crashed_count++] = (struct crashed){w, w->ops};
@@ -2468,6 +2470,20 @@ void wm_timers(void)
 void wm_close_popups(void)
 {
     close_popups(NULL);
+}
+
+/* a menu opened from a popup (the screenshot bar, a submenu) keeps that popup and the ones it came from */
+void wm_close_popups_except(struct window *keep)
+{
+    for (struct window *w = bottom; w;) {
+        struct window *next = w->above;
+        bool kept = false;
+        for (struct window *k = keep; k && !kept; k = k->owner)
+            kept = k == w;
+        if ((w->flags & WIN_POPUP) && !(w->flags & WIN_PASSIVE) && !kept)
+            wm_destroy(w);
+        w = next;
+    }
 }
 
 struct window *wm_top_popup(void)

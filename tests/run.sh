@@ -126,6 +126,8 @@ recovery safe
 this start did not come from the UEFI loader
 faulttest; echo still running
 contained: CPU exception 14, the system goes on
+faulttest hang; echo still running
+contained: the stuck app was stopped after 6 s
 parcheck
 parallel work: ok on 1 processor
 widgets add clock; widgets add tasks; config widgets
@@ -650,6 +652,8 @@ seq 1 1300000 > /home/big.txt; tail -n 1 /home/big.txt
 1300000
 wc -c /home/big.txt; rm /home/big.txt
 9288896
+seq 1 1300000 > /home/big.txt; time rm /home/big.txt
+real 0.
 pkg list | grep chrome
 Google Chrome (32-bit)
 autostart add Notepad; autostart add !echo hi; autostart list

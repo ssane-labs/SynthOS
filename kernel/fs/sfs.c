@@ -424,8 +424,12 @@ static void free_tree(struct sfs *fs, uint32_t *table_blk, uint32_t start, uint3
     }
 }
 
+/* The bitmap goes to the disk once at the end, not once per freed block: deleting a big file stays quick. */
 static void free_blocks(struct sfs *fs, struct sfs_inode *in, uint32_t keep)
 {
+    bool outer = !fs->batch;
+    if (outer)
+        batch_begin(fs);
     for (uint32_t i = keep; i < SFS_DIRECT; i++) {
         bfree(fs, in->direct[i]);
         in->direct[i] = 0;
@@ -437,6 +441,8 @@ static void free_blocks(struct sfs *fs, struct sfs_inode *in, uint32_t keep)
     free_tree(fs, &in->double_indirect, keep > base ? keep - base : 0, SFS_PTRS);
     base += SFS_PTRS * SFS_PTRS;
     free_tree(fs, &in->triple_indirect, keep > base ? keep - base : 0, SFS_PTRS * SFS_PTRS);
+    if (outer)
+        batch_end(fs);
 }
 
 #define RUN_MAX 256

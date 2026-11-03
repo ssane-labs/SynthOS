@@ -7,6 +7,10 @@ SECTIONS
 
     .text : {
         KEEP(*(.entry))
+        __apps_text_start = .;
+        *gui/apps/*.o(.text .text.*)
+        *(.text.apps)
+        __apps_text_end = .;
         *(.text .text.*)
         __text_end = .;
     }

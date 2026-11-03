@@ -264,6 +264,8 @@ void serial_write(const char *s, size_t n);
 void vga_init(void);
 void vga_text_mode(void);
 void arch_guard_catch(int vector, uintptr_t pc, uintptr_t address);
+bool arch_guard_tick(uintptr_t pc);
+void arch_guard_escape(void);
 void vga_load_font(int codepage);
 struct display *vga_display(void);
 struct display *serial_display(void);

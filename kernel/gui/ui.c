@@ -923,7 +923,7 @@ static const struct window_ops menu_ops = {menu_paint, menu_event, NULL, menu_de
 struct window *ui_menu_items(struct window *owner, int x, int y, const struct menu_item *items, int count,
                              ui_pick_fn pick)
 {
-    wm_close_popups();
+    wm_close_popups_except(owner);
     struct menu *m = kzalloc(sizeof(*m));
     if (!m)
         return NULL;

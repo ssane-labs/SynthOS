@@ -364,6 +364,8 @@ void x86_interrupt(struct regs *r)
         if (irq >= 8)
             outb(0xa0, 0x20);
         outb(0x20, 0x20);
+        if (irq == 0 && r->cs == 0x08 && arch_guard_tick((uintptr_t)r->eip))
+            r->eip = (uintptr_t)arch_guard_escape;
         if (irq == 0 && tick_hook)
             tick_hook(r->eip);
         interrupt_depth--;
