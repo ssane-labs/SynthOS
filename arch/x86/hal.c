@@ -49,6 +49,16 @@ void hal_net_init(void)
     realtek_init();
 }
 
+bool hal_safe_mode(void)
+{
+    return (bootinfo->flags & BOOT_SAFE) != 0;
+}
+
+uint32_t hal_boot_nonce(void)
+{
+    return (bootinfo->flags & BOOT_UEFI) ? bootinfo->boot_nonce : 0;
+}
+
 int hal_key_read(int timeout_ms)
 {
     uint64_t end = timeout_ms > 0 ? hal_ticks_ms() + (uint64_t)timeout_ms : 0;
@@ -117,7 +127,7 @@ const struct framebuffer *uefi_framebuffer(void)
 #ifndef CONFIG_SERIAL_CONSOLE
 static struct display *framebuffer_display(void)
 {
-    if (!(bootinfo->flags & BOOT_UEFI) || !bootinfo->fb_addr)
+    if (!(bootinfo->flags & BOOT_UEFI) || !x86_fb_phys(bootinfo))
         return NULL;
     struct framebuffer fb = {
         .width = bootinfo->fb_width,
@@ -128,7 +138,11 @@ static struct display *framebuffer_display(void)
         .green_shift = bootinfo->fb_shift[1],
         .blue_shift = bootinfo->fb_shift[2],
     };
-    fb.base = vmm_map_framebuffer(bootinfo->fb_addr, (size_t)fb.pitch * fb.height);
+    fb.base = vmm_map_framebuffer(x86_fb_phys(bootinfo), (size_t)fb.pitch * fb.height);
+    if (!fb.base) {
+        klog("display: framebuffer at %llx cannot be mapped", (unsigned long long)x86_fb_phys(bootinfo));
+        return NULL;
+    }
     uefi_fb = fb;
     struct display *d = fbcon_create(&fb);
     framebuffer_console = d != NULL;
@@ -407,8 +421,12 @@ void x86_main(uint32_t magic, const struct x86_bootinfo *info)
 
     setup_heap(&bi);
 #ifndef CONFIG_SERIAL_CONSOLE
-    if (!display && !(display = framebuffer_display()))
-        display = serial_display();
+    if (!display && !(display = framebuffer_display())) {
+        klog("display: no framebuffer from the firmware, VGA text mode");
+        vga_text_mode();
+        vga_init();
+        display = vga_display();
+    }
 #endif
 #ifdef CONFIG_CMDLINE
     bi.cmdline = CONFIG_CMDLINE;

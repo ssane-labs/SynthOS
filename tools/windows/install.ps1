@@ -135,9 +135,9 @@ Say "SynthOS:   новый раздел $SizeGB ГБ, загрузчик в ра
 if ($secure) {
     if ($shim) {
         Say 'Secure Boot включён — выключать не нужно. При первом запуске появится синий экран MokManager:'
-        Say '  OK → любая клавиша → Enroll key from disk → (раздел EFI) → SYNTHOS → SYNTHOS.CER → Continue → Yes → Reboot.'
+        Say '  OK → любая клавиша → Enroll key from disk → (раздел EFI) → SYNTHOS → synthos-key.cer → Continue → Yes → Reboot.'
     } else {
-        Say 'Secure Boot включён, а в этом архиве нет shim: добавьте SYNTHOS\SYNTHOS.CER в db прошивки или выключите Secure Boot.' -ForegroundColor Yellow
+        Say 'Secure Boot включён, а в этом архиве нет shim: добавьте SYNTHOS\synthos-key.cer в db прошивки или выключите Secure Boot.' -ForegroundColor Yellow
     }
 }
 if (-not (Ask 'Продолжить?')) { Fail 'отменено.' }
@@ -218,7 +218,7 @@ try {
         Copy-Item (Join-Path $here 'EFI\grubx64.efi') "$esp\EFI\SynthOS\synthos.efi" -Force
         $loader = '\EFI\SynthOS\synthos.efi'
     }
-    foreach ($f in 'KERNEL.BIN', 'SYNTHOS.CER', 'SHIM.TXT') {
+    foreach ($f in 'KERNEL.BIN', 'synthos-key.cer', 'SHIM.TXT') {
         if (Test-Path (Join-Path $here "EFI\$f")) { Copy-Item (Join-Path $here "EFI\$f") "$esp\SYNTHOS\$f" -Force }
     }
     $hex = ($id | ForEach-Object { $_.ToString('x2') }) -join ''

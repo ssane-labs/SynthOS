@@ -155,6 +155,7 @@ struct bootinfo {
     u8 fb_shift[4];
     u32 system_lba, system_sectors;
     u8 id[8];
+    u32 fb_addr_high, boot_nonce;
 };
 
 struct e820 {
@@ -167,14 +168,17 @@ struct e820 {
 #define KERNEL_ADDR 0x100000ull
 #define KERNEL_LIMIT 0x800000ull
 #define KERNEL_LBA 17
-#define MMAP_MAX 160
+#define MMAP_MAX 500
 #define BOOT_UEFI 1
 #define BOOT_SYSTEM 2
+#define BOOT_FB_HIGH 4
+#define BOOT_SAFE 8
 #define BY_PROTOCOL 2
 #define NOT_FOUND 0x800000000000000eull
 #define VAR_ATTRS 7
 #define FILE_READ 1
 #define FILE_WRITE 2
+#define FILE_CREATE 0x8000000000000000ull
 #define SCAN_UP 1
 #define SCAN_DOWN 2
 #define SCAN_ESC 0x17
@@ -352,19 +356,26 @@ static int bits(u32 mask)
     return n;
 }
 
-static void setup_framebuffer(struct bootinfo *bi)
+static int linear(const struct gop_mode_info *info)
 {
-    struct gop *gop;
-    if (ERROR(bs->locate_protocol(&gop_guid, 0, (void **)&gop)) || !gop->mode) {
-        say("SynthOS: no graphics output, using the serial console\n");
-        return;
-    }
+    return info->format <= 2 && info->width >= 640 && info->height >= 480;
+}
+
+/* The biggest mode up to 1920x1200 with a linear framebuffer; the current one when nothing is better. Graphics cards
+   with Resizable BAR ("Above 4G decoding") put the framebuffer above 4 GiB: the address goes to the kernel whole. */
+static int try_gop(struct gop *gop, struct bootinfo *bi)
+{
+    if (!gop || !gop->mode || !gop->mode->max_mode)
+        return 0;
     u32 best = gop->mode->mode;
-    u64 best_score = 0;
-    for (u32 m = 0; m < gop->mode->max_mode; m++) {
+    u64 best_score = gop->mode->info && linear(gop->mode->info) && gop->mode->info->width <= 1920 &&
+                             gop->mode->info->height <= 1200
+                         ? (u64)gop->mode->info->width * gop->mode->info->height
+                         : 0;
+    for (u32 m = 0; m < gop->mode->max_mode && m < 256; m++) {
         struct gop_mode_info *info;
         uintn size;
-        if (ERROR(gop->query_mode(gop, m, &size, &info)) || info->format > 2)
+        if (ERROR(gop->query_mode(gop, m, &size, &info)) || !linear(info))
             continue;
         if (info->width > 1920 || info->height > 1200)
             continue;
@@ -374,14 +385,26 @@ static void setup_framebuffer(struct bootinfo *bi)
             best = m;
         }
     }
-    if (best != gop->mode->mode)
-        gop->set_mode(gop, best);
+    if (best != gop->mode->mode && ERROR(gop->set_mode(gop, best)))
+        say("SynthOS: the graphics mode cannot be changed, keeping the current one\n");
     struct gop_mode_info *info = gop->mode->info;
-    if (info->format > 2 || gop->mode->fb_base + gop->mode->fb_size > 0x100000000ull) {
-        say("SynthOS: framebuffer is not usable, falling back to serial console\n");
-        return;
+    if (!info || info->format > 2 || !gop->mode->fb_base) {
+        for (u32 m = 0; m < gop->mode->max_mode && m < 256; m++) {
+            struct gop_mode_info *alt;
+            uintn size;
+            if (!ERROR(gop->query_mode(gop, m, &size, &alt)) && alt->format <= 2 && !ERROR(gop->set_mode(gop, m)) &&
+                gop->mode->fb_base)
+                break;
+        }
+        info = gop->mode->info;
+        if (!info || info->format > 2 || !gop->mode->fb_base)
+            return 0;
     }
-    bi->fb_addr = (u32)gop->mode->fb_base;
+    u64 base = gop->mode->fb_base;
+    bi->fb_addr = (u32)base;
+    bi->fb_addr_high = (u32)(base >> 32);
+    if (base >> 32)
+        bi->flags |= BOOT_FB_HIGH;
     bi->fb_width = info->width;
     bi->fb_height = info->height;
     bi->fb_pitch = info->pixels_per_line * 4;
@@ -402,6 +425,28 @@ static void setup_framebuffer(struct bootinfo *bi)
         bi->fb_shift[1] = mask_shift(info->green_mask);
         bi->fb_shift[2] = mask_shift(info->blue_mask);
     }
+    return 1;
+}
+
+/* The screen the firmware console uses first (with several graphics cards that is the one with the monitor), then
+   any other graphics output. Without one the kernel reprograms the VGA text mode and also writes to COM1. */
+static void setup_framebuffer(struct bootinfo *bi)
+{
+    struct gop *gop = 0;
+    if (st->con_out_handle && !ERROR(bs->handle_protocol(st->con_out_handle, &gop_guid, (void **)&gop)) &&
+        try_gop(gop, bi))
+        return;
+    uintn count = 0;
+    void **handles = 0;
+    if (!ERROR(bs->locate_handle_buffer(BY_PROTOCOL, &gop_guid, 0, &count, &handles))) {
+        for (uintn i = 0; i < count; i++)
+            if (!ERROR(bs->handle_protocol(handles[i], &gop_guid, (void **)&gop)) && try_gop(gop, bi))
+                return;
+    }
+    gop = 0;
+    if (!ERROR(bs->locate_protocol(&gop_guid, 0, (void **)&gop)) && try_gop(gop, bi))
+        return;
+    say("SynthOS: no linear framebuffer from the firmware, the system will use VGA text mode\n");
 }
 
 static struct file *open_root(void *device)
@@ -787,43 +832,50 @@ static void say16(const char16 *s)
     st->con_out->output_string(st->con_out, s);
 }
 
-static void draw_menu(struct entry *list, int n, int chosen, int seconds)
+static void draw_menu(struct entry *list, int n, int chosen, int seconds, int failed)
 {
     st->con_out->clear_screen(st->con_out);
     say("\n  SynthOS boot menu\n\n");
-    for (int i = 0; i <= n; i++) {
+    if (failed)
+        say("  SynthOS did not finish starting the last times: safe mode is chosen.\n\n");
+    for (int i = 0; i <= n + 1; i++) {
         st->con_out->set_attribute(st->con_out, i == chosen ? 0x70 : 0x07);
         say(i == chosen ? "  > " : "    ");
         if (i == 0)
             say("SynthOS");
+        else if (i == 1)
+            say("SynthOS (safe mode: basic drivers, one processor, no autostart)");
         else
-            say16(list[i - 1].name);
+            say16(list[i - 2].name);
         say("  \n");
         st->con_out->set_attribute(st->con_out, 0x07);
     }
     say("\n  Up and Down (or a number) choose, Enter starts.");
     if (seconds >= 0) {
-        char line[48] = "  SynthOS starts in 0 s.  ";
-        line[20] = (char)('0' + (seconds > 9 ? 9 : seconds));
+        char line[48] = "  Starts in 0 s.  ";
+        line[12] = (char)('0' + (seconds > 9 ? 9 : seconds));
         say(line);
     }
     say("\n");
 }
 
-static void boot_menu(int timeout)
+/* Returns 1 for safe mode. Shown when other systems are on the disks or the last starts failed. */
+static int boot_menu(int timeout, int failed)
 {
     struct entry list[8];
     int n = other_systems(list, 8);
-    if (!n || timeout <= 0 || !st->con_in)
-        return;
-    int chosen = 0, ticks = timeout * 10;
-    draw_menu(list, n, chosen, timeout);
+    if (failed && timeout < 5)
+        timeout = 5;
+    if ((!n && !failed) || timeout <= 0 || !st->con_in)
+        return failed;
+    int chosen = failed ? 1 : 0, ticks = timeout * 10;
+    draw_menu(list, n, chosen, timeout, failed);
     for (;;) {
         struct input_key key;
         if (ERROR(st->con_in->read_key_stroke(st->con_in, &key))) {
             bs->stall(100000);
             if (ticks > 0 && --ticks % 10 == 0)
-                draw_menu(list, n, chosen, ticks / 10);
+                draw_menu(list, n, chosen, ticks / 10, failed);
             if (ticks == 0)
                 break;
             continue;
@@ -831,25 +883,66 @@ static void boot_menu(int timeout)
         ticks = -1;
         if (key.scan == SCAN_UP && chosen > 0)
             chosen--;
-        else if (key.scan == SCAN_DOWN && chosen < n)
+        else if (key.scan == SCAN_DOWN && chosen < n + 1)
             chosen++;
         else if (key.unicode == '\r' || key.unicode == '\n')
             break;
-        else if (key.unicode >= '1' && key.unicode <= '1' + n) {
+        else if (key.unicode >= '1' && key.unicode <= '2' + n) {
             chosen = key.unicode - '1';
             break;
         }
         else if (key.scan == SCAN_ESC)
             chosen = 0;
-        draw_menu(list, n, chosen, -1);
+        draw_menu(list, n, chosen, -1, failed);
     }
     st->con_out->clear_screen(st->con_out);
-    if (chosen == 0)
-        return;
-    u16 number = list[chosen - 1].number;
+    if (chosen <= 1)
+        return chosen;
+    u16 number = list[chosen - 2].number;
     if (!ERROR(st->runtime->set_variable(u"BootNext", &global_guid, VAR_ATTRS, 2, &number)))
         st->runtime->reset_system(0, 0, 0, 0);
     say("SynthOS: could not start the other system\n");
+    return 0;
+}
+
+/* \SYNTHOS\BOOT.TRY counts the starts that did not get far: the kernel writes 0 back once the system has run for
+   a while (it finds the file by the nonce). Two failed starts in a row and the next one is in safe mode. */
+#define TRY_LEN 23
+
+static int read_tries(struct file *root)
+{
+    struct file *file;
+    char text[TRY_LEN + 1];
+    uintn size = TRY_LEN;
+    if (!root || ERROR(root->open(root, &file, u"\\SYNTHOS\\BOOT.TRY", FILE_READ, 0)))
+        return 0;
+    if (ERROR(file->read(file, &size, text)))
+        size = 0;
+    file->close(file);
+    return size >= 7 && key_is(text, "tries") && text[6] >= '0' && text[6] <= '9' ? text[6] - '0' : 0;
+}
+
+static void write_tries(struct file *root, int tries, u32 nonce)
+{
+    struct file *file;
+    if (!root || ERROR(root->open(root, &file, u"\\SYNTHOS\\BOOT.TRY", FILE_READ | FILE_WRITE | FILE_CREATE, 0)))
+        return;
+    char text[TRY_LEN] = "tries=0 nonce=00000000\n";
+    text[6] = (char)('0' + (tries > 9 ? 9 : tries));
+    for (int k = 0; k < 8; k++)
+        text[14 + k] = "0123456789abcdef"[(nonce >> (28 - 4 * k)) & 15];
+    uintn size = TRY_LEN;
+    file->set_position(file, 0);
+    file->write(file, &size, text);
+    file->flush(file);
+    file->close(file);
+}
+
+static u32 make_nonce(void)
+{
+    u32 lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return (lo ^ hi * 2654435761u) | 1;
 }
 
 static u32 e820_type(u32 efi_type)
@@ -870,22 +963,32 @@ static u32 e820_type(u32 efi_type)
     }
 }
 
+/* Usable RAM first (a long firmware map must not crowd it out), then sorted by address with neighbours merged. */
 static u32 convert_map(struct memory_descriptor *map, uintn size, uintn desc_size, struct e820 *out)
 {
     u32 n = 0;
-    for (uintn off = 0; off < size; off += desc_size) {
-        struct memory_descriptor *d = (struct memory_descriptor *)((u8 *)map + off);
-        u64 base = d->physical_start, length = d->pages * 4096;
-        u32 type = e820_type(d->type);
-        if (n && out[n - 1].type == type && out[n - 1].base + out[n - 1].length == base) {
-            out[n - 1].length += length;
-            continue;
+    for (int pass = 0; pass < 2; pass++)
+        for (uintn off = 0; off < size && n < MMAP_MAX; off += desc_size) {
+            struct memory_descriptor *d = (struct memory_descriptor *)((u8 *)map + off);
+            u32 type = e820_type(d->type);
+            if ((type == 1) == (pass == 0) && d->pages)
+                out[n++] = (struct e820){d->physical_start, d->pages * 4096, type, 1};
         }
-        if (n == MMAP_MAX)
-            break;
-        out[n++] = (struct e820){base, length, type, 1};
+    for (u32 i = 1; i < n; i++) {
+        struct e820 e = out[i];
+        u32 k = i;
+        for (; k > 0 && out[k - 1].base > e.base; k--)
+            out[k] = out[k - 1];
+        out[k] = e;
     }
-    return n;
+    u32 m = 0;
+    for (u32 i = 0; i < n; i++) {
+        if (m && out[m - 1].type == out[i].type && out[m - 1].base + out[m - 1].length == out[i].base)
+            out[m - 1].length += out[i].length;
+        else
+            out[m++] = out[i];
+    }
+    return m;
 }
 
 static int kernel_region_free(struct memory_descriptor *map, uintn size, uintn desc_size)
@@ -921,13 +1024,18 @@ status EFIAPI efi_main(void *image, struct system_table *table)
         return fail("no loaded image");
     struct file *root = open_root(li->device);
     struct config cfg;
+    int tries = read_tries(root), safe = tries >= 2;
     if (read_config(root, &cfg)) {
         if (cfg.reg && register_self(image, root))
             clear_register(root, &cfg);
-        boot_menu(cfg.timeout);
+        safe = boot_menu(cfg.timeout, safe);
     } else {
         start_new_installation(image, li->device);
+        if (safe)
+            say("SynthOS did not finish starting the last times: starting in safe mode\n");
     }
+    u32 nonce = make_nonce();
+    write_tries(root, tries + 1, nonce);
 
     u64 kernel_addr = KERNEL_ADDR;
     bs->allocate_pages(ALLOCATE_ADDRESS, LOADER_DATA, (KERNEL_LIMIT - KERNEL_ADDR) / 4096, &kernel_addr);
@@ -942,7 +1050,8 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     bi->magic = BOOT_MAGIC;
     bi->kernel_sectors = *(u32 *)(kernel + 12);
     bi->kernel_lba = KERNEL_LBA;
-    bi->flags = BOOT_UEFI | BOOT_SYSTEM;
+    bi->flags = BOOT_UEFI | BOOT_SYSTEM | (safe ? BOOT_SAFE : 0);
+    bi->boot_nonce = nonce;
     bi->system_lba = (u32)cfg.system;
     bi->system_sectors = (u32)cfg.sectors;
     copy(bi->id, cfg.id, 8);

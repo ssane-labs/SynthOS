@@ -120,6 +120,12 @@ desktops add
 desktop is not running
 sound
 no sound device found
+recovery
+Start counter: none (BIOS start)
+recovery safe
+this start did not come from the UEFI loader
+faulttest; echo still running
+contained: CPU exception 14, the system goes on
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets

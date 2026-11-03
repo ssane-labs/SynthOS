@@ -158,8 +158,9 @@ else
 endif
 
 # Secure Boot: the loader on the EFI partition carries the SHA-256 of its kernel and is signed with the key in
-# $(SB_DIR) (made on the first build, kept across "make clean"); SYNTHOS.CER next to the kernel is the certificate
-# to enroll in the firmware (docs/INSTALL.md). SB_KEY/SB_CERT pick another key, SB=0 leaves the loader unsigned.
+# $(SB_DIR) (made on the first build, kept across "make clean"); \SYNTHOS\synthos-key.cer next to the kernel is the
+# certificate to enroll (docs/INSTALL.md): a long lower-case name, since MokManager wants ".cer" and some firmware
+# cannot lower-case the 8.3 name. SB_KEY/SB_CERT pick another key, SB=0 leaves the loader unsigned.
 SB_DIR      ?= keys
 SB_KEY      ?= $(SB_DIR)/db.key
 SB_CERT     ?= $(SB_DIR)/db.crt
@@ -207,7 +208,7 @@ $(OUT)/esp.img: $(OUT)/kernel.bin $(OUT)/BOOTX64.EFI $(SHIM_FILES)
 	    mcopy -i $@ $(SHIM_DIR)/SHIM.TXT ::/SYNTHOS/SHIM.TXT; \
 	else mcopy -i $@ $(OUT)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI; fi
 	@mcopy -i $@ $(OUT)/kernel.bin ::/SYNTHOS/KERNEL.BIN
-	@if [ -f $(OUT)/SYNTHOS.CER ]; then mcopy -i $@ $(OUT)/SYNTHOS.CER ::/SYNTHOS/SYNTHOS.CER; fi
+	@if [ -f $(OUT)/SYNTHOS.CER ]; then mcopy -i $@ $(OUT)/SYNTHOS.CER ::/SYNTHOS/synthos-key.cer; fi
 
 $(BUILD)/efi/BOOTX64.EFI: arch/x86/efi/loader.c arch/x86/efi/trampoline.asm arch/x86/efi/blob.asm
 	@mkdir -p $(@D)
@@ -490,7 +491,7 @@ windows: $(IMAGE) $(OUT)/esp.img
 	@cp tools/windows/*.cmd tools/windows/*.ps1 tools/windows/README.txt $(WIN_DIR)/
 	@cp $(OUT)/BOOTX64.EFI $(WIN_DIR)/EFI/grubx64.efi
 	@cp $(OUT)/kernel.bin $(WIN_DIR)/EFI/KERNEL.BIN
-	@if [ -f $(OUT)/SYNTHOS.CER ]; then cp $(OUT)/SYNTHOS.CER $(WIN_DIR)/EFI/; fi
+	@if [ -f $(OUT)/SYNTHOS.CER ]; then cp $(OUT)/SYNTHOS.CER $(WIN_DIR)/EFI/synthos-key.cer; fi
 	@if [ -s $(SHIM_DIR)/shimx64.efi ] && [ -n "$(SHIM_FILES)" ]; then \
 	    cp $(SHIM_DIR)/shimx64.efi $(SHIM_DIR)/mmx64.efi $(SHIM_DIR)/SHIM.TXT $(WIN_DIR)/EFI/; fi
 	@cd $(BUILD) && python3 -I -m zipfile -c $(notdir $(WIN_DIR)).zip $(notdir $(WIN_DIR))

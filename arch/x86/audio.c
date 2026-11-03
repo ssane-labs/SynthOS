@@ -97,7 +97,7 @@ static bool use_hda(int rate)
     static bool tried, found;
     if (!tried) {
         tried = true;
-        found = hda_probe(rate);
+        found = !hal_safe_mode() && hda_probe(rate);
     }
     return found;
 }

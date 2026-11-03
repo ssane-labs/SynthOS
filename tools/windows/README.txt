@@ -9,7 +9,7 @@
 
 Настройки BIOS/UEFI менять не нужно: ни Secure Boot, ни Fast Boot, ни порядок загрузки.
 Если Secure Boot включён, при первом запуске один раз появится синий экран MokManager:
-  OK -> любая клавиша -> Enroll key from disk -> раздел EFI -> SYNTHOS -> SYNTHOS.CER ->
+  OK -> любая клавиша -> Enroll key from disk -> раздел EFI -> SYNTHOS -> synthos-key.cer ->
   Continue -> Yes -> Reboot.
 Так ключ SynthOS добавляется в список shim; ключи прошивки и Windows не меняются.
 

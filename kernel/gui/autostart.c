@@ -5,6 +5,7 @@
 #include <synth/heap.h>
 #include <synth/lnk.h>
 #include <synth/path.h>
+#include <synth/recovery.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/users.h>
@@ -250,6 +251,11 @@ int autostart_remove(int index)
 
 void autostart_run(void)
 {
+    if (safe_mode()) {
+        gui_notify("Safe mode", "The last starts failed, so programs from Startup were not started. "
+                                "Run 'recovery normal' in Terminal for a normal start next time.");
+        return;
+    }
     scan();
     for (int i = 0; i < item_count; i++) {
         const struct item *it = &items[i];

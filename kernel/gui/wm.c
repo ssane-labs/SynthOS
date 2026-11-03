@@ -1,5 +1,6 @@
 #include <synth/command.h>
 #include <synth/error.h>
+#include <synth/exec.h>
 #include <synth/fbcon.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
@@ -499,10 +500,79 @@ static void raise(struct window *w)
     wm_damage(outer_rect(w));
 }
 
+/* App code runs guarded: a CPU fault in a window's paint or event code closes that window with a notice and the
+   desktop goes on. Not while a Windows program runs: its own fault handling ends the program instead. */
+struct app_call {
+    struct window *w;
+    struct gui_event *e;
+    struct canvas *c;
+};
+
+static struct crashed {
+    struct window *w;
+    const struct window_ops *ops;
+} crashed_windows[8];
+static int crashed_count;
+
+static void call_event(void *p)
+{
+    struct app_call *a = p;
+    a->w->ops->event(a->w, a->e);
+}
+
+static void call_paint(void *p)
+{
+    struct app_call *a = p;
+    a->w->ops->paint(a->w, a->c);
+}
+
+static void call_destroy(void *p)
+{
+    struct crashed *c = p;
+    c->ops->destroy(c->w);
+}
+
+static const struct window_ops dead_ops;
+
+static void guarded(struct window *w, void (*fn)(void *), struct app_call *a)
+{
+#if CONFIG_WIN32
+    if (w32_in_program()) {
+        fn(a);
+        return;
+    }
+#endif
+    if (!hal_guard(fn, a))
+        return;
+    char text[96];
+    ksnprintf(text, sizeof(text), "\"%s\" quit unexpectedly. Its window was closed; the rest of the system is fine.",
+              w->title[0] ? w->title : w->app ? w->app->name : "The app");
+    gui_notify("App closed", text);
+    if (crashed_count < (int)ARRAY_SIZE(crashed_windows))
+        crashed_windows[crashed_count++] = (struct crashed){w, w->ops};
+    w->ops = &dead_ops;
+}
+
+/* the app's own destroy still runs (it forgets the window), guarded too */
+static void bury_crashed(void)
+{
+    while (crashed_count > 0) {
+        struct crashed c = crashed_windows[--crashed_count];
+        if (!wm_window_alive(c.w))
+            continue;
+        if (c.ops && c.ops->destroy)
+            hal_guard(call_destroy, &c);
+        wm_destroy(c.w);
+    }
+}
+
 static void send(struct window *w, struct gui_event *e)
 {
-    if (w && w->ops && w->ops->event)
-        w->ops->event(w, e);
+    if (w && w->ops && w->ops->event) {
+        struct app_call a = {w, e, NULL};
+        guarded(w, call_event, &a);
+        bury_crashed();
+    }
 }
 
 struct window *wm_focused(void)
@@ -1744,9 +1814,13 @@ void wm_render(void)
             w->dirty = false;
             struct canvas c = w->surface;
             c.clip = (struct rect){0, 0, c.w, c.h};
-            w->ops->paint(w, &c);
+            struct app_call a = {w, NULL, &c};
+            guarded(w, call_paint, &a);
             wm_damage_z(wm_client_rect(w), w->z);
         }
+    rendering = false;
+    bury_crashed();
+    rendering = true;
     for (int i = 0; i < screen_count; i++) {
         struct screen *s = &screens[i];
         struct rect list[MAX_DIRTY];

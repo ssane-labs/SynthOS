@@ -401,6 +401,11 @@ void w32_run_atexit(void)
     }
 }
 
+bool w32_in_program(void)
+{
+    return w32 && w32->jump.active;
+}
+
 void w32_exit(uint32_t code)
 {
     if (code && !w32->exiting)
@@ -431,7 +436,7 @@ static void where(struct w32_process *p, uint32_t a, char *out, size_t cap);
 static void on_fault(int vector, uint32_t eip, uint32_t address)
 {
     if (!w32 || !w32->jump.active)
-        panic("CPU exception %d at %08x (address %08x)", vector, eip, address);
+        return;
     w32_trace_dump();
     uint32_t r[8];
     arch_fault_registers(r);

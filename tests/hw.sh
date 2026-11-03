@@ -92,6 +92,20 @@ for config in bios:ide:any bios:ahci:any bios:nvme:any bios:usb:any bios:xhci:an
     [ "$cpu" = smp ] && check "$config processors" "$first" "Processors: 4 cores"
     check "$config persistence" "$second" "$tag"
 done
+# Recovery: the UEFI loader counts starts in \SYNTHOS\BOOT.TRY, the kernel resets the count once the shell is up;
+# after two that did not get there (here: asked for with "recovery safe") the next start is in safe mode.
+if [ -n "$ovmf" ]; then
+    cp "$image" "$work/disk.img"
+    [ -n "$ovmf_vars" ] && cp "$ovmf_vars" "$work/vars.fd"
+    out=$(boot uefi ide any "recovery safe")
+    check "recovery: counter found" "$out" "The next start is in safe mode"
+    out=$(boot uefi ide smp "recovery")
+    check "recovery: safe mode after failed starts" "$out" "Safe mode: on"
+    check "recovery: counter reset" "$out" "Start counter: 0"
+    out=$(boot uefi ide smp "recovery")
+    check "recovery: normal start again" "$out" "Safe mode: off"
+    check "recovery: normal start again" "$out" "Processors: 4 cores"
+fi
 # Sound: Intel HD Audio (the controller of real PCs, with Realtek and other codecs) plays a test tone; QEMU writes
 # what reaches the codec into a WAV file: 440 Hz for half a second, then silence.
 cp "$image" "$work/disk.img"

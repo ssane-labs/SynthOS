@@ -160,3 +160,16 @@ uint16_t pit_counter(void)
     uint8_t hi = inb(0x40);
     return (uint16_t)(lo | hi << 8);
 }
+
+/* Busy wait on the PIT counter, which runs with interrupts off too (a panic inside an interrupt handler). */
+void hal_delay_ms(uint32_t ms)
+{
+    uint32_t reload = PIT_FREQUENCY / tick_hz, prev = pit_counter();
+    uint64_t want = (uint64_t)ms * PIT_FREQUENCY / 1000u, done = 0;
+    while (done < want) {
+        uint32_t now = pit_counter();
+        done += prev >= now ? prev - now : prev + reload - now;
+        prev = now;
+        __asm__ volatile("pause");
+    }
+}

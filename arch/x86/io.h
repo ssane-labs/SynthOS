@@ -157,10 +157,19 @@ struct x86_bootinfo {
     uint32_t system_lba;
     uint32_t system_sectors;
     uint32_t id[2];
+    uint32_t fb_addr_high;
+    uint32_t boot_nonce;
 };
 
 #define BOOT_UEFI 0x1u
 #define BOOT_SYSTEM 0x2u
+#define BOOT_FB_HIGH 0x4u
+#define BOOT_SAFE 0x8u
+
+static inline uint64_t x86_fb_phys(const struct x86_bootinfo *bi)
+{
+    return bi->fb_addr | ((bi->flags & BOOT_FB_HIGH) ? (uint64_t)bi->fb_addr_high << 32 : 0);
+}
 
 struct e820_entry {
     uint64_t base;
@@ -184,7 +193,7 @@ struct cpu_info {
     uint32_t family;
 };
 
-#define MAX_CPUS 16
+#define MAX_CPUS 64
 
 void cpu_ap_init(int index);
 void *vmm_map_uncached(uint64_t phys, size_t size);
@@ -252,6 +261,8 @@ bool serial_ready(void);
 int serial_getc(void);
 void serial_write(const char *s, size_t n);
 void vga_init(void);
+void vga_text_mode(void);
+void arch_guard_catch(int vector, uintptr_t pc, uintptr_t address);
 void vga_load_font(int codepage);
 struct display *vga_display(void);
 struct display *serial_display(void);

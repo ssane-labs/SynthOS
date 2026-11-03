@@ -38,7 +38,7 @@
 
 **Secure Boot выключать не нужно.** Если он включён, при первом запуске один раз появится синий
 экран MokManager (подробно — в разделе 2): «OK» → любая клавиша → **Enroll key from disk** → раздел
-EFI → `SYNTHOS` → `SYNTHOS.CER` → **Continue** → **Yes** → **Reboot**.
+EFI → `SYNTHOS` → `synthos-key.cer` → **Continue** → **Yes** → **Reboot**.
 
 Удаление — `Uninstall SynthOS.cmd` из того же архива: раздел SynthOS, его файлы в разделе EFI и пункт
 меню удаляются, место возвращается диску C:.
@@ -88,11 +88,17 @@ EFI → `SYNTHOS` → `SYNTHOS.CER` → **Continue** → **Yes** → **Reboot**.
   1. «Verification failed: (0x1A) Security Violation» → **OK**;
   2. «Press any key to perform MOK management» → любая клавиша (на это 10 секунд);
   3. **Enroll key from disk** → выбрать раздел (флешку `SYNTHOS` или раздел EFI) → `SYNTHOS/` →
-     `SYNTHOS.CER`;
+     `synthos-key.cer`;
   4. **Continue** → **Yes** → **Reboot**.
 
+  Если MokManager пишет «Unsupported Format» (так было со старыми сборками, где файл назывался
+  `SYNTHOS.CER` заглавными буквами — часть прошивок не умеет переводить имя в строчные), скачайте
+  свежую сборку или выберите вместо ключа хеш: **Enroll hash from disk** → `EFI/BOOT/grubx64.efi`
+  (у установки из Windows — `EFI/SynthOS/grubx64.efi`) → **Yes** → **Reboot**. Хеш подходит только к
+  этой версии загрузчика, после обновления шаг придётся повторить, поэтому ключ удобнее.
+
   Ключи прошивки и Windows при этом не меняются, BitLocker ничего не замечает. Если shim не нравится,
-  по-прежнему можно добавить `SYNTHOS\SYNTHOS.CER` в db прошивки (Append, не Replace) или выключить
+  по-прежнему можно добавить `SYNTHOS\synthos-key.cer` в db прошивки (Append, не Replace) или выключить
   Secure Boot.
 * **Режим SATA** — подходит и AHCI, и «RAID / Intel RST» (без собранного RAID-массива): контроллер в
   режиме RAID SynthOS использует как AHCI, а NVMe-диски за Intel VMD («VMD controller», ноутбуки с
@@ -233,7 +239,7 @@ welcome                                   мастер первого запус
 * **«Access Denied» / ничего не происходит, MokManager не появляется** — прошивка не доверяет и
   загрузчику Microsoft для сторонних систем (на некоторых ноутбуках с «Secured-core» это выключено:
   в настройках Secure Boot включить «Allow Microsoft 3rd Party UEFI CA»), либо образ собран без shim:
-  добавить `SYNTHOS\SYNTHOS.CER` в db (п. 2) или выключить Secure Boot.
+  добавить `SYNTHOS\synthos-key.cer` в db (п. 2) или выключить Secure Boot.
 * **«Secure Boot: KERNEL.BIN is not the kernel this loader was signed with»** — ядро на флешке
   заменено или повреждено: записать образ заново.
 * **Установщик не видит диск** — `dmesg | grep -E "ahci|nvme|vmd"` покажет, что найдено. Собранный

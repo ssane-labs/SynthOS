@@ -84,9 +84,10 @@ void panic(const char *fmt, ...)
     con_set_attr(ATTR(COLOR_WHITE, COLOR_RED));
     kprintf("\n *** SynthOS kernel panic *** \n");
     con_reset();
-    kprintf(" %s\n System halted. Press any key to reboot.\n", msg);
+    kprintf(" %s\n The computer restarts in 15 seconds (any key: now). After two failed starts in a row the\n"
+            " boot menu picks safe mode.\n", msg);
     con_flush();
-    while (hal_key_read(-1) == 0)
-        ;
+    for (int i = 0; i < 1500 && hal_key_read(0) == 0; i++)
+        hal_delay_ms(10);
     hal_reboot();
 }

@@ -344,6 +344,8 @@ void x86_interrupt(struct regs *r)
             fault_regs = r;
             fault_handler((int)r->vector, r->eip, cr2);
         }
+        if (r->cs == 0x08)
+            arch_guard_catch((int)r->vector, r->eip, cr2);
         panic("CPU exception %u (%s) at %08x err=%x cr2=%08x eax=%08x ebx=%08x ecx=%08x edx=%08x esp=%08x",
               r->vector, exception_names[r->vector] ? exception_names[r->vector] : "reserved", r->eip,
               r->error, cr2, r->eax, r->ebx, r->ecx, r->edx, r->esp);

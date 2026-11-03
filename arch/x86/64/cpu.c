@@ -258,6 +258,8 @@ void x86_interrupt(struct regs *r)
                 backtrace(r, false);
             fault_handler((int)r->vector, (uint32_t)r->rip, (uint32_t)cr2);
         }
+        if (r->cs == 0x30)
+            arch_guard_catch((int)r->vector, (uintptr_t)r->rip, (uintptr_t)cr2);
         backtrace(r, true);
         panic("CPU exception %u (%s) at %016llx err=%x cr2=%016llx rax=%llx rbx=%llx rcx=%llx rdx=%llx rsp=%llx",
               (unsigned)r->vector, exception_names[r->vector] ? exception_names[r->vector] : "reserved",

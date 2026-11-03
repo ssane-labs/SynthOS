@@ -7,6 +7,7 @@
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/net.h>
+#include <synth/recovery.h>
 #include <synth/shell.h>
 #include <synth/users.h>
 #include <synth/string.h>
@@ -189,7 +190,10 @@ void kmain(const struct boot_info *bi)
     } else {
         boot_step(true, "Memory: %s available to the kernel heap", size);
     }
-    int cpus = hal_start_cpus();
+    recovery_init(bi->cmdline);
+    if (safe_mode())
+        boot_step(true, "Safe mode: the last starts failed or it was chosen in the boot menu");
+    int cpus = safe_mode() ? 1 : hal_start_cpus();
     if (cpus > 1)
         boot_step(true, "Processors: %d cores", cpus);
     if (con_is_grid())
@@ -234,6 +238,7 @@ void kmain(const struct boot_info *bi)
     if (desktop)
         gui_run(sh);
 #endif
+    recovery_boot_ok();
     shell_repl(sh);
 
     con_role(ROLE_MUTED);

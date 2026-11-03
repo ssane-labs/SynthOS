@@ -11,6 +11,7 @@
 #include <synth/lnk.h>
 #include <synth/path.h>
 #include <synth/picture.h>
+#include <synth/recovery.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/theme.h>
@@ -1695,6 +1696,7 @@ static void pump(int timeout_ms)
     screenshot_tick();
     hotcorner_tick();
     wm_render();
+    recovery_boot_ok();
     pumping = false;
     if (autostart_pending && session && session->idle && !gui_locked()) {
         autostart_pending = false;

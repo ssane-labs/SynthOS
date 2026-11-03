@@ -114,8 +114,8 @@ bool pci_relocate_bar64(const struct pci_device *d, uint8_t offset, uint32_t *ou
         if (map[i].base < 0x100000000ull)
             ram_top = MAX(ram_top, map[i].base + map[i].length);
     }
-    if (bi->fb_addr)
-        add_range(&used, bi->fb_addr, (uint64_t)bi->fb_addr + (uint64_t)bi->fb_pitch * bi->fb_height);
+    if (x86_fb_phys(bi))
+        add_range(&used, x86_fb_phys(bi), x86_fb_phys(bi) + (uint64_t)bi->fb_pitch * bi->fb_height);
     add_range(&used, 0xfec00000u, 0x100000000ull);
     pci_foreach(collect_bars, &used);
 

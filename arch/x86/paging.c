@@ -15,7 +15,7 @@
 #define PTE_USER 0x004u
 #define PTE_PWT 0x008u
 #define PTE_LARGE 0x080u
-#define MAX_REGIONS 8
+#define MAX_REGIONS 32
 
 static bool enabled, pae;
 static uint32_t page_dir[1024] __attribute__((aligned(4096)));
@@ -344,22 +344,35 @@ static void high_init(void)
         return;
     const struct x86_bootinfo *bi = x86_boot_info();
     const struct e820_entry *map = (const struct e820_entry *)bi->mmap_addr;
-    for (uint32_t i = 0; i < bi->mmap_count && region_count < MAX_REGIONS; i++) {
-        if (map[i].type != 1)
-            continue;
-        /* Everything above the kernel heap, below and above 4 GB, holds pages for programs. */
-        uint64_t start = MAX(map[i].base, (uint64_t)heap_phys + heap_bytes), end = map[i].base + map[i].length;
-        start = (start + 4095) & ~4095ull;
-        end &= ~4095ull;
-        if (end <= start || (start >> 12) > 0xffffffffull)
-            continue;
-        uint64_t count = MIN((end - start) >> 12, 0xffffffffull - (start >> 12));
+    /* the biggest free areas first: firmware maps on big machines list dozens of small pieces below 4 GiB */
+    while (region_count < MAX_REGIONS) {
+        uint64_t best_start = 0, best_count = 0;
+        for (uint32_t i = 0; i < bi->mmap_count; i++) {
+            if (map[i].type != 1)
+                continue;
+            uint64_t start = MAX(map[i].base, (uint64_t)heap_phys + heap_bytes), end = map[i].base + map[i].length;
+            start = (start + 4095) & ~4095ull;
+            end &= ~4095ull;
+            if (end <= start || (start >> 12) > 0xffffffffull)
+                continue;
+            uint64_t count = MIN((end - start) >> 12, 0xffffffffull - (start >> 12));
+            bool taken = false;
+            for (int k = 0; k < region_count && !taken; k++)
+                taken = (uint64_t)regions[k].first_pfn << 12 < end &&
+                        start < ((uint64_t)regions[k].first_pfn + regions[k].count) << 12;
+            if (!taken && count >= 16 && count > best_count) {
+                best_start = start;
+                best_count = count;
+            }
+        }
+        if (!best_count)
+            break;
         struct region *r = &regions[region_count];
-        r->bitmap = kzalloc((size_t)((count + 31) / 32) * 4);
+        r->bitmap = kzalloc((size_t)((best_count + 31) / 32) * 4);
         if (!r->bitmap)
-            continue;
-        r->first_pfn = (uint32_t)(start >> 12);
-        r->count = (uint32_t)count;
+            break;
+        r->first_pfn = (uint32_t)(best_start >> 12);
+        r->count = (uint32_t)best_count;
         r->free = r->count;
         region_count++;
     }

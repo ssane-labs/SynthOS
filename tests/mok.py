@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boots a stick image under Secure Boot with Microsoft's keys and enrolls SYNTHOS\\SYNTHOS.CER in MokManager by
+"""Boots a stick image under Secure Boot with Microsoft's keys and enrolls SYNTHOS\\synthos-key.cer in MokManager by
 pressing the keys a person would; prints the serial output of the boot that follows.
 usage: mok.py OVMF_CODE.fd OVMF_VARS.fd disk.img"""
 import os, socket, subprocess, sys, tempfile, time
@@ -40,7 +40,7 @@ keys("ret")                                # "Press any key to perform MOK manag
 keys("down", "ret")                        # Enroll key from disk
 keys("ret")                                # the stick's EFI partition
 keys("down", "ret")                        # SYNTHOS/
-keys("down", "down", "down", "ret")        # SYNTHOS.CER
+keys("down", "down", "down", "ret")        # synthos-key.cer
 keys("down", "ret")                        # Continue
 keys("down", "ret")                        # Yes
 keys("ret", pause=0)                       # Reboot

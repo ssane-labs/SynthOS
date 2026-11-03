@@ -129,7 +129,8 @@ static void probe(void)
 #ifdef CONFIG_SERIAL_CONSOLE
     return;
 #else
-    pci_foreach(found_pci, NULL);
+    if (!hal_safe_mode())
+        pci_foreach(found_pci, NULL);
     if (output_count && outputs[0].primary)
         return;
     struct output o = {0};
