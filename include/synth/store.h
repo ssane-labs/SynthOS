@@ -24,7 +24,7 @@ struct store_app {
     char id[24], name[48], developer[48], category[24], icon[16], version[24], size[16];
     char summary[120], about[600], note[120];
     char url[2][320], sha256[65];
-    char file[64], args[64], check[160], open[160], bin[64], post[16], strip[64], uninstall[64];
+    char file[64], args[64], check[160], open[160], bin[64], post[16], strip[64], uninstall[64], inner[64];
     enum store_kind kind;
     int bits;
 };

@@ -86,7 +86,6 @@ static DWORD WINAPI CM_Get_Device_Interface_ListW(const void *guid, const WCHAR 
 }
 
 /* comdlg32, crypt32, d3dcompiler, dbghelp, dnsapi, dwmapi */
-STUB(ChooseColorW, 1, 0, 0)
 STUB(CertNameToStrA, 5, 0, 0)
 STUB(CryptMsgOpenToDecode, 6, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(CryptMsgUpdate, 4, 0, ERROR_CALL_NOT_IMPLEMENTED)
@@ -149,7 +148,7 @@ static int WINAPI ExtSelectClipRgn(HANDLE dc, HANDLE rgn, int mode)
 
 /* imm32, iphlpapi */
 STUB(ImmGetCompositionFontW, 2, 0, 0)
-STUB(ImmSetCompositionFontW, 2, 0, 0)
+STUB(ImmSetCompositionFontW, 2, 1, 0)
 STUB(ImmGetCompositionStringA, 4, 0, 0)
 STUB(ImmGetDefaultIMEWnd, 1, 0, 0)
 STUB(ImmGetDescriptionW, 3, 0, 0)
@@ -395,7 +394,6 @@ static const struct w32_export gecko_ktmw32[] = {W32_FN(CreateTransaction), W32_
 static const struct w32_export gecko_cfgmgr32[] = {W32_FN(CM_Register_Notification), W32_FN(CM_Unregister_Notification),
                                                    W32_FN(CM_Get_Device_Interface_List_SizeW),
                                                    W32_FN(CM_Get_Device_Interface_ListW)};
-static const struct w32_export gecko_comdlg32[] = {W32_FN(ChooseColorW)};
 static const struct w32_export gecko_crypt32[] = {W32_FN(CertNameToStrA), W32_FN(CryptMsgOpenToDecode),
                                                   W32_FN(CryptMsgUpdate), W32_FN(CryptBinaryToStringW)};
 static const struct w32_export gecko_d3dcompiler[] = {W32_FN(D3DCompile)};
@@ -409,7 +407,7 @@ static const struct w32_export gecko_gdi32[] = {
     W32_FN(GetRandomRgn), W32_FN(GetGraphicsMode), W32_FN(ExtSelectClipRgn),
 };
 static const struct w32_export gecko_imm32[] = {
-    W32_FN(ImmGetCompositionFontW), W32_FN(ImmSetCompositionFontW), W32_FN(ImmGetCompositionStringA),
+    W32_FN(ImmGetCompositionFontW), W32_FN(ImmSetCompositionFontW), W32_AS("ImmSetCompositionFontA", ImmSetCompositionFontW), W32_FN(ImmGetCompositionStringA),
     W32_FN(ImmGetDefaultIMEWnd), W32_FN(ImmGetDescriptionW), W32_FN(ImmGetProperty), W32_FN(ImmSetOpenStatus),
     W32_FN(ImmGetConversionStatus), W32_FN(ImmSetConversionStatus),
 };
@@ -463,7 +461,6 @@ W32_EXPORTS(gecko_advapi32_module, "advapi32.dll", gecko_advapi32);
 W32_EXPORTS(gecko_avrt_module, "avrt.dll", gecko_avrt);
 W32_EXPORTS(gecko_ktmw32_module, "ktmw32.dll", gecko_ktmw32);
 W32_EXPORTS(gecko_cfgmgr32_module, "cfgmgr32.dll", gecko_cfgmgr32);
-W32_EXPORTS(gecko_comdlg32_module, "comdlg32.dll", gecko_comdlg32);
 W32_EXPORTS(gecko_crypt32_module, "crypt32.dll", gecko_crypt32);
 W32_EXPORTS(gecko_d3dcompiler_module, "d3dcompiler_47.dll", gecko_d3dcompiler);
 W32_EXPORTS(gecko_dbghelp_module, "dbghelp.dll", gecko_dbghelp);

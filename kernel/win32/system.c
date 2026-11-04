@@ -772,6 +772,25 @@ static long WINAPI SHGetMalloc(const void **out)
     return 0;
 }
 
+static long WINAPI CoGetMalloc(DWORD context, const void **out)
+{
+    if (context != 1 || !out)
+        return (long)0x80070057;
+    *out = &shell_malloc;
+    return 0;
+}
+
+static long WINAPI SHBindToParent(const void *pidl, const void *riid, void **out, const void **last)
+{
+    UNUSED(pidl);
+    UNUSED(riid);
+    if (last)
+        *last = NULL;
+    if (out)
+        *out = NULL;
+    return (long)0x80004001;
+}
+
 #define SEE_MASK_NOCLOSEPROCESS 0x40
 
 /* SHELLEXECUTEINFO: fMask 1, lpVerb 3, lpFile 4, lpParameters 5, lpDirectory 6, hInstApp 8, hProcess 14 */
@@ -1004,7 +1023,7 @@ static const struct w32_export shell32_exports[] = {
     W32_FN(SHGetSpecialFolderPathW), W32_FN(CommandLineToArgvW), W32_FN(ShellExecuteA),
     W32_FN(ShellExecuteW),           W32_FN(SHGetKnownFolderPath), W32_FN(ShellExecuteExW), W32_FN(ShellExecuteExA),
     W32_FN(SHQueryUserNotificationState), W32_FN(ILFree),      W32_FN(SHChangeNotify), W32_FN(SHGetPropertyStoreFromParsingName),
-    W32_FN(SHGetMalloc), W32_AS("SHGetDesktopFolder", shell_notimpl1),
+    W32_FN(SHGetMalloc), W32_AS("SHGetDesktopFolder", shell_notimpl1), W32_FN(SHBindToParent),
     W32_FN(SHGetSpecialFolderLocation), W32_FN(SHGetFolderLocation), W32_FN(SHGetKnownFolderIDList),
     W32_FN(SHGetPathFromIDListW), W32_FN(SHGetPathFromIDListA), W32_FN(SHGetPathFromIDListEx),
     W32_FN(SHParseDisplayName), W32_FN(ILCreateFromPathA), W32_FN(ILClone), W32_FN(ILGetSize),
@@ -1024,8 +1043,11 @@ static const char *const shell32_ordinals[681] = {
     [189] = "ILCreateFromPathA",    [190] = "ILCreateFromPathW",        [680] = "IsUserAnAdmin",
 };
 
+static const struct w32_export shell_ole32_exports[] = {W32_FN(CoGetMalloc)};
+
 W32_EXPORTS(shell32_module, "shell32.dll", shell32_exports, .ordinals = shell32_ordinals,
             .ordinal_count = ARRAY_SIZE(shell32_ordinals));
+W32_EXPORTS(shell_ole32_module, "ole32.dll", shell_ole32_exports);
 
 static LONG WINAPI RtlVerifyVersionInfo(const uint8_t *info, DWORD mask, uint64_t cond)
 {

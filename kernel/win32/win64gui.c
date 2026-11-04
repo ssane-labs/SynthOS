@@ -11,6 +11,7 @@
 #define CS_MAGIC 0x32335343u
 
 #define ENUM4 0x104
+#define ENUM3 0x103
 
 struct thunk {
     uint8_t code[16];
@@ -88,6 +89,12 @@ static uint32_t WINAPI bridge_enum4(struct thunk *t, uint32_t a, uint32_t b, uin
     return (uint32_t)w64_call(t->fn, 4, args);
 }
 
+static uint32_t WINAPI bridge_enum3(struct thunk *t, uint32_t a, uint32_t b, uint32_t c)
+{
+    uint64_t args[3] = {a, b, w64_high_back(c)};
+    return (uint32_t)w64_call(t->fn, 3, args);
+}
+
 static bool is_stub_for(uint64_t addr, w64_handler fn, void **target);
 static uint64_t h_proc32(uint64_t *a, const uint64_t *f, void *t);
 
@@ -105,7 +112,8 @@ static uint32_t to32(uint64_t fn, int argc)
     if (!t)
         return 0;
     uint32_t self = U(t), entry = U(argc == 1 ? (void *)bridge1 : argc == 2 ? (void *)bridge2
-                                    : argc == ENUM4 ? (void *)bridge_enum4 : (void *)bridge4);
+                                    : argc == ENUM4 ? (void *)bridge_enum4
+                                    : argc == ENUM3 ? (void *)bridge_enum3 : (void *)bridge4);
     int32_t rel = (int32_t)(entry - (self + 12));
     t->code[0] = 0x59;
     t->code[1] = 0x68;
@@ -140,6 +148,8 @@ bool w64_thunk_call(const void *fn, const uint32_t *w, int n, uint64_t *ret)
         *ret = bridge2(t, a[0], a[1]);
     else if (t->argc == ENUM4)
         *ret = bridge_enum4(t, a[0], a[1], a[2], a[3]);
+    else if (t->argc == ENUM3)
+        *ret = bridge_enum3(t, a[0], a[1], a[2]);
     else
         *ret = bridge4(t, a[0], a[1], a[2], a[3]);
     return true;
@@ -352,6 +362,11 @@ static uint64_t h_enum_resources(uint64_t *a, const uint64_t *f, void *t)
     return (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), to32(a[2], ENUM4), U(P(a[3])));
 }
 
+static uint64_t h_enum_types(uint64_t *a, const uint64_t *f, void *t)
+{
+    return (uint32_t)T32(t, U(P(a[0])), to32(a[1], ENUM3), U(P(a[2])));
+}
+
 static uint64_t h_enum_fonts(uint64_t *a, const uint64_t *f, void *t)
 {
     return (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), to32(a[2], ENUM4), U(P(a[3])), (uint32_t)a[4]);
@@ -542,6 +557,11 @@ static const struct w64_export winmm_exports[] = {
 };
 W64_EXPORTS(winmm_module, "winmm.dll", winmm_exports);
 
+static const struct w64_export comctl32_exports[] = {
+    W64_FN("LBItemFromPt", h_point1),
+};
+W64_EXPORTS(comctl32_module, "comctl32.dll", comctl32_exports);
+
 /* arrays of handles: 8 bytes each */
 static const struct w64_export wait_exports[] = {
     W64_FN("MsgWaitForMultipleObjectsEx", h_msg_wait),
@@ -552,6 +572,8 @@ W64_EXPORTS(wait_module, "*", wait_exports);
 static const struct w64_export enum_exports[] = {
     W64_FN("EnumResourceNamesW", h_enum_resources),
     W64_FN("EnumResourceNamesA", h_enum_resources),
+    W64_FN("EnumResourceTypesW", h_enum_types),
+    W64_FN("EnumResourceTypesA", h_enum_types),
     W64_FN("EnumFontFamiliesExA", h_enum_fonts),
     W64_FN("EnumFontFamiliesExW", h_enum_fonts),
     W64_FN("EnumSystemLocalesA", h_enum_locales),

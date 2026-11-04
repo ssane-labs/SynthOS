@@ -106,6 +106,22 @@ static const struct data_entry *find_entry(HANDLE module, const void *type, cons
     return (const struct data_entry *)langs;
 }
 
+static void *entry_name(const uint8_t *root, uint32_t name, bool wide, void **copy)
+{
+    if (!(name & 0x80000000u))
+        return (void *)(uintptr_t)name;
+    const uint16_t *s = (const uint16_t *)(root + (name & 0x7fffffffu));
+    if (!(*copy = w32_zalloc((size_t)(s[0] + 1) * 2)))
+        return NULL;
+    for (uint16_t k = 0; k < s[0]; k++) {
+        if (wide)
+            ((uint16_t *)*copy)[k] = s[1 + k];
+        else
+            ((char *)*copy)[k] = (char)(s[1 + k] < 0x80 ? s[1 + k] : '?');
+    }
+    return *copy;
+}
+
 typedef BOOL(WINAPI *enum_names_fn)(HANDLE, const void *, const void *, intptr_t);
 
 static BOOL enum_names(HANDLE module, const void *type, enum_names_fn fn, intptr_t param, bool wide)
@@ -120,25 +136,49 @@ static BOOL enum_names(HANDLE module, const void *type, enum_names_fn fn, intptr
     const uint32_t *entries = (const uint32_t *)(dir + 16);
     for (uint32_t i = 0; i < count; i++) {
         uint32_t name = entries[i * 2];
-        void *arg = (void *)(uintptr_t)name, *copy = NULL;
-        if (name & 0x80000000u) {
-            const uint16_t *s = (const uint16_t *)(root + (name & 0x7fffffffu));
-            if (!(copy = w32_zalloc((size_t)(s[0] + 1) * 2)))
-                return FALSE;
-            for (uint16_t k = 0; k < s[0]; k++) {
-                if (wide)
-                    ((uint16_t *)copy)[k] = s[1 + k];
-                else
-                    ((char *)copy)[k] = (char)(s[1 + k] < 0x80 ? s[1 + k] : '?');
-            }
-            arg = copy;
-        }
+        void *copy = NULL, *arg = entry_name(root, name, wide, &copy);
+        if (!arg)
+            return FALSE;
         BOOL go = W32_CALL(__typeof__(fn), fn, module, type, arg, param);
         w32_free(copy);
         if (!go)
             break;
     }
     return TRUE;
+}
+
+typedef BOOL(WINAPI *enum_types_fn)(HANDLE, const void *, intptr_t);
+
+static BOOL enum_types(HANDLE module, enum_types_fn fn, intptr_t param, bool wide)
+{
+    const uint8_t *root = resource_root(module_base(module));
+    if (!root || !fn) {
+        w32_set_error(1813);
+        return FALSE;
+    }
+    uint32_t count = (uint32_t)*(const uint16_t *)(root + 12) + *(const uint16_t *)(root + 14);
+    const uint32_t *entries = (const uint32_t *)(root + 16);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t name = entries[i * 2];
+        void *copy = NULL, *arg = entry_name(root, name, wide, &copy);
+        if (!arg)
+            return FALSE;
+        BOOL go = W32_CALL(__typeof__(fn), fn, module, arg, param);
+        w32_free(copy);
+        if (!go)
+            break;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI EnumResourceTypesW(HANDLE module, enum_types_fn fn, intptr_t param)
+{
+    return enum_types(module, fn, param, true);
+}
+
+static BOOL WINAPI EnumResourceTypesA(HANDLE module, enum_types_fn fn, intptr_t param)
+{
+    return enum_types(module, fn, param, false);
 }
 
 static BOOL WINAPI EnumResourceNamesW(HANDLE module, const WCHAR *type, enum_names_fn fn, intptr_t param)
@@ -373,9 +413,49 @@ static int WINAPI TranslateAcceleratorA(HANDLE hwnd, HANDLE table, MSG *msg)
     return 0;
 }
 
+static HANDLE WINAPI CreateAcceleratorTableW(const uint8_t *list, int n)
+{
+    if (!list || n <= 0)
+        return NULL;
+    struct accel *a = w32_zalloc((size_t)n * sizeof(*a) + 8);
+    if (!a)
+        return NULL;
+    memcpy(a, "SYACCEL", 8);
+    struct accel *t = (struct accel *)((uint8_t *)a + 8);
+    for (int i = 0; i < n; i++, list += 6) {
+        t[i].flags = list[0];
+        memcpy(&t[i].key, list + 2, 2);
+        memcpy(&t[i].cmd, list + 4, 2);
+    }
+    t[n - 1].flags |= 0x80;
+    return t;
+}
+
+static int WINAPI CopyAcceleratorTableW(HANDLE table, uint8_t *out, int n)
+{
+    const struct accel *a = table;
+    if (!a)
+        return 0;
+    int count = 0;
+    while (count < 256 && !(a[count++].flags & 0x80))
+        ;
+    if (!out)
+        return count;
+    int i = 0;
+    for (; i < n && i < count; i++, out += 6) {
+        out[0] = (uint8_t)(a[i].flags & 0x7f);
+        out[1] = 0;
+        memcpy(out + 2, &a[i].key, 2);
+        memcpy(out + 4, &a[i].cmd, 2);
+    }
+    return i;
+}
+
 static BOOL WINAPI DestroyAcceleratorTable(HANDLE table)
 {
-    UNUSED(table);
+    uint8_t *p = table ? (uint8_t *)table - 8 : NULL;
+    if (p && !memcmp(p, "SYACCEL", 8))
+        w32_free(p);
     return TRUE;
 }
 #endif
@@ -383,6 +463,7 @@ static BOOL WINAPI DestroyAcceleratorTable(HANDLE table)
 static const struct w32_export resource_exports[] = {
     W32_FN(FindResourceA), W32_FN(FindResourceW), W32_FN(FindResourceExA), W32_FN(FindResourceExW),
     W32_FN(EnumResourceNamesW), W32_FN(EnumResourceNamesA),
+    W32_FN(EnumResourceTypesW), W32_FN(EnumResourceTypesA),
     W32_FN(LoadResource),  W32_FN(LockResource),  W32_FN(SizeofResource),  W32_FN(FreeResource),
 };
 
@@ -392,6 +473,8 @@ static const struct w32_export resource_user_exports[] = {
     W32_FN(LoadMenuA), W32_FN(LoadMenuW), W32_FN(LoadMenuIndirectA), W32_AS("LoadMenuIndirectW", LoadMenuIndirectA),
     W32_FN(LoadAcceleratorsA), W32_FN(LoadAcceleratorsW), W32_FN(TranslateAcceleratorA),
     W32_AS("TranslateAcceleratorW", TranslateAcceleratorA), W32_FN(DestroyAcceleratorTable),
+    W32_FN(CreateAcceleratorTableW), W32_AS("CreateAcceleratorTableA", CreateAcceleratorTableW), W32_FN(CopyAcceleratorTableW),
+    W32_AS("CopyAcceleratorTableA", CopyAcceleratorTableW),
 #endif
 };
 

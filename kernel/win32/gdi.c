@@ -878,6 +878,21 @@ static int WINAPI SetStretchBltMode(HANDLE h, int mode)
     return 3;
 }
 
+static int WINAPI GetStretchBltMode(HANDLE h)
+{
+    return dc_of(h) ? 3 : 0;
+}
+
+/* only MM_TEXT: the extents stay one to one */
+static BOOL WINAPI SetWindowExtEx(HANDLE h, int x, int y, SIZE *old)
+{
+    UNUSED(x);
+    UNUSED(y);
+    if (old)
+        *old = (SIZE){1, 1};
+    return dc_of(h) != NULL;
+}
+
 static int WINAPI SetGraphicsMode(HANDLE h, int mode)
 {
     UNUSED(h);
@@ -1259,6 +1274,16 @@ static BOOL WINAPI Polyline(HANDLE h, const POINT *p, int n)
     if (target_of(d, &t))
         for (int i = 1; i < n; i++)
             line(d, &t, p[i - 1].x, p[i - 1].y, p[i].x, p[i].y);
+    return TRUE;
+}
+
+static BOOL WINAPI PolyPolyline(HANDLE h, const POINT *p, const DWORD *counts, DWORD n)
+{
+    if (!p || !counts)
+        return FALSE;
+    for (DWORD i = 0; i < n; p += counts[i++])
+        if (counts[i] >= 2)
+            Polyline(h, p, (int)counts[i]);
     return TRUE;
 }
 
@@ -1652,6 +1677,200 @@ static BOOL WINAPI GetTextExtentPoint32W(HANDLE h, LPCWSTR s, int n, SIZE *out)
     BOOL ok = u && extent(h, u, out);
     w32_free(u);
     return ok;
+}
+
+static int char_width(const struct ui_font *f, uint32_t c)
+{
+    char u[8];
+    u[utf8_encode(c, u)] = 0;
+    return gfx_text_width(f, u);
+}
+
+static uint32_t ansi_char(UINT c)
+{
+    char a = (char)c;
+    char *u = ansi_to_utf8(&a, 1);
+    uint32_t r = c;
+    if (u) {
+        const char *q = u;
+        r = utf8_next(&q);
+        w32_free(u);
+    }
+    return r;
+}
+
+static BOOL WINAPI GetCharWidthA(HANDLE h, UINT first, UINT last, int *out)
+{
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    for (UINT c = first; c <= last; c++)
+        out[c - first] = char_width(f, ansi_char(c));
+    return TRUE;
+}
+
+static uint32_t float_bits(int v)
+{
+    if (!v)
+        return 0;
+    uint32_t sign = v < 0 ? 0x80000000u : 0, m = v < 0 ? (uint32_t)-v : (uint32_t)v;
+    int e = 31;
+    while (!(m >> e))
+        e--;
+    uint32_t frac = e > 23 ? m >> (e - 23) : m << (23 - e);
+    return sign | (uint32_t)(e + 127) << 23 | (frac & 0x7fffff);
+}
+
+static BOOL abc_widths(HANDLE h, UINT first, UINT last, uint32_t *out, bool fl, bool ansi)
+{
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    for (UINT c = first; c <= last; c++, out += 3) {
+        int w = char_width(f, ansi ? ansi_char(c) : c);
+        out[0] = out[2] = 0;
+        out[1] = fl ? float_bits(w) : (uint32_t)w;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI GetCharABCWidthsW(HANDLE h, UINT first, UINT last, uint32_t *out)
+{
+    return abc_widths(h, first, last, out, false, false);
+}
+
+static BOOL WINAPI GetCharABCWidthsA(HANDLE h, UINT first, UINT last, uint32_t *out)
+{
+    return abc_widths(h, first, last, out, false, true);
+}
+
+static BOOL WINAPI GetCharABCWidthsFloatW(HANDLE h, UINT first, UINT last, uint32_t *out)
+{
+    return abc_widths(h, first, last, out, true, false);
+}
+
+static BOOL WINAPI GetCharABCWidthsFloatA(HANDLE h, UINT first, UINT last, uint32_t *out)
+{
+    return abc_widths(h, first, last, out, true, true);
+}
+
+static int extent_ex(HANDLE h, const uint32_t *cp, int n, int max, int *fit, int *dx)
+{
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    int x = 0, fits = 0;
+    for (int i = 0; i < n; i++) {
+        x += char_width(f, cp[i]);
+        if (dx)
+            dx[i] = x;
+        if (max < 0 || x <= max)
+            fits = i + 1;
+    }
+    if (fit)
+        *fit = fits;
+    return x;
+}
+
+static uint32_t *wide_codepoints(LPCWSTR s, int n)
+{
+    uint32_t *cp = w32_alloc((size_t)(n ? n : 1) * 4);
+    for (int i = 0; cp && i < n; i++)
+        cp[i] = s[i];
+    return cp;
+}
+
+static BOOL WINAPI GetTextExtentExPointW(HANDLE h, LPCWSTR s, int n, int max, int *fit, int *dx, SIZE *size)
+{
+    if (n < 0 || (!s && n))
+        return FALSE;
+    uint32_t *cp = wide_codepoints(s, n);
+    if (!cp)
+        return FALSE;
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    int w = extent_ex(h, cp, n, fit ? max : -1, fit, dx);
+    w32_free(cp);
+    if (size)
+        *size = (SIZE){w, f->height};
+    return TRUE;
+}
+
+static BOOL WINAPI GetTextExtentExPointA(HANDLE h, LPCSTR s, int n, int max, int *fit, int *dx, SIZE *size)
+{
+    if (n < 0 || (!s && n))
+        return FALSE;
+    uint32_t *cp = w32_alloc((size_t)(n ? n : 1) * 4);
+    if (!cp)
+        return FALSE;
+    for (int i = 0; i < n; i++)
+        cp[i] = ansi_char((uint8_t)s[i]);
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    int w = extent_ex(h, cp, n, fit ? max : -1, fit, dx);
+    w32_free(cp);
+    if (size)
+        *size = (SIZE){w, f->height};
+    return TRUE;
+}
+
+static uint32_t get_u32(const uint8_t *p)
+{
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return v;
+}
+
+static DWORD WINAPI GetCharacterPlacementW(HANDLE h, LPCWSTR s, int n, int max, uint8_t *res, DWORD flags)
+{
+    UNUSED(flags);
+    if (n < 0 || (!s && n))
+        return 0;
+    uint32_t *cp = wide_codepoints(s, n);
+    if (!cp)
+        return 0;
+    int ps = w32->win64 ? 8 : 4, fit = n;
+    int *dx = w32_alloc((size_t)(n ? n : 1) * sizeof(int));
+    int w = dx ? extent_ex(h, cp, n, max > 0 ? max : -1, &fit, dx) : 0;
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    if (res && dx) {
+        int base = w32->win64 ? 8 : 4;
+        uint8_t *field = res + base + 6 * ps;
+        int glyphs = (int)get_u32(field);
+        int count = glyphs && glyphs < n ? glyphs : n;
+        WCHAR *outs = (WCHAR *)(uintptr_t)get_u32(res + base);
+        UINT *order = (UINT *)(uintptr_t)get_u32(res + base + ps);
+        int *adv = (int *)(uintptr_t)get_u32(res + base + 2 * ps);
+        int *caret = (int *)(uintptr_t)get_u32(res + base + 3 * ps);
+        char *cls = (char *)(uintptr_t)get_u32(res + base + 4 * ps);
+        WCHAR *gl = (WCHAR *)(uintptr_t)get_u32(res + base + 5 * ps);
+        for (int i = 0; i < count; i++) {
+            if (outs)
+                outs[i] = s[i];
+            if (order)
+                order[i] = (UINT)i;
+            if (adv)
+                adv[i] = dx[i] - (i ? dx[i - 1] : 0);
+            if (caret)
+                caret[i] = i ? dx[i - 1] : 0;
+            if (cls)
+                cls[i] = 0;
+            if (gl)
+                gl[i] = s[i];
+        }
+        uint32_t v = (uint32_t)count;
+        memcpy(field, &v, 4);
+        v = (uint32_t)fit;
+        memcpy(field + 4, &v, 4);
+    }
+    w32_free(dx);
+    w32_free(cp);
+    return (DWORD)(w & 0xffff) | (DWORD)f->height << 16;
+}
+
+static UINT WINAPI SetLayout(HANDLE h, DWORD layout)
+{
+    UNUSED(h);
+    UNUSED(layout);
+    return 0;
 }
 
 static void text_metrics(HANDLE h, uint8_t *tm, bool wide)
@@ -3634,7 +3853,8 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(CreateFontIndirectW), W32_FN(CreateFontA), W32_FN(CreateFontW), W32_FN(SelectObject), W32_FN(DeleteObject),
     W32_FN(GetObjectType), W32_FN(GetObjectA), W32_FN(GetObjectW), W32_FN(SetTextColor),
     W32_FN(GetTextColor), W32_FN(SetBkColor), W32_FN(GetBkColor), W32_FN(SetBkMode), W32_FN(GetBkMode),
-    W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode), W32_FN(GetMapMode), W32_FN(LPtoDP), W32_FN(DPtoLP), W32_FN(GetNearestColor),
+    W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode), W32_FN(GetMapMode), W32_FN(GetStretchBltMode),
+    W32_FN(SetWindowExtEx), W32_AS("SetViewportExtEx", SetWindowExtEx), W32_FN(PolyPolyline), W32_FN(LPtoDP), W32_FN(DPtoLP), W32_FN(GetNearestColor),
     W32_FN(OffsetClipRgn), W32_FN(CreatePatternBrush), W32_FN(PolyBezier), W32_AS("AngleArc", w32_one6),
     W32_AS("ArcTo", w32_one9), W32_AS("PathToRegion", w32_zero1), W32_AS("CopyEnhMetaFileW", w32_zero2),
     W32_AS("GetEnhMetaFileDescriptionW", w32_zero3), W32_AS("GetEnhMetaFilePaletteEntries", w32_zero3),
@@ -3645,7 +3865,10 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(CreateRectRgnIndirect), W32_FN(SelectClipRgn), W32_FN(SetRectRgn), W32_FN(CombineRgn), W32_FN(GetRgnBox),
     W32_FN(EqualRgn), W32_FN(GetRegionData), W32_FN(GetClipRgn), W32_FN(GetCurrentObject), W32_FN(GetWorldTransform),
     W32_AS("SetWorldTransform", w32_one2), W32_AS("ModifyWorldTransform", w32_one3), W32_FN(SetBrushOrgEx),
-    W32_FN(GetCharWidthW), W32_AS("GetCharWidth32W", GetCharWidthW), W32_FN(GdiAlphaBlend), W32_FN(SetDIBits),
+    W32_FN(GetCharWidthW), W32_AS("GetCharWidth32W", GetCharWidthW), W32_FN(GetCharWidthA), W32_AS("GetCharWidth32A", GetCharWidthA),
+    W32_FN(GetCharABCWidthsW), W32_FN(GetCharABCWidthsA), W32_FN(GetCharABCWidthsFloatW), W32_FN(GetCharABCWidthsFloatA),
+    W32_FN(GetTextExtentExPointW), W32_FN(GetTextExtentExPointA), W32_FN(GetCharacterPlacementW), W32_FN(SetLayout),
+    W32_AS("GetLayout", w32_zero1), W32_AS("UpdateColors", w32_one1), W32_FN(GdiAlphaBlend), W32_FN(SetDIBits),
     W32_AS("SetPolyFillMode", w32_one2), W32_AS("SetArcDirection", w32_one2), W32_AS("SetMiterLimit", w32_one3),
     W32_FN(GetFontData), W32_AS("GetOutlineTextMetricsW", w32_zero3), W32_AS("BeginPath", w32_zero1),
     W32_AS("EndPath", w32_zero1), W32_AS("CloseFigure", w32_zero1), W32_AS("FillPath", w32_zero1),

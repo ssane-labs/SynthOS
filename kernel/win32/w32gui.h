@@ -152,6 +152,9 @@ enum control_kind {
     CK_LISTBOX,
     CK_COMBOBOX,
     CK_TAB,
+    CK_LISTVIEW,
+    CK_TOOLBAR,
+    CK_STATUS,
 };
 
 struct w32_class {
@@ -281,6 +284,10 @@ LRESULT WINAPI w32_static_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_edit_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_progress_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_tab_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_listview_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_toolbar_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_status_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+HANDLE WINAPI w32_set_capture_internal(struct w32_window *w);
 LRESULT WINAPI w32_richedit_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_dialog_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_dispatch(const MSG *msg);

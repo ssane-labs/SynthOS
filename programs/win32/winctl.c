@@ -7,6 +7,9 @@
 
 static int measured, drawn, last_notify;
 static int tab_notify;
+static int list_changed, last_command;
+static UINT find_msg;
+static DWORD find_flags;
 
 static LRESULT CALLBACK parent_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
@@ -19,8 +22,24 @@ static LRESULT CALLBACK parent_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         drawn++;
         return TRUE;
     }
-    if (m == WM_COMMAND)
+    if (m == WM_COMMAND) {
         last_notify = HIWORD(w);
+        last_command = LOWORD(w);
+    }
+    if (m == WM_NOTIFY && ((NMHDR *)l)->code == LVN_GETDISPINFOW) {
+        NMLVDISPINFOW *d = (NMLVDISPINFOW *)l;
+        if (d->item.mask & LVIF_TEXT)
+            swprintf(d->item.pszText, d->item.cchTextMax, L"v%d.%d", d->item.iItem, d->item.iSubItem);
+    }
+    if (m == WM_NOTIFY && ((NMHDR *)l)->code == LVN_GETDISPINFOA) {
+        NMLVDISPINFOA *d = (NMLVDISPINFOA *)l;
+        if (d->item.mask & LVIF_TEXT)
+            snprintf(d->item.pszText, d->item.cchTextMax, "a%d.%d", d->item.iItem, d->item.iSubItem);
+    }
+    if (find_msg && m == find_msg)
+        find_flags = ((FINDREPLACEW *)l)->Flags;
+    if (m == WM_NOTIFY && ((NMHDR *)l)->code == LVN_ITEMCHANGED)
+        list_changed++;
     if (m == WM_NOTIFY && ((NMHDR *)l)->code == TCN_SELCHANGE)
         tab_notify = TCN_SELCHANGE;
     return DefWindowProcA(h, m, w, l);
@@ -141,6 +160,182 @@ static void tab_test(HWND parent)
            (int)SendMessageW(tc, TCM_GETCURSEL, 0, 0), tab_notify == TCN_SELCHANGE);
 }
 
+static int CALLBACK by_param_desc(LPARAM a, LPARAM b, LPARAM sort)
+{
+    return (int)(b - a) * (int)sort;
+}
+
+static void list_test(HWND parent)
+{
+    HWND lv = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | LVS_REPORT, 0, 0, 300, 200, parent, (HMENU)8, NULL, NULL);
+    LVCOLUMNW col = {0};
+    col.mask = LVCF_TEXT | LVCF_WIDTH;
+    col.cx = 100;
+    col.pszText = L"Name";
+    SendMessageW(lv, LVM_INSERTCOLUMNW, 0, (LPARAM)&col);
+    col.pszText = L"Size";
+    SendMessageW(lv, LVM_INSERTCOLUMNW, 1, (LPARAM)&col);
+    const WCHAR *names[] = {L"alpha", L"beta", L"gamma"};
+    for (int i = 0; i < 3; i++) {
+        LVITEMW it = {0};
+        it.mask = LVIF_TEXT | LVIF_PARAM;
+        it.iItem = i;
+        it.pszText = (WCHAR *)names[i];
+        it.lParam = i + 1;
+        SendMessageW(lv, LVM_INSERTITEMW, i, (LPARAM)&it);
+        it.mask = LVIF_TEXT;
+        it.iSubItem = 1;
+        it.pszText = i == 1 ? LPSTR_TEXTCALLBACKW : L"10";
+        SendMessageW(lv, LVM_SETITEMTEXTW, i, (LPARAM)&it);
+    }
+    SendMessageW(lv, LVM_SORTITEMS, 1, (LPARAM)by_param_desc);
+    WCHAR first[16] = {0}, sub[16] = {0};
+    LVITEMW get = {0};
+    get.pszText = first;
+    get.cchTextMax = 16;
+    SendMessageW(lv, LVM_GETITEMTEXTW, 0, (LPARAM)&get);
+    get.iSubItem = 1;
+    get.pszText = sub;
+    SendMessageW(lv, LVM_GETITEMTEXTW, 1, (LPARAM)&get);
+    LVFINDINFOW find = {0};
+    find.flags = LVFI_STRING;
+    find.psz = L"Beta";
+    int found = (int)SendMessageW(lv, LVM_FINDITEMW, -1, (LPARAM)&find);
+    RECT r = {LVIR_BOUNDS};
+    SendMessageW(lv, LVM_GETITEMRECT, 2, (LPARAM)&r);
+    list_changed = 0;
+    SendMessageW(lv, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(r.left + 5, r.top + 3));
+    int sel = (int)SendMessageW(lv, LVM_GETNEXTITEM, -1, LVNI_SELECTED);
+    HWND virt = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | LVS_REPORT | LVS_OWNERDATA, 0, 0, 300, 200, parent,
+                                (HMENU)9, NULL, NULL);
+    col.pszText = L"A";
+    SendMessageW(virt, LVM_INSERTCOLUMNW, 0, (LPARAM)&col);
+    SendMessageW(virt, LVM_INSERTCOLUMNW, 1, (LPARAM)&col);
+    SendMessageW(virt, LVM_SETITEMCOUNT, 500, 0);
+    WCHAR vtext[16] = {0};
+    get.iSubItem = 1;
+    get.pszText = vtext;
+    SendMessageW(virt, LVM_GETITEMTEXTW, 420, (LPARAM)&get);
+    printf("listview count=%d first=%ls sub=%ls find=%d sel=%d changed=%d virtual=%d text=%ls\n",
+           (int)SendMessageW(lv, LVM_GETITEMCOUNT, 0, 0), first, sub, found, sel, list_changed > 0,
+           (int)SendMessageW(virt, LVM_GETITEMCOUNT, 0, 0), vtext);
+
+    TBBUTTON buttons[3] = {{0, 101, TBSTATE_ENABLED, BTNS_BUTTON, {0}, 0, 0},
+                           {0, 0, 0, BTNS_SEP, {0}, 0, 0},
+                           {1, 102, TBSTATE_ENABLED, BTNS_CHECK, {0}, 0, 0}};
+    HWND tb = CreateToolbarEx(parent, WS_CHILD | TBSTYLE_FLAT, 10, 0, NULL, 0, buttons, 3, 0, 0, 16, 16,
+                              sizeof(TBBUTTON));
+    RECT br;
+    SendMessageW(tb, TB_GETITEMRECT, 2, (LPARAM)&br);
+    last_command = 0;
+    SendMessageW(tb, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(br.left + 3, br.top + 3));
+    SendMessageW(tb, WM_LBUTTONUP, 0, MAKELPARAM(br.left + 3, br.top + 3));
+    HWND sb = CreateStatusWindowW(WS_CHILD, L"Ready", parent, 11);
+    int parts[2] = {100, -1};
+    SendMessageW(sb, SB_SETPARTS, 2, (LPARAM)parts);
+    SendMessageW(sb, SB_SETTEXTW, 1, (LPARAM)L"3 files");
+    WCHAR st[16] = {0};
+    SendMessageW(sb, SB_GETTEXTW, 1, (LPARAM)st);
+    printf("toolbar count=%d cmd=%d checked=%d status=%ls parts=%d\n", (int)SendMessageW(tb, TB_BUTTONCOUNT, 0, 0),
+           last_command, (int)SendMessageW(tb, TB_ISBUTTONCHECKED, 102, 0), st,
+           (int)SendMessageW(sb, SB_GETPARTS, 0, 0));
+}
+
+static void find_test(HWND parent)
+{
+    static WCHAR what[32] = L"needle";
+    static FINDREPLACEW fr;
+    find_msg = RegisterWindowMessageW(FINDMSGSTRINGW);
+    fr.lStructSize = sizeof(fr);
+    fr.hwndOwner = parent;
+    fr.lpstrFindWhat = what;
+    fr.wFindWhatLen = 32;
+    fr.Flags = FR_DOWN | FR_MATCHCASE;
+    HWND d = FindTextW(&fr);
+    WCHAR shown[32] = {0};
+    GetDlgItemTextW(d, 0x480, shown, 32);
+    SetDlgItemTextW(d, 0x480, L"hay");
+    SendMessageW(d, WM_COMMAND, IDOK, 0);
+    DWORD next = find_flags;
+    SendMessageW(d, WM_COMMAND, IDCANCEL, 0);
+    printf("findtext shown=%ls next=%d case=%d text=%ls term=%d gone=%d\n", shown, (next & FR_FINDNEXT) != 0,
+           (next & FR_MATCHCASE) != 0, what, (find_flags & FR_DIALOGTERM) != 0, !IsWindow(d));
+}
+
+static const char *drive_title;
+static int page_inits, page_applies;
+
+static void CALLBACK drive_dialog(HWND h, UINT m, UINT_PTR id, DWORD t)
+{
+    (void)m;
+    (void)t;
+    HWND d = FindWindowA(NULL, drive_title);
+    if (!d)
+        return;
+    KillTimer(h, id);
+    if (!strcmp(drive_title, "Color")) {
+        SetDlgItemInt(d, 0x2c2, 10, FALSE);
+        SetDlgItemInt(d, 0x2c3, 20, FALSE);
+        SetDlgItemInt(d, 0x2c4, 30, FALSE);
+    } else {
+        HWND page = (HWND)SendMessageW(d, PSM_GETCURRENTPAGEHWND, 0, 0);
+        SendMessageW(d, PSM_CHANGED, (WPARAM)page, 0);
+    }
+    PostMessageW(d, WM_COMMAND, IDOK, 0);
+}
+
+static INT_PTR CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    (void)h;
+    (void)w;
+    if (m == WM_INITDIALOG)
+        page_inits++;
+    if (m == WM_NOTIFY && ((NMHDR *)l)->code == (UINT)PSN_APPLY)
+        page_applies++;
+    return m == WM_INITDIALOG;
+}
+
+static void dialogs_test(HWND parent)
+{
+    static COLORREF custom[16];
+    CHOOSECOLORW cc = {0};
+    cc.lStructSize = sizeof(cc);
+    cc.hwndOwner = parent;
+    cc.rgbResult = RGB(200, 0, 0);
+    cc.lpCustColors = custom;
+    cc.Flags = CC_RGBINIT;
+    drive_title = "Color";
+    SetTimer(parent, 7, 30, drive_dialog);
+    BOOL picked = ChooseColorW(&cc);
+    static WORD tmpl[64];
+    DLGTEMPLATE *t = (DLGTEMPLATE *)tmpl;
+    t->style = WS_CHILD | DS_CONTROL;
+    t->cx = 120;
+    t->cy = 60;
+    WORD *p = (WORD *)(t + 1);
+    p[0] = p[1] = 0;
+    memcpy(p + 2, L"General", 16);
+    PROPSHEETPAGEW pg[2] = {0};
+    for (int i = 0; i < 2; i++) {
+        pg[i].dwSize = sizeof(pg[i]);
+        pg[i].dwFlags = PSP_DLGINDIRECT;
+        pg[i].pResource = t;
+        pg[i].pfnDlgProc = page_proc;
+    }
+    PROPSHEETHEADERW ph = {0};
+    ph.dwSize = sizeof(ph);
+    ph.dwFlags = PSH_PROPSHEETPAGE;
+    ph.hwndParent = parent;
+    ph.pszCaption = L"Sheet";
+    ph.nPages = 2;
+    ph.ppsp = pg;
+    drive_title = "Sheet";
+    SetTimer(parent, 8, 30, drive_dialog);
+    INT_PTR r = PropertySheetW(&ph);
+    printf("dialogs color=%d rgb=%d,%d,%d sheet=%d inits=%d applies=%d\n", picked, GetRValue(cc.rgbResult),
+           GetGValue(cc.rgbResult), GetBValue(cc.rgbResult), (int)r, page_inits, page_applies);
+}
+
 static void gdi_test(void)
 {
     HDC dc = CreateCompatibleDC(NULL);
@@ -245,6 +440,9 @@ int main(void)
     } else {
         controls_test(parent);
         tab_test(parent);
+        list_test(parent);
+        find_test(parent);
+        dialogs_test(parent);
         DestroyWindow(parent);
     }
     gdi_test();

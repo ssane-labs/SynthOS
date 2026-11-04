@@ -376,9 +376,37 @@ static BOOL WINAPI IsCharAlphaNumericA(char c)
     return is_alnum((uint8_t)c);
 }
 
+static BOOL WINAPI IsCharAlphaW(WCHAR c)
+{
+    if (c < 0xc0)
+        return is_alpha(c);
+    return c >= 0x3040 ? c < 0xfe00 : c != 0xd7 && c != 0xf7 && w32_towupper(c) != w32_towlower(c);
+}
 
+static BOOL WINAPI IsCharAlphaNumericW(WCHAR c)
+{
+    return (c >= '0' && c <= '9') || IsCharAlphaW(c);
+}
 
+static BOOL WINAPI IsCharUpperA(char c)
+{
+    return c >= 'A' && c <= 'Z';
+}
 
+static BOOL WINAPI IsCharLowerA(char c)
+{
+    return c >= 'a' && c <= 'z';
+}
+
+static BOOL WINAPI IsCharUpperW(WCHAR c)
+{
+    return w32_towlower(c) != c;
+}
+
+static BOOL WINAPI IsCharLowerW(WCHAR c)
+{
+    return w32_towupper(c) != c;
+}
 
 static DWORD WINAPI GetKeyboardLayout(DWORD thread)
 {
@@ -398,7 +426,8 @@ static const struct w32_export user32_exports[] = {
     W32_FN(wvsprintfA), W32_FN(wvsprintfW), W32_FN(CharUpperA), W32_FN(CharLowerA), W32_FN(CharUpperW),
     W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA), W32_FN(CharPrevExA), W32_FN(CharNextExA),
     W32_FN(CharNextW), W32_FN(CharPrevW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
-    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA),
+    W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA), W32_FN(IsCharAlphaW), W32_FN(IsCharUpperW), W32_FN(IsCharLowerW), W32_FN(IsCharUpperA), W32_FN(IsCharLowerA),
+    W32_FN(IsCharAlphaNumericW),
     W32_AS("GetKeyboardLayout", GetKeyboardLayout), W32_FN(GetKeyboardType),
 };
 

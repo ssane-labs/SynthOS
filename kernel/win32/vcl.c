@@ -80,10 +80,192 @@ static BOOL WINAPI DrawIcon(HANDLE dc, int x, int y, HANDLE icon)
     return draw ? draw(dc, x, y, icon, 0, 0, 0, NULL, 3) : FALSE;
 }
 
+#define BUILTIN(dll, name, type) ((type)w32_builtin_lookup(dll, name))
+
+static BOOL draw_state(HANDLE dc, HANDLE brush, void *fn, intptr_t data, uintptr_t wdata, int x, int y, int cx, int cy,
+                       UINT flags, bool wide)
+{
+    UNUSED(brush);
+    UINT type = flags & 15;
+    if (fn && type <= 2)
+        return W32_CALL(BOOL(WINAPI *)(HANDLE, intptr_t, uintptr_t, int, int), fn, dc, data, wdata, cx, cy);
+    if (type == 3)
+        return BUILTIN("user32.dll", "DrawIconEx", BOOL(WINAPI *)(HANDLE, int, int, HANDLE, int, int, UINT, HANDLE, UINT))(
+            dc, x, y, (HANDLE)data, cx, cy, 0, NULL, 3);
+    if (type == 4) {
+        HANDLE mem = BUILTIN("gdi32.dll", "CreateCompatibleDC", HANDLE(WINAPI *)(HANDLE))(dc);
+        HANDLE(WINAPI * select)(HANDLE, HANDLE) = BUILTIN("gdi32.dll", "SelectObject", HANDLE(WINAPI *)(HANDLE, HANDLE));
+        if (!mem)
+            return FALSE;
+        if (!cx || !cy) {
+            int32_t bm[6] = {0};
+            BUILTIN("gdi32.dll", "GetObjectW", int(WINAPI *)(HANDLE, int, void *))((HANDLE)data, sizeof(bm), bm);
+            cx = cx ? cx : bm[1];
+            cy = cy ? cy : bm[2];
+        }
+        HANDLE old = select(mem, (HANDLE)data);
+        BUILTIN("gdi32.dll", "BitBlt", BOOL(WINAPI *)(HANDLE, int, int, int, int, HANDLE, int, int, DWORD))(
+            dc, x, y, cx, cy, mem, 0, 0, 0xcc0020);
+        select(mem, old);
+        BUILTIN("gdi32.dll", "DeleteDC", BOOL(WINAPI *)(HANDLE))(mem);
+        return TRUE;
+    }
+    if (type != 1 && type != 2)
+        return FALSE;
+    RECT r = {x, y, x + (cx ? cx : 0x7fff), y + (cy ? cy : 0x7fff)};
+    COLORREF(WINAPI * color)(HANDLE, COLORREF) = BUILTIN("gdi32.dll", "SetTextColor", COLORREF(WINAPI *)(HANDLE, COLORREF));
+    COLORREF was = flags & 0x20 ? color(dc, 0x808080) : 0;
+    UINT format = 0x100 | (type == 1 ? 0x800 : 0);
+    if (wide)
+        BUILTIN("user32.dll", "DrawTextW", int(WINAPI *)(HANDLE, LPCWSTR, int, RECT *, UINT))(
+            dc, (LPCWSTR)data, wdata ? (int)wdata : -1, &r, format);
+    else
+        BUILTIN("user32.dll", "DrawTextA", int(WINAPI *)(HANDLE, LPCSTR, int, RECT *, UINT))(
+            dc, (LPCSTR)data, wdata ? (int)wdata : -1, &r, format);
+    if (flags & 0x20)
+        color(dc, was);
+    return TRUE;
+}
+
+static BOOL WINAPI DrawStateW(HANDLE dc, HANDLE brush, void *fn, intptr_t data, uintptr_t wdata, int x, int y, int cx,
+                              int cy, UINT flags)
+{
+    return draw_state(dc, brush, fn, data, wdata, x, y, cx, cy, flags, true);
+}
+
+static BOOL WINAPI DrawStateA(HANDLE dc, HANDLE brush, void *fn, intptr_t data, uintptr_t wdata, int x, int y, int cx,
+                              int cy, UINT flags)
+{
+    return draw_state(dc, brush, fn, data, wdata, x, y, cx, cy, flags, false);
+}
+
+static void put_word(uint8_t *p, int off, uintptr_t v)
+{
+    memcpy(p + off, &v, w32->win64 ? 8 : 4);
+}
+
+/* menus are drawn in the system menu bar at the top of the screen, not inside the window */
+static BOOL WINAPI GetMenuBarInfo(HANDLE h, int32_t object, int32_t item, uint8_t *info)
+{
+    UNUSED(item);
+    struct w32_window *w = w32_win(h);
+    if (!w || !info || object != -3 || !w->menu)
+        return FALSE;
+    int(WINAPI * metric)(int) = BUILTIN("user32.dll", "GetSystemMetrics", int(WINAPI *)(int));
+    RECT bar = {0, 0, metric(0), metric(15)};
+    memcpy(info + 4, &bar, sizeof(bar));
+    put_word(info, w32->win64 ? 24 : 20, (uintptr_t)w->menu);
+    put_word(info, w32->win64 ? 32 : 24, 0);
+    memset(info + (w32->win64 ? 40 : 28), 0, 4);
+    return TRUE;
+}
+
+static BOOL WINAPI GetMenuItemRect(HANDLE h, HANDLE menu, UINT item, RECT *r)
+{
+    UNUSED(h);
+    UNUSED(menu);
+    UNUSED(item);
+    if (r)
+        *r = (RECT){0, 0, 0, 0};
+    return FALSE;
+}
+
+static BOOL WINAPI GetComboBoxInfo(HANDLE h, uint8_t *info)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || !info || w->control != CK_COMBOBOX)
+        return FALSE;
+    int fh = w32_combo_field_height(w), bw = (w->style & 3) == 1 ? 0 : 17;
+    RECT item = {3, 3, w->rect.w - bw - 3, fh - 3}, button = {w->rect.w - bw, 0, w->rect.w, fh};
+    memcpy(info + 4, &item, sizeof(item));
+    memcpy(info + 20, &button, sizeof(button));
+    uint32_t state = bw ? 0 : 0x8000;
+    memcpy(info + 36, &state, 4);
+    put_word(info, 40, (uintptr_t)h);
+    put_word(info, w32->win64 ? 48 : 44, 0);
+    put_word(info, w32->win64 ? 56 : 48, 0);
+    return TRUE;
+}
+
+static HANDLE WINAPI CreateIconFromResourceEx(const uint8_t *bits, DWORD size, BOOL icon, DWORD version, int cx, int cy,
+                                              UINT flags)
+{
+    UNUSED(icon);
+    UNUSED(version);
+    UNUSED(cx);
+    UNUSED(cy);
+    UNUSED(flags);
+    if (!bits || size < 8)
+        return NULL;
+    return BUILTIN("user32.dll", "CreateIconIndirect", HANDLE(WINAPI *)(void *))(NULL);
+}
+
+static HANDLE WINAPI CreateIconFromResource(const uint8_t *bits, DWORD size, BOOL icon, DWORD version)
+{
+    return CreateIconFromResourceEx(bits, size, icon, version, 0, 0, 0);
+}
+
 static const struct w32_export vcl_user32[] = {
     W32_FN(CharUpperBuffW), W32_FN(CharLowerBuffW), W32_FN(CharToOemBuffA), W32_FN(OemToCharBuffA),
     W32_FN(CharToOemBuffW), W32_FN(OemToCharBuffW), W32_FN(CreateIcon), W32_FN(DrawIcon),
+    W32_FN(DrawStateW), W32_FN(DrawStateA), W32_FN(GetMenuBarInfo), W32_FN(GetMenuItemRect),
+    W32_FN(GetComboBoxInfo), W32_FN(CreateIconFromResourceEx), W32_FN(CreateIconFromResource),
 };
+
+/* charset, ANSI code page and font signature bit */
+static const uint16_t charsets[][3] = {
+    {0, 1252, 0}, {238, 1250, 1}, {204, 1251, 2}, {161, 1253, 3}, {162, 1254, 4}, {177, 1255, 5}, {178, 1256, 6},
+    {186, 1257, 7}, {163, 1258, 8}, {222, 874, 16}, {128, 932, 17}, {134, 936, 18}, {129, 949, 19}, {136, 950, 20},
+};
+
+static BOOL WINAPI TranslateCharsetInfo(uintptr_t *src, uint32_t *out, DWORD flags)
+{
+    if (!out)
+        return FALSE;
+    for (size_t i = 0; i < ARRAY_SIZE(charsets); i++) {
+        uintptr_t key = flags == 3 ? (src ? *src : 0) : (uintptr_t)src;
+        if (flags == 1 ? key != charsets[i][0] : flags == 2 ? key != charsets[i][1]
+            : flags == 3 ? !(key & (1u << charsets[i][2])) : true)
+            continue;
+        memset(out, 0, 32);
+        out[0] = charsets[i][0];
+        out[1] = charsets[i][1];
+        out[6] = 1u << charsets[i][2];
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static const struct w32_export vcl_gdi32[] = {W32_FN(TranslateCharsetInfo)};
+
+W32_EXPORTS(vcl_gdi32_module, "gdi32.dll", vcl_gdi32);
+
+static BOOL mci_error(DWORD err, void *buf, UINT len, bool wide)
+{
+    if (!buf || !len)
+        return FALSE;
+    char text[48];
+    ksnprintf(text, sizeof(text), err ? "MCI error %u." : "The specified command was carried out.", err);
+    UINT i = 0;
+    for (; text[i] && i + 1 < len; i++)
+        wide ? (void)(((WCHAR *)buf)[i] = (uint8_t)text[i]) : (void)(((char *)buf)[i] = text[i]);
+    wide ? (void)(((WCHAR *)buf)[i] = 0) : (void)(((char *)buf)[i] = 0);
+    return TRUE;
+}
+
+static BOOL WINAPI mciGetErrorStringW(DWORD err, LPWSTR buf, UINT len)
+{
+    return mci_error(err, buf, len, true);
+}
+
+static BOOL WINAPI mciGetErrorStringA(DWORD err, LPSTR buf, UINT len)
+{
+    return mci_error(err, buf, len, false);
+}
+
+static const struct w32_export vcl_winmm[] = {W32_FN(mciGetErrorStringW), W32_FN(mciGetErrorStringA)};
+
+W32_EXPORTS(vcl_winmm_module, "winmm.dll", vcl_winmm);
 
 W32_EXPORTS(vcl_user32_module, "user32.dll", vcl_user32);
 

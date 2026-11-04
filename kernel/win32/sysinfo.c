@@ -534,6 +534,8 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_AS("SetDllDirectoryA", w32_one1),
     W32_FN(SetFileCompletionNotificationModes),
     W32_AS("ClearCommError", w32_fail3),
+    W32_AS("SetCommBreak", w32_fail1),
+    W32_AS("ClearCommBreak", w32_fail1),
     W32_AS("EscapeCommFunction", w32_fail2),
     W32_AS("GetCommModemStatus", w32_fail2),
     W32_AS("GetCommState", w32_fail2),

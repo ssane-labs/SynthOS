@@ -1354,6 +1354,76 @@ static int WINAPI WSAConnect(UINT s, const struct sockaddr_in *addr, int len, vo
     return connect(s, addr, len);
 }
 
+static int address_text(const struct sockaddr_in *sa, int len, char *out)
+{
+    if (!sa || len < 8) {
+        w32_set_error(WSAEFAULT);
+        return -1;
+    }
+    char host[64];
+    uint16_t port;
+    if (sa->family == AF_INET6 && len >= 24) {
+        host[0] = '[';
+        net_format_ip6((const uint8_t *)sa + 8, host + 1, sizeof(host) - 3);
+        port = net_htons(sa->port);
+        size_t n = strlen(host);
+        if (port) {
+            host[n++] = ']';
+            host[n] = 0;
+        } else {
+            memmove(host, host + 1, n);
+        }
+    } else if (sa->family == AF_INET) {
+        inet_ntop(AF_INET, &sa->addr, host, sizeof(host));
+        port = net_htons(sa->port);
+    } else {
+        w32_set_error(WSAEINVAL);
+        return -1;
+    }
+    if (port)
+        ksnprintf(out, 80, "%s:%u", host, port);
+    else
+        str_copy(out, host, 80);
+    return (int)strlen(out) + 1;
+}
+
+static int WINAPI WSAAddressToStringA(const struct sockaddr_in *sa, DWORD len, void *info, char *out, DWORD *cap)
+{
+    UNUSED(info);
+    char buf[80];
+    int n = address_text(sa, (int)len, buf);
+    if (n < 0)
+        return SOCKET_ERROR;
+    if (!cap || *cap < (DWORD)n || !out) {
+        if (cap)
+            *cap = (DWORD)n;
+        w32_set_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+    memcpy(out, buf, (size_t)n);
+    *cap = (DWORD)n;
+    return 0;
+}
+
+static int WINAPI WSAAddressToStringW(const struct sockaddr_in *sa, DWORD len, void *info, WCHAR *out, DWORD *cap)
+{
+    UNUSED(info);
+    char buf[80];
+    int n = address_text(sa, (int)len, buf);
+    if (n < 0)
+        return SOCKET_ERROR;
+    if (!cap || *cap < (DWORD)n || !out) {
+        if (cap)
+            *cap = (DWORD)n;
+        w32_set_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+    for (int i = 0; i < n; i++)
+        out[i] = (uint8_t)buf[i];
+    *cap = (DWORD)n;
+    return 0;
+}
+
 static int WINAPI WSAStringToAddressW(const WCHAR *text, int family, void *info, struct sockaddr_in *addr, int *len)
 {
     UNUSED(info);
@@ -1694,7 +1764,7 @@ static const struct w32_export winsock_exports[] = {
     W32_FN(WSAWaitForMultipleEvents),
     W32_AS("WSAAsyncSelect", WSAUnsupported4),        W32_FN(WSAEventSelect),
     W32_FN(WSAIoctl),       W32_FN(WSASendTo),        W32_FN(WSARecvFrom),     W32_FN(WSAConnect),
-    W32_FN(WSAStringToAddressW), W32_FN(getnameinfo), W32_FN(GetNameInfoW),    W32_FN(getprotobyname),
+    W32_FN(WSAStringToAddressW), W32_FN(WSAAddressToStringA), W32_FN(WSAAddressToStringW), W32_FN(getnameinfo), W32_FN(GetNameInfoW),    W32_FN(getprotobyname),
     W32_FN(getprotobynumber), W32_FN(getservbyport),  W32_FN(WSADuplicateSocketW),
     W32_FN(AcceptEx),       W32_FN(GetAcceptExSockaddrs),
 };

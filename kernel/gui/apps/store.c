@@ -55,6 +55,12 @@ static enum icon_id app_icon(const struct store_app *a)
          : !strcmp(a->icon, "code")    ? ICON_CODE
          : !strcmp(a->icon, "games")   ? ICON_GAMES
          : !strcmp(a->icon, "terminal") ? ICON_TERMINAL
+         : !strcmp(a->icon, "viewer")  ? ICON_VIEWER
+         : !strcmp(a->icon, "music")   ? ICON_MUSIC
+         : !strcmp(a->icon, "video")   ? ICON_VIDEO
+         : !strcmp(a->icon, "files")   ? ICON_FILES
+         : !strcmp(a->icon, "photos")  ? ICON_PHOTOS
+         : !strcmp(a->icon, "installer") ? ICON_INSTALLER
                                        : ICON_APP;
 }
 
@@ -64,6 +70,9 @@ static enum symbol_id cat_symbol(const char *name)
          : contains(name, "develop") ? SYM_TERMINAL
          : contains(name, "game")    ? SYM_PLAY
          : contains(name, "music") || contains(name, "video") ? SYM_MUSIC
+         : contains(name, "util")    ? SYM_GEAR
+         : contains(name, "office") || contains(name, "doc") ? SYM_DOC
+         : contains(name, "internet") ? SYM_NETWORK
                                      : SYM_APPS;
 }
 

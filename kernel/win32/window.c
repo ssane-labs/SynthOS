@@ -445,7 +445,9 @@ static void builtin_classes(void)
                 {"RICHEDIT50W", CK_EDIT, 6, w32_richedit_proc}, {"RICHEDIT60W", CK_EDIT, 6, w32_richedit_proc},
                 {"RichEdit", CK_EDIT, 6, w32_richedit_proc}, {"ListBox", CK_LISTBOX, 6, w32_listbox_proc},
                 {"ComboBox", CK_COMBOBOX, 6, w32_combobox_proc}, {"ComboLBox", CK_LISTBOX, 6, w32_listbox_proc},
-                {"SysTabControl32", CK_TAB, 16, w32_tab_proc}};
+                {"SysTabControl32", CK_TAB, 16, w32_tab_proc}, {"SysListView32", CK_LISTVIEW, 6, w32_listview_proc},
+                {"ToolbarWindow32", CK_TOOLBAR, 16, w32_toolbar_proc},
+                {"msctls_statusbar32", CK_STATUS, 16, w32_status_proc}};
     if (!find_class("#32770")) {
         struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
         if (c)
@@ -1805,6 +1807,37 @@ static LRESULT WINAPI SendDlgItemMessageW(HANDLE dlg, int id, UINT msg, WPARAM w
 static BOOL WINAPI CheckDlgButton(HANDLE dlg, int id, UINT check)
 {
     return SendMessageA(GetDlgItem(dlg, id), 0xf1, check, 0) == 0;
+}
+
+static BOOL WINAPI CheckRadioButton(HANDLE dlg, int first, int last, int check)
+{
+    for (int id = first; id <= last; id++)
+        SendMessageA(GetDlgItem(dlg, id), 0xf1, id == check, 0);
+    return TRUE;
+}
+
+static BOOL WINAPI GetWindowInfo(HANDLE h, uint8_t *info)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || !info)
+        return FALSE;
+    RECT wr, cr;
+    GetWindowRect(h, &wr);
+    GetClientRect(h, &cr);
+    POINT o = {0, 0};
+    ClientToScreen(h, &o);
+    cr.left += o.x;
+    cr.right += o.x;
+    cr.top += o.y;
+    cr.bottom += o.y;
+    uint32_t v[5] = {w->style, w->exstyle, 0, 1, 1};
+    memcpy(info + 4, &wr, 16);
+    memcpy(info + 20, &cr, 16);
+    memcpy(info + 36, v, 20);
+    uint16_t atom = 0, ver = 0x0500;
+    memcpy(info + 56, &atom, 2);
+    memcpy(info + 58, &ver, 2);
+    return TRUE;
 }
 
 static UINT WINAPI IsDlgButtonChecked(HANDLE dlg, int id)
@@ -4238,7 +4271,8 @@ static const struct w32_export window_exports[] = {
     W32_FN(PostQuitMessage), W32_FN(SetWindowTextA), W32_FN(SetWindowTextW), W32_FN(GetWindowTextA),
     W32_FN(GetWindowTextW), W32_FN(GetWindowTextLengthA), W32_FN(GetWindowTextLengthW), W32_FN(SetDlgItemTextA),
     W32_FN(SetDlgItemTextW), W32_FN(GetDlgItemTextA), W32_FN(GetDlgItemTextW), W32_FN(GetDlgItemInt),
-    W32_FN(SetDlgItemInt), W32_FN(SendDlgItemMessageA), W32_FN(SendDlgItemMessageW), W32_FN(CheckDlgButton),
+    W32_FN(SetDlgItemInt), W32_FN(SendDlgItemMessageA), W32_FN(SendDlgItemMessageW), W32_FN(CheckDlgButton), W32_FN(CheckRadioButton), W32_FN(GetWindowInfo),
+    W32_AS("ShowWindowAsync", ShowWindow),
     W32_FN(IsDlgButtonChecked), W32_FN(GetWindowLongA), W32_FN(SetWindowLongA), W32_FN(GetWindowLongW),
     W32_FN(SetWindowLongW), W32_AS("GetWindowLongPtrA", GetWindowLongA), W32_AS("SetWindowLongPtrA", SetWindowLongA),
     W32_AS("GetWindowLongPtrW", GetWindowLongW), W32_AS("SetWindowLongPtrW", SetWindowLongW), W32_FN(GetClassLongA),

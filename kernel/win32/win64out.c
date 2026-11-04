@@ -10,6 +10,7 @@
 
 static const struct w64_export out_exports[] = {
     W64_OUT("BCryptCreateHash", A(1)),
+    W64_OUT("SHBindToParent", A(2) | A(3)),
     W64_OUT("BCryptDuplicateHash", A(1)),
     W64_OUT("BCryptGenerateSymmetricKey", A(1)),
     W64_OUT("BCryptImportKey", A(3)),

@@ -55,7 +55,7 @@ static void set_field(struct store_app *a, const char *key, const char *v)
 #define F(name) {#name, offsetof(struct store_app, name), sizeof(((struct store_app *)0)->name)}
         F(name),    F(developer), F(category), F(icon), F(version), F(size),  F(summary), F(about),
         F(note),    F(sha256),    F(file),     F(args), F(check),   F(open),  F(bin),     F(post),
-        F(strip),   F(uninstall),
+        F(strip),   F(uninstall), F(inner),
 #undef F
     };
     for (size_t i = 0; i < ARRAY_SIZE(fields); i++)
@@ -481,17 +481,66 @@ static int install_zip(const struct store_app *a, const struct store_ui *ui, cha
     return 0;
 }
 
+struct inner_find {
+    const char *name;
+    const struct zip_entry *found;
+    struct zip_entry entry;
+};
+
+static int find_inner(const struct zip_entry *e, void *ctx)
+{
+    struct inner_find *f = ctx;
+    size_t n = strlen(f->name);
+    const char *base = e->name;
+    for (size_t i = 0; i < e->name_len; i++)
+        if (e->name[i] == '/' || e->name[i] == '\\')
+            base = e->name + i + 1;
+    if ((size_t)(e->name + e->name_len - base) == n && !str_ncasecmp(base, f->name, n)) {
+        f->entry = *e;
+        f->found = &f->entry;
+        return 1;
+    }
+    return 0;
+}
+
+/* the vendor ships its installer inside a zip: unpack that one file next to the downloads */
+static int unpack_inner(const struct store_app *a, const struct store_ui *ui, const char *path, char *msg, size_t cap)
+{
+    struct http_response resp;
+    int err = download(a, ui, NULL, &resp, msg, cap);
+    if (err)
+        return err;
+    struct inner_find f = {a->inner, NULL, {0}};
+    zip_each((const uint8_t *)resp.body, resp.length, find_inner, &f);
+    uint8_t *data = NULL;
+    err = f.found ? zip_extract((const uint8_t *)resp.body, resp.length, f.found, &data) : E_NOENT;
+    if (!err) {
+        err = vfs_write_all(path, data, f.found->usize);
+        kfree(data);
+    }
+    http_free(&resp);
+    if (err)
+        ksnprintf(msg, cap, "%s is not in the download of %s", a->inner, a->name);
+    return err;
+}
+
 static int install_runner(const struct store_app *a, const struct store_ui *ui, char *msg, size_t cap)
 {
     char dir[PATH_MAX_LEN], path[PATH_MAX_LEN];
     path_join(user_home(), "Downloads", dir, sizeof(dir));
     vfs_mkdirs(dir);
-    path_join(dir, a->file[0] ? a->file : "setup.exe", path, sizeof(path));
-    struct http_response resp;
-    int err = download(a, ui, path, &resp, msg, cap);
+    path_join(dir, a->inner[0] ? a->inner : a->file[0] ? a->file : "setup.exe", path, sizeof(path));
+    int err;
+    if (a->inner[0]) {
+        err = unpack_inner(a, ui, path, msg, cap);
+    } else {
+        struct http_response resp;
+        err = download(a, ui, path, &resp, msg, cap);
+        if (!err)
+            http_free(&resp);
+    }
     if (err)
         return err;
-    http_free(&resp);
     record(a, true);
     if (ui && ui->run) {
         if (!ui->run(ui->ctx, path, a->args)) {

@@ -163,7 +163,15 @@ bool winshell_assoc_command(const char *assoc, const char *verb, char *out, size
     char cls[128];
     if (winshell_class(assoc, cls, sizeof(cls)) && class_command(cls, verb, out, cap, 0))
         return true;
-    return class_command(assoc, verb, out, cap, 0);
+    if (class_command(assoc, verb, out, cap, 0))
+        return true;
+    /* a program opens by running it, as exefile's own "%1" %* does in Windows */
+    bool program = !str_casecmp(assoc, ".exe") || !str_casecmp(assoc, ".com") || !str_casecmp(assoc, ".scr");
+    if (program && (!strcmp(verb, "open") || !strcmp(verb, "runas"))) {
+        str_copy(out, "\"%1\" %*", cap);
+        return true;
+    }
+    return false;
 }
 
 /* The command line Windows would run to open a file (a SynthOS path) or a link with a verb, false when nothing is

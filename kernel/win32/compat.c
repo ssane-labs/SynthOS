@@ -174,6 +174,8 @@ static const struct w32_export compat_kernel32[] = {
     W32_FN(CreateToolhelp32Snapshot),
     W32_AS("Process32First", unsupported2),
     W32_AS("Process32Next", unsupported2),
+    W32_AS("Thread32First", unsupported2),
+    W32_AS("Thread32Next", unsupported2),
     W32_AS("Process32FirstW", unsupported2),
     W32_AS("Process32NextW", unsupported2),
     W32_AS("GetThreadContext", unsupported2),

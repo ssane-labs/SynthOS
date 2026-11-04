@@ -737,16 +737,64 @@ static UINT WINAPI MapVirtualKeyExW(UINT code, UINT type, HANDLE layout)
     return MapVirtualKeyW(code, type);
 }
 
-static short WINAPI VkKeyScanExA(char ch, HANDLE layout)
+static short WINAPI VkKeyScanExW(WCHAR ch, HANDLE layout)
 {
     UNUSED(layout);
+    static const char shifted[] = ")!@#$%^&*(";
+    static const char plain[] = ";=,-./`[\\]'";
+    static const char upper[] = ":+<_>?~{|}\"";
+    static const uint8_t vk[] = {0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf, 0xc0, 0xdb, 0xdc, 0xdd, 0xde};
     if (ch >= 'a' && ch <= 'z')
         return (short)(ch - 'a' + 'A');
-    if ((ch >= 'A' && ch <= 'Z'))
+    if (ch >= 'A' && ch <= 'Z')
         return (short)(0x100 | ch);
     if (ch >= '0' && ch <= '9')
-        return ch;
-    return ch == ' ' ? 0x20 : -1;
+        return (short)ch;
+    for (int i = 0; i < 10; i++)
+        if (ch == (uint8_t)shifted[i])
+            return (short)(0x100 | ('0' + i));
+    for (int i = 0; i < 11; i++) {
+        if (ch == (uint8_t)plain[i])
+            return vk[i];
+        if (ch == (uint8_t)upper[i])
+            return (short)(0x100 | vk[i]);
+    }
+    if (ch == ' ' || ch == '\r' || ch == '\t' || ch == 8 || ch == 27)
+        return (short)(ch == '\r' ? 0x0d : ch);
+    if (ch == '\n')
+        return 0x20d;
+    return -1;
+}
+
+static short WINAPI VkKeyScanExA(char ch, HANDLE layout)
+{
+    return VkKeyScanExW((uint8_t)ch, layout);
+}
+
+static short WINAPI VkKeyScanW(WCHAR ch)
+{
+    return VkKeyScanExW(ch, NULL);
+}
+
+static short WINAPI VkKeyScanA(char ch)
+{
+    return VkKeyScanExW((uint8_t)ch, NULL);
+}
+
+static LPARAM WINAPI PackDDElParam(UINT msg, uintptr_t lo, uintptr_t hi)
+{
+    UNUSED(msg);
+    return (LPARAM)((lo & 0xffff) | (hi << 16));
+}
+
+static BOOL WINAPI UnpackDDElParam(UINT msg, LPARAM lp, uintptr_t *lo, uintptr_t *hi)
+{
+    UNUSED(msg);
+    if (lo)
+        *lo = (uintptr_t)lp & 0xffff;
+    if (hi)
+        *hi = (uintptr_t)lp >> 16;
+    return TRUE;
 }
 
 static BOOL WINAPI GetLastInputInfo(uint32_t *info)
@@ -1151,6 +1199,22 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(MapVirtualKeyExW),
     W32_AS("MapVirtualKeyExA", MapVirtualKeyExW),
     W32_FN(VkKeyScanExA),
+    W32_FN(VkKeyScanExW),
+    W32_FN(VkKeyScanA),
+    W32_FN(VkKeyScanW),
+    W32_FN(PackDDElParam),
+    W32_FN(UnpackDDElParam),
+    W32_AS("FreeDDElParam", w32_one2),
+    W32_AS("ReuseDDElParam", w32_zero5),
+    W32_AS("DdeFreeDataHandle", w32_one1),
+    W32_AS("DdeCreateDataHandle", w32_zero7),
+    W32_AS("DdeGetData", w32_zero4),
+    W32_AS("DdeNameService", w32_zero4),
+    W32_AS("DdeQueryStringW", w32_zero5),
+    W32_AS("DdeCreateStringHandleA", w32_zero3),
+    W32_AS("DdeInitializeA", DdeInitializeW),
+    W32_AS("GetClipboardOwner", w32_zero0),
+    W32_AS("FlashWindow", w32_zero2),
     W32_AS("keybd_event", w32_zero4),
     W32_AS("IsProcessDPIAware", w32_one0),
     W32_FN(EnumDisplaySettingsA),

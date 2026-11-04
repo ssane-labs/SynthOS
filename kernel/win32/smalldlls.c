@@ -293,8 +293,30 @@ static const struct w32_export dxcore_exports[] = {
     W32_FN(DXCoreCreateAdapterFactory),
 };
 
+/* the PE header checksum: 16-bit one's complement sum without the checksum field, plus the length */
+static const uint8_t *WINAPI CheckSumMappedFile(const uint8_t *base, DWORD len, DWORD *header, DWORD *sum)
+{
+    if (!base || len < 0x40 || base[0] != 'M' || base[1] != 'Z')
+        return NULL;
+    uint32_t nt = *(const uint32_t *)(base + 0x3c), field = nt + 0x58, total = 0;
+    if (nt > len - 0x5c || memcmp(base + nt, "PE\0\0", 4))
+        return NULL;
+    for (DWORD i = 0; i < len; i += 2) {
+        if (i == field || i == field + 2)
+            continue;
+        total += i + 1 < len ? *(const uint16_t *)(base + i) : base[i];
+        total = (total & 0xffff) + (total >> 16);
+    }
+    if (header)
+        *header = *(const uint32_t *)(base + field);
+    if (sum)
+        *sum = (total & 0xffff) + len;
+    return base + nt;
+}
+
 /* imagehlp: Authenticode certificates in executables; programs only look, and find none */
 static const struct w32_export imagehlp_exports[] = {
+    W32_FN(CheckSumMappedFile),
     W32_AS("ImageAddCertificate", w32_zero3),
     W32_AS("ImageRemoveCertificate", w32_zero2),
     W32_AS("ImageEnumerateCertificates", w32_zero5),
