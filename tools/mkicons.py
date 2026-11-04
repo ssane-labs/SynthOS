@@ -823,6 +823,50 @@ def trash_full_icon():
     return trash_icon(True)
 
 
+
+def store_icon():
+    """A shopping bag: the handle behind, a frosted bag in front with a crisp tag."""
+    return (Icon((70, 70, 78, 255), (22, 22, 26, 255))
+            .blur(ellipse4((120, 130, 250, 250)), a(BLUE, 170), 26)
+            .fill(lambda d: d.arc((90, 40, 166, 118), 180, 360, fill=255, width=13), (236, 236, 240, 255),
+                  (196, 198, 206, 255))
+            .glass(rr4((54, 82, 202, 214), 30), (255, 255, 255, 58), 10, 40)
+            .fill(ellipse4((84, 106, 100, 122)), (236, 236, 240, 255))
+            .fill(ellipse4((156, 106, 172, 122)), (236, 236, 240, 255))
+            .fill(lambda d: d.line([(100, 160), (124, 182), (160, 144)], fill=255, width=13, joint="curve"),
+                  (156, 200, 244, 255), (110, 160, 220, 255), 30)
+            .done())
+
+
+def code_icon():
+    """Developer tools: angle brackets around a slash on a dark frosted card."""
+    return (Icon(*GRAPHITE)
+            .blur(ellipse4((30, 120, 160, 250)), (150, 130, 220, 90), 30)
+            .glass(rr4((40, 52, 216, 204), 28), (50, 52, 60, 150), 10, 50, (255, 255, 255, 70))
+            .fill(lambda d: d.line([(98, 96), (68, 128), (98, 160)], fill=255, width=13, joint="curve"),
+                  (244, 244, 246, 255), (204, 206, 212, 255))
+            .fill(lambda d: d.line([(158, 96), (188, 128), (158, 160)], fill=255, width=13, joint="curve"),
+                  (244, 244, 246, 255), (204, 206, 212, 255))
+            .fill(lambda d: d.line([(140, 86), (116, 170)], fill=255, width=12), (186, 172, 236, 255),
+                  (146, 130, 210, 255))
+            .done())
+
+
+def games_icon():
+    """A game controller: a frosted body over a soft glow, a crisp pad and buttons."""
+    def body(d):
+        d.rounded_rectangle((40, 92, 216, 176), radius=42, fill=255)
+        d.ellipse((40, 120, 112, 206), fill=255)
+        d.ellipse((144, 120, 216, 206), fill=255)
+    icon = (Icon(*STONE)
+            .blur(ellipse4((50, 70, 210, 230)), (70, 72, 80, 110), 18)
+            .glass(body, (255, 255, 255, 90), 12, 36)
+            .fill(rr4((70, 128, 116, 142), 6), INK)
+            .fill(rr4((86, 112, 100, 158), 6), INK))
+    for cx, cy, c in ((164, 122, a(RED)), (184, 142, a(BLUE))):
+        icon.fill(ellipse4((cx - 10, cy - 10, cx + 10, cy + 10)), c, deeper(c))
+    return icon.done()
+
 ICONS = [
     ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_icon),
     ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_icon),
@@ -836,7 +880,8 @@ ICONS = [
     ("ICON_FOLDER_DESKTOP", desktop_folder_icon), ("ICON_FOLDER_DOWNLOADS", downloads_folder_icon),
     ("ICON_BROWSER", browser_icon), ("ICON_PHOTOS", photos_icon), ("ICON_MUSIC", music_icon),
     ("ICON_VIDEO", video_icon), ("ICON_VIEWER", viewer_icon), ("ICON_INSTALLER", installer_icon),
-    ("ICON_SCREENSHOT", screenshot_icon),
+    ("ICON_SCREENSHOT", screenshot_icon), ("ICON_STORE", store_icon), ("ICON_CODE", code_icon),
+    ("ICON_GAMES", games_icon),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)

@@ -9,6 +9,7 @@
 #include <synth/sevenzip.h>
 #include <synth/path.h>
 #include <synth/shell.h>
+#include <synth/store.h>
 #include <synth/stream.h>
 #include <synth/string.h>
 #include <synth/tls.h>
@@ -273,10 +274,10 @@ static int download(struct shell *sh, const struct package *p, struct http_respo
     return err;
 }
 
-static void add_path(struct shell *sh, const char *dir)
+void pkg_add_path(struct shell *sh, const char *dir)
 {
-    const char *cur = sh_get(sh, "PATH");
-    if (!cur || !strstr(cur, dir)) {
+    const char *cur = sh ? sh_get(sh, "PATH") : NULL;
+    if (sh && (!cur || !strstr(cur, dir))) {
         char *grown = kmalloc(strlen(cur ? cur : "") + strlen(dir) + 2);
         if (grown) {
             ksnprintf(grown, strlen(cur ? cur : "") + strlen(dir) + 2, "%s:%s", cur ? cur : "", dir);
@@ -303,11 +304,11 @@ static void add_path(struct shell *sh, const char *dir)
     kfree(old);
 }
 
-static int post_python(struct shell *sh, const char *root)
+void pkg_python_site(struct shell *sh, const char *root)
 {
     struct vdir d;
     if (vfs_opendir(root, &d) != 0)
-        return 0;
+        return;
     struct vfs_dirent ent;
     char pth[PATH_MAX_LEN] = "";
     while (vfs_readdir(&d, &ent) == 0)
@@ -315,7 +316,7 @@ static int post_python(struct shell *sh, const char *root)
             path_join(root, ent.name, pth, sizeof(pth));
     vfs_closedir(&d);
     if (!pth[0])
-        return 0;
+        return;
     char zipname[NAME_MAX_LEN];
     str_copy(zipname, path_basename(pth), sizeof(zipname));
     char *dot = strrchr(zipname, '.');
@@ -327,8 +328,8 @@ static int post_python(struct shell *sh, const char *root)
     char site[PATH_MAX_LEN];
     path_join(root, "Lib/site-packages", site, sizeof(site));
     vfs_mkdirs(site);
-    sh_puts(sh, "Enabled site-packages (pip can be installed with: python get-pip.py)\n");
-    return 0;
+    if (sh)
+        sh_puts(sh, "Enabled site-packages (pip can be installed with: python get-pip.py)\n");
 }
 
 static void omaha_say(void *ctx, const char *text)
@@ -382,13 +383,13 @@ static int install(struct shell *sh, const struct package *p, const char *base)
     if (rc)
         return rc;
     if (p->post == POST_PYTHON)
-        post_python(sh, root);
+        pkg_python_site(sh, root);
     char bin[PATH_MAX_LEN];
     if (p->bin[0])
         path_join(root, p->bin, bin, sizeof(bin));
     else
         str_copy(bin, root, sizeof(bin));
-    add_path(sh, bin);
+    pkg_add_path(sh, bin);
     sh_role(sh, ROLE_OK);
     sh_printf(sh, "Installed %s %s\n", p->name, p->version);
     sh_role(sh, ROLE_TEXT);

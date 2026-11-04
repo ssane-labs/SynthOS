@@ -1,0 +1,92 @@
+# The SynthOS App Store catalog: one [id] block per app.
+# kind: zip (unpacked into /home/apps/<id>), installer (the vendor's installer, run with args),
+#       chrome (Google's update server), builtin (comes with the image)
+# url (up to two, the second is a mirror), sha256 (optional), check (the file that shows it is installed),
+# open (the program to start), bin (put on the PATH), bits = 64 (needs the 64-bit SynthOS)
+
+[firefox]
+name = Firefox
+developer = Mozilla
+category = Browsers
+icon = browser
+version = latest
+size = 65 MB
+summary = The independent browser: fast, private, open source
+about = Mozilla's official Firefox installer runs by itself and puts Firefox into C:\Program Files\Mozilla Firefox, with a shortcut in Launchpad. Firefox registers as a browser, so Settings > Apps can make it the default one.\nThe first start takes a while on a computer without hardware acceleration.
+kind = installer
+url = https://download.mozilla.org/?product=firefox-latest-ssl&os=win&lang=en-US
+file = Firefox Setup.exe
+args = /S
+check = C:\Program Files\Mozilla Firefox\firefox.exe
+uninstall = Mozilla Firefox
+
+[chrome]
+name = Google Chrome
+developer = Google
+category = Browsers
+icon = browser
+version = stable
+size = 110 MB
+summary = Google's browser, straight from Google's update server
+about = Downloads the current Chrome from Google's update server and unpacks it into /home/apps/chrome, with a shortcut on the desktop and in the Dock. SynthOS starts it with the switches it needs.
+kind = chrome
+check = /home/apps/chrome/chrome.exe
+
+[chromium]
+name = Chromium
+developer = The Chromium Authors
+category = Browsers
+icon = browser
+version = bundled
+summary = The open-source browser that comes with SynthOS
+about = Chromium is part of the SynthOS image and unpacks itself after the first login. It is the default browser until you pick another one in Settings > Apps.
+kind = builtin
+check = /home/apps/chromium/chrome.exe
+
+[git]
+name = Git
+developer = Git for Windows
+category = Developer Tools
+icon = code
+version = 2.56.0
+size = 30 MB
+summary = Version control: clone, commit and push over HTTPS
+about = MinGit, the compact Git for Windows, unpacked into /home/apps/git and put on the PATH, so git works in the Terminal right away (git clone https://...).
+kind = zip
+url = https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/MinGit-2.56.0.2-32-bit.zip
+url = https://registry.npmmirror.com/-/binary/git-for-windows/v2.56.0.windows.2/MinGit-2.56.0.2-32-bit.zip
+bin = mingw32/bin
+check = mingw32/bin/git.exe
+
+[python]
+name = Python
+developer = Python Software Foundation
+category = Developer Tools
+icon = code
+version = 3.12.10
+size = 10 MB
+summary = The Python language for Windows, with site-packages and pip
+about = The official embeddable Python, unpacked into /home/apps/python and put on the PATH. site-packages is switched on, so pip works after python get-pip.py.
+kind = zip
+url = https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-win32.zip
+post = python
+bin = .
+check = python.exe
+
+[steam]
+name = Steam
+developer = Valve
+category = Games
+icon = games
+version = latest
+size = 2 GB
+summary = The games store and library, with its own updater
+about = Valve's installer puts Steam into C:\Program Files\Steam; the first start downloads the client (about 240 MB) and keeps it up to date. The Steam client is 64-bit, so it needs the 64-bit SynthOS and about 2 GB of free space.
+note = Games that need DirectX 11 or Vulkan do not run yet.
+kind = installer
+url = https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
+file = SteamSetup.exe
+args = /S
+check = C:\Program Files\Steam\steam.exe
+uninstall = Steam
+bits = 64

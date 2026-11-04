@@ -837,6 +837,34 @@ if command -v openssl >/dev/null; then
     cp "$work/www/synthos-update$sfx.sup" "$work/www/new/"
     sed 's/^kernel-sha256=.*/kernel-sha256=0000/' "$work/www/synthos-update$sfx.txt" > "$work/www/new/synthos-update$sfx.txt"
     printf 'SYNUPD01 broken' > "$work/www/bad.sup"
+    mkdir -p "$work/www/store"
+    python3 -I -c 'import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("hello/readme.txt", "hello from the store\n")
+    z.writestr("hello/bin/tool.txt", "a store tool in bin\n")' "$work/www/store/hello.zip"
+    hello_sum=$(sha256sum "$work/www/store/hello.zip" | cut -c1-64)
+    cat > "$work/www/store/store-catalog.txt" <<EOF
+[hello]
+name = Hello
+developer = SynthOS tests
+category = Testing
+version = 1.0
+summary = A tiny app for the tests
+kind = zip
+url = https://10.0.2.2:$port/store/hello.zip
+sha256 = $hello_sum
+strip = hello
+check = readme.txt
+
+[broken]
+name = Broken
+category = Testing
+version = 1.0
+summary = Its checksum is wrong
+kind = zip
+url = https://10.0.2.2:$port/store/hello.zip
+sha256 = 0000000000000000000000000000000000000000000000000000000000000000
+EOF
     if command -v python3 >/dev/null; then
         cat > "$work/cookie.py" <<'PYEOF'
 import gzip, http.server, sys
@@ -922,6 +950,26 @@ rm /tmp/u.sup; update install | tail -n 1
 Updated to test (boot sectors, EFI partition). Restart to use it.
 EOF
     cat >> "$work/cases" <<EOF
+store info firefox
+Firefox latest by Mozilla (Browsers, get)
+config storeurl https://10.0.2.2:$port/store/; store refresh
+The catalog has 2 apps
+store info hello
+Hello 1.0 by SynthOS tests (Testing, get)
+store get hello | tail -n 1
+Hello 1.0 is installed in /home/apps/hello
+cat /home/apps/hello/readme.txt
+hello from the store
+cat /home/apps/hello/bin/tool.txt
+a store tool in bin
+store info hello
+Hello 1.0 by SynthOS tests (Testing, installed)
+store get broken
+the download of Broken is damaged (its checksum does not match)
+store remove hello | tr a-z A-Z; store info hello | tr a-z A-Z
+HELLO 1.0 BY SYNTHOS TESTS (TESTING, GET)
+rm /home/etc/store/catalog.txt; config storeurl default; store info python
+Python 3.12.10 by Python Software Foundation (Developer Tools, get)
 config updateurl default; config updateurl
 updateurl = https://github.com/ssane-labs/synthos/releases/latest/download/
 cd /tmp; winnet https://10.0.2.2:$port/hello.txt | grep wininet

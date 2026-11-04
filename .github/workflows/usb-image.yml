@@ -34,6 +34,7 @@ jobs:
       - name: Pack
         run: |
           cd build
+          cp ../rootfs/system/store/catalog.txt store-catalog.txt
           python3 -m zipfile -c synthos-usb.zip synthos-usb.img synthos-usb.img.sha256
           python3 -m zipfile -c synthos-usb32.zip synthos-usb32.img synthos-usb32.img.sha256
           sha256sum synthos-windows.zip synthos-usb.zip synthos-usb32.zip synthos-update.sup synthos-update32.sup > SHA256SUMS
@@ -67,5 +68,5 @@ jobs:
         run: |
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest --target "$GITHUB_SHA" --latest --title "SynthOS (latest build)" --notes \
-            "Newest build of ${GITHUB_SHA::7}. synthos-windows.zip: install from Windows without a USB stick (Install SynthOS.cmd). synthos-usb.zip: image for a USB stick (Rufus in DD mode or balenaEtcher). synthos-usb32.zip: 32-bit system for old PCs. synthos-update*.sup: system update, installed copies fetch it themselves (Settings > General > Software Update). Guide: docs/INSTALL.md." \
-            build/synthos-windows.zip build/synthos-usb.zip build/synthos-usb32.zip build/synthos-update.sup build/synthos-update.txt build/synthos-update32.sup build/synthos-update32.txt build/SHA256SUMS
+            "Newest build of ${GITHUB_SHA::7}. synthos-windows.zip: install from Windows without a USB stick (Install SynthOS.cmd). synthos-usb.zip: image for a USB stick (Rufus in DD mode or balenaEtcher). synthos-usb32.zip: 32-bit system for old PCs. synthos-update*.sup: system update, installed copies fetch it themselves (Settings > General > Software Update). store-catalog.txt: the App Store catalog. Guide: docs/INSTALL.md." \
+            build/synthos-windows.zip build/synthos-usb.zip build/synthos-usb32.zip build/synthos-update.sup build/synthos-update.txt build/synthos-update32.sup build/synthos-update32.txt build/store-catalog.txt build/SHA256SUMS

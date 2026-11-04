@@ -59,7 +59,11 @@
   Настройки → Network → VPN, `config vpn`): трафик для AllowedIPs идёт через туннель, DNS — через сервер VPN,
   IPv6 мимо туннеля перекрыт, когда VPN забирает весь трафик. Пока без cookie-ответов сервера под нагрузкой и
   без IPv6 внутри туннеля.
-- [ ] **Магазин приложений.**
+- [x] **Магазин приложений.** Сделано: приложение App Store (Discover, разделы Browsers / Developer Tools /
+  Games, Installed/Updates, страница приложения с описанием и сведениями, поиск, кнопки GET/OPEN/UPDATE и
+  Remove); каталог `/system/store/catalog.txt`, свежий каталог раз в день из релиза (`store-catalog.txt`,
+  `config storeurl`); виды: zip (в `/home/apps/<id>`, PATH, SHA-256), установщик разработчика (Firefox, Steam —
+  тихий запуск), Chrome (сервер Google), встроенный Chromium; в терминале `store list/info/get/remove/open/refresh`.
 
 ## Заход «Black Hole» (версия 1.1)
 

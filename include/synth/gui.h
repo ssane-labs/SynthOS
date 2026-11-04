@@ -77,6 +77,9 @@ enum icon_id {
     ICON_VIEWER,
     ICON_INSTALLER,
     ICON_SCREENSHOT,
+    ICON_STORE,
+    ICON_CODE,
+    ICON_GAMES,
     ICON_COUNT,
 };
 

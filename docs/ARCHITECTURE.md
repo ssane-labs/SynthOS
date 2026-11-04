@@ -335,6 +335,15 @@ UEFI (32/24/16 бит, ×2 на экранах от 1600×1000) и перери�
 имени или началу слова (`launch mon` → System Monitor); поле `extensions` связывает их с типами
 файлов в Файлах. Плавающая точка — только в `calc_fp.c` (правило `*_fp.c`).
 
+**App Store** (`apps/store.c` + `kernel/core/store.c`): каталог — текст из блоков `[id]` со строками
+`ключ = значение` (`/system/store/catalog.txt`; свежий из релиза кладётся в `/home/etc/store/catalog.txt`,
+установленное — `/home/etc/store/installed`, «id версия» в строке). Виды: `zip` (скачивается в память,
+SHA-256, распаковка в `/home/apps/<id>`, `strip`, `bin` в PATH, `post = python`), `installer` (поток в
+`~/Downloads`, запуск с `args`), `chrome` (`chrome_install`), `builtin`. Установлено ли — по файлу `check`;
+UPDATE — когда записанная версия zip-приложения отличается от каталога. Окно только просит работу, а
+делает её `store_run()` из цикла стола под общей карточкой прогресса (`gui/progress.c`, ею же пользуется
+Software Update).
+
 **Chrome** (`apps/chrome.c`) — браузер системы: запускает настоящий Google Chrome из `/home/apps/chrome`, а
 если его ещё нет — окно «Get Chrome». Установка (`chrome_install`, `kernel/cmds/omaha.c`) спрашивает сервер
 обновлений Google по протоколу Omaha 3.1, скачивает CRX3-пакет офлайн-установщика (проверка SHA-256 и
