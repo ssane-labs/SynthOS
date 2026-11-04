@@ -309,9 +309,13 @@ static void pick_window(struct window *owner, int index)
         wm_minimize(f);
     else if (index == 1 && f)
         wm_toggle_maximize(f);
-    else if (index == 3)
+    else if (index == 2 && f)
+        wm_toggle_fullscreen(f);
+    else if (index == 3 && f)
+        wm_set_pinned(f, !(f->flags & WIN_PINNED));
+    else if (index == 5)
         wm_bring_all();
-    else if (index >= 5 && window_targets[index] && wm_window_alive(window_targets[index]))
+    else if (index >= 7 && window_targets[index] && wm_window_alive(window_targets[index]))
         wm_show(window_targets[index]);
 }
 
@@ -373,6 +377,13 @@ static void open_title_menu(int i)
         int n = 0;
         window_items[n++] = (struct menu_item){"Minimize", menu_target ? 0 : -1, "⌘M"};
         window_items[n++] = (struct menu_item){"Zoom", menu_target ? 0 : -1, NULL};
+        bool full = menu_target && (menu_target->flags & WIN_FULLSCREEN);
+        window_items[n++] = (struct menu_item){full ? "Exit Full Screen" : "Enter Full Screen",
+                                               menu_target && (menu_target->flags & (WIN_RESIZABLE | WIN_FULLSCREEN))
+                                                   ? 0 : -1, "F11"};
+        bool pinned = menu_target && (menu_target->flags & WIN_PINNED);
+        window_items[n++] = (struct menu_item){pinned ? "Stop Keeping on Top" : "Keep on Top", menu_target ? 0 : -1,
+                                               NULL};
         window_items[n++] = (struct menu_item){"", 0, NULL};
         window_items[n++] = (struct menu_item){"Bring All to Front", 0, NULL};
         window_items[n++] = (struct menu_item){"", 0, NULL};

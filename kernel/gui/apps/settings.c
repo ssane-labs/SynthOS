@@ -934,7 +934,9 @@ static void pane_dock(struct page *p)
     section(p, "Windows");
     toggle_setting(p, "Tile windows at the screen edges", "Drag a window to a side, a corner or the top; Super+arrows "
                                                           "do it from the keyboard", "snap");
-    end(p, "The ··· button of every window has Tile Left, Tile Right and the quarters too.");
+    toggle_setting(p, "Minimize button", "The yellow button in the corner of every window; Cmd+M minimizes "
+                                         "either way", "minbutton");
+    end(p, "A right click on a window's title bar has Full Screen, Tile, Keep on Top and Minimize.");
     section(p, "Mission Control");
     static const char *const corners[] = {"Off", "Mission Control", "Desktop", "Launchpad", "Notifications",
                                           "Lock Screen", "Screenshot"};

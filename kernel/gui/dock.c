@@ -76,7 +76,7 @@ static struct spring ox[MAX_ITEMS], oy[MAX_ITEMS];
 
 static struct item items[MAX_ITEMS];
 static int count;
-static struct spring lift[MAX_ITEMS];
+static struct spring lift[MAX_ITEMS], appear[MAX_ITEMS], dock_w;
 static const struct gui_app *grid[GRID_MAX];
 static struct rect grid_r[GRID_MAX];
 static int grid_count, grid_hover = -1, grid_pressed = -1;
@@ -91,6 +91,7 @@ static struct spring grow, hl, hl_alpha;
 static uint64_t last_tick;
 static const struct gui_app *bounce_app;
 static uint64_t bounce_start;
+static int bounce_done;
 static struct glass glass;
 static struct rect dock_rect, zone;
 static bool started;
@@ -337,15 +338,30 @@ static int item_width(const struct item *it)
     return it->kind == DI_SEPARATOR ? SEPARATOR_W : it->size;
 }
 
+/* An opening app hops like a ball: up fast, slowing at the top, down under gravity, again until its window is open
+   (at most BOUNCES times). */
+#define BOUNCE_MS 620
+#define BOUNCES 3
+
+static int bounce_height(void)
+{
+    return kind == DOCK_CORNER ? CORNER_ICON / 2 : base_size * 9 / 16;
+}
+
 static int bounce_offset(const struct item *it)
 {
     if (!bounce_app || it->kind != DI_APP || it->app != bounce_app)
         return 0;
     uint64_t t = hal_ticks_ms() - bounce_start;
-    if (t >= 420)
+    if (t >= (uint64_t)BOUNCE_MS * BOUNCES)
         return 0;
-    int phase = ease_in_out((int)t * 1024 / 420);
-    return 10 * 4 * phase / 1024 * (1024 - phase) / 1024;
+    int p = (int)(t % BOUNCE_MS) * 1024 / BOUNCE_MS;
+    return bounce_height() * 4 * p / 1024 * (1024 - p) / 1024;
+}
+
+static int appear_of(int i)
+{
+    return appear[i].target ? CLAMP(appear[i].pos, 0, 1024) : 1024;
 }
 
 static void layout_center(void)
@@ -370,20 +386,30 @@ static void layout_center(void)
     }
     int total = 0;
     for (int i = 0; i < count; i++)
-        total += item_width(&items[i]) + (i ? GAP : 0);
-    int x = s.x + (s.w - total - 2 * PAD) / 2;
+        total += (item_width(&items[i]) + (i ? GAP : 0)) * appear_of(i) / 1024;
+    dock_w.target = total + 2 * PAD;
+    if (dock_w.pos <= 0)
+        spring_set(&dock_w, total + 2 * PAD);
+    int width = spring_busy(&dock_w) ? dock_w.pos : total + 2 * PAD;
+    int x = s.x + (s.w - width) / 2;
     int h = base_size + 2 * PAD;
     int shown = s.y + s.h - BOTTOM - h, hidden = s.y + s.h + 2;
     int y = hidden + (shown - hidden) * CLAMP(slide.pos, 0, 1024) / 1024;
-    dock_rect = (struct rect){x, y, total + 2 * PAD, h};
-    x += PAD;
+    dock_rect = (struct rect){x, y, width, h};
+    x = s.x + (s.w - total - 2 * PAD) / 2 + PAD;
     for (int i = 0; i < count; i++) {
+        int a = appear_of(i);
+        if (i)
+            x += GAP * a / 1024;
+        int size = items[i].size * a / 1024, slot = item_width(&items[i]) * a / 1024;
         items[i].x = x;
         int bottom = dock_rect.y + PAD + base_size - bounce_offset(&items[i]);
-        items[i].r = (struct rect){x, bottom - items[i].size, items[i].size, items[i].size};
-        x += item_width(&items[i]) + GAP;
+        items[i].r = (struct rect){x + (slot - size) / 2, bottom - size, size, size};
+        if (items[i].kind == DI_SEPARATOR)
+            items[i].r.w = slot;
+        x += slot;
     }
-    int extra = big - base_size + TOOLTIP_H + 14;
+    int extra = MAX(big - base_size, bounce_height()) + TOOLTIP_H + 14;
     zone = (struct rect){dock_rect.x - 60, dock_rect.y - extra, dock_rect.w + 120, dock_rect.h + extra + BOTTOM};
 }
 
@@ -658,6 +684,7 @@ void dock_bounce(const struct gui_app *app)
         return;
     bounce_app = app;
     bounce_start = hal_ticks_ms();
+    bounce_done = 0;
 }
 
 /* Dragging icons: a Dock icon picked up leaves a gap that follows the pointer, the others glide aside; dropped off
@@ -722,6 +749,13 @@ static void rebuild_glide(void)
     for (int i = 0; i < MAX_ITEMS; i++) {
         spring_set(&ox[i], 0);
         spring_set(&oy[i], 0);
+    }
+    for (int i = 0; i < count; i++) {
+        bool known = old_count == 0;
+        for (int k = 0; k < old_count && !known; k++)
+            known = same_item(&old[k], &items[i]);
+        spring_set(&appear[i], known || kind != DOCK_CENTER || !wm_animations() ? 1024 : 0);
+        appear[i].target = 1024;
     }
     layout();
     for (int i = 0; i < count; i++) {
@@ -892,12 +926,18 @@ bool dock_animate(void)
             wm_damage_z(rect_inset(items[i].r, -4), Z_DOCK);
         busy |= spring_step(&ox[i], 300, 26, dt);
         busy |= spring_step(&oy[i], 300, 26, dt);
+        busy |= spring_step(&appear[i], 260, 30, dt);
     }
+    busy |= spring_step(&dock_w, 300, 32, dt);
     if (spring_step(&dnd.pop, 500, 22, dt) | spring_step(&dnd.poof, 200, 30, dt))
         damage_drag();
     if (bounce_app) {
-        if (now - bounce_start >= 1000)
-            bounce_app = NULL;
+        int n = (int)((now - bounce_start) / BOUNCE_MS);
+        if (n > bounce_done) {
+            bounce_done = n;
+            if (n >= BOUNCES || wm_app_window(bounce_app))
+                bounce_app = NULL;
+        }
         busy = true;
     }
     dock_peek_tick();

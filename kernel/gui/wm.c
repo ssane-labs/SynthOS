@@ -879,6 +879,13 @@ bool wm_animating(void)
     return animating;
 }
 
+/* While a window is dragged its frames come at a steady pace, and the pointer is drawn with them so the two move
+   together. */
+bool wm_dragging(void)
+{
+    return drag == DRAG_MOVE || drag == DRAG_RESIZE;
+}
+
 static void wm_animate(void)
 {
     for (struct ghost **pp = &ghosts; *pp;) {
@@ -1515,9 +1522,33 @@ static int set_snap(struct shell *sh, const char *value)
     return 0;
 }
 
+/* The yellow minimize light is off unless the user wants it (minimize stays on Cmd+M and in the Window menu). */
+static bool show_minimize = false;
+
+static void get_minbutton(char *buf, size_t cap)
+{
+    setting_flag_get(show_minimize, buf, cap);
+}
+
+static int set_minbutton(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int err = setting_flag(value, &show_minimize);
+    if (!err)
+        wm_damage_all();
+    return err;
+}
+
+static const struct setting s_minbutton = {"minbutton", "on|off", "show the yellow minimize button on windows",
+                                           get_minbutton, set_minbutton};
+SETTING(s_minbutton);
+
 static const struct setting s_snap = {"snap", "on|off", "drag windows to the screen edges to tile them", get_snap,
                                       set_snap};
 SETTING(s_snap);
+
+static struct rect full_frame(const struct window *w, int screen);
+static bool full_menu;
 
 void wm_toggle_fullscreen(struct window *w)
 {
@@ -1536,7 +1567,7 @@ void wm_toggle_fullscreen(struct window *w)
     } else {
         w->restore_full = w->frame;
         w->flags |= WIN_FULLSCREEN;
-        set_frame(w, wm_screen_rect(wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + 8)));
+        set_frame(w, full_frame(w, wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + 8)));
         wm_focus(w);
     }
     if (g)
@@ -1544,16 +1575,21 @@ void wm_toggle_fullscreen(struct window *w)
     wm_damage_all();
 }
 
-bool wm_fullscreen_front(void)
+static struct window *fullscreen_window(void)
 {
     for (struct window *w = top; w; w = w->below)
         if (visible(w) && !w->anim_hold && framed(w))
             return (w->flags & WIN_FULLSCREEN) &&
-                   rect_contains(screens[0].area, w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2);
-    return false;
+                           rect_contains(screens[0].area, w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2)
+                       ? w
+                       : NULL;
+    return NULL;
 }
 
-static bool full_menu;
+bool wm_fullscreen_front(void)
+{
+    return fullscreen_window() != NULL;
+}
 
 bool wm_fullscreen_menu(void)
 {
@@ -1625,14 +1661,43 @@ static int title_band(const struct window *w)
     return w->flags & WIN_FULLSIZE ? (w->toolbar_h ? w->toolbar_h : TITLE_HEIGHT) : TITLE_HEIGHT;
 }
 
+/* A titled window in full screen keeps its title bar just above the top of the screen, so its content takes all of
+   it; while the pointer is at the top the title bar shows again under the menu bar. */
+static bool hides_title(const struct window *w)
+{
+    return (w->flags & WIN_FULLSCREEN) && framed(w) && !(w->flags & WIN_FULLSIZE);
+}
+
+static struct rect full_frame(const struct window *w, int screen)
+{
+    struct rect r = wm_screen_rect(screen);
+    if (framed(w) && !(w->flags & WIN_FULLSIZE)) {
+        r.y -= TITLE_HEIGHT;
+        r.h += TITLE_HEIGHT;
+    }
+    return r;
+}
+
+static int title_top(const struct window *w)
+{
+    if (hides_title(w) && full_menu)
+        return w->frame.y + TITLE_HEIGHT + menubar_height();
+    return w->frame.y;
+}
+
 static int traffic_cy(const struct window *w)
 {
-    return w->frame.y + title_band(w) / 2;
+    return title_top(w) + title_band(w) / 2;
+}
+
+static bool light_shown(int i)
+{
+    return i != 1 || show_minimize;
 }
 
 static int traffic_cx(const struct window *w, int i)
 {
-    return w->frame.x + 20 + i * 20;
+    return w->frame.x + 20 + (i == 2 && !show_minimize ? 1 : i) * 20;
 }
 
 static bool light_enabled(const struct window *w, int i)
@@ -1673,6 +1738,8 @@ static void draw_lights(struct canvas *c, struct window *w)
     int grow = hover ? CLAMP(lights_grow.pos, 0, 1200) : 0;
     uint32_t idle = color_mix(active ? style.titlebar : style.titlebar_inactive, style.text, active ? 70 : 40);
     for (int i = 0; i < 3; i++) {
+        if (!light_shown(i))
+            continue;
         int cx = traffic_cx(w, i);
         bool on = light_enabled(w, i);
         int rad = 5;
@@ -1697,6 +1764,21 @@ static void draw_lights(struct canvas *c, struct window *w)
             }
         }
     }
+}
+
+static void draw_full_title(struct canvas *c, struct window *w)
+{
+    int y = title_top(w);
+    bool active = w == focus;
+    gfx_fill(c, (struct rect){w->frame.x, y, w->frame.w, TITLE_HEIGHT},
+             (active ? style.titlebar : style.titlebar_inactive) | 0xff000000u);
+    gfx_fill(c, (struct rect){w->frame.x, y + TITLE_HEIGHT - 1, w->frame.w, 1}, style.separator);
+    if (!(w->flags & WIN_NOTITLE))
+        gfx_text_box(c, (struct rect){w->frame.x + 76, y, w->frame.w - 152, TITLE_HEIGHT}, &font_bold, w->title,
+                     active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_CENTER);
+    draw_lights(c, w);
+    if (has_more(w))
+        draw_more(c, w);
 }
 
 static void draw_window(struct canvas *c, struct window *w)
@@ -1802,7 +1884,10 @@ static void compose(int index, struct rect area)
     }
     if (ghosts)
         draw_ghosts(c, false);
-    bool full = index == 0 && wm_fullscreen_front();
+    struct window *full_win = index == 0 ? fullscreen_window() : NULL;
+    bool full = full_win != NULL;
+    if (full && full_menu && hides_title(full_win))
+        draw_full_title(c, full_win);
     if (!full || full_menu)
         menubar_paint(c, index);
     if (!full)
@@ -1913,6 +1998,8 @@ static int light_at(struct window *w, int x, int y)
         return -1;
     int cy = traffic_cy(w);
     for (int i = 0; i < 3; i++) {
+        if (!light_shown(i))
+            continue;
         int dx = x - traffic_cx(w, i), dy = y - cy;
         if (dx * dx + dy * dy <= 8 * 8)
             return light_enabled(w, i) ? i : -1;
@@ -2023,21 +2110,53 @@ static void more_pick(struct window *owner, int index)
     }
 }
 
+/* The ··· button holds only what the app itself can do; moving, sizing and tiling are done by dragging, and the
+   rest of the window controls are in the title bar's right-click menu and the menu bar's Window menu. */
 void wm_window_menu(struct window *w, int x, int y)
 {
     int n = 0;
     more_target = w;
+    bool headers = w->menus && w->menu_count > 1;
     for (int i = 0; w->menus && i < w->menu_count; i++) {
         const struct app_menu *m = &w->menus[i];
         if (n > 40)
             break;
         if (n)
             more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
-        more_action[n] = ACT_NONE;
-        more_items[n++] = (struct menu_item){m->title, MENU_HEADER, NULL};
+        if (headers) {
+            more_action[n] = ACT_NONE;
+            more_items[n++] = (struct menu_item){m->title, MENU_HEADER, NULL};
+        }
         for (int k = 0; k < m->count && n < 42; k++) {
             more_action[n] = m->items[k].label[0] ? ACT_KEY : ACT_NONE;
             more_items[n++] = m->items[k];
+        }
+    }
+    if (!n) {
+        wm_window_controls(w, x, y);
+        return;
+    }
+    ui_menu_items(NULL, x, y, more_items, n, more_pick);
+}
+
+void wm_window_controls(struct window *w, int x, int y)
+{
+    int n = 0;
+    more_target = w;
+    if (w->flags & (WIN_RESIZABLE | WIN_FULLSCREEN)) {
+        more_action[n] = ACT_FULL;
+        more_items[n++] = (struct menu_item){w->flags & WIN_FULLSCREEN ? "Exit Full Screen" : "Enter Full Screen", 0, "F11"};
+    }
+    if ((w->flags & WIN_RESIZABLE) && !(w->flags & WIN_FULLSCREEN)) {
+        more_action[n] = ACT_ZOOM;
+        more_items[n++] = (struct menu_item){w->flags & WIN_MAXIMIZED ? "Restore Size" : "Fill Screen", 0, NULL};
+        more_action[n] = ACT_SNAP + SNAP_LEFT;
+        more_items[n++] = (struct menu_item){"Tile Left", 0, "\xe2\x8c\x98\xe2\x86\x90"};
+        more_action[n] = ACT_SNAP + SNAP_RIGHT;
+        more_items[n++] = (struct menu_item){"Tile Right", 0, "\xe2\x8c\x98\xe2\x86\x92"};
+        if (w->flags & WIN_TILED) {
+            more_action[n] = ACT_SNAP + SNAP_RESTORE;
+            more_items[n++] = (struct menu_item){"Return to Previous Size", 0, NULL};
         }
     }
     if (n)
@@ -2046,37 +2165,6 @@ void wm_window_menu(struct window *w, int x, int y)
     more_items[n++] = (struct menu_item){w->flags & WIN_PINNED ? "Stop Keeping on Top" : "Keep on Top", 0, NULL};
     more_action[n] = ACT_MINIMIZE;
     more_items[n++] = (struct menu_item){"Minimize", 0, "\xe2\x8c\x98M"};
-    if (w->flags & WIN_RESIZABLE) {
-        more_action[n] = ACT_ZOOM;
-        more_items[n++] = (struct menu_item){w->flags & WIN_MAXIMIZED ? "Restore Size" : "Fill Screen", 0, NULL};
-    }
-    if ((w->flags & WIN_RESIZABLE) && !(w->flags & WIN_FULLSCREEN)) {
-        static const struct {
-            const char *label, *keys;
-            enum snap_zone z;
-        } tiles[] = {{"Tile Left", "\xe2\x8c\x98\xe2\x86\x90", SNAP_LEFT},
-                     {"Tile Right", "\xe2\x8c\x98\xe2\x86\x92", SNAP_RIGHT},
-                     {"Top Left Quarter", NULL, SNAP_TOP_LEFT},
-                     {"Top Right Quarter", NULL, SNAP_TOP_RIGHT},
-                     {"Bottom Left Quarter", NULL, SNAP_BOTTOM_LEFT},
-                     {"Bottom Right Quarter", NULL, SNAP_BOTTOM_RIGHT}};
-        more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
-        for (size_t i = 0; i < ARRAY_SIZE(tiles); i++) {
-            more_action[n] = ACT_SNAP + tiles[i].z;
-            more_items[n++] = (struct menu_item){tiles[i].label, 0, tiles[i].keys};
-        }
-        if (w->flags & WIN_TILED) {
-            more_action[n] = ACT_SNAP + SNAP_RESTORE;
-            more_items[n++] = (struct menu_item){"Return to Previous Size", 0, NULL};
-        }
-        more_action[n] = ACT_NONE, more_items[n++] = (struct menu_item){"", 0, NULL};
-    }
-    if (w->flags & (WIN_RESIZABLE | WIN_FULLSCREEN)) {
-        more_action[n] = ACT_FULL;
-        more_items[n++] = (struct menu_item){w->flags & WIN_FULLSCREEN ? "Exit Full Screen" : "Enter Full Screen", 0, "F11"};
-    }
-    more_action[n] = ACT_CLOSE;
-    more_items[n++] = (struct menu_item){"Close", 0, "\xe2\x8c\x98W"};
     ui_menu_items(NULL, x, y, more_items, n, more_pick);
 }
 
@@ -2124,8 +2212,20 @@ static void mouse_down(unsigned button)
         drag_frame = w->frame;
         return;
     }
+    if (hides_title(w)) {
+        int ty = title_top(w);
+        if (full_menu && mouse_y >= ty && mouse_y < ty + TITLE_HEIGHT) {
+            if (button == BUTTON_RIGHT)
+                wm_window_controls(w, mouse_x, mouse_y);
+            else if (button == BUTTON_LEFT && click_count >= 2)
+                wm_toggle_fullscreen(w);
+            return;
+        }
+    }
     bool in_title = framed(w) && mouse_y < w->frame.y + title_band(w);
     if (in_title && !(w->flags & WIN_FULLSIZE)) {
+        if (button == BUTTON_RIGHT)
+            wm_window_controls(w, mouse_x, mouse_y);
         if (button != BUTTON_LEFT)
             return;
         if (click_count >= 2) {
@@ -2305,8 +2405,9 @@ static void clamp_mouse(int x, int y)
     mouse_x = x;
     mouse_y = y;
     struct rect a = screens[0].area;
-    bool want = wm_fullscreen_front() && rect_contains(a, x, y) &&
-                y < a.y + (full_menu ? MAX(menubar_height(), 2) : 2);
+    struct window *fw = fullscreen_window();
+    int keep = MAX(menubar_height(), 2) + (fw && hides_title(fw) ? TITLE_HEIGHT : 0) + 2;
+    bool want = fw && rect_contains(a, x, y) && y < a.y + (full_menu ? keep : 3);
     if (want != full_menu) {
         full_menu = want;
         wm_damage_all();
@@ -2349,7 +2450,7 @@ static void pointer_irq(struct pointer_event *ev)
         return;
     hw_x = x;
     hw_y = y;
-    if (fb_busy)
+    if (fb_busy || drag == DRAG_MOVE || drag == DRAG_RESIZE)
         hw_dirty = true;
     else
         hw_cursor_move();
@@ -2660,7 +2761,7 @@ static void keep_visible(struct window *w, void *ctx)
     for (int i = 0; i < screen_count; i++)
         visible_somewhere |= rect_contains(screens[i].area, cx, ty);
     if (w->flags & WIN_FULLSCREEN) {
-        set_frame(w, wm_screen_rect(wm_screen_at(cx, ty)));
+        set_frame(w, full_frame(w, wm_screen_at(cx, hides_title(w) ? ty + TITLE_HEIGHT : ty)));
         return;
     }
     if (w->flags & WIN_MAXIMIZED) {
@@ -3094,11 +3195,29 @@ COMMAND(wmbench, NULL, "dev", "wmbench [frames]", "time full-screen desktop redr
         wm_damage_all();
         wm_render();
     }
+    uint64_t moved = 0;
+    if (w && !(w->flags & (WIN_MAXIMIZED | WIN_FULLSCREEN))) {
+        struct rect f = w->frame;
+        enum drag_mode saved = drag;
+        drag = DRAG_MOVE;
+        t0 = hal_ticks_ms();
+        for (long i = 0; i < frames; i++) {
+            int d = (int)(i % 16) * 6;
+            wm_move(w, f.x + (i / 16 % 2 ? 96 - d : d), f.y + d / 2);
+            wm_render();
+        }
+        moved = hal_ticks_ms() - t0;
+        drag = saved;
+        wm_move(w, f.x, f.y);
+        wm_render();
+    }
     sh_printf(sh, "full screen %dx%d: %u ms per frame\n", wm_screen_rect(0).w, wm_screen_rect(0).h,
               (unsigned)(full / (uint64_t)frames));
     if (anim)
         sh_printf(sh, "front window area: %u ms per frame\nfront window zoom: %u ms per frame\n",
                   (unsigned)(part / (uint64_t)anim), (unsigned)(zoom / (uint64_t)anim));
+    if (moved)
+        sh_printf(sh, "dragging the front window: %u ms per frame\n", (unsigned)(moved / (uint64_t)frames));
     sh_printf(sh, "processors drawing: %d\n", hal_parallel_cpus());
     return 0;
 }

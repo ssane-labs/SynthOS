@@ -164,6 +164,10 @@ config dnd on; config dnd; config dnd off
 dnd = on
 config desktopdrives off; config desktopdisk off; config desktopdrives; config desktopdisk on; config desktopdrives on
 desktopdrives = off
+config minbutton
+minbutton = off
+config magnify
+magnify = off
 config browser chrome; config browser; config browser chromium
 browser = chrome
 config dockdots off; config dockbounce off; config dockdots; config dockdots on

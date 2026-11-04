@@ -1719,6 +1719,8 @@ static void handle_key(int key)
 
 static bool pumping;
 
+#define DRAG_FRAME_MS 8
+
 static void pump(int timeout_ms)
 {
     if (pumping)
@@ -1761,7 +1763,12 @@ static void pump(int timeout_ms)
     terminal_flush();
     screenshot_tick();
     hotcorner_tick();
-    wm_render();
+    static uint64_t last_frame;
+    bool paced = wm_dragging();
+    if (!paced || hal_ticks_ms() - last_frame >= DRAG_FRAME_MS) {
+        last_frame = hal_ticks_ms();
+        wm_render();
+    }
     recovery_boot_ok();
     pumping = false;
     if (autostart_pending && session && session->idle && !gui_locked()) {
@@ -1778,6 +1785,10 @@ static void pump(int timeout_ms)
     int nap = timeout_ms > 0 ? MIN(timeout_ms, 8) : 8;
     if (wm_animating())
         nap = (int)CLAMP((int64_t)frame_start + 16 - (int64_t)done, 0, 8);
+    if (paced) {
+        nap = (int)CLAMP((int64_t)last_frame + DRAG_FRAME_MS - (int64_t)done, 0, DRAG_FRAME_MS);
+        busy = false;
+    }
     frame_start = done + (uint64_t)nap;
 #if CONFIG_WIN32
     if (timeout_ms != 0)

@@ -35,7 +35,8 @@ Menu bar
 Windows
   Drag a window to the left or right edge for half the screen, to a corner
   for a quarter, to the top for all of it; drag it away to get its size
-  back. The ... button has Tile Left, Tile Right and the quarters.
+  back. A right click on the title bar has Full Screen, Tile Left and
+  Right, Keep on Top and Minimize (the yellow button is off: minbutton).
   Rest the pointer on an app in the Dock to see its windows (dockpreviews).
   Hot corners run Mission Control, the desktop, Launchpad and more
   (Settings > Desktop & Dock, config cornertr mission).
@@ -120,8 +121,8 @@ nothing grows or jumps under the pointer; a Dock icon sinks a little when
 pressed and the app hops once while it starts.
 
 Every window has only its title and one small button: ... opens a list
-with all the commands of the app and Keep on Top, Minimize, Fill Screen
-and Close. Viewers keep their few real controls: back, forward and up in
+with the commands of the app; the window itself is moved and sized by
+dragging, and its controls are in the title bar's right-click menu. Viewers keep their few real controls: back, forward and up in
 Files, a pill with previous, zoom, rotate and next in Photos, play, pause
 and the timeline in Video. The Dock starts with only Apps, Files, Chromium,
 Terminal and the Trash; drag icons from the desktop onto it, along it or
