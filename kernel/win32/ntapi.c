@@ -74,19 +74,50 @@ static DWORD WINAPI NtQueryInformationProcess(HANDLE process, int cls, void *inf
     return STATUS_INVALID_INFO_CLASS;
 }
 
+/* one processor: core, package, NUMA node and its caches (L1 data/instruction, L2, L3) */
+static const struct {
+    uint32_t relation;
+    uint8_t level, assoc;
+    uint16_t line;
+    uint32_t size, type;
+} cpu_layout[] = {
+    {0, 1, 0, 0, 0, 0},          {3, 0, 0, 0, 0, 0},           {1, 0, 0, 0, 0, 0},
+    {2, 1, 8, 64, 32768, 2},     {2, 1, 8, 64, 32768, 1},      {2, 2, 8, 64, 262144, 0},
+    {2, 3, 16, 64, 8388608, 0},
+};
+
+static int cpu_record(int i, uint32_t *relation, uint32_t *u)
+{
+    if (i < 0 || i >= (int)ARRAY_SIZE(cpu_layout))
+        return 0;
+    *relation = cpu_layout[i].relation;
+    memset(u, 0, 16);
+    if (cpu_layout[i].relation == 2) {
+        u[0] = cpu_layout[i].level | (uint32_t)cpu_layout[i].assoc << 8 | (uint32_t)cpu_layout[i].line << 16;
+        u[1] = cpu_layout[i].size;
+        u[2] = cpu_layout[i].type;
+    }
+    return 1;
+}
+
 static BOOL WINAPI GetLogicalProcessorInformation(uint32_t *buf, DWORD *len)
 {
-    if (!len)
+    if (!len) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
         return FALSE;
-    if (!buf || *len < 24) {
-        *len = 24;
+    }
+    DWORD need = ARRAY_SIZE(cpu_layout) * 24;
+    if (!buf || *len < need) {
+        *len = need;
         w32_set_error(ERROR_INSUFFICIENT_BUFFER);
         return FALSE;
     }
-    memset(buf, 0, 24);
-    buf[0] = 1;
-    buf[1] = 0;
-    *len = 24;
+    for (int i = 0; i < (int)ARRAY_SIZE(cpu_layout); i++) {
+        uint32_t *e = buf + i * 6;
+        e[0] = 1;
+        cpu_record(i, &e[1], e + 2);
+    }
+    *len = need;
     return TRUE;
 }
 

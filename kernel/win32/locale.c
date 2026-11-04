@@ -743,6 +743,11 @@ static BOOL WINAPI preferred_languages(DWORD flags, ULONG *count, LPWSTR buf, UL
     return TRUE;
 }
 
+static WORD WINAPI SetThreadUILanguage(WORD lang)
+{
+    return lang ? lang : 0x409;
+}
+
 static int WINAPI FoldStringW(DWORD flags, LPCWSTR src, int n, LPWSTR out, int cap)
 {
     UNUSED(flags);
@@ -800,7 +805,9 @@ static const struct w32_export locale_exports[] = {
     W32_FN(IsValidLocaleName), W32_FN(ResolveLocaleName), W32_AS("GetUserPreferredUILanguages", preferred_languages),
     W32_AS("GetThreadPreferredUILanguages", preferred_languages),
     W32_AS("GetSystemPreferredUILanguages", preferred_languages),
-    W32_AS("GetProcessPreferredUILanguages", preferred_languages), W32_FN(FoldStringW), W32_FN(GetGeoInfoW),
+    W32_AS("GetProcessPreferredUILanguages", preferred_languages), W32_AS("GetThreadUILanguage", GetUserDefaultLangID),
+    W32_FN(SetThreadUILanguage), W32_AS("SetThreadPreferredUILanguages", w32_one3),
+    W32_AS("SetProcessPreferredUILanguages", w32_one3), W32_FN(FoldStringW), W32_FN(GetGeoInfoW),
     W32_FN(GetUserGeoID),
 };
 

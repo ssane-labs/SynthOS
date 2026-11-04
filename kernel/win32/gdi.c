@@ -9,6 +9,7 @@ enum {
     OBJ_PEN = 1,
     OBJ_BRUSH = 2,
     OBJ_DC = 3,
+    OBJ_PAL = 5,
     OBJ_FONT = 6,
     OBJ_BITMAP = 7,
     OBJ_REGION = 8,
@@ -56,12 +57,14 @@ struct gdi_obj {
     void *bits;
     bool mapped;
     struct rect region;
+    uint32_t *colors;
+    int ncolors;
 };
 
 struct dc_state {
-    struct gdi_obj *pen, *brush, *font, *bitmap;
+    struct gdi_obj *pen, *brush, *font, *bitmap, *palette;
     COLORREF text, bk, dc_brush, dc_pen;
-    int bk_mode, rop2, org_x, org_y;
+    int bk_mode, rop2, org_x, org_y, brush_x, brush_y;
     UINT align;
     struct rect clip;
     bool clipped;
@@ -169,6 +172,33 @@ static const struct ui_font *pick_font(int height, int weight, const char *face,
     return &font_large;
 }
 
+static const uint32_t system_colors[20] = {
+    0x000000, 0x000080, 0x008000, 0x008080, 0x800000, 0x800080, 0x808000, 0xc0c0c0, 0xc0dcc0, 0xf0caa6,
+    0xf0fbff, 0xa4a0a0, 0x808080, 0x0000ff, 0x00ff00, 0x00ffff, 0xff0000, 0xff00ff, 0xffff00, 0xffffff,
+};
+
+static struct gdi_obj *palette_new(int n)
+{
+    struct gdi_obj *o = new_obj(OBJ_PAL);
+    if (o && !(o->colors = w32_zalloc(sizeof(uint32_t) * (size_t)MAX(n, 1)))) {
+        w32_free(o);
+        return NULL;
+    }
+    if (o)
+        o->ncolors = n;
+    return o;
+}
+
+static struct gdi_obj *default_palette(void)
+{
+    struct gdi_obj *o = palette_new(20);
+    if (o) {
+        o->stock = true;
+        memcpy(o->colors, system_colors, sizeof(system_colors));
+    }
+    return o;
+}
+
 HANDLE w32_stock(int index)
 {
     if (index < 0 || index >= 20)
@@ -186,7 +216,7 @@ HANDLE w32_stock(int index)
         case 8: stock[index] = make_stock(OBJ_PEN, 0, PS_NULL); break;
         case 18: stock[index] = make_stock(OBJ_BRUSH, 0xffffff, 0); break;
         case 19: stock[index] = make_stock(OBJ_PEN, 0x000000, 0); break;
-        case 15: stock[index] = make_stock(9, 0, 0); break;
+        case 15: stock[index] = default_palette(); break;
         default:
             stock[index] = make_stock(OBJ_FONT, 0, 0);
             if (stock[index])
@@ -243,6 +273,7 @@ static void dc_defaults(struct w32_dc *d)
     d->s.dc_pen = 0;
     d->s.bk_mode = OPAQUE;
     d->s.rop2 = 13;
+    d->s.palette = w32_stock(15);
 }
 
 HANDLE w32_window_dc(struct w32_window *w, struct rect visible)
@@ -616,6 +647,7 @@ static BOOL WINAPI DeleteObject(HANDLE h)
         w32_unmap_section(o->bits);
     else if (o->kind == OBJ_BITMAP && o->bits)
         w32_free(o->bits);
+    w32_free(o->colors);
     o->magic = 0;
     w32_free(o);
     return TRUE;
@@ -678,6 +710,12 @@ static int get_object(HANDLE h, int size, void *out, bool wide)
         if (out)
             memcpy(out, lp, (size_t)MIN(size, 16));
         return MIN(size, 16);
+    }
+    if (o->kind == OBJ_PAL) {
+        WORD n = (WORD)o->ncolors;
+        if (out && size >= 2)
+            memcpy(out, &n, 2);
+        return 2;
     }
     if (o->kind == OBJ_BRUSH) {
         uint32_t lb[3] = {(uint32_t)o->style, o->color, 0};
@@ -1075,11 +1113,23 @@ static BOOL WINAPI GetWorldTransform(HANDLE h, uint32_t *xform)
 
 static BOOL WINAPI SetBrushOrgEx(HANDLE h, int x, int y, POINT *old)
 {
-    UNUSED(x);
-    UNUSED(y);
+    struct w32_dc *d = dc_of(h);
+    if (!d)
+        return FALSE;
     if (old)
-        *old = (POINT){0, 0};
-    return dc_of(h) != NULL;
+        *old = (POINT){d->s.brush_x, d->s.brush_y};
+    d->s.brush_x = x;
+    d->s.brush_y = y;
+    return TRUE;
+}
+
+static BOOL WINAPI GetBrushOrgEx(HANDLE h, POINT *out)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || !out)
+        return FALSE;
+    *out = (POINT){d->s.brush_x, d->s.brush_y};
+    return TRUE;
 }
 
 static DWORD WINAPI GetFontData(HANDLE h, DWORD table, DWORD offset, void *buf, DWORD size)
@@ -1720,6 +1770,58 @@ static int WINAPI DrawTextExW(HANDLE h, LPWSTR s, int n, RECT *r, UINT format, v
     return DrawTextW(h, s, n, r, format);
 }
 
+/* DrawFrameControl: check boxes, radio buttons, push buttons, scroll arrows and caption buttons in the desktop's look */
+static BOOL WINAPI DrawFrameControl(HANDLE h, RECT *r, UINT type, UINT state)
+{
+    struct w32_dc *d = dc_of(h);
+    struct target t;
+    if (!d || !r || !target_of(d, &t))
+        return FALSE;
+    struct rect box = {t.ox + r->left, t.oy + r->top, r->right - r->left, r->bottom - r->top};
+    if (box.w <= 0 || box.h <= 0)
+        return TRUE;
+    t.c->clip = rect_intersect(t.clip, box);
+    bool inactive = state & 0x100, pushed = state & 0x200, checked = state & 0x400;
+    unsigned kind = state & 0xff;
+    int size = MIN(box.w, box.h);
+    struct rect sq = {box.x + (box.w - size) / 2, box.y + (box.h - size) / 2, size, size};
+    if (type == 4 && (kind & 0x1f) != 0x10) {
+        bool radio = (kind & 0xf) == 4 || (kind & 0xf) == 8;
+        int radius = radio ? size / 2 : MIN(4, size / 3);
+        uint32_t fill = checked && !inactive ? style.accent : pushed ? style.control_pressed : style.field;
+        gfx_round(t.c, sq, radius, fill);
+        if (!checked || inactive)
+            gfx_round_frame(t.c, sq, radius, inactive ? style.separator : style.control_border);
+        uint32_t mark = inactive ? style.tertiary : style.accent_text;
+        if (checked && radio)
+            gfx_circle(t.c, sq.x + size / 2, sq.y + size / 2, MAX(2, size / 5), mark);
+        else if (checked)
+            gfx_symbol(t.c, sq.x, sq.y, SYM_CHECK, size, mark);
+    } else if (type == 4 || type == 1 || type == 3) {
+        gfx_round(t.c, box, 4, pushed ? style.control_pressed : style.control);
+        gfx_round_frame(t.c, box, 4, style.control_border);
+        static const uint8_t scroll_syms[] = {SYM_UP, SYM_DOWN, SYM_LEFT, SYM_RIGHT, 0, SYM_DOWN};
+        static const uint8_t caption_syms[] = {SYM_CLOSE, SYM_MINUS, SYM_PLUS, SYM_WINDOW, 0};
+        int sym = type == 3 && kind < sizeof(scroll_syms) ? scroll_syms[kind]
+                  : type == 1 && kind < sizeof(caption_syms) ? caption_syms[kind] : 0;
+        if (sym) {
+            int s = MAX(8, size - 4);
+            gfx_symbol(t.c, sq.x + (size - s) / 2, sq.y + (size - s) / 2, sym, s, inactive ? style.tertiary : style.text);
+        }
+    } else if (type == 2) {
+        uint32_t ink = w32_rgb(d->s.text);
+        if (kind == 1)
+            gfx_symbol(t.c, sq.x, sq.y, SYM_CHECK, size, ink);
+        else if (kind == 2)
+            gfx_circle(t.c, sq.x + size / 2, sq.y + size / 2, MAX(2, size / 6), ink);
+        else
+            gfx_symbol(t.c, sq.x, sq.y, SYM_RIGHT, size, ink);
+    }
+    t.c->clip = t.clip;
+    damage(d, &t, box);
+    return TRUE;
+}
+
 static BOOL WINAPI DrawFocusRect(HANDLE h, const RECT *r)
 {
     UNUSED(h);
@@ -1807,12 +1909,57 @@ static HANDLE WINAPI CreateCompatibleBitmap(HANDLE h, int w, int height)
     return new_bitmap(w, -height, NULL, 32);
 }
 
+/* OBM_CHECKBOXES: a 4 x 3 sheet of 13 x 13 check boxes, radio buttons and 3-state boxes */
+HANDLE w32_check_sheet(void)
+{
+    HANDLE bmp = new_bitmap(52, -39, NULL, 32), dc = CreateCompatibleDC(NULL);
+    if (!bmp || !dc)
+        return bmp;
+    HANDLE old = SelectObject(dc, bmp);
+    RECT all = {0, 0, 52, 39};
+    FillRect(dc, &all, w32_syscolor_brush(5));
+    static const UINT kinds[3] = {0, 4, 8};
+    static const UINT states[4] = {0, 0x400, 0x200, 0x600};
+    for (int row = 0; row < 3; row++)
+        for (int col = 0; col < 4; col++) {
+            RECT r = {col * 13, row * 13, col * 13 + 13, row * 13 + 13};
+            DrawFrameControl(dc, &r, 4, kinds[row] | states[col]);
+        }
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    return bmp;
+}
+
 static HANDLE WINAPI CreateBitmap(int w, int h, UINT planes, UINT bpp, const void *bits)
 {
     UNUSED(planes);
     struct gdi_obj *o = new_bitmap(w, -h, NULL, 32);
-    if (o && bits && bpp == 32)
+    if (!o || !bits || w <= 0 || h <= 0)
+        return o;
+    if (bpp == 32) {
         memcpy(o->bits, bits, (size_t)w * (size_t)h * 4);
+        return o;
+    }
+    /* device-dependent rows are padded to 16 bits; 1 bit per pixel is a mask (set = white) */
+    size_t stride = (size_t)(((w * (int)bpp + 15) / 16) * 2);
+    for (int y = 0; y < h; y++) {
+        const uint8_t *row = (const uint8_t *)bits + (size_t)y * stride;
+        for (int x = 0; x < w; x++) {
+            uint32_t c;
+            switch (bpp) {
+            case 1: c = row[x / 8] >> (7 - x % 8) & 1 ? 0xffffff : 0; break;
+            case 24: c = (uint32_t)row[x * 3] | (uint32_t)row[x * 3 + 1] << 8 | (uint32_t)row[x * 3 + 2] << 16; break;
+            case 16: {
+                uint16_t v = (uint16_t)(row[x * 2] | row[x * 2 + 1] << 8);
+                c = RGB((v >> 11) << 3, ((v >> 5) & 63) << 2, (v & 31) << 3);
+                break;
+            }
+            case 8: c = w32_rgb(system_colors[row[x] % 20]); break;
+            default: c = 0;
+            }
+            o->canvas.px[y * o->canvas.stride + x] = c | 0xff000000u;
+        }
+    }
     return o;
 }
 
@@ -1829,7 +1976,6 @@ static HANDLE WINAPI CreateDIBSection(HANDLE h, const struct bitmap_info *bmi, U
                                       HANDLE section, DWORD offset)
 {
     UNUSED(h);
-    UNUSED(usage);
     if (!bmi || bmi->width <= 0 || !bmi->height)
         return NULL;
     /* With a section the pixels live in shared memory another process draws into (Chromium's compositor). */
@@ -1847,18 +1993,28 @@ static HANDLE WINAPI CreateDIBSection(HANDLE h, const struct bitmap_info *bmi, U
         return NULL;
     }
     o->mapped = shared != NULL;
+    if (bmi->bpp <= 8) {
+        int n = bmi->used && bmi->used <= (1u << bmi->bpp) ? (int)bmi->used : 1 << bmi->bpp;
+        if ((o->colors = w32_zalloc(sizeof(uint32_t) * (size_t)n))) {
+            o->ncolors = n;
+            if (usage == 0)
+                memcpy(o->colors, (const uint8_t *)bmi + bmi->size, sizeof(uint32_t) * (size_t)n);
+        }
+    }
     if (bits)
         *bits = o->bits;
     return o;
 }
 
-static uint32_t dib_pixel(const struct bitmap_info *bmi, const uint8_t *bits, int x, int y)
+static uint32_t dib_pixel_in(const struct bitmap_info *bmi, const uint32_t *palette, const uint8_t *bits, int x, int y)
 {
     int w = bmi->width, h = bmi->height < 0 ? -bmi->height : bmi->height;
     int row = bmi->height < 0 ? y : h - 1 - y;
     int stride = ((w * bmi->bpp + 31) / 32) * 4;
     const uint8_t *p = bits + (size_t)row * (size_t)stride;
-    const uint32_t *palette = (const uint32_t *)((const uint8_t *)bmi + bmi->size);
+    static const uint32_t gray[2] = {0, 0xffffff};
+    if (!palette)
+        palette = gray;
     switch (bmi->bpp) {
     case 32: return ((const uint32_t *)p)[x] | 0xff000000u;
     case 24: return RGB(p[x * 3 + 2], p[x * 3 + 1], p[x * 3]);
@@ -1873,6 +2029,11 @@ static uint32_t dib_pixel(const struct bitmap_info *bmi, const uint8_t *bits, in
     case 1: return palette[(p[x / 8] >> (7 - x % 8)) & 1] | 0xff000000u;
     default: return 0xff000000u;
     }
+}
+
+static uint32_t dib_pixel(const struct bitmap_info *bmi, const uint8_t *bits, int x, int y)
+{
+    return dib_pixel_in(bmi, (const uint32_t *)((const uint8_t *)bmi + bmi->size), bits, x, y);
 }
 
 static void blit_dib(struct target *t, int dx, int dy, int dw, int dh, const struct bitmap_info *bmi,
@@ -1982,7 +2143,15 @@ static uint32_t raster(uint32_t src, uint32_t dst, uint32_t pat, DWORD rop)
     case DSTINVERT: return ~dst;
     case BLACKNESS: return 0;
     case WHITENESS: return 0xffffff;
-    default: return src;
+    default: {
+        /* any other ternary operation: bit i of the code is the result for pattern/source/destination bits i */
+        uint8_t code = (uint8_t)(rop >> 16);
+        uint32_t r = 0;
+        for (int i = 0; i < 8; i++)
+            if (code >> i & 1)
+                r |= (i & 4 ? pat : ~pat) & (i & 2 ? src : ~src) & (i & 1 ? dst : ~dst);
+        return r & 0xffffff;
+    }
     }
 }
 
@@ -2057,7 +2226,7 @@ static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx
                 if (sb && sb->bpp != 32) {
                     if (xx < 0 || yy < 0 || xx >= sb->canvas.w || yy >= sb->canvas.h)
                         continue;
-                    src = dib_pixel(&bmi, sb->bits, xx, yy);
+                    src = dib_pixel_in(&bmi, sb->colors, sb->bits, xx, yy);
                 } else {
                     int px = st.ox + xx, py = st.oy + yy;
                     if (px < 0 || py < 0 || px >= st.c->w || py >= st.c->h)
@@ -2190,16 +2359,6 @@ static BOOL WINAPI GdiFlush(void)
     return TRUE;
 }
 
-static int WINAPI EnumFontFamiliesExA(HANDLE h, void *lf, void *fn, LPARAM lp, DWORD flags)
-{
-    UNUSED(h);
-    UNUSED(lf);
-    UNUSED(fn);
-    UNUSED(lp);
-    UNUSED(flags);
-    return 1;
-}
-
 void w32_gdi_reset(void)
 {
     memset(stock, 0, sizeof(stock));
@@ -2220,6 +2379,1163 @@ static HANDLE WINAPI AddFontMemResourceEx(void *data, DWORD size, void *reserved
     }
     *count = 1;
     return (HANDLE)(uintptr_t)0x5f000000u;
+}
+
+static HANDLE WINAPI CreatePalette(const WORD *lp)
+{
+    if (!lp || !lp[1])
+        return NULL;
+    struct gdi_obj *o = palette_new(lp[1]);
+    if (o)
+        memcpy(o->colors, lp + 2, sizeof(uint32_t) * lp[1]);
+    return o;
+}
+
+static HANDLE WINAPI CreateHalftonePalette(HANDLE h)
+{
+    UNUSED(h);
+    struct gdi_obj *o = palette_new(256);
+    if (!o)
+        return NULL;
+    memcpy(o->colors, system_colors, 10 * sizeof(uint32_t));
+    memcpy(o->colors + 246, system_colors + 10, 10 * sizeof(uint32_t));
+    int i = 10;
+    for (int r = 0; r < 6; r++)
+        for (int g = 0; g < 6; g++)
+            for (int b = 0; b < 6; b++)
+                o->colors[i++] = (uint32_t)(r * 51) | (uint32_t)(g * 51) << 8 | (uint32_t)(b * 51) << 16;
+    for (int k = 0; i < 246; i++, k++) {
+        uint32_t v = (uint32_t)(8 + k * 12) & 0xff;
+        o->colors[i] = v | v << 8 | v << 16;
+    }
+    return o;
+}
+
+static struct gdi_obj *palette_of(HANDLE h)
+{
+    struct gdi_obj *o = obj(h);
+    return o && o->kind == OBJ_PAL ? o : NULL;
+}
+
+static HANDLE WINAPI SelectPalette(HANDLE h, HANDLE pal, BOOL background)
+{
+    UNUSED(background);
+    struct w32_dc *d = dc_of(h);
+    struct gdi_obj *p = palette_of(pal);
+    if (!d || !p)
+        return NULL;
+    struct gdi_obj *old = d->s.palette ? d->s.palette : w32_stock(15);
+    d->s.palette = p;
+    return old;
+}
+
+/* a true-colour display maps every entry without changing the system palette */
+static UINT WINAPI RealizePalette(HANDLE h)
+{
+    return dc_of(h) ? 0 : 0xffffffffu;
+}
+
+static UINT WINAPI GetPaletteEntries(HANDLE pal, UINT start, UINT n, uint32_t *out)
+{
+    struct gdi_obj *p = palette_of(pal);
+    if (!p)
+        return 0;
+    if (!out)
+        return (UINT)p->ncolors;
+    if (start >= (UINT)p->ncolors)
+        return 0;
+    n = MIN(n, (UINT)p->ncolors - start);
+    memcpy(out, p->colors + start, sizeof(uint32_t) * n);
+    return n;
+}
+
+static UINT WINAPI SetPaletteEntries(HANDLE pal, UINT start, UINT n, const uint32_t *in)
+{
+    struct gdi_obj *p = palette_of(pal);
+    if (!p || p->stock || !in || start >= (UINT)p->ncolors)
+        return 0;
+    n = MIN(n, (UINT)p->ncolors - start);
+    memcpy(p->colors + start, in, sizeof(uint32_t) * n);
+    return n;
+}
+
+static BOOL WINAPI ResizePalette(HANDLE pal, UINT n)
+{
+    struct gdi_obj *p = palette_of(pal);
+    uint32_t *c = p && !p->stock && n ? w32_zalloc(sizeof(uint32_t) * n) : NULL;
+    if (!c)
+        return FALSE;
+    memcpy(c, p->colors, sizeof(uint32_t) * MIN(n, (UINT)p->ncolors));
+    w32_free(p->colors);
+    p->colors = c;
+    p->ncolors = (int)n;
+    return TRUE;
+}
+
+static UINT WINAPI GetNearestPaletteIndex(HANDLE pal, COLORREF c)
+{
+    struct gdi_obj *p = palette_of(pal);
+    if (!p)
+        return 0xffffffffu;
+    UINT best = 0;
+    int dist = 1 << 30;
+    for (int i = 0; i < p->ncolors; i++) {
+        int dr = (int)(p->colors[i] & 0xff) - (int)(c & 0xff), dg = (int)(p->colors[i] >> 8 & 0xff) - (int)(c >> 8 & 0xff),
+            db = (int)(p->colors[i] >> 16 & 0xff) - (int)(c >> 16 & 0xff);
+        if (dr * dr + dg * dg + db * db < dist) {
+            dist = dr * dr + dg * dg + db * db;
+            best = (UINT)i;
+        }
+    }
+    return best;
+}
+
+static UINT WINAPI GetSystemPaletteEntries(HANDLE h, UINT start, UINT n, uint32_t *out)
+{
+    UNUSED(h);
+    struct gdi_obj *p = CreateHalftonePalette(NULL);
+    UINT got = p ? GetPaletteEntries(p, start, n, out) : 0;
+    if (p)
+        DeleteObject(p);
+    return got;
+}
+
+static BOOL WINAPI UnrealizeObject(HANDLE h)
+{
+    struct gdi_obj *o = obj(h);
+    return o && (o->kind == OBJ_PAL || o->kind == OBJ_BRUSH);
+}
+
+static struct gdi_obj *selected_dib(HANDLE h)
+{
+    struct w32_dc *d = dc_of(h);
+    struct gdi_obj *b = d && d->memory ? d->s.bitmap : NULL;
+    return b && b->colors ? b : NULL;
+}
+
+static UINT WINAPI GetDIBColorTable(HANDLE h, UINT start, UINT n, uint32_t *out)
+{
+    struct gdi_obj *b = selected_dib(h);
+    if (!b || !out || start >= (UINT)b->ncolors)
+        return 0;
+    n = MIN(n, (UINT)b->ncolors - start);
+    memcpy(out, b->colors + start, sizeof(uint32_t) * n);
+    return n;
+}
+
+static UINT WINAPI SetDIBColorTable(HANDLE h, UINT start, UINT n, const uint32_t *in)
+{
+    struct gdi_obj *b = selected_dib(h);
+    if (!b || !in || start >= (UINT)b->ncolors)
+        return 0;
+    n = MIN(n, (UINT)b->ncolors - start);
+    memcpy(b->colors + start, in, sizeof(uint32_t) * n);
+    return n;
+}
+
+static LONG WINAPI GetBitmapBits(HANDLE bitmap, LONG size, void *out)
+{
+    struct gdi_obj *b = obj(bitmap);
+    if (!b || b->kind != OBJ_BITMAP || !b->canvas.px)
+        return 0;
+    LONG total = b->canvas.w * b->canvas.h * 4;
+    if (!out)
+        return total;
+    LONG n = MIN(size, total);
+    for (LONG done = 0, y = 0; done < n; y++) {
+        LONG k = MIN(n - done, (LONG)b->canvas.w * 4);
+        memcpy((uint8_t *)out + done, b->canvas.px + y * b->canvas.stride, (size_t)k);
+        done += k;
+    }
+    return n;
+}
+
+static LONG WINAPI SetBitmapBits(HANDLE bitmap, DWORD size, const void *in)
+{
+    struct gdi_obj *b = obj(bitmap);
+    if (!b || b->kind != OBJ_BITMAP || !b->canvas.px || !in)
+        return 0;
+    LONG n = MIN((LONG)size, b->canvas.w * b->canvas.h * 4);
+    for (LONG done = 0, y = 0; done < n; y++) {
+        LONG k = MIN(n - done, (LONG)b->canvas.w * 4);
+        memcpy(b->canvas.px + y * b->canvas.stride, (const uint8_t *)in + done, (size_t)k);
+        done += k;
+    }
+    return n;
+}
+
+static BOOL WINAPI GetCurrentPositionEx(HANDLE h, POINT *out)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || !out)
+        return FALSE;
+    *out = (POINT){d->x, d->y};
+    return TRUE;
+}
+
+static BOOL WINAPI GetWindowOrgEx(HANDLE h, POINT *out)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || !out)
+        return FALSE;
+    *out = (POINT){d->s.org_x, d->s.org_y};
+    return TRUE;
+}
+
+static BOOL WINAPI GetViewportOrgEx(HANDLE h, POINT *out)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || !out)
+        return FALSE;
+    *out = (POINT){-d->s.org_x, -d->s.org_y};
+    return TRUE;
+}
+
+static BOOL WINAPI GetDCOrgEx(HANDLE h, POINT *out)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || !out)
+        return FALSE;
+    *out = (POINT){0, 0};
+    if (!d->memory && d->win && w32_win(d->win)) {
+        struct w32_window *top = w32_top(d->win);
+        struct rect a = w32_area(d->win), cr = top->wm ? wm_client_rect(top->wm) : (struct rect){0, 0, 0, 0};
+        *out = (POINT){cr.x + a.x, cr.y + a.y};
+    }
+    return TRUE;
+}
+
+/* clipping is one rectangle: an excluded band along an edge shrinks it, a hole inside keeps the whole rectangle */
+static int WINAPI ExcludeClipRect(HANDLE h, int l, int t, int r, int b)
+{
+    struct w32_dc *d = dc_of(h);
+    struct target tg;
+    if (!d)
+        return 0;
+    struct rect c = d->s.clip;
+    if (!d->s.clipped) {
+        if (!target_of(d, &tg))
+            return 1;
+        c = (struct rect){tg.clip.x - tg.ox - d->s.org_x, tg.clip.y - tg.oy - d->s.org_y, tg.clip.w, tg.clip.h};
+    }
+    int cr = c.x + c.w, cb = c.y + c.h;
+    if (r <= c.x || l >= cr || b <= c.y || t >= cb)
+        return region_kind(c);
+    if (t <= c.y && b >= cb) {
+        if (l <= c.x)
+            c = (struct rect){r, c.y, cr - r, c.h};
+        else if (r >= cr)
+            c.w = l - c.x;
+    } else if (l <= c.x && r >= cr) {
+        if (t <= c.y)
+            c = (struct rect){c.x, b, c.w, cb - b};
+        else if (b >= cb)
+            c.h = t - c.y;
+    }
+    if (c.w < 0)
+        c.w = 0;
+    if (c.h < 0)
+        c.h = 0;
+    d->s.clip = c;
+    d->s.clipped = true;
+    return c.w && c.h ? 3 : 1;
+}
+
+static BOOL WINAPI RectVisible(HANDLE h, const RECT *r)
+{
+    RECT box;
+    if (!r || GetClipBox(h, &box) <= 1)
+        return FALSE;
+    return MAX(r->left, box.left) < MIN(r->right, box.right) && MAX(r->top, box.top) < MIN(r->bottom, box.bottom);
+}
+
+static BOOL WINAPI PtVisible(HANDLE h, int x, int y)
+{
+    RECT r = {x, y, x + 1, y + 1};
+    return RectVisible(h, &r);
+}
+
+static BOOL WINAPI ExtFloodFill(HANDLE h, int x, int y, COLORREF color, UINT type)
+{
+    struct w32_dc *d = dc_of(h);
+    struct target t;
+    if (!d || !target_of(d, &t))
+        return FALSE;
+    int sx = t.ox + x, sy = t.oy + y;
+    struct rect c = t.clip;
+    if (sx < c.x || sy < c.y || sx >= c.x + c.w || sy >= c.y + c.h)
+        return FALSE;
+    bool none;
+    uint32_t fillc = (brush_color(d, d->s.brush, &none) & 0xffffff) | 0xff000000u;
+    uint32_t ref = w32_rgb(color) & 0xffffff;
+    uint32_t *px = t.c->px;
+    int stride = t.c->stride;
+#define INSIDE(X, Y) (type ? (px[(Y) * stride + (X)] & 0xffffff) == ref : (px[(Y) * stride + (X)] & 0xffffff) != ref)
+    if (none || !INSIDE(sx, sy) || (px[sy * stride + sx] | 0xff000000u) == fillc)
+        return !none;
+    int cap = 4096, n = 0;
+    int *stack = kmalloc(sizeof(int) * 2 * (size_t)cap);
+    if (!stack)
+        return FALSE;
+    stack[n++] = sx;
+    stack[n++] = sy;
+    struct rect dirty = {sx, sy, 1, 1};
+    while (n) {
+        int py = stack[--n], pxx = stack[--n];
+        if (!INSIDE(pxx, py) || (px[py * stride + pxx] | 0xff000000u) == fillc)
+            continue;
+        int l = pxx, r = pxx;
+        while (l > c.x && INSIDE(l - 1, py) && (px[py * stride + l - 1] | 0xff000000u) != fillc)
+            l--;
+        while (r + 1 < c.x + c.w && INSIDE(r + 1, py) && (px[py * stride + r + 1] | 0xff000000u) != fillc)
+            r++;
+        for (int i = l; i <= r; i++)
+            px[py * stride + i] = fillc;
+        dirty = rect_union(dirty, (struct rect){l, py, r - l + 1, 1});
+        for (int ny = py - 1; ny <= py + 1; ny += 2) {
+            if (ny < c.y || ny >= c.y + c.h)
+                continue;
+            for (int i = l; i <= r; i++) {
+                if (!INSIDE(i, ny) || (px[ny * stride + i] | 0xff000000u) == fillc)
+                    continue;
+                if (n + 2 > cap * 2) {
+                    int *grown = kmalloc(sizeof(int) * 4 * (size_t)cap);
+                    if (!grown)
+                        break;
+                    memcpy(grown, stack, sizeof(int) * (size_t)n);
+                    kfree(stack);
+                    stack = grown;
+                    cap *= 2;
+                }
+                stack[n++] = i;
+                stack[n++] = ny;
+                while (i + 1 <= r && INSIDE(i + 1, ny))
+                    i++;
+            }
+        }
+    }
+#undef INSIDE
+    kfree(stack);
+    damage(d, &t, dirty);
+    return TRUE;
+}
+
+static BOOL WINAPI FloodFill(HANDLE h, int x, int y, COLORREF color)
+{
+    return ExtFloodFill(h, x, y, color, 0);
+}
+
+static BOOL WINAPI LineDDA(int x0, int y0, int x1, int y1, void *fn, LPARAM lp)
+{
+    if (!fn)
+        return FALSE;
+    int dx = ABS(x1 - x0), dy = -ABS(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+    while (x0 != x1 || y0 != y1) {
+        W32_CALL(void(WINAPI *)(int, int, LPARAM), fn, x0, y0, lp);
+        int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+    return TRUE;
+}
+
+/* MAKEROP4(fore, back): where the mask is set the foreground operation draws, elsewhere the background one */
+static BOOL WINAPI MaskBlt(HANDLE hd, int dx, int dy, int w, int h, HANDLE hs, int sx, int sy, HANDLE mask, int mx,
+                           int my, DWORD rop)
+{
+    DWORD fore = rop & 0x00ffffffu, back = (rop >> 8 & 0x00ff0000u) | 0x0000ffffu;
+    struct gdi_obj *m = obj(mask);
+    if (!m || m->kind != OBJ_BITMAP || !m->canvas.px)
+        return stretch(hd, dx, dy, w, h, hs, sx, sy, w, h, fore);
+    struct w32_dc *d = dc_of(hd), *s = dc_of(hs);
+    struct target dt, st;
+    if (!d || !target_of(d, &dt))
+        return d != NULL;
+    bool has_src = s && target_of(s, &st);
+    bool none;
+    uint32_t pat = brush_color(d, d->s.brush, &none) & 0xffffff;
+    for (int y = 0; y < h; y++) {
+        int ty = dt.oy + dy + y, py = has_src ? st.oy + sy + y : 0, my2 = my + y;
+        if (ty < dt.clip.y || ty >= dt.clip.y + dt.clip.h || my2 < 0 || my2 >= m->canvas.h)
+            continue;
+        for (int x = 0; x < w; x++) {
+            int tx = dt.ox + dx + x, mx2 = mx + x;
+            if (tx < dt.clip.x || tx >= dt.clip.x + dt.clip.w || mx2 < 0 || mx2 >= m->canvas.w)
+                continue;
+            uint32_t src = 0;
+            if (has_src) {
+                int px = st.ox + sx + x;
+                if (px < 0 || py < 0 || px >= st.c->w || py >= st.c->h)
+                    continue;
+                src = st.c->px[py * st.c->stride + px] & 0xffffff;
+            }
+            uint32_t *out = dt.c->px + ty * dt.c->stride + tx;
+            bool set = (m->canvas.px[my2 * m->canvas.stride + mx2] & 0xffffff) != 0;
+            *out = (raster(src, *out & 0xffffff, pat, set ? fore : back) & 0xffffff) | 0xff000000u;
+        }
+    }
+    dt.c->clip = dt.clip;
+    damage(d, &dt, (struct rect){dt.ox + dx, dt.oy + dy, w + 1, h + 1});
+    return TRUE;
+}
+
+/* Fonts SynthOS can draw, under the names programs ask for */
+static const struct {
+    const char *face;
+    const struct ui_font *font;
+    uint8_t pitch;
+} font_faces[] = {
+    {"Segoe UI", &font_sans, 0x22},       {"Tahoma", &font_sans, 0x22},       {"Arial", &font_sans, 0x22},
+    {"Microsoft Sans Serif", &font_sans, 0x22}, {"MS Sans Serif", &font_sans, 0x22}, {"Verdana", &font_sans, 0x22},
+    {"Times New Roman", &font_sans, 0x12}, {"Courier New", &font_mono, 0x31}, {"Consolas", &font_mono, 0x31},
+    {"Lucida Console", &font_mono, 0x31},
+};
+
+static int enum_fonts(HANDLE h, const char *only, uint8_t charset, void *fn, LPARAM lp, bool wide, bool ex)
+{
+    uint8_t *lf = w32_zalloc(512), *tm = lf ? w32_zalloc(512) : NULL;
+    int ret = 1;
+    if (!tm) {
+        w32_free(lf);
+        return 0;
+    }
+    HANDLE dc = h ? h : w32_screen_dc();
+    for (size_t i = 0; i < ARRAY_SIZE(font_faces) && ret; i++) {
+        if (only && *only && str_casecmp(only, font_faces[i].face))
+            continue;
+        if (charset != 0 && charset != 1)
+            continue;
+        const struct ui_font *f = font_faces[i].font;
+        memset(lf, 0, 512);
+        memset(tm, 0, 512);
+        w32_logfont(lf, wide, -f->height, 400, 0, 0, font_faces[i].face);
+        lf[23] = 0;
+        lf[27] = font_faces[i].pitch;
+        if (ex) {
+            size_t full = wide ? 92 : 60, step = wide ? 2 : 1;
+            for (size_t k = 0; font_faces[i].face[k] && k < 63; k++)
+                lf[full + k * step] = (uint8_t)font_faces[i].face[k];
+            const char *style = "Regular", *script = "Western";
+            for (size_t k = 0; style[k]; k++)
+                lf[full + 64 * step + k * step] = (uint8_t)style[k];
+            for (size_t k = 0; script[k]; k++)
+                lf[full + 96 * step + k * step] = (uint8_t)script[k];
+        }
+        struct w32_dc *d = dc_of(dc);
+        struct gdi_obj *saved = d ? d->s.font : NULL, probe = {0};
+        if (d) {
+            probe.magic = W32_GDI_MAGIC;
+            probe.kind = OBJ_FONT;
+            probe.font = f;
+            probe.weight = 400;
+            d->s.font = &probe;
+        }
+        text_metrics(dc, tm, wide);
+        if (d)
+            d->s.font = saved;
+        tm[wide ? 56 : 52] = 0;
+        ret = W32_CALL(int(WINAPI *)(void *, void *, DWORD, LPARAM), fn, lf, tm, 4u, lp);
+    }
+    if (!h)
+        w32_free_dc(dc);
+    w32_free(tm);
+    w32_free(lf);
+    return ret;
+}
+
+static int WINAPI EnumFontFamiliesExA(HANDLE h, const uint8_t *lf, void *fn, LPARAM lp, DWORD flags)
+{
+    UNUSED(flags);
+    return fn ? enum_fonts(h, lf ? (const char *)lf + 28 : NULL, lf ? lf[23] : 1, fn, lp, false, true) : 0;
+}
+
+static int WINAPI EnumFontFamiliesExW(HANDLE h, const uint8_t *lf, void *fn, LPARAM lp, DWORD flags)
+{
+    UNUSED(flags);
+    char *face = lf ? w32_narrow((LPCWSTR)(lf + 28)) : NULL;
+    int ret = fn ? enum_fonts(h, face, lf ? lf[23] : 1, fn, lp, true, true) : 0;
+    w32_free(face);
+    return ret;
+}
+
+static int WINAPI EnumFontsA(HANDLE h, const char *face, void *fn, LPARAM lp)
+{
+    return fn ? enum_fonts(h, face, 1, fn, lp, false, false) : 0;
+}
+
+static int WINAPI EnumFontsW(HANDLE h, LPCWSTR face, void *fn, LPARAM lp)
+{
+    char *f = face ? w32_narrow(face) : NULL;
+    int ret = fn ? enum_fonts(h, f, 1, fn, lp, true, false) : 0;
+    w32_free(f);
+    return ret;
+}
+
+static int WINAPI EnumFontFamiliesA(HANDLE h, const char *face, void *fn, LPARAM lp)
+{
+    return fn ? enum_fonts(h, face, 1, fn, lp, false, true) : 0;
+}
+
+static int WINAPI EnumFontFamiliesW(HANDLE h, LPCWSTR face, void *fn, LPARAM lp)
+{
+    char *f = face ? w32_narrow(face) : NULL;
+    int ret = fn ? enum_fonts(h, f, 1, fn, lp, true, true) : 0;
+    w32_free(f);
+    return ret;
+}
+
+/* font files a program installs for itself: accepted, drawn with the closest built-in face */
+static int WINAPI AddFontResourceW(LPCWSTR file)
+{
+    return file ? 1 : 0;
+}
+
+static int WINAPI AddFontResourceA(const char *file)
+{
+    return file ? 1 : 0;
+}
+
+static int WINAPI AddFontResourceExW(LPCWSTR file, DWORD flags, void *reserved)
+{
+    UNUSED(flags);
+    UNUSED(reserved);
+    return file ? 1 : 0;
+}
+
+static BOOL WINAPI RemoveFontResourceW(LPCWSTR file)
+{
+    return file != NULL;
+}
+
+/* Image lists: one ARGB strip, an image per cy rows; alpha 0 is transparent */
+#define IL_MAGIC 0x4c494d47u
+#define CLR_NONE 0xffffffffu
+
+struct image_list {
+    uint32_t magic;
+    int cx, cy, count, cap, grow;
+    UINT flags;
+    COLORREF bk;
+    uint32_t *px;
+    struct gdi_obj *image;
+    int overlay[16];
+};
+
+static W32_STATE struct image_list *drag_list;
+
+static struct image_list *il_of(void *h)
+{
+    struct image_list *il = h;
+    return il && (uintptr_t)il >= 0x10000 && il->magic == IL_MAGIC ? il : NULL;
+}
+
+static bool il_reserve(struct image_list *il, int n)
+{
+    if (n <= il->cap)
+        return true;
+    int cap = MAX(n, il->cap + MAX(il->grow, 4));
+    uint32_t *px = w32_zalloc((size_t)il->cx * (size_t)il->cy * (size_t)cap * 4);
+    if (!px)
+        return false;
+    if (il->px)
+        memcpy(px, il->px, (size_t)il->cx * (size_t)il->cy * (size_t)il->count * 4);
+    w32_free(il->px);
+    il->px = px;
+    il->cap = cap;
+    if (il->image) {
+        il->image->bits = NULL;
+        il->image->magic = 0;
+        w32_free(il->image);
+        il->image = NULL;
+    }
+    return true;
+}
+
+static uint32_t *il_cell(struct image_list *il, int i)
+{
+    return il->px + (size_t)i * (size_t)il->cx * (size_t)il->cy;
+}
+
+static void *WINAPI ImageList_Create(int cx, int cy, UINT flags, int initial, int grow)
+{
+    struct image_list *il = w32_zalloc(sizeof(*il));
+    if (!il)
+        return NULL;
+    *il = (struct image_list){IL_MAGIC, MAX(cx, 1), MAX(cy, 1), 0, 0, MAX(grow, 4), flags, CLR_NONE, NULL, NULL, {0}};
+    if (!il_reserve(il, MAX(initial, 1))) {
+        w32_free(il);
+        return NULL;
+    }
+    return il;
+}
+
+static BOOL WINAPI ImageList_Destroy(void *h)
+{
+    struct image_list *il = il_of(h);
+    if (!il)
+        return FALSE;
+    if (il->image) {
+        il->image->bits = NULL;
+        il->image->magic = 0;
+        w32_free(il->image);
+    }
+    if (drag_list == il)
+        drag_list = NULL;
+    il->magic = 0;
+    w32_free(il->px);
+    w32_free(il);
+    return TRUE;
+}
+
+static int WINAPI ImageList_GetImageCount(void *h)
+{
+    struct image_list *il = il_of(h);
+    return il ? il->count : 0;
+}
+
+static BOOL WINAPI ImageList_SetImageCount(void *h, UINT n)
+{
+    struct image_list *il = il_of(h);
+    if (!il || !il_reserve(il, (int)n))
+        return FALSE;
+    if ((int)n > il->count)
+        memset(il_cell(il, il->count), 0, (size_t)il->cx * (size_t)il->cy * (size_t)((int)n - il->count) * 4);
+    il->count = (int)n;
+    return TRUE;
+}
+
+static BOOL WINAPI ImageList_GetIconSize(void *h, int *cx, int *cy)
+{
+    struct image_list *il = il_of(h);
+    if (!il)
+        return FALSE;
+    if (cx)
+        *cx = il->cx;
+    if (cy)
+        *cy = il->cy;
+    return TRUE;
+}
+
+static BOOL WINAPI ImageList_SetIconSize(void *h, int cx, int cy)
+{
+    struct image_list *il = il_of(h);
+    if (!il || cx <= 0 || cy <= 0)
+        return FALSE;
+    w32_free(il->px);
+    il->px = NULL;
+    il->cap = il->count = 0;
+    il->cx = cx;
+    il->cy = cy;
+    return il_reserve(il, 4);
+}
+
+static COLORREF WINAPI ImageList_SetBkColor(void *h, COLORREF c)
+{
+    struct image_list *il = il_of(h);
+    if (!il)
+        return CLR_NONE;
+    COLORREF old = il->bk;
+    il->bk = c;
+    return old;
+}
+
+static COLORREF WINAPI ImageList_GetBkColor(void *h)
+{
+    struct image_list *il = il_of(h);
+    return il ? il->bk : CLR_NONE;
+}
+
+/* source pixel of a bitmap in screen order, whatever its depth */
+static bool bitmap_pixel(struct gdi_obj *b, int x, int y, uint32_t *out)
+{
+    if (!b || x < 0 || y < 0 || x >= b->canvas.w || y >= b->canvas.h)
+        return false;
+    if (b->canvas.px) {
+        *out = b->canvas.px[y * b->canvas.stride + x];
+        return true;
+    }
+    if (!b->bits)
+        return false;
+    struct bitmap_info bmi = {40, b->canvas.w, b->height, 1, (WORD)b->bpp, 0, 0, 0, 0, 0, 0};
+    *out = dib_pixel_in(&bmi, b->colors, b->bits, x, y);
+    return true;
+}
+
+/* images from a bitmap strip: a mask (set = transparent) or the bitmap's own alpha decide what shows */
+static void il_store(struct image_list *il, int index, struct gdi_obj *b, struct gdi_obj *mask, bool keyed,
+                     uint32_t key, int n)
+{
+    bool alpha = false;
+    if (!mask && !keyed && b->bpp == 32 && (il->flags & 0xfe) >= 0x20)
+        for (int y = 0; y < b->canvas.h && !alpha; y++)
+            for (int x = 0; x < b->canvas.w && !alpha; x++) {
+                uint32_t p;
+                alpha = bitmap_pixel(b, x, y, &p) && (p >> 24) != 0 && (p >> 24) != 0xff;
+            }
+    for (int i = 0; i < n; i++) {
+        uint32_t *cell = il_cell(il, index + i);
+        for (int y = 0; y < il->cy; y++)
+            for (int x = 0; x < il->cx; x++) {
+                uint32_t p = 0, m = 0;
+                int sx = (index + i - index) * il->cx + x;
+                if (!bitmap_pixel(b, sx, y, &p)) {
+                    cell[y * il->cx + x] = 0;
+                    continue;
+                }
+                bool clear = keyed ? (p & 0xffffff) == key : mask && bitmap_pixel(mask, sx, y, &m) && (m & 0xffffff);
+                cell[y * il->cx + x] = clear ? 0 : alpha ? p : (p & 0xffffff) | 0xff000000u;
+            }
+    }
+}
+
+static int il_add(void *h, HANDLE bitmap, HANDLE mask, bool keyed, COLORREF key)
+{
+    struct image_list *il = il_of(h);
+    struct gdi_obj *b = obj(bitmap);
+    if (!il || !b || b->kind != OBJ_BITMAP)
+        return -1;
+    int n = MAX(b->canvas.w / il->cx, 1);
+    if (!il_reserve(il, il->count + n))
+        return -1;
+    struct gdi_obj *m = obj(mask);
+    il_store(il, il->count, b, m && m->kind == OBJ_BITMAP ? m : NULL, keyed, w32_rgb(key) & 0xffffff, n);
+    il->count += n;
+    return il->count - n;
+}
+
+static int WINAPI ImageList_Add(void *h, HANDLE bitmap, HANDLE mask)
+{
+    return il_add(h, bitmap, mask, false, 0);
+}
+
+static int WINAPI ImageList_AddMasked(void *h, HANDLE bitmap, COLORREF key)
+{
+    struct gdi_obj *b = obj(bitmap);
+    if (key == CLR_NONE && b && b->canvas.px)
+        key = to_colorref(b->canvas.px[0]);
+    return il_add(h, bitmap, NULL, key != CLR_NONE, key);
+}
+
+static BOOL WINAPI ImageList_Replace(void *h, int i, HANDLE bitmap, HANDLE mask)
+{
+    struct image_list *il = il_of(h);
+    struct gdi_obj *b = obj(bitmap), *m = obj(mask);
+    if (!il || !b || i < 0 || i >= il->count)
+        return FALSE;
+    il_store(il, i, b, m && m->kind == OBJ_BITMAP ? m : NULL, false, 0, 1);
+    return TRUE;
+}
+
+/* icons carry no pixels here: the slot is kept, empty */
+static int WINAPI ImageList_ReplaceIcon(void *h, int i, HANDLE icon)
+{
+    UNUSED(icon);
+    struct image_list *il = il_of(h);
+    if (!il || i >= il->count)
+        return -1;
+    if (i < 0) {
+        if (!il_reserve(il, il->count + 1))
+            return -1;
+        i = il->count++;
+    }
+    memset(il_cell(il, i), 0, (size_t)il->cx * (size_t)il->cy * 4);
+    return i;
+}
+
+static BOOL WINAPI ImageList_Remove(void *h, int i)
+{
+    struct image_list *il = il_of(h);
+    if (!il || i >= il->count)
+        return FALSE;
+    if (i < 0) {
+        il->count = 0;
+        return TRUE;
+    }
+    size_t cell = (size_t)il->cx * (size_t)il->cy;
+    memmove(il_cell(il, i), il_cell(il, i + 1), cell * (size_t)(il->count - i - 1) * 4);
+    il->count--;
+    return TRUE;
+}
+
+static BOOL WINAPI ImageList_Copy(void *dst, int di, void *src, int si, UINT flags)
+{
+    struct image_list *d = il_of(dst), *s = il_of(src);
+    if (!d || !s || d->cx != s->cx || d->cy != s->cy || di < 0 || si < 0 || di >= d->count || si >= s->count)
+        return FALSE;
+    size_t cell = (size_t)d->cx * (size_t)d->cy * 4;
+    if (flags & 1) {
+        uint32_t *tmp = w32_alloc(cell);
+        if (!tmp)
+            return FALSE;
+        memcpy(tmp, il_cell(d, di), cell);
+        memcpy(il_cell(d, di), il_cell(s, si), cell);
+        memcpy(il_cell(s, si), tmp, cell);
+        w32_free(tmp);
+    } else {
+        memcpy(il_cell(d, di), il_cell(s, si), cell);
+    }
+    return TRUE;
+}
+
+static void *WINAPI ImageList_Duplicate(void *h)
+{
+    struct image_list *il = il_of(h), *n = il ? ImageList_Create(il->cx, il->cy, il->flags, il->count, il->grow) : NULL;
+    if (!n)
+        return NULL;
+    memcpy(n->px, il->px, (size_t)il->cx * (size_t)il->cy * (size_t)il->count * 4);
+    n->count = il->count;
+    n->bk = il->bk;
+    memcpy(n->overlay, il->overlay, sizeof(n->overlay));
+    return n;
+}
+
+static BOOL WINAPI ImageList_SetOverlayImage(void *h, int image, int overlay)
+{
+    struct image_list *il = il_of(h);
+    if (!il || overlay < 1 || overlay > 15)
+        return FALSE;
+    il->overlay[overlay] = image + 1;
+    return TRUE;
+}
+
+static void il_paint(struct image_list *il, int i, struct w32_dc *d, struct target *t, int x, int y, int w, int h,
+                     COLORREF bk, COLORREF fg, UINT how)
+{
+    const uint32_t *cell = il_cell(il, i);
+    bool mask_only = how & 0x10, blend = how & 6;
+    if (bk == 0xff000000u)
+        bk = il->bk;
+    bool fill_bk = !(how & 1) && bk != CLR_NONE && !mask_only;
+    uint32_t bkc = w32_rgb(bk) & 0xffffff, fgc = fg == 0xff000000u || fg == CLR_NONE ? style.accent : w32_rgb(fg);
+    for (int yy = 0; yy < h && yy < il->cy; yy++) {
+        int ty = t->oy + y + yy;
+        if (ty < t->clip.y || ty >= t->clip.y + t->clip.h)
+            continue;
+        for (int xx = 0; xx < w && xx < il->cx; xx++) {
+            int tx = t->ox + x + xx;
+            if (tx < t->clip.x || tx >= t->clip.x + t->clip.w)
+                continue;
+            uint32_t *out = t->c->px + ty * t->c->stride + tx, p = cell[yy * il->cx + xx];
+            unsigned a = p >> 24;
+            if (mask_only) {
+                *out = a ? 0xff000000u : 0xffffffffu;
+                continue;
+            }
+            uint32_t under = fill_bk ? bkc : *out & 0xffffff;
+            if (blend && a)
+                p = (p & 0xff000000u) | (((p & 0xfefefe) >> 1) + ((fgc & 0xfefefe) >> 1));
+            uint32_t r = ((p >> 16 & 0xff) * a + (under >> 16 & 0xff) * (255 - a)) / 255,
+                     g = ((p >> 8 & 0xff) * a + (under >> 8 & 0xff) * (255 - a)) / 255,
+                     b = ((p & 0xff) * a + (under & 0xff) * (255 - a)) / 255;
+            *out = 0xff000000u | r << 16 | g << 8 | b;
+        }
+    }
+    UNUSED(d);
+}
+
+static BOOL WINAPI ImageList_DrawEx(void *h, int i, HANDLE dc, int x, int y, int w, int hgt, COLORREF bk,
+                                    COLORREF fg, UINT style)
+{
+    struct image_list *il = il_of(h);
+    struct w32_dc *d = dc_of(dc);
+    struct target t;
+    if (!il || !d || i < 0 || i >= il->count)
+        return FALSE;
+    if (!target_of(d, &t))
+        return TRUE;
+    if (w <= 0)
+        w = il->cx;
+    if (hgt <= 0)
+        hgt = il->cy;
+    il_paint(il, i, d, &t, x, y, w, hgt, bk, fg, style);
+    int ov = (int)(style >> 8 & 0xf);
+    if (ov && il->overlay[ov] > 0 && il->overlay[ov] - 1 < il->count)
+        il_paint(il, il->overlay[ov] - 1, d, &t, x, y, w, hgt, CLR_NONE, 0, 1);
+    t.c->clip = t.clip;
+    damage(d, &t, (struct rect){t.ox + x, t.oy + y, w, hgt});
+    return TRUE;
+}
+
+static BOOL WINAPI ImageList_Draw(void *h, int i, HANDLE dc, int x, int y, UINT style)
+{
+    return ImageList_DrawEx(h, i, dc, x, y, 0, 0, 0xff000000u, 0xff000000u, style);
+}
+
+/* IMAGELISTDRAWPARAMS: cbSize, himl, i, hdcDst, x, y, cx, cy, xBitmap, yBitmap, rgbBk, rgbFg, fStyle, ... */
+static BOOL WINAPI ImageList_DrawIndirect(const uint32_t *p)
+{
+    if (!p)
+        return FALSE;
+    return ImageList_DrawEx((void *)(uintptr_t)p[1], (int)p[2], (HANDLE)(uintptr_t)p[3], (int)p[4], (int)p[5],
+                            (int)p[6], (int)p[7], p[10], p[11], p[12]);
+}
+
+static struct gdi_obj *il_bitmap(struct image_list *il)
+{
+    if (!il->image) {
+        struct gdi_obj *o = new_obj(OBJ_BITMAP);
+        if (!o)
+            return NULL;
+        o->stock = true;
+        o->bpp = 32;
+        o->bits = il->px;
+        o->canvas = canvas_make(il->px, il->cx, il->cy * il->cap);
+        o->height = -il->cy * il->cap;
+        il->image = o;
+    }
+    return il->image;
+}
+
+/* IMAGEINFO: hbmImage, hbmMask, Unused1, Unused2, rcImage */
+static BOOL WINAPI ImageList_GetImageInfo(void *h, int i, uint32_t *info)
+{
+    struct image_list *il = il_of(h);
+    struct gdi_obj *b = il ? il_bitmap(il) : NULL;
+    if (!b || !info || i < 0 || i >= il->count)
+        return FALSE;
+    info[0] = (uint32_t)(uintptr_t)b;
+    info[1] = 0;
+    info[2] = info[3] = 0;
+    info[4] = 0;
+    info[5] = (uint32_t)(i * il->cy);
+    info[6] = (uint32_t)il->cx;
+    info[7] = (uint32_t)((i + 1) * il->cy);
+    return TRUE;
+}
+
+static HANDLE WINAPI ImageList_GetIcon(void *h, int i, UINT flags)
+{
+    UNUSED(flags);
+    struct image_list *il = il_of(h);
+    return il && i >= 0 && i < il->count ? (HANDLE)(uintptr_t)(0x30000u | 32512u) : NULL;
+}
+
+static void *WINAPI ImageList_Merge(void *a, int ia, void *b, int ib, int dx, int dy)
+{
+    struct image_list *la = il_of(a), *lb = il_of(b);
+    if (!la || !lb || ia < 0 || ib < 0 || ia >= la->count || ib >= lb->count)
+        return NULL;
+    struct image_list *n = ImageList_Create(MAX(la->cx, lb->cx + dx), MAX(la->cy, lb->cy + dy), la->flags, 1, 1);
+    if (!n)
+        return NULL;
+    n->count = 1;
+    uint32_t *out = il_cell(n, 0);
+    for (int y = 0; y < la->cy; y++)
+        memcpy(out + y * n->cx, il_cell(la, ia) + y * la->cx, (size_t)la->cx * 4);
+    for (int y = 0; y < lb->cy; y++)
+        for (int x = 0; x < lb->cx; x++) {
+            uint32_t p = il_cell(lb, ib)[y * lb->cx + x];
+            int tx = x + dx, ty = y + dy;
+            if (p >> 24 && tx >= 0 && ty >= 0 && tx < n->cx && ty < n->cy)
+                out[ty * n->cx + tx] = p;
+        }
+    return n;
+}
+
+/* the drag image follows nothing on screen; the calls keep their state for the program */
+static BOOL WINAPI ImageList_BeginDrag(void *h, int i, int x, int y)
+{
+    UNUSED(x);
+    UNUSED(y);
+    struct image_list *il = il_of(h);
+    if (!il || i < 0 || i >= il->count)
+        return FALSE;
+    drag_list = il;
+    return TRUE;
+}
+
+static void WINAPI ImageList_EndDrag(void)
+{
+    drag_list = NULL;
+}
+
+static void *WINAPI ImageList_GetDragImage(POINT *pt, POINT *hot)
+{
+    if (pt)
+        *pt = (POINT){0, 0};
+    if (hot)
+        *hot = (POINT){0, 0};
+    return drag_list;
+}
+
+/* ImageList_Read/Write: the ILHEAD record and BMP images that Windows stores in resources and forms */
+static bool istream_read(void *stream, void *buf, uint32_t n)
+{
+    void **vt = *(void ***)stream;
+    uint32_t *got = w32_alloc(4);
+    if (!got)
+        return false;
+    *got = 0;
+    uint32_t hr = W32_CALL(uint32_t(WINAPI *)(void *, void *, uint32_t, uint32_t *), vt[3], stream, buf, n, got);
+    bool ok = hr == 0 && *got == n;
+    w32_free(got);
+    return ok;
+}
+
+static bool istream_write(void *stream, const void *buf, uint32_t n)
+{
+    void **vt = *(void ***)stream;
+    return W32_CALL(uint32_t(WINAPI *)(void *, const void *, uint32_t, uint32_t *), vt[4], stream, buf, n, NULL) == 0;
+}
+
+static uint8_t *read_bmp(void *stream, struct bitmap_info **info)
+{
+    uint8_t *head = w32_alloc(14 + 40);
+    if (!head || !istream_read(stream, head, 14 + 40) || head[0] != 'B' || head[1] != 'M') {
+        w32_free(head);
+        return NULL;
+    }
+    struct bitmap_info bi;
+    memcpy(&bi, head + 14, sizeof(bi));
+    w32_free(head);
+    if (bi.size < 40 || bi.width <= 0 || !bi.height || bi.bpp == 0 || bi.bpp > 32 || bi.compression)
+        return NULL;
+    uint32_t colors = bi.bpp <= 8 ? (bi.used ? bi.used : 1u << bi.bpp) : 0;
+    uint32_t extra = bi.size - 40, rows = (uint32_t)(bi.height < 0 ? -bi.height : bi.height);
+    uint32_t stride = ((uint32_t)bi.width * bi.bpp + 31) / 32 * 4, bytes = stride * rows;
+    uint8_t *blk = w32_alloc(40 + 256 * 4 + bytes + extra);
+    if (!blk)
+        return NULL;
+    memcpy(blk, &bi, sizeof(bi));
+    ((struct bitmap_info *)blk)->size = 40;
+    if ((extra && !istream_read(stream, blk + 40 + 256 * 4, extra)) ||
+        (colors && !istream_read(stream, blk + 40, colors * 4)) || !istream_read(stream, blk + 40 + 256 * 4, bytes)) {
+        w32_free(blk);
+        return NULL;
+    }
+    if (colors)
+        memmove(blk + 40 + colors * 4, blk + 40 + 256 * 4, bytes);
+    *info = (struct bitmap_info *)blk;
+    return blk + 40 + colors * 4;
+}
+
+static void *WINAPI ImageList_Read(void *stream)
+{
+    if (!stream)
+        return NULL;
+    uint8_t *head = w32_alloc(28);
+    if (!head || !istream_read(stream, head, 28) || head[0] != 'I' || head[1] != 'L') {
+        w32_free(head);
+        return NULL;
+    }
+    WORD cur, max, grow, cx, cy, flags;
+    COLORREF bk;
+    memcpy(&cur, head + 4, 2);
+    memcpy(&max, head + 6, 2);
+    memcpy(&grow, head + 8, 2);
+    memcpy(&cx, head + 10, 2);
+    memcpy(&cy, head + 12, 2);
+    memcpy(&bk, head + 14, 4);
+    memcpy(&flags, head + 18, 2);
+    short ovls[4];
+    memcpy(ovls, head + 20, 8);
+    w32_free(head);
+    struct image_list *il = ImageList_Create(cx, cy, flags, MAX(cur, max), grow);
+    if (!il)
+        return NULL;
+    il->bk = bk;
+    struct bitmap_info *ii = NULL, *mi = NULL;
+    uint8_t *ib = read_bmp(stream, &ii), *mb = ib && (flags & 1) ? read_bmp(stream, &mi) : NULL;
+    if (!ib || !il_reserve(il, cur)) {
+        w32_free(ii);
+        ImageList_Destroy(il);
+        return NULL;
+    }
+    bool alpha = false;
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < cur; i++) {
+            uint32_t *cell = il_cell(il, i);
+            int ox = (i % 4) * cx, oy = (i / 4) * cy;
+            for (int y = 0; y < cy; y++)
+                for (int x = 0; x < cx; x++) {
+                    int h = ii->height < 0 ? -ii->height : ii->height;
+                    if (ox + x >= ii->width || oy + y >= h)
+                        continue;
+                    uint32_t p = dib_pixel(ii, ib, ox + x, oy + y);
+                    if (ii->bpp == 32) {
+                        int row = ii->height < 0 ? oy + y : h - 1 - (oy + y);
+                        p = ((const uint32_t *)ib)[(size_t)row * (size_t)ii->width + (size_t)(ox + x)];
+                    }
+                    if (pass == 0) {
+                        alpha |= ii->bpp == 32 && (p >> 24) != 0;
+                        continue;
+                    }
+                    bool clear = mb && (dib_pixel(mi, mb, ox + x, oy + y) & 0xffffff);
+                    cell[y * cx + x] = clear ? 0 : alpha ? p : (p & 0xffffff) | 0xff000000u;
+                }
+        }
+    il->count = cur;
+    for (int i = 0; i < 4; i++)
+        if (ovls[i] >= 0)
+            il->overlay[i + 1] = ovls[i] + 1;
+    w32_free(ii);
+    w32_free(mi);
+    return il;
+}
+
+static BOOL WINAPI ImageList_Write(void *h, void *stream)
+{
+    struct image_list *il = il_of(h);
+    if (!il || !stream)
+        return FALSE;
+    int rows = MAX((il->count + 3) / 4, 1), w = il->cx * 4, hgt = il->cy * rows;
+    uint32_t bytes = (uint32_t)w * (uint32_t)hgt * 4;
+    uint8_t *buf = w32_zalloc(28 + 54 + bytes);
+    if (!buf)
+        return FALSE;
+    WORD head[7] = {0x4c49, 0x101, (WORD)il->count, (WORD)il->cap, (WORD)il->grow, (WORD)il->cx, (WORD)il->cy};
+    memcpy(buf, head, 14);
+    memcpy(buf + 14, &il->bk, 4);
+    WORD flags = (WORD)((il->flags & ~1u) | 0x20);
+    memcpy(buf + 18, &flags, 2);
+    for (int i = 0; i < 4; i++) {
+        short v = (short)(il->overlay[i + 1] - 1);
+        memcpy(buf + 20 + i * 2, &v, 2);
+    }
+    uint8_t *bmp = buf + 28;
+    uint32_t file = 54 + bytes, off = 54;
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    memcpy(bmp + 2, &file, 4);
+    memcpy(bmp + 10, &off, 4);
+    struct bitmap_info bi = {40, w, hgt, 1, 32, 0, bytes, 0, 0, 0, 0};
+    memcpy(bmp + 14, &bi, 40);
+    uint32_t *px = (uint32_t *)(bmp + 54);
+    for (int i = 0; i < il->count; i++)
+        for (int y = 0; y < il->cy; y++)
+            for (int x = 0; x < il->cx; x++) {
+                int ty = (i / 4) * il->cy + y, tx = (i % 4) * il->cx + x;
+                px[(size_t)(hgt - 1 - ty) * (size_t)w + (size_t)tx] = il_cell(il, i)[y * il->cx + x];
+            }
+    BOOL ok = istream_write(stream, buf, 28 + 54 + bytes);
+    w32_free(buf);
+    return ok;
+}
+
+static void *WINAPI ImageList_LoadImageW(HANDLE inst, const void *name, int cx, int grow, COLORREF mask, UINT type,
+                                         UINT flags)
+{
+    UNUSED(flags);
+    if (type != 0)
+        return NULL;
+    uint32_t size = 0;
+    const void *dib = w32_find_resource(inst, (const void *)2, name, &size);
+    struct gdi_obj *b = dib ? w32_bitmap_from_dib(dib, size) : NULL;
+    if (!b)
+        return NULL;
+    struct image_list *il = ImageList_Create(cx > 0 ? cx : b->canvas.h, b->canvas.h, 0x21, 4, grow);
+    if (il && (mask == CLR_NONE ? ImageList_Add(il, b, NULL) : ImageList_AddMasked(il, b, mask)) < 0) {
+        ImageList_Destroy(il);
+        il = NULL;
+    }
+    DeleteObject(b);
+    return il;
 }
 
 static const struct w32_export gdi_exports[] = {
@@ -2259,12 +3575,22 @@ static const struct w32_export gdi_exports[] = {
     W32_AS("CreateICW", CreateDCW), W32_AS("CreateICA", CreateDCW), W32_FN(CreateCompatibleBitmap),
     W32_FN(CreateBitmap), W32_FN(CreateDIBSection), W32_FN(StretchDIBits), W32_FN(SetDIBitsToDevice),
     W32_FN(GetDIBits), W32_FN(BitBlt), W32_FN(StretchBlt), W32_FN(PatBlt), W32_FN(GetDeviceCaps), W32_FN(GdiFlush),
-    W32_FN(EnumFontFamiliesExA), W32_AS("EnumFontFamiliesExW", EnumFontFamiliesExA),
+    W32_FN(EnumFontFamiliesExA), W32_FN(EnumFontFamiliesExW), W32_FN(EnumFontsA), W32_FN(EnumFontsW),
+    W32_FN(EnumFontFamiliesA), W32_FN(EnumFontFamiliesW), W32_FN(AddFontResourceW), W32_FN(AddFontResourceA),
+    W32_FN(AddFontResourceExW), W32_AS("AddFontResourceExA", AddFontResourceExW), W32_FN(RemoveFontResourceW),
+    W32_AS("RemoveFontResourceA", RemoveFontResourceW), W32_AS("RemoveFontResourceExW", w32_one3),
+    W32_FN(CreatePalette), W32_FN(CreateHalftonePalette), W32_FN(SelectPalette), W32_FN(RealizePalette),
+    W32_FN(GetPaletteEntries), W32_FN(SetPaletteEntries), W32_FN(ResizePalette), W32_FN(GetNearestPaletteIndex),
+    W32_AS("AnimatePalette", SetPaletteEntries), W32_FN(GetSystemPaletteEntries), W32_FN(UnrealizeObject),
+    W32_FN(GetDIBColorTable), W32_FN(SetDIBColorTable), W32_FN(GetBitmapBits), W32_FN(SetBitmapBits),
+    W32_FN(GetCurrentPositionEx), W32_FN(GetWindowOrgEx), W32_FN(GetViewportOrgEx), W32_FN(GetDCOrgEx),
+    W32_FN(ExcludeClipRect), W32_FN(RectVisible), W32_FN(PtVisible), W32_FN(ExtFloodFill), W32_FN(FloodFill),
+    W32_FN(LineDDA), W32_FN(MaskBlt), W32_FN(GetBrushOrgEx),
 };
 
 static const struct w32_export gdi_user_exports[] = {
     W32_FN(FillRect),    W32_FN(FrameRect), W32_FN(InvertRect),  W32_FN(GetSysColor),   W32_FN(GetSysColorBrush),
-    W32_FN(DrawTextA),   W32_FN(DrawTextW), W32_FN(DrawTextExW), W32_FN(DrawFocusRect), W32_FN(DrawEdge),
+    W32_FN(DrawTextA),   W32_FN(DrawTextW), W32_FN(DrawTextExW), W32_FN(DrawFocusRect), W32_FN(DrawFrameControl), W32_FN(DrawEdge),
 };
 
 static const struct w32_export msimg_exports[] = {
@@ -2275,4 +3601,20 @@ static const struct w32_export msimg_exports[] = {
 W32_EXPORTS(gdi_module, "gdi32.dll", gdi_exports, .attach = w32_gdi_reset);
 W32_EXPORTS(gdi_user_module, "user32.dll", gdi_user_exports);
 W32_EXPORTS(msimg_module, "msimg32.dll", msimg_exports);
+
+static const struct w32_export imagelist_exports[] = {
+    W32_FN(ImageList_Create), W32_FN(ImageList_Destroy), W32_FN(ImageList_GetImageCount),
+    W32_FN(ImageList_SetImageCount), W32_FN(ImageList_GetIconSize), W32_FN(ImageList_SetIconSize),
+    W32_FN(ImageList_SetBkColor), W32_FN(ImageList_GetBkColor), W32_FN(ImageList_Add), W32_FN(ImageList_AddMasked),
+    W32_FN(ImageList_Replace), W32_FN(ImageList_ReplaceIcon), W32_FN(ImageList_Remove), W32_FN(ImageList_Copy),
+    W32_FN(ImageList_Duplicate), W32_FN(ImageList_SetOverlayImage), W32_FN(ImageList_Draw), W32_FN(ImageList_DrawEx),
+    W32_FN(ImageList_DrawIndirect), W32_FN(ImageList_GetImageInfo), W32_FN(ImageList_GetIcon), W32_FN(ImageList_Merge),
+    W32_FN(ImageList_BeginDrag), W32_FN(ImageList_EndDrag), W32_FN(ImageList_GetDragImage),
+    W32_AS("ImageList_DragEnter", w32_one3), W32_AS("ImageList_DragLeave", w32_one1),
+    W32_AS("ImageList_DragMove", w32_one2), W32_AS("ImageList_DragShowNolock", w32_one1),
+    W32_AS("ImageList_SetDragCursorImage", w32_one4), W32_FN(ImageList_Read), W32_FN(ImageList_Write),
+    W32_FN(ImageList_LoadImageW),
+};
+
+W32_EXPORTS(imagelist_module, "comctl32.dll", imagelist_exports);
 #endif

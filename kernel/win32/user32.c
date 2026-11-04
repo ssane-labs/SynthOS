@@ -386,6 +386,11 @@ static DWORD WINAPI GetKeyboardLayout(DWORD thread)
     return 0x04090409;
 }
 
+static int WINAPI GetKeyboardType(int what)
+{
+    return what == 0 ? 4 : what == 2 ? 12 : 0;
+}
+
 static const struct w32_export user32_exports[] = {
     W32_FN(MessageBoxA), W32_FN(MessageBoxW), W32_FN(MessageBoxExA), W32_FN(MessageBoxExW),
     W32_FN(MessageBoxIndirectA), W32_FN(MessageBoxIndirectW), W32_FN(ExitWindowsEx), W32_FN(MessageBeep),
@@ -394,7 +399,7 @@ static const struct w32_export user32_exports[] = {
     W32_FN(CharLowerW), W32_FN(CharUpperBuffA), W32_FN(CharLowerBuffA), W32_FN(CharNextA), W32_FN(CharPrevA), W32_FN(CharPrevExA), W32_FN(CharNextExA),
     W32_FN(CharNextW), W32_FN(CharPrevW), W32_FN(CharToOemA), W32_FN(OemToCharA), W32_AS("AnsiToOem", CharToOemA),
     W32_AS("OemToAnsi", OemToCharA), W32_FN(IsCharAlphaA), W32_FN(IsCharAlphaNumericA),
-    W32_AS("GetKeyboardLayout", GetKeyboardLayout),
+    W32_AS("GetKeyboardLayout", GetKeyboardLayout), W32_FN(GetKeyboardType),
 };
 
 W32_EXPORTS(user32_module, "user32.dll", user32_exports);

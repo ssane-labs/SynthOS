@@ -132,21 +132,33 @@ static int WINAPI GetClassNameW(HANDLE h, WCHAR *out, int max)
     return n;
 }
 
-static BOOL WINAPI GetClassInfoW(HANDLE inst, const WCHAR *name, uint32_t *out)
+static BOOL class_info(const char *name, const void *orig, uint32_t *out)
 {
-    UNUSED(inst);
-    char *n = (uintptr_t)name < 0x10000 ? NULL : w32_narrow(name);
-    struct w32_class *c = w32_find_class(n ? n : (const char *)name);
-    w32_free(n);
+    struct w32_class *c = w32_find_class(name);
     if (!c) {
         w32_set_error(1411);
         return FALSE;
     }
     uint32_t v[10] = {c->style, (uint32_t)c->proc, (uint32_t)c->class_extra, (uint32_t)c->window_extra,
                       (uint32_t)c->instance, (uint32_t)c->icon, (uint32_t)c->cursor, (uint32_t)c->background, 0,
-                      (uint32_t)name};
+                      (uint32_t)orig};
     memcpy(out, v, sizeof(v));
     return TRUE;
+}
+
+static BOOL WINAPI GetClassInfoW(HANDLE inst, const WCHAR *name, uint32_t *out)
+{
+    UNUSED(inst);
+    char *n = (uintptr_t)name < 0x10000 ? NULL : w32_narrow(name);
+    BOOL ok = class_info(n ? n : (const char *)name, name, out);
+    w32_free(n);
+    return ok;
+}
+
+static BOOL WINAPI GetClassInfoA(HANDLE inst, const char *name, uint32_t *out)
+{
+    UNUSED(inst);
+    return class_info(name, name, out);
 }
 
 static DWORD WINAPI GetWindowThreadProcessId(HANDLE h, DWORD *pid)
@@ -1019,7 +1031,7 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(GetAncestor),
     W32_FN(IsChild),
     W32_FN(GetClassNameW),
-    W32_FN(GetClassInfoW),
+    W32_FN(GetClassInfoW), W32_FN(GetClassInfoA),
     W32_FN(GetWindowThreadProcessId),
     W32_FN(SetPropW),
     W32_FN(GetPropW),
@@ -1037,7 +1049,6 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("IsWindowArranged", w32_zero1),
     W32_AS("GetMenuInfo", w32_zero2),
     W32_AS("SetMenuInfo", w32_one2),
-    W32_AS("DrawFrameControl", w32_one4),
     W32_AS("DrawIconEx", w32_one9),
     W32_FN(CreateIconIndirect),
     W32_AS("GetIconInfo", w32_zero2),
@@ -1152,6 +1163,14 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(MsgWaitForMultipleObjectsEx),
     W32_FN(SendMessageTimeoutW),
     W32_AS("SetProcessDPIAware", w32_one0),
+    W32_AS("ShutdownBlockReasonCreate", w32_one2),
+    W32_AS("ShutdownBlockReasonDestroy", w32_one1),
+    W32_AS("ShutdownBlockReasonQuery", w32_zero3),
+    W32_AS("SetLayeredWindowAttributes", w32_one4),
+    W32_AS("ChangeWindowMessageFilter", w32_one2),
+    W32_AS("ChangeWindowMessageFilterEx", w32_one4),
+    W32_AS("DisableProcessWindowsGhosting", w32_zero0),
+    W32_AS("WINNLSEnableIME", w32_one2),
 };
 
 W32_EXPORTS(user32x_module, "user32.dll", user32x_exports);

@@ -33,6 +33,7 @@ ARGS(6);
 ARGS(7);
 ARGS(8);
 ARGS(9);
+ARGS(10);
 ARGS(11);
 
 #define STUB(name, n, value, error)                                                                                    \
@@ -291,6 +292,36 @@ static const struct w32_export winspool_exports[] = {
 STUB(Theme5, 5, E_HANDLE, 0)
 STUB(Theme6, 6, E_HANDLE, 0)
 STUB(Theme7, 7, E_HANDLE, 0)
+STUB(Theme3, 3, E_HANDLE, 0)
+STUB(Theme4, 4, E_HANDLE, 0)
+STUB(Theme8, 8, E_HANDLE, 0)
+STUB(Theme9, 9, E_HANDLE, 0)
+STUB(Theme10, 10, E_HANDLE, 0)
+
+static uint32_t user32_call(const char *name, int index)
+{
+    typedef uint32_t WINAPI (*fn1)(int);
+    fn1 f = (fn1)w32_builtin_lookup("user32.dll", name);
+    return f ? f(index) : 0;
+}
+
+static uint32_t WINAPI ThemeSysColor(HANDLE theme, int index)
+{
+    UNUSED(theme);
+    return user32_call("GetSysColor", index);
+}
+
+static uint32_t WINAPI ThemeSysBrush(HANDLE theme, int index)
+{
+    UNUSED(theme);
+    return user32_call("GetSysColorBrush", index);
+}
+
+static uint32_t WINAPI ThemeSysSize(HANDLE theme, int index)
+{
+    UNUSED(theme);
+    return user32_call("GetSystemMetrics", index);
+}
 
 static const struct w32_export uxtheme_exports[] = {
     W32_AS("OpenThemeData", w32_zero2),
@@ -306,6 +337,44 @@ static const struct w32_export uxtheme_exports[] = {
     W32_AS("DrawThemeBackgroundEx", Theme6),
     W32_AS("BufferedPaintInit", w32_zero0),
     W32_AS("BufferedPaintUnInit", w32_zero0),
+    W32_AS("GetWindowTheme", w32_zero1),
+    W32_AS("EnableThemeDialogTexture", w32_zero2),
+    W32_AS("IsThemeDialogTextureEnabled", w32_zero1),
+    W32_AS("GetThemeAppProperties", w32_zero0),
+    W32_AS("SetThemeAppProperties", w32_zero1),
+    W32_AS("EnableTheming", w32_zero1),
+    W32_AS("IsThemePartDefined", w32_zero3),
+    W32_AS("IsThemeBackgroundPartiallyTransparent", w32_zero3),
+    W32_AS("GetThemeSysBool", w32_zero2),
+    W32_AS("GetThemeSysColor", ThemeSysColor),
+    W32_AS("GetThemeSysColorBrush", ThemeSysBrush),
+    W32_AS("GetThemeSysSize", ThemeSysSize),
+    W32_AS("GetThemeSysInt", Theme3),
+    W32_AS("GetThemeSysFont", Theme3),
+    W32_AS("GetThemeSysString", Theme4),
+    W32_AS("GetCurrentThemeName", Theme6),
+    W32_AS("GetThemeDocumentationProperty", Theme4),
+    W32_AS("DrawThemeParentBackground", Theme3),
+    W32_AS("DrawThemeText", Theme9),
+    W32_AS("DrawThemeEdge", Theme8),
+    W32_AS("DrawThemeIcon", Theme7),
+    W32_AS("GetThemeTextExtent", Theme9),
+    W32_AS("GetThemeTextMetrics", Theme5),
+    W32_AS("GetThemeBackgroundExtent", Theme6),
+    W32_AS("GetThemeBackgroundRegion", Theme6),
+    W32_AS("HitTestThemeBackground", Theme10),
+    W32_AS("GetThemeInt", Theme5),
+    W32_AS("GetThemeBool", Theme5),
+    W32_AS("GetThemeEnumValue", Theme5),
+    W32_AS("GetThemePosition", Theme5),
+    W32_AS("GetThemeRect", Theme5),
+    W32_AS("GetThemeIntList", Theme5),
+    W32_AS("GetThemePropertyOrigin", Theme5),
+    W32_AS("GetThemeMetric", Theme6),
+    W32_AS("GetThemeFont", Theme6),
+    W32_AS("GetThemeString", Theme6),
+    W32_AS("GetThemeFilename", Theme6),
+    W32_AS("GetThemeMargins", Theme7),
 };
 
 static const struct w32_export dcomp_exports[] = {

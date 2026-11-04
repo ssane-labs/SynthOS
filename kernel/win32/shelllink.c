@@ -446,6 +446,35 @@ static uint32_t WINAPI CoCreateInstance(const uint8_t *clsid, void *outer, DWORD
     return hr;
 }
 
+struct multi_qi {
+    const uint8_t *iid;
+    void *itf;
+    uint32_t hr;
+};
+
+static uint32_t WINAPI CoCreateInstanceEx(const uint8_t *clsid, void *outer, DWORD ctx, void *server, DWORD count,
+                                          struct multi_qi *r)
+{
+    UNUSED(server);
+    if (!count || !r)
+        return 0x80070057u;
+    for (DWORD i = 0; i < count; i++)
+        r[i].itf = NULL;
+    void *obj = NULL;
+    uint32_t hr = CoCreateInstance(clsid, outer, ctx, r[0].iid, &obj);
+    for (DWORD i = 0; i < count; i++)
+        r[i].hr = hr;
+    if (hr)
+        return hr;
+    r[0].itf = obj;
+    DWORD got = 1;
+    for (DWORD i = 1; i < count; i++) {
+        r[i].hr = com_call(obj, 0, (uint32_t)(uintptr_t)r[i].iid, (uint32_t)(uintptr_t)&r[i].itf, 0);
+        got += !r[i].hr;
+    }
+    return got == count ? 0 : 0x00080012u;
+}
+
 /* PSCreateMemoryPropertyStore: an IPropertyStore that only keeps values (jump lists and AppUserModel IDs) */
 #define STORE_MAX 16
 
@@ -580,7 +609,7 @@ static const struct w32_export memory_store_exports[] = {
 W32_EXPORTS(memory_store_module, "propsys.dll", memory_store_exports);
 
 static const struct w32_export shelllink_exports[] = {
-    W32_FN(CoCreateInstance),
+    W32_FN(CoCreateInstance), W32_FN(CoCreateInstanceEx),
     W32_FN(CoGetClassObject),
     W32_FN(CoRegisterClassObject),
     W32_FN(CoRevokeClassObject),

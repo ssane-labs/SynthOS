@@ -206,6 +206,10 @@ static size_t pos_at(struct notepad *n, int line, int x)
 static void load_text(struct notepad *n, const char *data, size_t size)
 {
     n->len = 0;
+    if (size >= 3 && !memcmp(data, "\xef\xbb\xbf", 3)) {
+        data += 3;
+        size -= 3;
+    }
     if (reserve(n, size)) {
         size_t out = 0;
         for (size_t i = 0; i < size; i++)

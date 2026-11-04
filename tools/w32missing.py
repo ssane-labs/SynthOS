@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lists the imports of Windows programs that SynthOS does not provide yet.
+"""Lists the imports of Windows programs (32- and 64-bit) that SynthOS does not provide yet.
 
 usage: tools/w32missing.py build/serial32/kernel.elf DIR_OR_FILES...
 
@@ -78,7 +78,7 @@ for f in files:
                                                pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT']])
     except Exception:
         continue
-    if pe.FILE_HEADER.Machine != 0x14c:
+    if pe.FILE_HEADER.Machine not in (0x14c, 0x8664):
         continue
     for entry in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', []) + getattr(pe, 'DIRECTORY_ENTRY_DELAY_IMPORT', []):
         dll = entry.dll.decode().lower()

@@ -45,6 +45,32 @@ static void WINAPI PathRemoveExtensionW(WCHAR *path)
     *PathFindExtensionW(path) = 0;
 }
 
+static BOOL WINAPI PathRenameExtensionW(WCHAR *path, const WCHAR *ext)
+{
+    WCHAR *dot = PathFindExtensionW(path);
+    size_t keep = (size_t)(dot - path), add = w32_wcslen(ext);
+    if (keep + add >= 260)
+        return FALSE;
+    memcpy(dot, ext, (add + 1) * sizeof(WCHAR));
+    return TRUE;
+}
+
+static BOOL WINAPI PathRenameExtensionA(char *path, const char *ext)
+{
+    char *dot = NULL, *p = path;
+    for (; *p; p++)
+        if (*p == '\\' || *p == '/' || *p == ' ')
+            dot = NULL;
+        else if (*p == '.')
+            dot = p;
+    if (!dot)
+        dot = p;
+    if ((size_t)(dot - path) + strlen(ext) >= 260)
+        return FALSE;
+    memcpy(dot, ext, strlen(ext) + 1);
+    return TRUE;
+}
+
 static BOOL WINAPI PathRemoveFileSpecW(WCHAR *path)
 {
     WCHAR *name = PathFindFileNameW(path);
@@ -405,7 +431,7 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(UrlCanonicalizeW),
     W32_FN(PathFindFileNameW),
     W32_FN(PathFindExtensionW),
-    W32_FN(PathRemoveExtensionW),
+    W32_FN(PathRemoveExtensionW), W32_FN(PathRenameExtensionW), W32_FN(PathRenameExtensionA),
     W32_FN(PathRemoveFileSpecW),
     W32_FN(PathStripPathW),
     W32_FN(PathAddBackslashW),

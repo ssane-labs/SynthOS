@@ -149,6 +149,8 @@ enum control_kind {
     CK_STATIC,
     CK_EDIT,
     CK_PROGRESS,
+    CK_LISTBOX,
+    CK_COMBOBOX,
 };
 
 struct w32_class {
@@ -165,6 +167,12 @@ struct w32_class {
     bool dialog;
     uintptr_t extra[8];
     struct w32_class *next;
+};
+
+struct w32_scroll {
+    int min, max, pos;
+    UINT page;
+    bool disabled;
 };
 
 struct w32_bridge {
@@ -212,6 +220,9 @@ struct w32_window {
     uint64_t caption_due;
     uint8_t caption_tries;
     struct subclasses *subs;
+    struct w32_scroll bars[3];
+    bool rich;
+    void *list;
 };
 
 struct w32_window *w32_win(HANDLE h);
@@ -237,6 +248,7 @@ COLORREF w32_syscolor(int index);
 HANDLE w32_syscolor_brush(int index);
 const struct ui_font *w32_font_of(HANDLE font);
 HANDLE w32_stock(int index);
+HANDLE w32_check_sheet(void);
 void w32_fill_brush(HANDLE dc, const RECT *r, HANDLE brush);
 struct canvas *w32_dc_canvas(HANDLE dc, int *ox, int *oy);
 bool w32_gui_pick_file(const struct gui_picker *o, char *out, size_t cap);
@@ -244,7 +256,30 @@ void w32_dc_damage(HANDLE dc, struct rect r);
 HANDLE w32_dc_font(HANDLE dc);
 COLORREF w32_dc_text_color(HANDLE dc);
 
+struct w32_paint {
+    HANDLE dc;
+    struct canvas *c;
+    struct rect r;
+    COLORREF text;
+    bool custom_text;
+};
+bool w32_ctl_begin(struct w32_window *w, struct w32_paint *p, UINT color_msg);
+void w32_ctl_end(struct w32_window *w, struct w32_paint *p);
+const struct ui_font *w32_ctl_font(struct w32_window *w);
+void w32_ctl_notify(struct w32_window *w, unsigned code);
+int w32_popup_choose(const struct menu_item *items, int count, int x, int y);
+void w32_client_origin(struct w32_window *w, int *x, int *y);
+int w32_combo_field_height(struct w32_window *w);
+short w32_get_key_state(int vk);
+int w32_string_message(struct w32_window *w, UINT msg);
+LRESULT WINAPI w32_listbox_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_combobox_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_control_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_button_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_static_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_edit_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_progress_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_richedit_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_dialog_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_dispatch(const MSG *msg);
 LRESULT WINAPI w32_def_window_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp);

@@ -1,3 +1,4 @@
+#include <synth/config.h>
 #include <synth/string.h>
 
 #include "win32.h"
@@ -16,6 +17,7 @@ static void WINAPI InitCommonControls(void)
 {
 }
 
+#if !CONFIG_GUI
 /* Image lists keep their size and count; the controls that would draw them paint without images. */
 struct image_list {
     int cx, cy, count;
@@ -91,12 +93,16 @@ static BOOL WINAPI ImageList_Destroy(struct image_list *il)
     return TRUE;
 }
 
+#endif
+
 static const struct w32_export comctl32_exports[] = {
-    W32_FN(InitCommonControlsEx),    W32_FN(InitCommonControls),       W32_FN(ImageList_Create),
-    W32_FN(ImageList_Add),           W32_FN(ImageList_AddMasked),      W32_FN(ImageList_ReplaceIcon),
-    W32_FN(ImageList_GetImageCount), W32_FN(ImageList_Remove),         W32_FN(ImageList_GetIconSize),
-    W32_FN(ImageList_Destroy),       W32_AS("ImageList_SetBkColor", w32_zero2),
+    W32_FN(InitCommonControlsEx), W32_FN(InitCommonControls),
+#if !CONFIG_GUI
+    W32_FN(ImageList_Create),        W32_FN(ImageList_Add),           W32_FN(ImageList_AddMasked),
+    W32_FN(ImageList_ReplaceIcon),   W32_FN(ImageList_GetImageCount), W32_FN(ImageList_Remove),
+    W32_FN(ImageList_GetIconSize),   W32_FN(ImageList_Destroy),       W32_AS("ImageList_SetBkColor", w32_zero2),
     W32_AS("ImageList_Draw", w32_one6),
+#endif
 };
 
 static uint32_t WINAPI DwmIsCompositionEnabled(BOOL *enabled)

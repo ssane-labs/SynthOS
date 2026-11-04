@@ -597,6 +597,10 @@ wintime | grep event
 mmtimer event=1 delay=1 kill=0 bad=11
 time64 | grep -c "=1 "
 2
+sys64 | grep cpuinfo
+cpuinfo first=0 err=122 ok=1 stride=0 cores=1 caches=4 l2=256k
+sys64 | grep uilang
+uilang thread=409 class=1 proc=1 name=1
 config w32headless on; proc64; config w32headless off
 proc64 create=1 custom=1 r=42 enum=1 timer=1
 winshell2 | grep volume
@@ -611,6 +615,28 @@ config w32headless on; winshell2 | grep sysmenu; config w32headless off
 sysmenu count=7 close=&Close same=1 reverted=7
 config w32headless on; winshell2 | grep track; config w32headless off
 track ok=1 leave=1 hover=1 query=0
+config w32headless on; winctl | grep listbox; config w32headless off
+listbox count=3 first=apple find=2 cur=2 data=77 len=4
+config w32headless on; winctl | grep ownerdraw; config w32headless off
+ownerdraw measured=2 data=5678 top=22 bottom=44
+config w32headless on; winctl | grep combo; config w32headless off
+combo count=2 cur=1 text=green shown=green short=1
+config w32headless on; winctl | grep richedit | cut -d " " -f 1-4,6-8; config w32headless off
+richedit chars=25 text=Hello bold||Café end euro=1 lines=2
+config w32headless on; winctl | grep subclass; config w32headless off
+subclass calls=1 notify=1
+winctl | grep floodfill
+floodfill ok=1 inside=0000ff outside=ffffff
+winctl | grep palette
+palette entries=4 green=255 nearest=2 count=4
+winctl | grep atom
+atom high=1 same=1 name=SynthAtom num=42
+winctl | grep profile
+profile value=Value9 int=17
+winctl | grep safearray
+safearray dims=2 ub1=2 ub2=4 value=99
+winctl | grep imagelist
+imagelist first=0 count=2 size=16x16
 windialog | head -n 1
 strings: Greeter / Hello from a string table
 windialog | grep resource
@@ -990,12 +1016,12 @@ if [ "$KERNEL64" = 1 ]; then
 fi
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
         "$work/cases" | sed -e 's|^1  /tmp/auto.txt$|  /tmp/auto.txt|' > "$work/cases.native" &&
         mv "$work/cases.native" "$work/cases"
 elif [ "$NO_WIN64" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|winnet64|menu64|time64|proc64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|winnet64|menu64|time64|proc64|sys64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
         "$work/cases" > "$work/cases.native" && mv "$work/cases.native" "$work/cases"
 fi
 

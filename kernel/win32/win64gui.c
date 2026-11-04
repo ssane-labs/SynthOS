@@ -215,6 +215,22 @@ static uint64_t h_class_info_ex(uint64_t *a, const uint64_t *f, void *t)
     return r;
 }
 
+static uint64_t h_class_info(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t wc[10] = {0};
+    uint32_t r = (uint32_t)T32(t, U(P(a[0])), U(P(a[1])), U(wc));
+    if (r) {
+        uint8_t *o = P(a[2]);
+        put64(o, wc[0]);
+        put64(o + 8, to64(wc[1]));
+        memcpy(o + 16, wc + 2, 8);
+        for (int i = 0; i < 5; i++)
+            put64(o + 24 + i * 8, wc[4 + i]);
+        put64(o + 64, a[1]);
+    }
+    return r;
+}
+
 static void msg_to64(const uint32_t *m, uint8_t *o)
 {
     memset(o, 0, 48);
@@ -456,6 +472,8 @@ static const struct w64_export user32_exports[] = {
     W64_FN("RegisterClassExW", h_register_class_ex),
     W64_FN("GetClassInfoExA", h_class_info_ex),
     W64_FN("GetClassInfoExW", h_class_info_ex),
+    W64_FN("GetClassInfoA", h_class_info),
+    W64_FN("GetClassInfoW", h_class_info),
     W64_FN("GetMessageA", h_get_message),
     W64_FN("GetMessageW", h_get_message),
     W64_FN("PeekMessageA", h_get_message),

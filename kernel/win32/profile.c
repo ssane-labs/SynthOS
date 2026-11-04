@@ -367,9 +367,206 @@ static BOOL WINAPI WritePrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR 
     return ok;
 }
 
+
+/* win.ini: the profile functions without a file name */
+static DWORD WINAPI GetProfileStringA(LPCSTR app, LPCSTR key, LPCSTR def, LPSTR out, DWORD size)
+{
+    return GetPrivateProfileStringA(app, key, def, out, size, "win.ini");
+}
+
+static const WCHAR win_ini[] = {'w', 'i', 'n', '.', 'i', 'n', 'i', 0};
+
+static DWORD WINAPI GetProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR def, LPWSTR out, DWORD size)
+{
+    return GetPrivateProfileStringW(app, key, def, out, size, win_ini);
+}
+
+static UINT WINAPI GetProfileIntA(LPCSTR app, LPCSTR key, INT def)
+{
+    return GetPrivateProfileIntA(app, key, def, "win.ini");
+}
+
+static UINT WINAPI GetProfileIntW(LPCWSTR app, LPCWSTR key, INT def)
+{
+    return GetPrivateProfileIntW(app, key, def, win_ini);
+}
+
+static BOOL WINAPI WriteProfileStringA(LPCSTR app, LPCSTR key, LPCSTR value)
+{
+    return WritePrivateProfileStringA(app, key, value, "win.ini");
+}
+
+static BOOL WINAPI WriteProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR value)
+{
+    return WritePrivateProfileStringW(app, key, value, win_ini);
+}
+
+/* Atoms: strings kept with a reference count; numbers below 0xc000 are their own atoms */
+#define ATOM_MAX 512
+
+struct atom {
+    char *name;
+    int refs;
+};
+
+static W32_STATE struct atom atoms[ATOM_MAX];
+
+static int atom_number(const char *s)
+{
+    if ((uintptr_t)s < 0x10000)
+        return (int)(uintptr_t)s;
+    if (s[0] != '#')
+        return -1;
+    long v = 0;
+    for (const char *p = s + 1; *p; p++) {
+        if (*p < '0' || *p > '9')
+            return -1;
+        v = v * 10 + (*p - '0');
+        if (v > 0xffff)
+            return -1;
+    }
+    return (int)v;
+}
+
+static WORD atom_find(const char *s)
+{
+    int n = atom_number(s);
+    if (n >= 0)
+        return n > 0 && n < 0xc000 ? (WORD)n : 0;
+    for (int i = 0; i < ATOM_MAX; i++)
+        if (atoms[i].name && !str_casecmp(atoms[i].name, s))
+            return (WORD)(0xc000 + i);
+    return 0;
+}
+
+static WORD atom_add(const char *s)
+{
+    int n = atom_number(s);
+    if (n >= 0) {
+        if (n == 0 || n >= 0xc000)
+            w32_set_error(ERROR_INVALID_PARAMETER);
+        return n > 0 && n < 0xc000 ? (WORD)n : 0;
+    }
+    if (!*s || strlen(s) > 255) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    WORD a = atom_find(s);
+    if (a) {
+        atoms[a - 0xc000].refs++;
+        return a;
+    }
+    for (int i = 0; i < ATOM_MAX; i++)
+        if (!atoms[i].name) {
+            if (!(atoms[i].name = w32_alloc(strlen(s) + 1)))
+                break;
+            memcpy(atoms[i].name, s, strlen(s) + 1);
+            atoms[i].refs = 1;
+            return (WORD)(0xc000 + i);
+        }
+    w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+    return 0;
+}
+
+static WORD WINAPI AddAtomA(LPCSTR s)
+{
+    return s ? atom_add(s) : 0;
+}
+
+static WORD WINAPI AddAtomW(LPCWSTR s)
+{
+    if ((uintptr_t)s < 0x10000)
+        return atom_add((const char *)s);
+    char *n = w32_narrow(s);
+    WORD a = n ? atom_add(n) : 0;
+    w32_free(n);
+    return a;
+}
+
+static WORD WINAPI FindAtomA(LPCSTR s)
+{
+    WORD a = s ? atom_find(s) : 0;
+    if (!a)
+        w32_set_error(ERROR_FILE_NOT_FOUND);
+    return a;
+}
+
+static WORD WINAPI FindAtomW(LPCWSTR s)
+{
+    if ((uintptr_t)s < 0x10000)
+        return FindAtomA((const char *)s);
+    char *n = w32_narrow(s);
+    WORD a = n ? FindAtomA(n) : 0;
+    w32_free(n);
+    return a;
+}
+
+static WORD WINAPI DeleteAtom(WORD a)
+{
+    if (a < 0xc000)
+        return 0;
+    struct atom *e = a - 0xc000 < ATOM_MAX ? &atoms[a - 0xc000] : NULL;
+    if (!e || !e->name) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return a;
+    }
+    if (--e->refs <= 0) {
+        w32_free(e->name);
+        e->name = NULL;
+    }
+    return 0;
+}
+
+static UINT atom_name(WORD a, char *out, int cap)
+{
+    if (!out || cap <= 0)
+        return 0;
+    if (a && a < 0xc000) {
+        ksnprintf(out, (size_t)cap, "#%u", (unsigned)a);
+        return (UINT)strlen(out);
+    }
+    struct atom *e = a >= 0xc000 && a - 0xc000 < ATOM_MAX ? &atoms[a - 0xc000] : NULL;
+    if (!e || !e->name) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    str_copy(out, e->name, (size_t)cap);
+    return (UINT)strlen(out);
+}
+
+static UINT WINAPI GetAtomNameA(WORD a, LPSTR out, int cap)
+{
+    return atom_name(a, out, cap);
+}
+
+static UINT WINAPI GetAtomNameW(WORD a, LPWSTR out, int cap)
+{
+    char name[260];
+    UINT n = atom_name(a, name, sizeof(name));
+    if (!n || !out || cap <= 0)
+        return 0;
+    n = MIN(n, (UINT)cap - 1);
+    for (UINT i = 0; i < n; i++)
+        out[i] = (WCHAR)(uint8_t)name[i];
+    out[n] = 0;
+    return n;
+}
+
+static BOOL WINAPI InitAtomTable(DWORD size)
+{
+    UNUSED(size);
+    return TRUE;
+}
+
 static const struct w32_export profile_exports[] = {
     W32_FN(GetPrivateProfileStringA), W32_FN(GetPrivateProfileStringW), W32_FN(GetPrivateProfileIntA),
     W32_FN(GetPrivateProfileIntW),    W32_FN(WritePrivateProfileStringA), W32_FN(WritePrivateProfileStringW),
+    W32_FN(GetProfileStringA), W32_FN(GetProfileStringW), W32_FN(GetProfileIntA), W32_FN(GetProfileIntW),
+    W32_FN(WriteProfileStringA), W32_FN(WriteProfileStringW), W32_FN(AddAtomA), W32_FN(AddAtomW), W32_FN(FindAtomA),
+    W32_FN(FindAtomW), W32_FN(DeleteAtom), W32_FN(GetAtomNameA), W32_FN(GetAtomNameW), W32_FN(InitAtomTable),
+    W32_AS("GlobalAddAtomA", AddAtomA), W32_AS("GlobalAddAtomW", AddAtomW), W32_AS("GlobalFindAtomA", FindAtomA),
+    W32_AS("GlobalFindAtomW", FindAtomW), W32_AS("GlobalDeleteAtom", DeleteAtom),
+    W32_AS("GlobalGetAtomNameA", GetAtomNameA), W32_AS("GlobalGetAtomNameW", GetAtomNameW),
 };
 
 W32_EXPORTS(profile_module, "kernel32.dll", profile_exports);

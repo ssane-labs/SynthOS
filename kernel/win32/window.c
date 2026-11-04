@@ -159,8 +159,11 @@ struct w32_window *w32_windows(void)
     return windows;
 }
 
+static void builtin_classes(void);
+
 struct w32_class *w32_find_class(const char *name)
 {
+    builtin_classes();
     return find_class(name);
 }
 
@@ -435,8 +438,13 @@ static void builtin_classes(void)
         const char *name;
         enum control_kind kind;
         int background;
-    } list[] = {{"Button", CK_BUTTON, 16}, {"Static", CK_STATIC, 16}, {"Edit", CK_EDIT, 6},
-                {"msctls_progress32", CK_PROGRESS, 16}};
+        WNDPROC proc;
+    } list[] = {{"Button", CK_BUTTON, 16, w32_button_proc}, {"Static", CK_STATIC, 16, w32_static_proc},
+                {"Edit", CK_EDIT, 6, w32_edit_proc}, {"msctls_progress32", CK_PROGRESS, 16, w32_progress_proc},
+                {"RichEdit20W", CK_EDIT, 6, w32_richedit_proc}, {"RichEdit20A", CK_EDIT, 6, w32_richedit_proc},
+                {"RICHEDIT50W", CK_EDIT, 6, w32_richedit_proc}, {"RICHEDIT60W", CK_EDIT, 6, w32_richedit_proc},
+                {"RichEdit", CK_EDIT, 6, w32_richedit_proc}, {"ListBox", CK_LISTBOX, 6, w32_listbox_proc},
+                {"ComboBox", CK_COMBOBOX, 6, w32_combobox_proc}, {"ComboLBox", CK_LISTBOX, 6, w32_listbox_proc}};
     if (!find_class("#32770")) {
         struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
         if (c)
@@ -444,7 +452,7 @@ static void builtin_classes(void)
     }
     for (size_t i = 0; i < ARRAY_SIZE(list); i++)
         if (!find_class(list[i].name)) {
-            struct w32_class *c = add_class(list[i].name, w32_control_proc, 8, (HANDLE)(intptr_t)list[i].background,
+            struct w32_class *c = add_class(list[i].name, list[i].proc, 8, (HANDLE)(intptr_t)list[i].background,
                                             0, 0, false, NULL);
             if (c)
                 c->control = list[i].kind;
@@ -667,6 +675,7 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
     w->enabled = !(style & WS_DISABLED);
     w->thread = w32_thread_id();
     w->control = cls->control;
+    w->rich = cls->proc == w32_richedit_proc;
     w->text = w32_strdup(title ? title : "");
     w->extra = cls->window_extra > 0 ? w32_zalloc((size_t)cls->window_extra) : NULL;
     w->parent = parent;
@@ -681,6 +690,8 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
                                 height == W32_CW_USEDEFAULT ? 30 : MAX(height, 0)};
         link_child(parent, w);
         w->font = parent->font;
+        if (w->control == CK_COMBOBOX)
+            w->rect.h = w32_combo_field_height(w);
     } else if (message_only || headless) {
         w->message_only = message_only;
         w->rect = (struct rect){0, 0, width == W32_CW_USEDEFAULT ? 0 : MAX(width, 0),
@@ -1020,6 +1031,11 @@ static void client_origin(struct w32_window *w, int *x, int *y)
     *y = cr.y + a.y;
 }
 
+void w32_client_origin(struct w32_window *w, int *x, int *y)
+{
+    client_origin(w, x, y);
+}
+
 static BOOL WINAPI ClientToScreen(HANDLE h, POINT *p)
 {
     struct w32_window *w = w32_win(h);
@@ -1107,7 +1123,7 @@ static void move_window(struct w32_window *w, int x, int y, int width, int heigh
         }
         if (size) {
             w->rect.w = MAX(width, 0);
-            w->rect.h = MAX(height, 0);
+            w->rect.h = w->control == CK_COMBOBOX ? w32_combo_field_height(w) : MAX(height, 0);
         }
         if (w->parent) {
             struct rect pa = w32_area(w->parent);
@@ -1594,7 +1610,37 @@ static LRESULT send_converted(struct w32_window *w, UINT msg, WPARAM wp, LPARAM 
 {
     if (!w)
         return 0;
-    if (w->unicode == unicode || (msg != WM_SETTEXT && msg != WM_GETTEXT))
+    if (w->unicode == unicode)
+        return w32_send(w, msg, wp, lp);
+    int kind = w32_string_message(w, msg);
+    if (kind == 1 && lp) {
+        void *conv = unicode ? (void *)w32_narrow((LPCWSTR)lp) : (void *)w32_widen((LPCSTR)lp);
+        LRESULT r = w32_send(w, msg, wp, (LPARAM)conv);
+        w32_free(conv);
+        return r;
+    }
+    if (kind == 2 && lp) {
+        LRESULT len = w32_send(w, msg == 0x189 ? 0x18a : 0x149, wp, 0);
+        if (len < 0)
+            return len;
+        void *tmp = w32_zalloc(((size_t)len + 1) * 4);
+        if (!tmp)
+            return -1;
+        w32_send(w, msg, wp, (LPARAM)tmp);
+        LRESULT n;
+        if (unicode) {
+            n = (LRESULT)w32_cp_to_wide(tmp, (int)strlen(tmp), (WCHAR *)lp, (size_t)len * 2 + 1, 65001);
+            ((WCHAR *)lp)[n] = 0;
+        } else {
+            char *nar = w32_narrow(tmp);
+            n = nar ? (LRESULT)strlen(nar) : 0;
+            memcpy((char *)lp, nar ? nar : "", (size_t)n + 1);
+            w32_free(nar);
+        }
+        w32_free(tmp);
+        return n;
+    }
+    if (msg != WM_SETTEXT && msg != WM_GETTEXT)
         return w32_send(w, msg, wp, lp);
     if (msg == WM_SETTEXT) {
         if (unicode) {
@@ -2374,6 +2420,11 @@ static short WINAPI GetKeyState(int vk)
     return down ? (short)0x8000 : 0;
 }
 
+short w32_get_key_state(int vk)
+{
+    return GetKeyState(vk);
+}
+
 static int WINAPI GetSystemMetrics(int index)
 {
     int sw = 1024, sh = 768;
@@ -2542,12 +2593,319 @@ static HANDLE WINAPI LoadImageA(HANDLE inst, LPCSTR name, UINT type, int cx, int
 
 static HANDLE WINAPI LoadBitmapA(HANDLE inst, LPCSTR name)
 {
+    if (!inst && (uintptr_t)name == 32759)
+        return w32_check_sheet();
     return (uintptr_t)name < 0x10000 ? load_bitmap(inst, name) : NULL;
 }
 
+
+/* Scroll bars keep their range, page and position for the program; the frame does not draw them. */
+struct scroll_info {
+    UINT size, mask;
+    int min, max;
+    UINT page;
+    int pos, track;
+};
+
+static struct w32_scroll *bar_of(HANDLE h, int bar)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || bar < 0 || bar > 2) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return NULL;
+    }
+    return &w->bars[bar];
+}
+
+static int clamp_pos(const struct w32_scroll *b, int pos)
+{
+    int top = b->max - MAX((int)b->page - 1, 0);
+    return MAX(MIN(pos, top), b->min);
+}
+
+static int WINAPI SetScrollInfo(HANDLE h, int bar, const struct scroll_info *si, BOOL redraw)
+{
+    UNUSED(redraw);
+    struct w32_scroll *b = bar_of(h, bar);
+    if (!b || !si)
+        return 0;
+    if (si->mask & 1) {
+        b->min = si->min;
+        b->max = si->max;
+    }
+    if (si->mask & 2)
+        b->page = MIN(si->page, (UINT)(b->max - b->min + 1));
+    if (si->mask & 4)
+        b->pos = si->pos;
+    b->pos = clamp_pos(b, b->pos);
+    return b->pos;
+}
+
+static BOOL WINAPI GetScrollInfo(HANDLE h, int bar, struct scroll_info *si)
+{
+    struct w32_scroll *b = bar_of(h, bar);
+    if (!b || !si)
+        return FALSE;
+    if (si->mask & 1) {
+        si->min = b->min;
+        si->max = b->max;
+    }
+    if (si->mask & 2)
+        si->page = b->page;
+    if (si->mask & 4)
+        si->pos = b->pos;
+    if (si->mask & 0x10)
+        si->track = b->pos;
+    return TRUE;
+}
+
+static int WINAPI SetScrollPos(HANDLE h, int bar, int pos, BOOL redraw)
+{
+    UNUSED(redraw);
+    struct w32_scroll *b = bar_of(h, bar);
+    if (!b)
+        return 0;
+    int old = b->pos;
+    b->pos = clamp_pos(b, pos);
+    return old;
+}
+
+static int WINAPI GetScrollPos(HANDLE h, int bar)
+{
+    struct w32_scroll *b = bar_of(h, bar);
+    return b ? b->pos : 0;
+}
+
+static BOOL WINAPI SetScrollRange(HANDLE h, int bar, int min, int max, BOOL redraw)
+{
+    UNUSED(redraw);
+    struct w32_scroll *b = bar_of(h, bar);
+    if (!b)
+        return FALSE;
+    b->min = min;
+    b->max = max;
+    b->pos = clamp_pos(b, b->pos);
+    return TRUE;
+}
+
+static BOOL WINAPI GetScrollRange(HANDLE h, int bar, int *min, int *max)
+{
+    struct w32_scroll *b = bar_of(h, bar);
+    if (!b)
+        return FALSE;
+    if (min)
+        *min = b->min;
+    if (max)
+        *max = b->max;
+    return TRUE;
+}
+
+static BOOL WINAPI ShowScrollBar(HANDLE h, int bar, BOOL show)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w)
+        return FALSE;
+    uint32_t bits = bar == 0 ? WS_HSCROLL : bar == 1 ? WS_VSCROLL : bar == 3 ? WS_HSCROLL | WS_VSCROLL : 0;
+    if (bar == 2)
+        return ShowWindow(h, show ? 5 : 0) || TRUE;
+    w->style = show ? w->style | bits : w->style & ~bits;
+    return TRUE;
+}
+
+static BOOL WINAPI EnableScrollBar(HANDLE h, UINT bar, UINT arrows)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || bar > 3)
+        return FALSE;
+    for (UINT i = 0; i < 3; i++)
+        if (bar == i || (bar == 3 && i < 2))
+            w->bars[i].disabled = arrows == 3;
+    return TRUE;
+}
+
+static BOOL WINAPI GetScrollBarInfo(HANDLE h, LONG object, void *info)
+{
+    UNUSED(object);
+    if (!w32_win(h) || !info)
+        return FALSE;
+    memset((uint8_t *)info + 4, 0, 56);
+    return TRUE;
+}
+
+/* The program repaints what moved: the area is invalidated and, when asked, the children move with it. */
+static int WINAPI ScrollWindowEx(HANDLE h, int dx, int dy, const RECT *scroll, const RECT *clip, HANDLE rgn,
+                                 RECT *update, UINT flags)
+{
+    UNUSED(rgn);
+    struct w32_window *w = w32_win(h);
+    if (!w)
+        return 0;
+    RECT area = {0, 0, w->rect.w, w->rect.h};
+    if (scroll)
+        area = *scroll;
+    if (clip) {
+        area.left = MAX(area.left, clip->left);
+        area.top = MAX(area.top, clip->top);
+        area.right = MIN(area.right, clip->right);
+        area.bottom = MIN(area.bottom, clip->bottom);
+    }
+    if (flags & 1)
+        for (struct w32_window *c = w->child; c; c = c->sibling)
+            if (!c->destroyed)
+                move_window(c, c->rect.x + dx, c->rect.y + dy, c->rect.w, c->rect.h, true, false);
+    if (flags & 2 || !(flags & ~1u))
+        InvalidateRect(h, &area, (flags & 4) != 0);
+    if (update)
+        *update = area;
+    return area.right > area.left && area.bottom > area.top ? 2 : 1;
+}
+
+static BOOL WINAPI ScrollWindow(HANDLE h, int dx, int dy, const RECT *scroll, const RECT *clip)
+{
+    return ScrollWindowEx(h, dx, dy, scroll, clip, NULL, NULL, scroll ? 2 : 3) != 0;
+}
+
+static BOOL WINAPI ScrollDC(HANDLE dc, int dx, int dy, const RECT *scroll, const RECT *clip, HANDLE rgn, RECT *update)
+{
+    UNUSED(dc);
+    UNUSED(dx);
+    UNUSED(dy);
+    UNUSED(clip);
+    UNUSED(rgn);
+    if (update)
+        *update = scroll ? *scroll : (RECT){0, 0, 0, 0};
+    return TRUE;
+}
+
+static BOOL WINAPI IsWindowUnicode(HANDLE h)
+{
+    struct w32_window *w = w32_win(h);
+    return w && w->unicode;
+}
+
+static BOOL WINAPI ShowOwnedPopups(HANDLE h, BOOL show)
+{
+    struct w32_window *owner = w32_win(h);
+    if (!owner)
+        return FALSE;
+    for (struct w32_window *it = windows; it; it = it->next_all)
+        if (!it->destroyed && it->owner == owner && (it->style & WS_POPUP))
+            ShowWindow(it, show ? 4 : 0);
+    return TRUE;
+}
+
+/* MDI frames and children behave as ordinary windows */
+static LRESULT WINAPI DefFrameProcW(HANDLE h, HANDLE client, UINT msg, WPARAM wp, LPARAM lp)
+{
+    UNUSED(client);
+    return DefWindowProcW(h, msg, wp, lp);
+}
+
+static LRESULT WINAPI DefMDIChildProcW(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    return DefWindowProcW(h, msg, wp, lp);
+}
+
+static BOOL WINAPI TranslateMDISysAccel(HANDLE client, MSG *msg)
+{
+    UNUSED(client);
+    UNUSED(msg);
+    return FALSE;
+}
+
+static W32_STATE HANDLE current_cursor;
+
 static HANDLE WINAPI SetCursor(HANDLE cursor)
 {
-    return cursor;
+    HANDLE old = current_cursor;
+    current_cursor = cursor;
+    return old;
+}
+
+static HANDLE WINAPI GetCursor(void)
+{
+    return current_cursor ? current_cursor : LoadCursorA(NULL, (LPCSTR)32512);
+}
+
+static BOOL WINAPI DestroyCursor(HANDLE cursor)
+{
+    if (cursor == current_cursor)
+        current_cursor = NULL;
+    return TRUE;
+}
+
+static const struct {
+    uint8_t scan;
+    const char *name;
+} key_names[] = {
+    {0x01, "Esc"}, {0x0e, "Backspace"}, {0x0f, "Tab"}, {0x1c, "Enter"}, {0x1d, "Ctrl"}, {0x2a, "Shift"},
+    {0x36, "Right Shift"}, {0x38, "Alt"}, {0x39, "Space"}, {0x3a, "Caps Lock"}, {0x45, "Num Lock"},
+    {0x46, "Scroll Lock"}, {0x47, "Home"}, {0x48, "Up"}, {0x49, "Page Up"}, {0x4b, "Left"}, {0x4d, "Right"},
+    {0x4f, "End"}, {0x50, "Down"}, {0x51, "Page Down"}, {0x52, "Insert"}, {0x53, "Delete"},
+};
+
+static int key_name_text(LONG lp, char *out, int cap)
+{
+    unsigned scan = (unsigned)lp >> 16 & 0xff;
+    const char *name = NULL;
+    char buf[8];
+    for (size_t i = 0; i < ARRAY_SIZE(key_names); i++)
+        if (key_names[i].scan == scan)
+            name = key_names[i].name;
+    static const char row1[] = "1234567890-=", row2[] = "QWERTYUIOP[]", row3[] = "ASDFGHJKL;'`", row4[] = "\\ZXCVBNM,./";
+    if (!name && scan >= 0x3b && scan <= 0x44) {
+        buf[0] = 'F';
+        buf[1] = (char)('1' + scan - 0x3b);
+        buf[2] = 0;
+        if (scan == 0x44)
+            str_copy(buf, "F10", sizeof(buf));
+        name = buf;
+    } else if (!name && (scan == 0x57 || scan == 0x58)) {
+        name = scan == 0x57 ? "F11" : "F12";
+    } else if (!name) {
+        char c = scan >= 0x02 && scan <= 0x0d ? row1[scan - 0x02]
+                 : scan >= 0x10 && scan <= 0x1b ? row2[scan - 0x10]
+                 : scan >= 0x1e && scan <= 0x29 ? row3[scan - 0x1e]
+                 : scan >= 0x2b && scan <= 0x35 ? row4[scan - 0x2b]
+                                                : 0;
+        if (!c)
+            return 0;
+        buf[0] = c;
+        buf[1] = 0;
+        name = buf;
+    }
+    str_copy(out, name, (size_t)cap);
+    return (int)strlen(out);
+}
+
+static int WINAPI GetKeyNameTextA(LONG lp, LPSTR out, int cap)
+{
+    return out && cap > 0 ? key_name_text(lp, out, cap) : 0;
+}
+
+static int WINAPI GetKeyNameTextW(LONG lp, LPWSTR out, int cap)
+{
+    char name[32];
+    int n = out && cap > 0 ? key_name_text(lp, name, sizeof(name)) : 0;
+    if (!n)
+        return 0;
+    n = MIN(n, cap - 1);
+    for (int i = 0; i < n; i++)
+        out[i] = (WCHAR)(uint8_t)name[i];
+    out[n] = 0;
+    return n;
+}
+
+static HANDLE WINAPI LoadKeyboardLayoutW(LPCWSTR id, UINT flags)
+{
+    UNUSED(flags);
+    unsigned v = 0;
+    for (int i = 0; id && id[i] && i < 8; i++) {
+        WCHAR c = id[i];
+        v = v << 4 | (unsigned)(c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0');
+    }
+    v &= 0xffff;
+    return (HANDLE)(uintptr_t)(v ? (v << 16 | v) : 0x04090409u);
 }
 
 static int WINAPI ShowCursor(BOOL show)
@@ -3147,6 +3505,19 @@ static struct w32_menu_item *popup_track(struct w32_menu *m, int x, int y, struc
         items[i].key = (it->flags & (MF_GRAYED | MF_DISABLED)) ? -1 : i;
         items[i].shortcut = labels[i][1][0] ? labels[i][1] : NULL;
     }
+    int index = w32_popup_choose(items, n, x, y);
+    kfree(items);
+    kfree(labels);
+    if (index < 0 || index >= m->count)
+        return NULL;
+    struct w32_menu_item *it = &m->items[index];
+    return it->sub ? popup_track(it->sub, x + 24, y + 12, owner) : it;
+}
+
+int w32_popup_choose(const struct menu_item *items, int n, int x, int y)
+{
+    if (!gui_active())
+        return -1;
     struct popup_result result = {false, -1};
     struct popup_result *saved = popup_wait;
     popup_wait = &result;
@@ -3171,12 +3542,7 @@ static struct w32_menu_item *popup_track(struct w32_menu *m, int x, int y, struc
     popup_wait = saved;
     if (menu && wm_window_alive(menu))
         wm_destroy(menu);
-    kfree(items);
-    kfree(labels);
-    if (result.index < 0 || result.index >= m->count)
-        return NULL;
-    struct w32_menu_item *it = &m->items[result.index];
-    return it->sub ? popup_track(it->sub, x + 24, y + 12, owner) : it;
+    return result.index;
 }
 
 static BOOL WINAPI TrackPopupMenuEx(HANDLE h, UINT flags, int x, int y, HANDLE hwnd, const void *params)
@@ -3828,7 +4194,13 @@ static const struct w32_export window_exports[] = {
     W32_FN(SystemParametersInfoA), W32_FN(SystemParametersInfoW), W32_FN(SystemParametersInfoForDpi), W32_FN(LoadCursorA),
     W32_AS("LoadCursorW", LoadCursorA), W32_FN(LoadIconA), W32_AS("LoadIconW", LoadIconA), W32_FN(LoadImageA),
     W32_AS("LoadImageW", LoadImageA),
-    W32_FN(LoadBitmapA), W32_AS("LoadBitmapW", LoadBitmapA), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(CreateMenu),
+    W32_FN(LoadBitmapA), W32_AS("LoadBitmapW", LoadBitmapA), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(GetCursor), W32_FN(DestroyCursor),
+    W32_FN(SetScrollInfo), W32_FN(GetScrollInfo), W32_FN(SetScrollPos), W32_FN(GetScrollPos), W32_FN(SetScrollRange),
+    W32_FN(GetScrollRange), W32_FN(ShowScrollBar), W32_FN(EnableScrollBar), W32_FN(GetScrollBarInfo), W32_FN(ScrollWindowEx),
+    W32_FN(ScrollWindow), W32_FN(ScrollDC), W32_FN(IsWindowUnicode), W32_FN(ShowOwnedPopups), W32_FN(DefFrameProcW),
+    W32_AS("DefFrameProcA", DefFrameProcW), W32_FN(DefMDIChildProcW), W32_AS("DefMDIChildProcA", DefMDIChildProcW),
+    W32_FN(TranslateMDISysAccel), W32_FN(GetKeyNameTextA), W32_FN(GetKeyNameTextW), W32_FN(LoadKeyboardLayoutW),
+ W32_FN(CreateMenu),
     W32_AS("CreatePopupMenu", CreateMenu), W32_FN(DestroyMenu), W32_FN(AppendMenuA), W32_FN(AppendMenuW),
     W32_FN(InsertMenuA), W32_FN(SetMenu), W32_FN(GetMenu), W32_FN(DrawMenuBar), W32_FN(GetSubMenu),
     W32_FN(CheckMenuItem), W32_FN(EnableMenuItem), W32_FN(GetMenuItemCount), W32_FN(GetMenuState), W32_FN(IsMenu),
@@ -3846,6 +4218,13 @@ W32_EXPORTS(window_module, "user32.dll", window_exports, .attach = window_attach
 
 static const struct w32_export subclass_exports[] = {
     W32_FN(SetWindowSubclass), W32_FN(GetWindowSubclass), W32_FN(RemoveWindowSubclass), W32_FN(DefSubclassProc),
+    W32_AS("_TrackMouseEvent", TrackMouseEvent), W32_AS("InitializeFlatSB", w32_one1),
+    W32_AS("UninitializeFlatSB", w32_zero1), W32_AS("FlatSB_SetScrollInfo", SetScrollInfo),
+    W32_AS("FlatSB_GetScrollInfo", GetScrollInfo), W32_AS("FlatSB_SetScrollPos", SetScrollPos),
+    W32_AS("FlatSB_GetScrollPos", GetScrollPos), W32_AS("FlatSB_SetScrollRange", SetScrollRange),
+    W32_AS("FlatSB_GetScrollRange", GetScrollRange), W32_AS("FlatSB_ShowScrollBar", ShowScrollBar),
+    W32_AS("FlatSB_EnableScrollBar", EnableScrollBar), W32_AS("FlatSB_SetScrollProp", w32_one4),
+    W32_AS("FlatSB_GetScrollProp", w32_zero3),
 };
 
 static const char *const subclass_ordinals[414] = {

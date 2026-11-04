@@ -588,6 +588,29 @@ static uint64_t h_one(uint64_t *a, const uint64_t *f, void *t)
     return 1;
 }
 
+static uint64_t h_logical_processors(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint8_t *out = P(a[0]);
+    uint32_t *len = P(a[1]), tmp[6 * 16], n = sizeof(tmp);
+    if (!len || !T32(t, U(tmp), U(&n)))
+        return T32(t, 0, U(len));
+    uint32_t count = n / 24, need = count * 32;
+    if (!out || *len < need) {
+        *len = need;
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t *o = out + i * 32;
+        memset(o, 0, 32);
+        put64(o, tmp[i * 6]);
+        put32(o + 8, tmp[i * 6 + 1]);
+        memcpy(o + 16, tmp + i * 6 + 2, 16);
+    }
+    *len = need;
+    return 1;
+}
+
 static uint64_t h_get_system_info(uint64_t *a, const uint64_t *f, void *t)
 {
     uint8_t *o = P(a[0]);
@@ -1213,6 +1236,7 @@ static uint64_t h_bsearch(uint64_t *a, const uint64_t *f, void *t)
 
 static const struct w64_export kernel32_exports[] = {
     W64_FN("GetSystemInfo", h_get_system_info),
+    W64_FN("GetLogicalProcessorInformation", h_logical_processors),
     W64_FN("GetNativeSystemInfo", h_get_system_info),
     W64_FN("GetStartupInfoA", h_get_startup_info),
     W64_FN("GetStartupInfoW", h_get_startup_info),

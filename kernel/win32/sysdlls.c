@@ -1047,6 +1047,26 @@ static void WINAPI SysFreeString(WCHAR *s)
         w32_free((uint8_t *)s - 4);
 }
 
+static INT WINAPI SysReAllocStringLen(WCHAR **old, const WCHAR *s, UINT n)
+{
+    if (!old)
+        return FALSE;
+    WCHAR *b = SysAllocStringLen(s, n);
+    if (!b)
+        return FALSE;
+    SysFreeString(*old);
+    *old = b;
+    return TRUE;
+}
+
+static INT WINAPI SysReAllocString(WCHAR **old, const WCHAR *s)
+{
+    UINT n = 0;
+    while (s && s[n])
+        n++;
+    return s ? SysReAllocStringLen(old, s, n) : FALSE;
+}
+
 static UINT WINAPI SysStringLen(const WCHAR *s)
 {
     return s ? *(const uint32_t *)((const uint8_t *)s - 4) / 2 : 0;
@@ -1090,6 +1110,45 @@ static uint32_t WINAPI VariantCopy(uint16_t *dst, const uint16_t *src)
     return 0;
 }
 
+static uint32_t vt_size(uint16_t vt);
+
+/* a by-reference variant is copied as the value it points to */
+static uint32_t WINAPI VariantCopyInd(uint16_t *dst, const uint16_t *src)
+{
+    if (!src || !dst)
+        return 0x80070057u;
+    if (!(src[0] & 0x4000))
+        return VariantCopy(dst, src);
+    const void *p = *(void *const *)(src + 4);
+    uint16_t vt = src[0] & (uint16_t)~0x4000u;
+    if (!p)
+        return 0x80070057u;
+    if (vt == 12)
+        return VariantCopyInd(dst, p);
+    uint16_t tmp[8] = {vt};
+    uint32_t n = vt_size(vt);
+    if (vt & 0x2000)
+        n = 4;
+    memcpy(tmp + 4, p, MIN(n, 8u));
+    return VariantCopy(dst, tmp);
+}
+
+static uint32_t WINAPI GetActiveObject(const void *clsid, void *reserved, void **out)
+{
+    UNUSED(clsid);
+    UNUSED(reserved);
+    if (out)
+        *out = NULL;
+    return 0x800401e3u;
+}
+
+static uint32_t WINAPI RegisterTypeLib(void *lib, const WCHAR *path, const WCHAR *help)
+{
+    UNUSED(path);
+    UNUSED(help);
+    return lib ? 0 : 0x80070057u;
+}
+
 static char *WINAPI SysAllocStringByteLen(const char *s, UINT n)
 {
     uint8_t *b = w32_alloc(4 + (size_t)n + 2);
@@ -1125,12 +1184,15 @@ static uint32_t WINAPI VarBstrCmp(const WCHAR *a, const WCHAR *b, DWORD lcid, DW
     return na == nb ? 1 : na < nb ? 0 : 2;
 }
 
+/* SAFEARRAY: the bounds are stored last dimension first, as Windows keeps them */
 struct safearray {
     uint16_t dims, features;
     uint32_t element_size, locks;
     uint8_t *data;
-    uint32_t count;
-    int32_t lower;
+    struct {
+        uint32_t count;
+        int32_t lower;
+    } bound[];
 };
 
 static uint32_t vt_size(uint16_t vt)
@@ -1151,24 +1213,47 @@ static uint32_t vt_size(uint16_t vt)
     }
 }
 
-static struct safearray *WINAPI SafeArrayCreateVector(uint16_t vt, int32_t lower, uint32_t count)
+static uint32_t sa_total(const struct safearray *sa)
 {
-    uint32_t *block = w32_zalloc(4 + sizeof(struct safearray));
+    uint32_t n = 1;
+    for (int i = 0; i < sa->dims; i++)
+        n *= sa->bound[i].count;
+    return n;
+}
+
+static struct safearray *sa_create(uint16_t vt, UINT dims, const int32_t *bounds)
+{
+    if (!dims || dims > 64)
+        return NULL;
+    uint32_t *block = w32_zalloc(4 + sizeof(struct safearray) + dims * sizeof(((struct safearray *)0)->bound[0]));
     if (!block)
         return NULL;
     struct safearray *sa = (struct safearray *)(block + 1);
     block[0] = vt;
-    sa->dims = 1;
+    sa->dims = (uint16_t)dims;
     sa->features = 0x80 | (vt == 8 ? 0x100 : vt == 13 ? 0x200 : vt == 9 ? 0x400 : vt == 12 ? 0x800 : 0);
     sa->element_size = vt_size(vt);
-    sa->count = count;
-    sa->lower = lower;
-    sa->data = w32_zalloc((size_t)count * sa->element_size + 1);
+    for (UINT i = 0; i < dims; i++) {
+        sa->bound[dims - 1 - i].count = (uint32_t)bounds[i * 2];
+        sa->bound[dims - 1 - i].lower = bounds[i * 2 + 1];
+    }
+    sa->data = w32_zalloc((size_t)sa_total(sa) * sa->element_size + 1);
     if (!sa->data) {
         w32_free(block);
         return NULL;
     }
     return sa;
+}
+
+static struct safearray *WINAPI SafeArrayCreateVector(uint16_t vt, int32_t lower, uint32_t count)
+{
+    int32_t b[2] = {(int32_t)count, lower};
+    return sa_create(vt, 1, b);
+}
+
+static struct safearray *WINAPI SafeArrayCreate(uint16_t vt, UINT dims, const int32_t *bounds)
+{
+    return bounds ? sa_create(vt, dims, bounds) : NULL;
 }
 
 static uint16_t sa_vartype(const struct safearray *sa)
@@ -1182,7 +1267,7 @@ static uint32_t WINAPI SafeArrayDestroy(struct safearray *sa)
         return 0;
     if (sa->locks)
         return 0x8002000du;
-    for (uint32_t i = 0; i < sa->count; i++) {
+    for (uint32_t i = 0, n = sa_total(sa); i < n; i++) {
         void *p = sa->data + (size_t)i * sa->element_size;
         if (sa->features & 0x100)
             SysFreeString(*(WCHAR **)p);
@@ -1203,17 +1288,17 @@ static UINT WINAPI SafeArrayGetDim(const struct safearray *sa)
 
 static uint32_t WINAPI SafeArrayGetLBound(const struct safearray *sa, UINT dim, int32_t *out)
 {
-    if (!sa || dim != 1)
+    if (!sa || dim < 1 || dim > sa->dims)
         return 0x8002000bu;
-    *out = sa->lower;
+    *out = sa->bound[sa->dims - dim].lower;
     return 0;
 }
 
 static uint32_t WINAPI SafeArrayGetUBound(const struct safearray *sa, UINT dim, int32_t *out)
 {
-    if (!sa || dim != 1)
+    if (!sa || dim < 1 || dim > sa->dims)
         return 0x8002000bu;
-    *out = sa->lower + (int32_t)sa->count - 1;
+    *out = sa->bound[sa->dims - dim].lower + (int32_t)sa->bound[sa->dims - dim].count - 1;
     return 0;
 }
 
@@ -1240,10 +1325,48 @@ static uint32_t WINAPI SafeArrayUnaccessData(struct safearray *sa)
     return 0;
 }
 
+/* the first index belongs to the leftmost dimension and changes fastest */
 static void *element(struct safearray *sa, const int32_t *index)
 {
-    int32_t i = index[0] - sa->lower;
-    return i >= 0 && (uint32_t)i < sa->count ? sa->data + (size_t)i * sa->element_size : NULL;
+    size_t cell = 0, size = 1;
+    for (int d = 0; d < sa->dims; d++) {
+        int32_t i = index[d] - sa->bound[sa->dims - 1 - d].lower;
+        if (i < 0 || (uint32_t)i >= sa->bound[sa->dims - 1 - d].count)
+            return NULL;
+        cell += (size_t)i * size;
+        size *= sa->bound[sa->dims - 1 - d].count;
+    }
+    return sa->data + cell * sa->element_size;
+}
+
+static uint32_t WINAPI SafeArrayPtrOfIndex(struct safearray *sa, const int32_t *index, void **out)
+{
+    void *p = sa && index && out ? element(sa, index) : NULL;
+    if (!p)
+        return 0x8002000bu;
+    *out = p;
+    return 0;
+}
+
+static UINT WINAPI SafeArrayGetElemsize(const struct safearray *sa)
+{
+    return sa ? sa->element_size : 0;
+}
+
+static uint32_t WINAPI SafeArrayLock(struct safearray *sa)
+{
+    if (!sa)
+        return 0x80070057u;
+    sa->locks++;
+    return 0;
+}
+
+static uint32_t WINAPI SafeArrayUnlock(struct safearray *sa)
+{
+    if (!sa || !sa->locks)
+        return 0x8000ffffu;
+    sa->locks--;
+    return 0;
 }
 
 static uint32_t WINAPI SafeArrayGetElement(struct safearray *sa, const int32_t *index, void *out)
@@ -1327,9 +1450,16 @@ static const struct w32_export oleaut32_exports[] = {
     W32_FN(SafeArrayGetUBound), W32_FN(SafeArrayGetVartype), W32_FN(SafeArrayAccessData),
     W32_FN(SafeArrayUnaccessData), W32_FN(SafeArrayGetElement), W32_FN(SafeArrayPutElement),
     W32_FN(LoadRegTypeLib), W32_FN(LoadTypeLib), W32_FN(OleLoadPicturePath),
+    W32_FN(SysReAllocString), W32_FN(SysReAllocStringLen), W32_FN(VariantCopyInd), W32_FN(SafeArrayCreate),
+    W32_FN(SafeArrayPtrOfIndex), W32_FN(SafeArrayGetElemsize), W32_FN(SafeArrayLock), W32_FN(SafeArrayUnlock),
+    W32_FN(GetActiveObject), W32_FN(RegisterTypeLib), W32_AS("RegisterTypeLibForUser", RegisterTypeLib),
+    W32_AS("UnRegisterTypeLib", w32_zero5),
 };
 
 static const char *const oleaut32_ordinals[] = {
+    [3] = "SysReAllocString", [5] = "SysReAllocStringLen", [11] = "VariantCopyInd", [15] = "SafeArrayCreate",
+    [18] = "SafeArrayGetElemsize", [21] = "SafeArrayLock", [22] = "SafeArrayUnlock", [35] = "GetActiveObject",
+    [148] = "SafeArrayPtrOfIndex", [163] = "RegisterTypeLib", [186] = "UnRegisterTypeLib",
     [2] = "SysAllocString", [4] = "SysAllocStringLen", [6] = "SysFreeString", [7] = "SysStringLen",
     [8] = "VariantInit",    [9] = "VariantClear",      [10] = "VariantCopy",
     [16] = "SafeArrayDestroy", [17] = "SafeArrayGetDim", [19] = "SafeArrayGetUBound",

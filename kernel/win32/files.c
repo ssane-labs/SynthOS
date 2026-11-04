@@ -1239,6 +1239,17 @@ static UINT WINAPI GetSystemDirectoryW(LPWSTR buf, UINT size)
     return to_wide_buffer("C:\\Windows\\System32", buf, size);
 }
 
+/* a 32-bit program on 64-bit Windows: SysWOW64 shares System32's files here */
+static UINT WINAPI GetSystemWow64DirectoryA(LPSTR buf, UINT size)
+{
+    return to_ansi_buffer("C:\\Windows\\SysWOW64", buf, size);
+}
+
+static UINT WINAPI GetSystemWow64DirectoryW(LPWSTR buf, UINT size)
+{
+    return to_wide_buffer("C:\\Windows\\SysWOW64", buf, size);
+}
+
 static UINT WINAPI GetDriveTypeA(LPCSTR root)
 {
     return !root || to_upper((uint8_t)root[0]) == 'C' || root[0] == '\\' ? 3 : 1;
@@ -1551,7 +1562,7 @@ static const struct w32_export kernel32_files[] = {
     W32_FN(GetTempFileNameW), W32_FN(GetWindowsDirectoryA), W32_FN(GetWindowsDirectoryW),
     W32_AS("GetSystemWindowsDirectoryA", GetWindowsDirectoryA),
     W32_AS("GetSystemWindowsDirectoryW", GetWindowsDirectoryW), W32_FN(GetSystemDirectoryA),
-    W32_FN(GetSystemDirectoryW), W32_FN(GetDriveTypeA), W32_FN(GetDriveTypeW), W32_FN(GetLogicalDrives),
+    W32_FN(GetSystemDirectoryW), W32_FN(GetSystemWow64DirectoryA), W32_FN(GetSystemWow64DirectoryW), W32_FN(GetDriveTypeA), W32_FN(GetDriveTypeW), W32_FN(GetLogicalDrives),
     W32_FN(GetLogicalDriveStringsA), W32_FN(GetDiskFreeSpaceA), W32_FN(GetDiskFreeSpaceW),
     W32_FN(GetDiskFreeSpaceExA), W32_FN(GetDiskFreeSpaceExW), W32_FN(GetVolumeInformationA),
     W32_FN(GetVolumeInformationW), W32_FN(GetShortPathNameA), W32_FN(GetShortPathNameW),

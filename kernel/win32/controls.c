@@ -5,6 +5,11 @@
 
 #include "w32gui.h"
 
+#define begin w32_ctl_begin
+#define end w32_ctl_end
+#define font_for w32_ctl_font
+#define notify w32_ctl_notify
+
 enum {
     BS_DEFPUSHBUTTON = 1,
     BS_CHECKBOX = 2,
@@ -21,6 +26,11 @@ enum {
     ES_CENTER = 0x1,
     ES_RIGHT = 0x2,
     ES_MULTILINE = 0x4,
+    ES_AUTOHSCROLL = 0x80,
+    EM_SCROLL = 0xb5,
+    EM_LINESCROLL = 0xb6,
+    EM_GETLINECOUNT = 0xba,
+    EM_GETFIRSTVISIBLELINE = 0xce,
     ES_PASSWORD = 0x20,
     ES_READONLY = 0x800,
     ES_NUMBER = 0x2000,
@@ -48,26 +58,20 @@ enum {
     PBM_SETMARQUEE = 0x40a,
 };
 
-static void notify(struct w32_window *w, unsigned code)
+void w32_ctl_notify(struct w32_window *w, unsigned code)
 {
     if (w->parent)
         w32_send(w->parent, WM_COMMAND, (WPARAM)((uint32_t)(uint16_t)w->id | code << 16), (LPARAM)w);
 }
 
-static const struct ui_font *font_for(struct w32_window *w)
+const struct ui_font *w32_ctl_font(struct w32_window *w)
 {
     return w->font ? w32_font_of(w->font) : &font_sans;
 }
 
-struct paint_ctx {
-    HANDLE dc;
-    struct canvas *c;
-    struct rect r;
-    COLORREF text;
-    bool custom_text;
-};
+#define paint_ctx w32_paint
 
-static bool begin(struct w32_window *w, struct paint_ctx *p, UINT color_msg)
+bool w32_ctl_begin(struct w32_window *w, struct paint_ctx *p, UINT color_msg)
 {
     PAINTSTRUCT ps;
     extern HANDLE WINAPI w32_begin_paint(HANDLE, PAINTSTRUCT *);
@@ -95,7 +99,7 @@ static bool begin(struct w32_window *w, struct paint_ctx *p, UINT color_msg)
     return true;
 }
 
-static void end(struct w32_window *w, struct paint_ctx *p)
+void w32_ctl_end(struct w32_window *w, struct paint_ctx *p)
 {
     w32_dc_damage(p->dc, p->r);
     extern BOOL WINAPI w32_end_paint(HANDLE, const PAINTSTRUCT *);
@@ -170,6 +174,9 @@ static void paint_button(struct w32_window *w)
     end(w, &p);
 }
 
+static bool next_line(const struct ui_font *f, int width, bool wrap, const char *s, size_t *pos, size_t *start,
+                      size_t *len);
+
 static void paint_static(struct w32_window *w)
 {
     struct paint_ctx p;
@@ -182,24 +189,118 @@ static void paint_static(struct w32_window *w)
         gfx_fill(p.c, (struct rect){p.r.x, p.r.y, p.r.w, 1}, style.separator);
     } else {
         const struct ui_font *f = font_for(w);
-        char text[512];
-        strip(text, sizeof(text), w->text);
-        int y = p.r.y;
-        char *line = text;
-        while (line && y < p.r.y + p.r.h) {
-            char *next = strchr(line, '\n');
-            if (next)
-                *next++ = 0;
-            size_t n = strlen(line);
-            if (n && line[n - 1] == '\r')
-                line[--n] = 0;
+        char *text = w32_alloc(strlen(w->text) + 1);
+        if (text) {
+            if (w->style & 0x80)
+                memcpy(text, w->text, strlen(w->text) + 1);
+            else
+                strip(text, strlen(w->text) + 1, w->text);
+            bool wrap = kind <= SS_RIGHT;
             enum text_align align = kind == SS_CENTER ? ALIGN_CENTER : kind == SS_RIGHT ? ALIGN_RIGHT : ALIGN_LEFT;
-            gfx_text_box(p.c, (struct rect){p.r.x, y, p.r.w, f->height}, f, line, text_color(w, &p), align);
-            y += f->height;
-            line = next;
+            int y = p.r.y;
+            size_t pos = 0, start, len;
+            while (y < p.r.y + p.r.h && next_line(f, p.r.w, wrap, text, &pos, &start, &len)) {
+                char saved = text[start + len];
+                text[start + len] = 0;
+                gfx_text_box(p.c, (struct rect){p.r.x, y, p.r.w, f->height}, f, text + start, text_color(w, &p),
+                             align);
+                text[start + len] = saved;
+                y += f->height;
+            }
+            w32_free(text);
         }
     }
     end(w, &p);
+}
+
+/* one display line from *pos (its bytes, without the line break); false after the last one */
+static bool next_line(const struct ui_font *f, int width, bool wrap, const char *s, size_t *pos, size_t *start,
+                      size_t *len)
+{
+    size_t p = *pos;
+    if (p == (size_t)-1)
+        return false;
+    size_t e = p;
+    while (s[e] && s[e] != '\n' && s[e] != '\r')
+        e++;
+    *start = p;
+    if (wrap && width > 0 && gfx_text_width_n(f, s + p, e - p) > width) {
+        size_t fit = p, i = p;
+        while (i < e) {
+            size_t j = i;
+            while (j < e && s[j] != ' ')
+                j++;
+            if (gfx_text_width_n(f, s + p, j - p) > width)
+                break;
+            fit = j;
+            while (j < e && s[j] == ' ')
+                j++;
+            i = j;
+        }
+        if (fit == p) {
+            fit = p + 1;
+            while (fit < e && gfx_text_width_n(f, s + p, fit + 1 - p) <= width)
+                fit++;
+            while (fit < e && ((uint8_t)s[fit] & 0xc0) == 0x80)
+                fit++;
+        }
+        *len = fit - p;
+        while (fit < e && s[fit] == ' ')
+            fit++;
+        *pos = fit;
+        return true;
+    }
+    *len = e - p;
+    if (!s[e]) {
+        *pos = (size_t)-1;
+    } else {
+        if (s[e] == '\r')
+            e++;
+        if (s[e] == '\n')
+            e++;
+        *pos = e;
+    }
+    return true;
+}
+
+static bool edit_wraps(struct w32_window *w)
+{
+    return !(w->style & (ES_AUTOHSCROLL | WS_HSCROLL));
+}
+
+static int edit_line_count(struct w32_window *w)
+{
+    const struct ui_font *f = font_for(w);
+    size_t pos = 0, start, len;
+    int n = 0;
+    while (next_line(f, w->rect.w - 12, edit_wraps(w), w->text, &pos, &start, &len))
+        n++;
+    return n;
+}
+
+static LRESULT edit_scroll(struct w32_window *w, int lines)
+{
+    const struct ui_font *f = font_for(w);
+    int visible = MAX(1, (w->rect.h - 6) / f->height);
+    int old = w->scroll;
+    w->scroll = MAX(0, MIN(w->scroll + lines, edit_line_count(w) - visible));
+    if (w->scroll != old)
+        w32_invalidate(w, NULL, true);
+    return TRUE;
+}
+
+static LRESULT edit_scroll_code(struct w32_window *w, unsigned code)
+{
+    int page = MAX(1, (w->rect.h - 6) / font_for(w)->height - 1);
+    switch (code) {
+    case 0: return edit_scroll(w, -1);
+    case 1: return edit_scroll(w, 1);
+    case 2: return edit_scroll(w, -page);
+    case 3: return edit_scroll(w, page);
+    case 6: return edit_scroll(w, -w->scroll);
+    case 7: return edit_scroll(w, 1 << 20);
+    default: return 0;
+    }
 }
 
 static void paint_edit(struct w32_window *w)
@@ -214,40 +315,47 @@ static void paint_edit(struct w32_window *w)
     gfx_round_frame(p.c, r, 5, focused ? style.accent : style.field_border);
     struct rect inner = {r.x + 6, r.y + 3, r.w - 12, r.h - 6};
     p.c->clip = rect_intersect(p.c->clip, inner);
-    char shown[1024];
-    size_t len = strlen(w->text);
-    if (w->style & ES_PASSWORD) {
-        size_t n = 0;
-        for (size_t i = 0; i < len && n + 4 < sizeof(shown); i++) {
-            memcpy(shown + n, "•", 3);
-            n += 3;
-        }
-        shown[n] = 0;
-    } else {
-        str_copy(shown, w->text, sizeof(shown));
-    }
     uint32_t color = text_color(w, &p);
     if (w->style & ES_MULTILINE) {
-        int y = inner.y - w->scroll * f->height;
-        char *line = shown;
-        size_t offset = 0;
-        int caret_x = inner.x, caret_y = inner.y;
-        while (line) {
-            char *next = strchr(line, '\n');
-            size_t n = next ? (size_t)(next - line) : strlen(line);
-            size_t visible = n && line[n - 1] == '\r' ? n - 1 : n;
-            gfx_text_n(p.c, inner.x, y, f, line, visible, color);
-            if (w->caret >= offset && w->caret <= offset + n) {
-                caret_x = inner.x + gfx_text_width_n(f, line, MIN(w->caret - offset, visible));
+        const char *s = w->text;
+        bool wrap = edit_wraps(w);
+        int visible = MAX(1, inner.h / f->height), total = 0;
+        size_t pos = 0, start, len;
+        while (next_line(f, inner.w, wrap, s, &pos, &start, &len))
+            total++;
+        w->scroll = MAX(0, MIN(w->scroll, total - visible));
+        int y = inner.y - w->scroll * f->height, caret_x = -1, caret_y = 0;
+        pos = 0;
+        while (next_line(f, inner.w, wrap, s, &pos, &start, &len)) {
+            if (y + f->height > inner.y && y < inner.y + inner.h)
+                gfx_text_n(p.c, inner.x, y, f, s + start, len, color);
+            if (w->caret >= start && w->caret <= start + len && caret_x < 0) {
+                caret_x = inner.x + gfx_text_width_n(f, s + start, w->caret - start);
                 caret_y = y;
             }
-            offset += n + (next ? 1 : 0);
             y += f->height;
-            line = next ? next + 1 : NULL;
         }
-        if (focused)
+        if (total > visible) {
+            int track = inner.h, knob = MAX(12, track * visible / total);
+            int at = (track - knob) * w->scroll / MAX(1, total - visible);
+            p.c->clip = rect_intersect(p.c->clip, r);
+            gfx_round(p.c, (struct rect){r.x + r.w - 6, inner.y + at, 3, knob}, 1, style.tertiary);
+        }
+        if (focused && caret_x >= 0 && !(w->style & ES_READONLY))
             gfx_fill(p.c, (struct rect){caret_x, caret_y, 1, f->height}, style.accent);
     } else {
+        char shown[1024];
+        size_t len = strlen(w->text);
+        if (w->style & ES_PASSWORD) {
+            size_t n = 0;
+            for (size_t i = 0; i < len && n + 4 < sizeof(shown); i++) {
+                memcpy(shown + n, "•", 3);
+                n += 3;
+            }
+            shown[n] = 0;
+        } else {
+            str_copy(shown, w->text, sizeof(shown));
+        }
         int y = inner.y + (inner.h - f->height) / 2;
         size_t caret = w->style & ES_PASSWORD ? w->caret * 3 : w->caret;
         int caret_px = gfx_text_width_n(f, shown, MIN(caret, strlen(shown)));
@@ -379,6 +487,13 @@ static void edit_key(struct w32_window *w, WPARAM vk)
         break;
     case 0x24: w->caret = 0; break;
     case 0x23: w->caret = len; break;
+    case 0x21:
+    case 0x22:
+    case 0x26:
+    case 0x28:
+        if (w->style & ES_MULTILINE)
+            edit_scroll_code(w, vk == 0x26 ? 0 : vk == 0x28 ? 1 : vk == 0x21 ? 2 : 3);
+        return;
     case 0x2e:
         if (w->caret < len && !(w->style & ES_READONLY)) {
             memmove(w->text + w->caret, w->text + w->caret + 1, len - w->caret);
@@ -486,7 +601,8 @@ LRESULT WINAPI w32_control_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
             w32_invalidate(w, NULL, true);
         } else if (w->control == CK_EDIT) {
             w32_set_focus(w);
-            w->caret = strlen(w->text);
+            if (!(w->style & ES_READONLY))
+                w->caret = strlen(w->text);
             w32_invalidate(w, NULL, true);
         }
         return 0;
@@ -550,10 +666,43 @@ LRESULT WINAPI w32_control_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         w32_invalidate(w, NULL, true);
         return TRUE;
     case WM_GETDLGCODE: return w->control == CK_EDIT ? 0x85 : 0;
+    case WM_MOUSEWHEEL:
+        if (w->control == CK_EDIT && (w->style & ES_MULTILINE))
+            return edit_scroll(w, -(int16_t)(wp >> 16) / 40);
+        return w32_def_window_proc(h, msg, wp, lp);
+    case WM_VSCROLL:
+    case EM_SCROLL:
+        if (w->control == CK_EDIT && (w->style & ES_MULTILINE))
+            return edit_scroll_code(w, wp & 0xffff);
+        return 0;
+    case EM_LINESCROLL:
+        if (w->control == CK_EDIT && (w->style & ES_MULTILINE))
+            return edit_scroll(w, (int)lp);
+        return FALSE;
+    case EM_GETLINECOUNT: return w->control == CK_EDIT && (w->style & ES_MULTILINE) ? edit_line_count(w) : 1;
+    case EM_GETFIRSTVISIBLELINE: return w->scroll;
     default:
         if (w->control == CK_PROGRESS && msg >= PBM_SETRANGE && msg <= 0x410)
             return progress_msg(w, msg, wp, lp);
         return w32_def_window_proc(h, msg, wp, lp);
     }
 }
+
+/* classes subclassed from the built-in ones (GetClassInfo + CallWindowProc) keep the right kind */
+static LRESULT kind_proc(enum control_kind kind, HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct w32_window *w = w32_win(h);
+    if (w && w->control == CK_NONE)
+        w->control = kind;
+    return w32_control_proc(h, msg, wp, lp);
+}
+
+LRESULT WINAPI w32_button_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{ return kind_proc(CK_BUTTON, h, msg, wp, lp); }
+LRESULT WINAPI w32_static_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{ return kind_proc(CK_STATIC, h, msg, wp, lp); }
+LRESULT WINAPI w32_edit_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{ return kind_proc(CK_EDIT, h, msg, wp, lp); }
+LRESULT WINAPI w32_progress_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{ return kind_proc(CK_PROGRESS, h, msg, wp, lp); }
 #endif

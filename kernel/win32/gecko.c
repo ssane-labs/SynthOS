@@ -155,6 +155,17 @@ STUB(ImmGetDefaultIMEWnd, 1, 0, 0)
 STUB(ImmGetDescriptionW, 3, 0, 0)
 STUB(ImmGetProperty, 2, 0, 0)
 STUB(ImmSetOpenStatus, 2, 0, 0)
+STUB(ImmSetConversionStatus, 3, 1, 0)
+
+static BOOL WINAPI ImmGetConversionStatus(HANDLE imc, DWORD *conversion, DWORD *sentence)
+{
+    UNUSED(imc);
+    if (conversion)
+        *conversion = 0;
+    if (sentence)
+        *sentence = 0;
+    return TRUE;
+}
 STUB(NotifyIpInterfaceChange, 5, ERROR_NOT_SUPPORTED, 0)
 STUB(CancelMibChangeNotify2, 1, 0, 0)
 STUB(GetBestInterfaceEx, 2, ERROR_NOT_SUPPORTED, 0)
@@ -401,6 +412,7 @@ static const struct w32_export gecko_gdi32[] = {
 static const struct w32_export gecko_imm32[] = {
     W32_FN(ImmGetCompositionFontW), W32_FN(ImmSetCompositionFontW), W32_FN(ImmGetCompositionStringA),
     W32_FN(ImmGetDefaultIMEWnd), W32_FN(ImmGetDescriptionW), W32_FN(ImmGetProperty), W32_FN(ImmSetOpenStatus),
+    W32_FN(ImmGetConversionStatus), W32_FN(ImmSetConversionStatus),
 };
 static const struct w32_export gecko_iphlpapi[] = {W32_FN(NotifyIpInterfaceChange), W32_FN(CancelMibChangeNotify2),
                                                    W32_FN(GetBestInterfaceEx), W32_FN(GetIpInterfaceTable)};
@@ -410,7 +422,7 @@ static const struct w32_export gecko_kernel32[] = {
     W32_FN(ReplaceFileA), W32_FN(SetThreadIdealProcessor),
     W32_FN(CreateWaitableTimerExA), W32_FN(GetComputerNameExA), W32_FN(GetOverlappedResultEx),
     W32_FN(GetProcessIdOfThread), W32_FN(GetTimeZoneInformationForYear), W32_FN(SetThreadErrorMode),
-    W32_FN(SetThreadStackGuarantee),
+    W32_FN(SetThreadStackGuarantee), W32_AS("SetSearchPathMode", w32_one1),
 };
 static const struct w32_export gecko_msimg32[] = {W32_FN(GradientFill)};
 static const struct w32_export gecko_ntdll[] = {
@@ -426,8 +438,11 @@ static const struct w32_export gecko_oleaut32[] = {W32_FN(CreateStdDispatch), W3
 static const struct w32_export gecko_propsys[] = {W32_FN(PropVariantToString)};
 static const struct w32_export gecko_rpcrt4[] = {W32_FN(UuidToStringA)};
 static const struct w32_export gecko_shell32[] = {W32_FN(GetCurrentProcessExplicitAppUserModelID),
-                                                  W32_FN(SHAddToRecentDocs), W32_FN(SHGetKnownFolderItem)};
-static const struct w32_export gecko_shlwapi[] = {W32_FN(PathIsNetworkPathW), W32_FN(PathUnExpandEnvStringsW)};
+                                                  W32_FN(SHAddToRecentDocs), W32_FN(SHGetKnownFolderItem),
+                                                  W32_AS("SHPathPrepareForWriteW", w32_zero4),
+                                                  W32_AS("SHPathPrepareForWriteA", w32_zero4)};
+static const struct w32_export gecko_shlwapi[] = {W32_FN(PathIsNetworkPathW), W32_FN(PathUnExpandEnvStringsW),
+                                                  W32_AS("SHAutoComplete", w32_zero2)};
 static const struct w32_export gecko_user32[] = {
     W32_FN(ActivateKeyboardLayout), W32_FN(LoadKeyboardLayoutA), W32_FN(UnloadKeyboardLayout), W32_FN(AnimateWindow),
     W32_FN(BroadcastSystemMessageW), W32_FN(CloseGestureInfoHandle), W32_FN(CreateCaret), W32_FN(DestroyCaret),
