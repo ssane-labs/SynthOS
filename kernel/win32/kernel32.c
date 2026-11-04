@@ -1058,6 +1058,10 @@ static BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out
         if (to == from && shared_state) {
             o->refs++;
             h = src;
+        } else if (to == w32 && o->type >= WH_STDIN && o->type <= WH_STDERR) {
+            if (!(h = w32_handle_new(o->type)))
+                return FALSE;
+            w32_handle_get(h)->inherit = inherit != 0;
         } else {
             h = w32_handle_put(to, o);
             if (!h) {

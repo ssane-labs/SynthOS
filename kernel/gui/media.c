@@ -104,7 +104,7 @@ static struct {
     uint32_t wav_frames, wav_rate, wav_pos_frac;
     uint64_t wav_pos;
     int split[3];
-    bool user_file;
+    bool user_file, sounding;
 } m;
 
 static uint32_t rnd(void)
@@ -618,8 +618,14 @@ bool media_tick(void)
             active = true;
         m.levels[i] = m.levels[i] * 7 / 8;
     }
-    if (!m.playing)
+    if (!m.playing) {
+        /* the card keeps looping its ring buffer: stop it, or the last half second plays forever */
+        if (m.device && m.sounding) {
+            hal_audio_close();
+            m.sounding = false;
+        }
         return active;
+    }
     static int16_t buf[BLOCK * 2];
     if (m.device) {
         for (int guard = 0; guard < 8; guard++) {
@@ -633,6 +639,7 @@ bool media_tick(void)
                 for (int k = 0; k < n * 2; k++)
                     buf[k] = (int16_t)(buf[k] * gain / 256);
             hal_audio_write(buf, n);
+            m.sounding = true;
         }
     } else {
         int frames = (int)MIN((now - m.wall) * (uint64_t)m.rate / 1000, (uint64_t)m.rate / 4);

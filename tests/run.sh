@@ -767,6 +767,8 @@ music list
 2  Better Days - SynthOS Lofi
 music play 3; music status
 Desert Wind - SynthOS Ambient, playing
+music play 2; music pause; music status
+Better Days - SynthOS Lofi, paused
 browse /mnt/hdb/page.html | grep next
    1. file:///mnt/hdb/next.html
 browse -n /mnt/hdb/page.html | grep third

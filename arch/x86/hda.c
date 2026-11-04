@@ -557,6 +557,12 @@ void hda_close(void)
     if (hd.running)
         stop();
     memset(hd.ring, 0, RING_BYTES);
+    if (hd.sd) {
+        uint32_t pos = *(volatile uint32_t *)(hd.sd + SD_LPIB) % RING_BYTES & ~3u;
+        hd.last = pos;
+        hd.write = (pos + LEAD_BYTES) % RING_BYTES;
+        hd.queued = LEAD_BYTES;
+    }
 }
 
 const char *hda_name(void)

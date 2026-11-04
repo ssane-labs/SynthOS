@@ -160,49 +160,12 @@ static LONG WINAPI CompareFileTime(const uint32_t *a, const uint32_t *b)
     return x < y ? -1 : x > y ? 1 : 0;
 }
 
-typedef BOOL(WINAPI *info_fn)(HANDLE, DWORD, void *, DWORD);
-
-static DWORD WINAPI NtQueryInformationFile(HANDLE h, uint32_t *iosb, void *out, DWORD size, DWORD cls)
-{
-    struct w32_object *o = w32_handle_get(h);
-    if (!o)
-        return STATUS_INVALID_HANDLE;
-    int ex = cls == 4 ? 0 : cls == 5 ? 1 : cls == 9 ? 2 : -1;
-    if (ex < 0)
-        return STATUS_INVALID_INFO_CLASS;
-    info_fn fn = (info_fn)w32_builtin_lookup("kernel32.dll", "GetFileInformationByHandleEx");
-    if (!fn || !fn(h, (DWORD)ex, out, size))
-        return STATUS_INVALID_INFO_CLASS;
-    if (iosb) {
-        iosb[0] = 0;
-        iosb[1] = size;
-    }
-    return 0;
-}
-
 static DWORD WINAPI nt_not_implemented4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
     UNUSED(a);
     UNUSED(b);
     UNUSED(c);
     UNUSED(d);
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static DWORD WINAPI NtQueryDirectoryFile(HANDLE h, HANDLE ev, void *apc, void *ctx, void *iosb, void *out, DWORD size,
-                                         DWORD cls, BOOL single, void *mask, BOOL restart)
-{
-    UNUSED(h);
-    UNUSED(ev);
-    UNUSED(apc);
-    UNUSED(ctx);
-    UNUSED(iosb);
-    UNUSED(out);
-    UNUSED(size);
-    UNUSED(cls);
-    UNUSED(single);
-    UNUSED(mask);
-    UNUSED(restart);
     return STATUS_NOT_IMPLEMENTED;
 }
 
@@ -230,8 +193,6 @@ static const struct w32_export compat_kernel32[] = {
 };
 
 static const struct w32_export compat_ntdll[] = {
-    W32_FN(NtQueryInformationFile),
-    W32_FN(NtQueryDirectoryFile),
     W32_AS("NtSetEaFile", nt_not_implemented4),
 };
 

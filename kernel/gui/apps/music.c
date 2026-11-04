@@ -307,8 +307,10 @@ static struct window *music_win;
 
 static void destroy(struct window *w)
 {
-    if (music_win == w)
+    if (music_win == w) {
         music_win = NULL;
+        media_stop();
+    }
     kfree(w->data);
 }
 
