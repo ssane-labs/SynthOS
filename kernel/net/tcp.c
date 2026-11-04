@@ -72,7 +72,7 @@ static int segment(struct sock *s, uint32_t seq, uint8_t flags, const uint8_t *d
     if (flags & SYN) {
         p[20] = 2;
         p[21] = 4;
-        wr16(p + 22, DEFAULT_MSS);
+        wr16(p + 22, net_mss_for(s->rip));
         if (s->rcv_shift) {
             p[24] = 1;
             p[25] = 3;
@@ -200,7 +200,7 @@ int net_connect_start(int id, uint32_t ip, uint16_t port)
     s->snd_una = s->iss;
     s->snd_nxt = s->iss + 1;
     s->snd_wnd = DEFAULT_MSS;
-    s->mss = DEFAULT_MSS;
+    s->mss = net_mss_for(ip);
     s->rcv_shift = WSCALE;
     s->snd_shift = 0;
     s->rx_total = 0;
@@ -542,7 +542,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
     uint16_t wnd = rd16(p + 14);
     if (header < 20 || header > length)
         return;
-    uint16_t mss = DEFAULT_MSS;
+    uint16_t mss = net_mss_for(src);
     int ws = -1;
     for (size_t i = 20; i + 1 < header;) {
         uint8_t kind = p[i];
@@ -556,7 +556,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
         if (len < 2)
             break;
         if (kind == 2 && len == 4 && i + 4 <= header)
-            mss = (uint16_t)MIN(rd16(p + i + 2), DEFAULT_MSS);
+            mss = (uint16_t)MIN(rd16(p + i + 2), net_mss_for(src));
         else if (kind == 3 && len == 3 && i + 3 <= header)
             ws = MIN(p[i + 2], 14);
         i += len;

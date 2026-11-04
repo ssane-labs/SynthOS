@@ -183,7 +183,8 @@ static uint32_t to_host(uint32_t be)
     return net_htonl(be);
 }
 
-/* IPv6 sockets run over the IPv4 stack: ::1, :: and ::ffff:a.b.c.d stand for their IPv4 addresses */
+/* IPv6 sockets: ::1, :: and ::ffff:a.b.c.d stand for their IPv4 addresses, other IPv6 addresses for the handles
+   the kernel gives them (synth/net.h), so one socket layer serves both */
 #define AF_INET6 23
 #define SOCKADDR_IN6 28
 
@@ -198,7 +199,9 @@ static void fill_addr6(uint8_t *out, int *len, uint32_t ip, uint16_t port)
     uint32_t be = net_htonl(ip);
     memcpy(out, &family, 2);
     memcpy(out + 2, &be_port, 2);
-    if (ip == 0x7f000001u) {
+    if (net_is_v6(ip)) {
+        net_v6_addr(ip, out + 8);
+    } else if (ip == 0x7f000001u) {
         out[23] = 1;
     } else if (ip) {
         out[18] = out[19] = 0xff;
@@ -216,11 +219,18 @@ static const struct sockaddr_in *v4_addr(const void *addr, int len, struct socka
         return addr;
     static const uint8_t zero[10];
     const uint8_t *ip = a + 8;
-    if (len < SOCKADDR_IN6 || memcmp(ip, zero, 10))
+    if (len < SOCKADDR_IN6)
         return NULL;
     memset(tmp, 0, sizeof(*tmp));
     tmp->family = AF_INET;
     memcpy(&tmp->port, a + 2, 2);
+    if (memcmp(ip, zero, 10)) {
+        uint32_t h = net_v6_handle(ip);
+        if (!h)
+            return NULL;
+        tmp->addr = net_htonl(h);
+        return tmp;
+    }
     if (ip[10] == 0xff && ip[11] == 0xff)
         memcpy(&tmp->addr, ip + 12, 4);
     else if (!ip[10] && !ip[11] && !ip[12] && !ip[13] && !ip[14] && ip[15] <= 1)
@@ -862,23 +872,8 @@ static char *WINAPI inet_ntoa(uint32_t be)
 static int WINAPI inet_pton(int family, const char *s, void *out)
 {
     uint32_t ip;
-    if (family == AF_INET6) {
-        uint8_t *o = out;
-        memset(o, 0, 16);
-        if (!strcmp(s, "::"))
-            return 1;
-        if (!strcmp(s, "::1")) {
-            o[15] = 1;
-            return 1;
-        }
-        if (!str_ncasecmp(s, "::ffff:", 7) && net_parse_ip(s + 7, &ip)) {
-            uint32_t be = net_htonl(ip);
-            o[10] = o[11] = 0xff;
-            memcpy(o + 12, &be, 4);
-            return 1;
-        }
-        return 0;
-    }
+    if (family == AF_INET6)
+        return net_parse_ip6(s, out) ? 1 : 0;
     if (family != AF_INET) {
         w32_set_error(WSAEAFNOSUPPORT);
         return -1;
@@ -893,19 +888,7 @@ static int WINAPI inet_pton(int family, const char *s, void *out)
 static const char *WINAPI inet_ntop(int family, const void *addr, char *out, SIZE_T cap)
 {
     if (family == AF_INET6) {
-        const uint8_t *a = addr;
-        static const uint8_t zero[15];
-        char v4[16];
-        if (!memcmp(a, zero, 15))
-            str_copy(out, a[15] == 1 ? "::1" : "::", cap);
-        else if (!memcmp(a, zero, 10) && a[10] == 0xff && a[11] == 0xff) {
-            uint32_t be;
-            memcpy(&be, a + 12, 4);
-            net_format_ip(net_htonl(be), v4, sizeof(v4));
-            ksnprintf(out, cap, "::ffff:%s", v4);
-        } else {
-            ksnprintf(out, cap, "%x:%x::", (unsigned)(a[0] << 8 | a[1]), (unsigned)(a[2] << 8 | a[3]));
-        }
+        net_format_ip6(addr, out, cap);
         return out;
     }
     if (family != AF_INET) {
@@ -981,7 +964,7 @@ static uint16_t service_port(const char *service)
 static int WINAPI getaddrinfo(const char *node, const char *service, const struct addrinfo *hints,
                               struct addrinfo **out)
 {
-    if (hints && hints->family != 0 && hints->family != AF_INET)
+    if (hints && hints->family != 0 && hints->family != AF_INET && hints->family != AF_INET6)
         return WSAEAFNOSUPPORT;
     uint32_t ip = 0;
     if (node) {
@@ -991,15 +974,20 @@ static int WINAPI getaddrinfo(const char *node, const char *service, const struc
     } else if (!(hints && (hints->flags & 1))) {
         ip = 0x7f000001u;
     }
-    struct addrinfo *a = w32_zalloc(sizeof(*a) + sizeof(struct sockaddr_in));
+    /* an IPv6 answer (or an IPv6-only question) comes back as sockaddr_in6, the rest as sockaddr_in */
+    bool six = net_is_v6(ip) || (hints && hints->family == AF_INET6);
+    struct addrinfo *a = w32_zalloc(sizeof(*a) + SOCKADDR_IN6);
     if (!a)
         return 8;
-    a->family = AF_INET;
+    a->family = six ? AF_INET6 : AF_INET;
     a->socktype = hints && hints->socktype ? hints->socktype : SOCK_STREAM;
     a->protocol = a->socktype == SOCK_DGRAM ? 17 : 6;
-    a->addrlen = sizeof(struct sockaddr_in);
+    a->addrlen = six ? SOCKADDR_IN6 : sizeof(struct sockaddr_in);
     a->addr = (struct sockaddr_in *)(a + 1);
-    fill_addr(a->addr, NULL, ip, service_port(service));
+    if (six)
+        fill_addr6((uint8_t *)a->addr, NULL, ip, service_port(service));
+    else
+        fill_addr(a->addr, NULL, ip, service_port(service));
     if (node && hints && (hints->flags & 2))
         a->canonname = w32_strdup(node);
     *out = a;

@@ -8,7 +8,7 @@
 
 #include "net.h"
 
-#define MAX_IFACES 4
+#define MAX_IFACES NET_MAX_IFACES
 #define ARP_SIZE 32
 #define ARP_TTL 600000
 #define LOOP_QUEUE 16
@@ -56,6 +56,16 @@ uint32_t net_ip(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
 
 bool net_parse_ip(const char *s, uint32_t *out)
 {
+    if (strchr(s, ':')) {
+        uint8_t a[16];
+        if (!net_parse_ip6(s, a))
+            return false;
+        uint32_t h = net_v6_handle(a);
+        if (!h)
+            return false;
+        *out = h;
+        return true;
+    }
     uint32_t ip = 0;
     for (int part = 0; part < 4; part++) {
         if (*s < '0' || *s > '9')
@@ -78,6 +88,11 @@ bool net_parse_ip(const char *s, uint32_t *out)
 
 void net_format_ip(uint32_t ip, char *out, size_t cap)
 {
+    uint8_t a[16];
+    if (net_is_v6(ip) && net_v6_addr(ip, a)) {
+        net_format_ip6(a, out, cap);
+        return;
+    }
     ksnprintf(out, cap, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255);
 }
 
@@ -98,6 +113,8 @@ uint16_t net_checksum(const void *data, size_t length, uint32_t sum)
 
 uint32_t net_pseudo_sum(uint32_t src, uint32_t dst, uint8_t proto, uint16_t length)
 {
+    if (net_is_v6(src) || net_is_v6(dst))
+        return net_pseudo_sum6(src, dst, proto, length);
     return (src >> 16) + (src & 0xffff) + (dst >> 16) + (dst & 0xffff) + proto + length;
 }
 
@@ -138,7 +155,7 @@ int net_configure(struct net_iface *ifc, uint32_t ip, uint32_t mask, uint32_t ga
 
 bool net_is_local(uint32_t ip)
 {
-    if ((ip >> 24) == 127)
+    if ((ip >> 24) == 127 || net_v6_local(ip))
         return true;
     for (int i = 0; i < iface_count; i++)
         if (ifaces[i].configured && ifaces[i].ip == ip)
@@ -163,11 +180,18 @@ uint32_t net_source_for(uint32_t dst)
         return LOOPBACK;
     if (net_is_local(dst))
         return dst;
+    if (net_is_v6(dst))
+        return net_source6_for(dst);
     struct net_iface *ifc = route(dst);
     return ifc ? ifc->ip : 0;
 }
 
-static int eth_send(struct net_iface *ifc, const uint8_t *mac, uint16_t type, const void *payload, size_t length)
+uint16_t net_mss_for(uint32_t dst)
+{
+    return net_is_v6(dst) && !net_is_local(dst) ? 1440 : 1460;
+}
+
+int net_eth_send(struct net_iface *ifc, const uint8_t *mac, uint16_t type, const void *payload, size_t length)
 {
     static uint8_t frame[NET_FRAME];
     if (length > NET_MTU)
@@ -202,7 +226,7 @@ static void arp_send(struct net_iface *ifc, uint16_t op, const uint8_t *target_m
     wr32(p + 14, ifc->ip);
     memcpy(p + 18, op == 1 ? (const uint8_t[6]){0} : target_mac, 6);
     wr32(p + 24, target_ip);
-    eth_send(ifc, op == 1 ? broadcast : target_mac, 0x0806, p, sizeof(p));
+    net_eth_send(ifc, op == 1 ? broadcast : target_mac, 0x0806, p, sizeof(p));
 }
 
 static struct arp_entry *arp_find(uint32_t ip, bool create)
@@ -232,7 +256,7 @@ static void arp_learn(struct net_iface *ifc, uint32_t ip, const uint8_t *mac)
     e->valid = true;
     e->time = net_now();
     if (e->pending) {
-        eth_send(ifc, e->mac, 0x0800, e->pending, e->pending_length);
+        net_eth_send(ifc, e->mac, 0x0800, e->pending, e->pending_length);
         kfree(e->pending);
         e->pending = NULL;
     }
@@ -288,18 +312,20 @@ int ip_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, size
         loop_push(packet, total);
         return 0;
     }
+    if (net_is_v6(dst))
+        return ip6_send(src, dst, proto, payload, length);
     struct net_iface *ifc = route(dst);
     if (!ifc)
         return E_UNREACH;
     bool broadcast = dst == 0xffffffffu || (ifc->configured && (dst | ifc->mask) == 0xffffffffu);
     if (broadcast)
-        return eth_send(ifc, (const uint8_t[6]){0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0x0800, packet, total);
+        return net_eth_send(ifc, (const uint8_t[6]){0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0x0800, packet, total);
     if (!ifc->configured)
         return E_UNREACH;
     uint32_t hop = (dst & ifc->mask) == (ifc->ip & ifc->mask) || !ifc->gateway ? dst : ifc->gateway;
     struct arp_entry *e = arp_find(hop, true);
     if (e->valid && net_now() - e->time < ARP_TTL)
-        return eth_send(ifc, e->mac, 0x0800, packet, total);
+        return net_eth_send(ifc, e->mac, 0x0800, packet, total);
     kfree(e->pending);
     e->pending = kmalloc(total);
     if (e->pending) {
@@ -329,7 +355,14 @@ static void icmp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t leng
         wr16(reply + 2, net_checksum(reply, length, 0));
         ip_send(dst == 0xffffffffu ? 0 : dst, src, IP_ICMP, reply, length);
         kfree(reply);
-    } else if (p[0] == 0 && rd16(p + 4) == ping.id && rd16(p + 6) == ping.seq) {
+    } else if (p[0] == 0) {
+        net_ping_answer(rd16(p + 4), rd16(p + 6), ttl);
+    }
+}
+
+void net_ping_answer(uint16_t id, uint16_t seq, uint8_t ttl)
+{
+    if (id == ping.id && seq == ping.seq) {
         ping.done = true;
         ping.ttl = ttl;
     }
@@ -382,6 +415,8 @@ static void eth_input(struct net_iface *ifc, const uint8_t *frame, size_t length
         arp_input(ifc, frame + 14, length - 14);
     else if (type == 0x0800)
         ip_input(ifc, frame + 14, length - 14);
+    else if (type == 0x86dd)
+        ip6_input(ifc, frame + 14, length - 14);
 }
 
 /* Counts received packets, so code waiting for the network knows when to look again. */
@@ -421,6 +456,7 @@ static int poll_frames(void)
     uint64_t now = net_now();
     tcp_tick(now);
     dhcp_tick(now);
+    ip6_tick(now);
     polling = false;
     return frames;
 }
@@ -473,7 +509,7 @@ int net_ping(uint32_t ip, uint16_t seq, size_t size, int timeout_ms, uint32_t *r
     uint8_t *p = kzalloc(size + 8);
     if (!p)
         return E_NOMEM;
-    p[0] = 8;
+    p[0] = net_is_v6(ip) ? 128 : 8;
     ping = (struct ping_wait){0x5359, seq, false, 0};
     wr16(p + 4, ping.id);
     wr16(p + 6, seq);
@@ -515,7 +551,9 @@ void net_init(void)
     if (!iface_count)
         return;
     await_until = net_now() + 4000;
-    for (int i = 0; i < iface_count; i++)
+    for (int i = 0; i < iface_count; i++) {
         net_dhcp_start(&ifaces[i]);
+        ip6_start(&ifaces[i]);
+    }
     hal_set_idle(net_poll);
 }

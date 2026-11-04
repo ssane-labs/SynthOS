@@ -1,6 +1,7 @@
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -49,7 +50,7 @@ static size_t skip_name(const uint8_t *p, size_t at, size_t length)
     return length;
 }
 
-static bool parse(const uint8_t *p, size_t length, uint16_t id, uint32_t *ip, uint32_t *ttl)
+static bool parse(const uint8_t *p, size_t length, uint16_t id, uint16_t qtype, uint32_t *ip, uint32_t *ttl)
 {
     if (length < 12 || rd16(p) != id || !(p[2] & 0x80) || (p[3] & 0x0f))
         return false;
@@ -66,6 +67,10 @@ static bool parse(const uint8_t *p, size_t length, uint16_t id, uint32_t *ip, ui
         at += 10;
         if (type == 1 && cls == 1 && size == 4 && at + 4 <= length) {
             *ip = rd32(p + at);
+            *ttl = t;
+            return true;
+        }
+        if (qtype == 28 && type == 28 && cls == 1 && size == 16 && at + 16 <= length && (*ip = net_v6_handle(p + at))) {
             *ttl = t;
             return true;
         }
@@ -136,6 +141,73 @@ static bool hosts_lookup(const char *name, uint32_t *ip)
     return false;
 }
 
+static bool has_v4(void)
+{
+    for (int i = 0; i < net_interface_count(); i++)
+        if (net_interface(i)->configured)
+            return true;
+    return false;
+}
+
+static bool has_v6(void)
+{
+    for (int i = 0; i < net_interface_count(); i++)
+        if (net_v6_info(i)->global_ok)
+            return true;
+    return false;
+}
+
+static uint32_t dns_override;
+
+void net_set_dns_override(uint32_t server)
+{
+    dns_override = server;
+    for (int i = 0; i < CACHE; i++)
+        cache[i].name[0] = 0;
+}
+
+static uint32_t dns_chosen;
+
+static void get_dns(char *buf, size_t cap)
+{
+    if (dns_chosen)
+        net_format_ip(dns_chosen, buf, cap);
+    else
+        str_copy(buf, "auto", cap);
+}
+
+static int set_dns(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    uint32_t ip = 0;
+    if (strcmp(value, "auto") && !net_parse_ip(value, &ip))
+        return E_INVAL;
+    dns_chosen = ip;
+    for (int i = 0; i < CACHE; i++)
+        cache[i].name[0] = 0;
+    return 0;
+}
+
+static const struct setting s_dns = {"dnsserver", "auto|<address>", "the DNS server (auto: from the network)", get_dns,
+                                     set_dns};
+SETTING(s_dns);
+
+/* The VPN's server first, then a chosen one, then the one DHCP gave, then the one the IPv6 router announced. */
+uint32_t net_dns_server(void)
+{
+    if (dns_override)
+        return dns_override;
+    if (dns_chosen)
+        return dns_chosen;
+    for (int i = 0; i < net_interface_count(); i++)
+        if (net_interface(i)->configured && net_interface(i)->dns)
+            return net_interface(i)->dns;
+    for (int i = 0; i < net_interface_count(); i++)
+        if (net_v6_info(i)->dns_ok && net_v6_info(i)->global_ok)
+            return net_v6_info(i)->dns_h;
+    return 0;
+}
+
 int net_resolve_start(const char *name, struct dns_query *q, uint32_t *ip)
 {
     q->sock = -1;
@@ -154,10 +226,7 @@ int net_resolve_start(const char *name, struct dns_query *q, uint32_t *ip)
             return 0;
         }
     net_await_address();
-    uint32_t server = 0;
-    for (int i = 0; i < net_interface_count() && !server; i++)
-        if (net_interface(i)->configured)
-            server = net_interface(i)->dns;
+    uint32_t server = net_dns_server();
     if (!server)
         return E_UNREACH;
     memset(q->query, 0, 12);
@@ -168,7 +237,8 @@ int net_resolve_start(const char *name, struct dns_query *q, uint32_t *ip)
     size_t n = encode(name, q->query + 12, sizeof(q->query) - 16);
     if (!n)
         return E_INVAL;
-    wr16(q->query + 12 + n, 1);
+    q->qtype = has_v4() ? 1 : 28;
+    wr16(q->query + 12 + n, q->qtype);
     wr16(q->query + 14 + n, 1);
     q->length = (uint16_t)(16 + n);
     q->server = server;
@@ -193,11 +263,22 @@ int net_resolve_poll(struct dns_query *q, uint32_t *ip, int timeout_ms)
     long got;
     while (err == E_AGAIN && (got = net_recvfrom(q->sock, reply, sizeof(reply), &from, &port)) > 0) {
         uint32_t ttl = 0;
-        if (parse(reply, (size_t)got, q->id, ip, &ttl)) {
+        if (parse(reply, (size_t)got, q->id, q->qtype, ip, &ttl)) {
             remember(q->name, *ip, ttl);
             err = 0;
         } else if (got >= 4 && rd16(reply) == q->id) {
             err = E_NOENT;
+            /* no IPv4 address for the name: ask for an IPv6 one when this computer has IPv6 */
+            if (q->qtype == 1 && has_v6()) {
+                q->qtype = 28;
+                q->id = (uint16_t)hal_entropy();
+                wr16(q->query, q->id);
+                wr16(q->query + q->length - 4, 28);
+                net_sendto(q->sock, q->query, q->length, q->server, 53);
+                q->sent = net_now();
+                q->attempt = 0;
+                err = E_AGAIN;
+            }
         }
     }
     if (err == E_AGAIN && net_now() - q->sent >= (uint64_t)(timeout_ms / 3 + 1)) {

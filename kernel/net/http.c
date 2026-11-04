@@ -41,6 +41,20 @@ bool http_parse_url(const char *s, struct http_url *u)
     memcpy(u->host, s, host_len);
     u->port = u->https ? 443 : 80;
     char *colon = strchr(u->host, ':');
+    if (u->host[0] == '[') {
+        char *close = strchr(u->host, ']');
+        if (!close || (close[1] && close[1] != ':'))
+            return false;
+        if (close[1]) {
+            long port = str_to_long(close + 2, NULL, 10);
+            if (port <= 0 || port > 65535)
+                return false;
+            u->port = (uint16_t)port;
+        }
+        *close = 0;
+        memmove(u->host, u->host + 1, strlen(u->host + 1) + 1);
+        colon = NULL;
+    }
     if (colon) {
         *colon = 0;
         long port = str_to_long(colon + 1, NULL, 10);
@@ -113,9 +127,9 @@ bool http_resolve_url(const char *base, const char *ref, char *out, size_t cap)
     const char *scheme = b.https ? "https" : "http";
     char origin[300];
     if (b.port == (b.https ? 443 : 80))
-        ksnprintf(origin, sizeof(origin), "%s://%s", scheme, b.host);
+        ksnprintf(origin, sizeof(origin), strchr(b.host, ':') ? "%s://[%s]" : "%s://%s", scheme, b.host);
     else
-        ksnprintf(origin, sizeof(origin), "%s://%s:%u", scheme, b.host, b.port);
+        ksnprintf(origin, sizeof(origin), strchr(b.host, ':') ? "%s://[%s]:%u" : "%s://%s:%u", scheme, b.host, b.port);
     if (ref[0] == '/' && ref[1] == '/') {
         ksnprintf(out, cap, "%s:%s", scheme, ref);
         return true;
@@ -461,10 +475,11 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
     }
     const char *method = req->method ? req->method : req->flags & HTTP_HEAD ? "HEAD" : "GET";
     char host[300];
+    bool literal6 = strchr(u.host, ':') != NULL;
     if (u.port == (u.https ? 443 : 80))
-        str_copy(host, u.host, sizeof(host));
+        ksnprintf(host, sizeof(host), literal6 ? "[%s]" : "%s", u.host);
     else
-        ksnprintf(host, sizeof(host), "%s:%u", u.host, u.port);
+        ksnprintf(host, sizeof(host), literal6 ? "[%s]:%u" : "%s:%u", u.host, u.port);
     char *head = kmalloc(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX);
     if (!head) {
         conn_close(&c);

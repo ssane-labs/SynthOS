@@ -184,7 +184,7 @@ static bool setup(struct e1000 *n)
     wr(n, RDLEN, RX_COUNT * sizeof(struct rx_desc));
     wr(n, RDH, 0);
     wr(n, RDT, RX_COUNT - 1);
-    wr(n, RCTL, (1u << 1) | (1u << 15) | (1u << 26));
+    wr(n, RCTL, (1u << 1) | (1u << 4) | (1u << 15) | (1u << 26));
     wr(n, TDBAL, vmm_phys((const void *)n->tx));
     wr(n, TDBAH, 0);
     wr(n, TDLEN, TX_COUNT * sizeof(struct tx_desc));

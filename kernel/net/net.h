@@ -60,6 +60,18 @@ bool net_is_local(uint32_t ip);
 uint64_t net_now(void);
 uint16_t net_ephemeral_port(enum net_type type);
 
+int ip6_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, size_t length);
+void ip6_input(struct net_iface *ifc, const uint8_t *p, size_t length);
+void ip6_start(struct net_iface *ifc);
+void ip6_tick(uint64_t now);
+uint32_t net_source6_for(uint32_t dst);
+uint32_t net_pseudo_sum6(uint32_t src, uint32_t dst, uint8_t proto, uint32_t length);
+bool net_v6_local(uint32_t ip);
+int net_eth_send(struct net_iface *ifc, const uint8_t *mac, uint16_t type, const void *payload, size_t length);
+void net_ping_answer(uint16_t id, uint16_t seq, uint8_t ttl);
+uint16_t net_mss_for(uint32_t dst);
+uint32_t net_dns_server(void);
+void net_set_dns_override(uint32_t server);
 void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t length);
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t length);
 void tcp_tick(uint64_t now);

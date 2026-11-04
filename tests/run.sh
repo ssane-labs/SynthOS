@@ -630,6 +630,22 @@ ping -c 1 10.0.2.2 | grep from
 64 bytes from 10.0.2.2: icmp_seq=1
 ping -c 1 localhost | grep loss
 1 packets sent, 1 received
+ifconfig eth0 | grep -c inet6
+2
+ping -c 1 fec0::2 | grep from
+64 bytes from fec0::2: icmp_seq=1
+ifconfig eth1 | grep 2001
+inet6 2001:db8:1:0:5054:ff:fe12:3457/64 router fe80::1 dns 2001:db8:1::53
+ping -c 1 2001:db8:1::1 | grep from
+64 bytes from 2001:db8:1::1: icmp_seq=1 ttl=64
+wget -O - http://[2001:db8:1::1]/hi.txt
+hello over ipv6
+config dnsserver 2001:db8:1::53; nslookup six.test; config dnsserver auto
+six.test has IPv6 address 2001:db8:1::1
+config dnsserver 2001:db8:1::53; wget -O - http://six.test/x | tail -n 1; config dnsserver auto; config dnsserver
+dnsserver = auto
+config ipv6 off; ping -c 1 fec0::2 | grep -c from; config ipv6 on
+0
 lsusb
 QEMU USB Keyboard
 hello64 a b | grep longjmp
@@ -911,9 +927,15 @@ fi
 awk 'NR % 2 == 1' "$work/cases" > "$work/input"
 echo "shutdown" >> "$work/input"
 
+# a second network card leads to an IPv6 router and host (tests/v6peer.py) over a UDP socket
+v6port=$((40000 + $$ % 20000))
+python3 -I tests/v6peer.py "$v6port" "$((v6port + 1))" >/dev/null 2>&1 &
+v6peer=$!
 timeout 90 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
     -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
-    < "$work/input" > "$work/output" 2>&1
+    -netdev socket,id=v6,udp=127.0.0.1:$v6port,localaddr=127.0.0.1:$((v6port + 1)) \
+    -device e1000,netdev=v6,mac=52:54:00:12:34:57 < "$work/input" > "$work/output" 2>&1
+kill $v6peer 2>/dev/null
 
 [ -n "$server" ] && kill $server 2>/dev/null
 

@@ -94,6 +94,8 @@ static bool rtl8139_setup(struct rtl8139 *n)
         n->dev.mac[i] = inb((uint16_t)(n->io + i));
     outl((uint16_t)(n->io + 0x30), vmm_phys(n->rx));
     outw((uint16_t)(n->io + 0x3c), 0);
+    outl((uint16_t)(n->io + 0x08), 0xffffffffu);
+    outl((uint16_t)(n->io + 0x0c), 0xffffffffu);
     outl((uint16_t)(n->io + 0x44), 0x0000008eu | 7u << 13 | 7u << 8);
     outl((uint16_t)(n->io + 0x40), 0x03000600u);
     outb((uint16_t)(n->io + 0x37), 0x0c);
@@ -184,6 +186,8 @@ static bool rtl8169_setup(struct rtl8169 *n)
     outl((uint16_t)(n->io + 0xe4), vmm_phys((const void *)n->rx));
     outl((uint16_t)(n->io + 0xe8), 0);
     outb((uint16_t)(n->io + 0x37), 0x0c);
+    outl((uint16_t)(n->io + 0x08), 0xffffffffu);
+    outl((uint16_t)(n->io + 0x0c), 0xffffffffu);
     outl((uint16_t)(n->io + 0x44), 0x0000e70eu);
     outl((uint16_t)(n->io + 0x40), 0x03000700u);
     outw((uint16_t)(n->io + 0x3c), 0);

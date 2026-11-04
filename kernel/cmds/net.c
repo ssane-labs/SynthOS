@@ -44,6 +44,27 @@ static void print_iface(struct shell *sh, struct net_iface *ifc)
                   ifc->dhcp ? " (dhcp)" : "");
     else
         sh_printf(sh, "       not configured%s\n", ifc->dhcp ? " (waiting for dhcp)" : "");
+    for (int i = 0; i < net_interface_count(); i++) {
+        struct net6 *v = net_v6_info(i);
+        if (net_interface(i) != ifc || !v->ll_ok)
+            continue;
+        char text[48];
+        if (v->global_ok) {
+            net_format_ip6(v->global, text, sizeof(text));
+            sh_printf(sh, "       inet6 %s/64", text);
+            if (v->router_ok) {
+                net_format_ip6(v->router, text, sizeof(text));
+                sh_printf(sh, " router %s", text);
+            }
+            if (v->dns_ok) {
+                net_format_ip6(v->dns, text, sizeof(text));
+                sh_printf(sh, " dns %s", text);
+            }
+            sh_puts(sh, "\n");
+        }
+        net_format_ip6(v->ll, text, sizeof(text));
+        sh_printf(sh, "       inet6 %s/64 (link)\n", text);
+    }
     char rx[16], tx[16];
     fmt_size(rx, sizeof(rx), ifc->rx_bytes);
     fmt_size(tx, sizeof(tx), ifc->tx_bytes);
@@ -124,7 +145,7 @@ COMMAND(ping, NULL, "system", "ping [-c count] host", "check that a host answers
     uint32_t ip;
     if (resolve(sh, "ping", argv[i], &ip))
         return 1;
-    char text[16];
+    char text[48];
     net_format_ip(ip, text, sizeof(text));
     sh_printf(sh, "PING %s (%s) 56 bytes of data\n", argv[i], text);
     int received = 0;
@@ -160,9 +181,9 @@ COMMAND(nslookup, "host", "system", "nslookup name", "look up the address of a h
     uint32_t ip;
     if (resolve(sh, "nslookup", argv[1], &ip))
         return 1;
-    char text[16];
+    char text[48];
     net_format_ip(ip, text, sizeof(text));
-    sh_printf(sh, "%s has address %s\n", argv[1], text);
+    sh_printf(sh, "%s has %s %s\n", argv[1], net_is_v6(ip) ? "IPv6 address" : "address", text);
     return 0;
 }
 
@@ -176,7 +197,7 @@ COMMAND(netstat, NULL, "system", "netstat", "list open network connections")
     sh_printf(sh, "%-5s %-22s %-22s %s\n", "PROTO", "LOCAL", "REMOTE", "STATE");
     sh_role(sh, ROLE_TEXT);
     for (int i = 0; i < n; i++) {
-        char l[16], r[16], la[24], ra[24];
+        char l[48], r[48], la[56], ra[56];
         net_format_ip(list[i].local_ip, l, sizeof(l));
         net_format_ip(list[i].remote_ip, r, sizeof(r));
         ksnprintf(la, sizeof(la), "%s:%u", l, list[i].local_port);
@@ -245,7 +266,8 @@ COMMAND(wget, "fetch", "system", "wget [-k] [-O file] http[s]://host[:port]/path
     if (!http_parse_url(url, &u))
         return sh_error(sh, "wget", "%s: bad address", argv[i]);
     sh_role(sh, ROLE_MUTED);
-    sh_printf(sh, "Fetching %s://%s:%u%s\n", u.https ? "https" : "http", u.host, u.port, u.path);
+    sh_printf(sh, strchr(u.host, ':') ? "Fetching %s://[%s]:%u%s\n" : "Fetching %s://%s:%u%s\n", u.https ? "https" : "http",
+              u.host, u.port, u.path);
     sh_role(sh, ROLE_TEXT);
     char name[PATH_MAX_LEN];
     if (output) {
@@ -415,7 +437,7 @@ COMMAND(httpd, "serve", "system", "httpd [port] [directory]", "serve a directory
                 sent += (size_t)k;
             }
         kfree(data);
-        char from[16];
+        char from[48];
         net_format_ip(ip, from, sizeof(from));
         sh_printf(sh, "%s GET %s %d\n", from, target, ok ? 200 : 404);
         net_shutdown(c);

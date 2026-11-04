@@ -6,6 +6,7 @@
 #define NET_MTU 1500
 #define NET_FRAME 1514
 #define NET_MAX_SOCKETS 32
+#define NET_MAX_IFACES 4
 
 struct netdev {
     char name[16];
@@ -22,6 +23,14 @@ struct net_iface {
     uint32_t ip, mask, gateway, dns;
     bool configured, dhcp;
     uint64_t rx_packets, tx_packets, rx_bytes, tx_bytes, dropped;
+};
+
+struct net6 {
+    uint8_t ll[16], global[16], router[16], dns[16];
+    bool ll_ok, global_ok, router_ok, dns_ok;
+    uint32_t ll_h, global_h, dns_h;
+    uint64_t rs_at;
+    int rs_count;
 };
 
 enum net_type {
@@ -72,9 +81,16 @@ bool net_parse_ip(const char *s, uint32_t *out);
 void net_format_ip(uint32_t ip, char *out, size_t cap);
 int net_resolve(const char *name, uint32_t *ip, int timeout_ms);
 
+bool net_is_v6(uint32_t ip);
+uint32_t net_v6_handle(const uint8_t a[16]);
+bool net_v6_addr(uint32_t ip, uint8_t out[16]);
+bool net_parse_ip6(const char *s, uint8_t out[16]);
+void net_format_ip6(const uint8_t a[16], char *out, size_t cap);
+struct net6 *net_v6_info(int index);
+
 struct dns_query {
     int sock;
-    uint16_t id, length;
+    uint16_t id, length, qtype, pad;
     uint32_t server;
     uint64_t sent;
     int attempt;
