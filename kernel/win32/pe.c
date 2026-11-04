@@ -434,6 +434,21 @@ static void trace_call(const char *name)
         w32->current->recent[w32->current->recent_pos++ % 8] = name;
 }
 
+/* the 64-bit kernel's gate has no relay stubs: it names the built-in function by its export entry */
+const char *w32_builtin_name(const void *fn)
+{
+    SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def)
+        for (size_t i = 0; i < def->count; i++)
+            if (def->exports[i].address == fn)
+                return def->exports[i].name;
+    return NULL;
+}
+
+void w32_trace_api(const char *name)
+{
+    trace_call(name);
+}
+
 void w32_trace_note(const char *module, const char *name)
 {
     char label[64];

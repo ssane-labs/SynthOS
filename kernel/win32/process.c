@@ -442,6 +442,11 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
     arch_fault_registers(r);
     klog("win32: fault %d in %s thread %u at %08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x",
          vector, w32->parent ? "child" : "main", w32->current ? w32->current->id : 0, eip, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+#ifdef __x86_64__
+    extern const void *w32_gate_current;
+    if (w32_gate_current)
+        klog("win32:   inside built-in %08x", (uint32_t)(uintptr_t)w32_gate_current);
+#endif
     uint32_t fp = r[6];
     for (int i = 0; i < 16 && fp >= VMM_USER_START && (fp >= 0xc0000000u ? fp < 0xfff00000u : vmm_mapped(fp + 4)); i++) {
         char at[96];
@@ -459,6 +464,12 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
         for (struct w32_image *img = w32->images; img; img = img->next)
             if (!img->builtin && v >= img->base && v - img->base < img->size)
                 klog("win32:   stack %08x: %s+0x%x", sp, img->name, v - img->base);
+    }
+    if (eip < 0x10000 && (r[7] >= 0xc0000000u ? r[7] < 0xfff00000u - 32 : vmm_mapped(r[7] - 48) && vmm_mapped(r[7] + 28))) {
+        for (int row = -12; row < 8; row += 4) {
+            const uint32_t *s = (const uint32_t *)(uintptr_t)(r[7] + row * 4);
+            klog("win32:   stack %08x: %08x %08x %08x %08x", r[7] + row * 4, s[0], s[1], s[2], s[3]);
+        }
     }
     uint64_t pc = (uint64_t)arch_fault_rip_high() << 32 | eip, at = (uint64_t)arch_fault_address_high() << 32 | address;
     if (vector == 14)

@@ -156,6 +156,11 @@ struct bootinfo {
     u32 system_lba, system_sectors;
     u8 id[8];
     u32 fb_addr_high, boot_nonce;
+    u32 more_count;
+    struct {
+        u32 addr, addr_high, width, height, pitch, bpp;
+        u8 shift[4];
+    } more[3];
 };
 
 struct e820 {
@@ -173,6 +178,7 @@ struct e820 {
 #define BOOT_SYSTEM 2
 #define BOOT_FB_HIGH 4
 #define BOOT_SAFE 8
+#define BOOT_MORE_FB 16
 #define BY_PROTOCOL 2
 #define NOT_FOUND 0x800000000000000eull
 #define VAR_ATTRS 7
@@ -428,20 +434,66 @@ static int try_gop(struct gop *gop, struct bootinfo *bi)
     return 1;
 }
 
+/* Other monitors on the graphics cards: firmware that drives each output gives it its own GOP with its own
+   framebuffer; an output it left dark gets a mode set here. The same output seen twice (the console splitter) has
+   the same framebuffer and is skipped. */
+static void more_framebuffers(struct bootinfo *bi)
+{
+    uintn count = 0;
+    void **handles = 0;
+    if (ERROR(bs->locate_handle_buffer(BY_PROTOCOL, &gop_guid, 0, &count, &handles)))
+        return;
+    u64 primary = bi->fb_addr | (u64)bi->fb_addr_high << 32;
+    for (uintn i = 0; i < count && bi->more_count < 3; i++) {
+        struct gop *gop;
+        if (ERROR(bs->handle_protocol(handles[i], &gop_guid, (void **)&gop)) || !gop || !gop->mode)
+            continue;
+        u64 base = gop->mode->fb_base;
+        int seen = base == primary;
+        for (u32 k = 0; k < bi->more_count && !seen; k++)
+            seen = base == (bi->more[k].addr | (u64)bi->more[k].addr_high << 32);
+        if (seen && base)
+            continue;
+        struct bootinfo one;
+        fill(&one, 0, sizeof(one));
+        if (!try_gop(gop, &one))
+            continue;
+        base = one.fb_addr | (u64)one.fb_addr_high << 32;
+        seen = base == primary;
+        for (u32 k = 0; k < bi->more_count && !seen; k++)
+            seen = base == (bi->more[k].addr | (u64)bi->more[k].addr_high << 32);
+        if (seen)
+            continue;
+        u32 k = bi->more_count++;
+        bi->more[k].addr = one.fb_addr;
+        bi->more[k].addr_high = one.fb_addr_high;
+        bi->more[k].width = one.fb_width;
+        bi->more[k].height = one.fb_height;
+        bi->more[k].pitch = one.fb_pitch;
+        bi->more[k].bpp = one.fb_bpp;
+        copy(bi->more[k].shift, one.fb_shift, 4);
+        bi->flags |= BOOT_MORE_FB;
+    }
+}
+
 /* The screen the firmware console uses first (with several graphics cards that is the one with the monitor), then
    any other graphics output. Without one the kernel reprograms the VGA text mode and also writes to COM1. */
 static void setup_framebuffer(struct bootinfo *bi)
 {
     struct gop *gop = 0;
     if (st->con_out_handle && !ERROR(bs->handle_protocol(st->con_out_handle, &gop_guid, (void **)&gop)) &&
-        try_gop(gop, bi))
+        try_gop(gop, bi)) {
+        more_framebuffers(bi);
         return;
+    }
     uintn count = 0;
     void **handles = 0;
     if (!ERROR(bs->locate_handle_buffer(BY_PROTOCOL, &gop_guid, 0, &count, &handles))) {
         for (uintn i = 0; i < count; i++)
-            if (!ERROR(bs->handle_protocol(handles[i], &gop_guid, (void **)&gop)) && try_gop(gop, bi))
+            if (!ERROR(bs->handle_protocol(handles[i], &gop_guid, (void **)&gop)) && try_gop(gop, bi)) {
+                more_framebuffers(bi);
                 return;
+            }
     }
     gop = 0;
     if (!ERROR(bs->locate_protocol(&gop_guid, 0, (void **)&gop)) && try_gop(gop, bi))

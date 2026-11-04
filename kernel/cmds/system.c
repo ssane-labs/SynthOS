@@ -731,6 +731,13 @@ COMMAND(displays, "screens", "system", "displays", "list displays and the resolu
         sh_puts(sh, "\n");
         sh_role(sh, ROLE_TEXT);
     }
+    if (count == 1 && !strcmp(hal_screen_name(0), "UEFI framebuffer")) {
+        sh_role(sh, ROLE_MUTED);
+        sh_puts(sh, "the firmware gave a picture to this monitor only: others on the same graphics card stay dark\n"
+                    "until SynthOS has a driver for the card (connect the second monitor to another port and reboot\n"
+                    "to try another output)\n");
+        sh_role(sh, ROLE_TEXT);
+    }
     return 0;
 }
 

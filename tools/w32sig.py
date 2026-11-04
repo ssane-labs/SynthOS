@@ -103,11 +103,11 @@ def functions(text):
     # functions defined elsewhere (the kernel's string functions in msvcrt's tables) by their prototypes
     for m in re.finditer(r'^declare (.*?)@("?[\w.$]+"?)\((.*)\)', text, re.M):
         pre, name, params = m.group(1), m.group(2).strip('"'), m.group(3)
-        if name in out or name.startswith('llvm.'):
+        if name in out or name.startswith('llvm.') or params.strip() == '...':
             continue
         ret = ATTRS.sub('', re.sub(r'\b(dso_local|internal|private|hidden|noundef|zeroext|signext|'
                                     r'x86_stdcallcc|x86_fastcallcc|x86_thiscallcc|range\([^)]*\))\s*', '', pre)).strip()
-        out[name] = {'stdcall': False, 'other_cc': 'fastcallcc' in pre or 'thiscallcc' in pre,
+        out[name] = {'stdcall': 'x86_stdcallcc' in pre, 'other_cc': 'fastcallcc' in pre or 'thiscallcc' in pre,
                      'ret': ret, 'params': [ATTRS.sub('', p).strip() for p in split_top(params)], 'declared': True}
     return out
 

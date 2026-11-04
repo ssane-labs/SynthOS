@@ -124,6 +124,33 @@ const struct framebuffer *uefi_framebuffer(void)
 #endif
 }
 
+/* the other monitors the firmware gave a framebuffer of their own (see more_framebuffers in the UEFI loader) */
+const struct framebuffer *uefi_more_framebuffer(int index)
+{
+#ifdef CONFIG_SERIAL_CONSOLE
+    UNUSED(index);
+    return NULL;
+#else
+    static struct framebuffer more[3];
+    if (!(bootinfo->flags & BOOT_UEFI) || !(bootinfo->flags & BOOT_MORE_FB) || index < 0 ||
+        (uint32_t)index >= MIN(bootinfo->more_count, 3u))
+        return NULL;
+    struct framebuffer *fb = &more[index];
+    if (!fb->base) {
+        const typeof(bootinfo->more[0]) *m = &bootinfo->more[index];
+        uint64_t phys = m->addr | (uint64_t)m->addr_high << 32;
+        if (!phys || m->width < 320 || m->height < 200 || m->pitch < m->width * 2)
+            return NULL;
+        *fb = (struct framebuffer){.width = m->width, .height = m->height, .pitch = m->pitch, .bpp = m->bpp,
+                                   .red_shift = m->shift[0], .green_shift = m->shift[1], .blue_shift = m->shift[2]};
+        fb->base = vmm_map_framebuffer(phys, (size_t)fb->pitch * fb->height);
+        if (!fb->base)
+            return NULL;
+    }
+    return fb;
+#endif
+}
+
 #ifndef CONFIG_SERIAL_CONSOLE
 static struct display *framebuffer_display(void)
 {

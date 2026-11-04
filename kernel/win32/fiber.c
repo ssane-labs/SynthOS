@@ -120,13 +120,7 @@ static void *WINAPI CreateFiberEx(SIZE_T commit, SIZE_T reserve, DWORD flags, vo
     f->stack = stack;
     f->stack_size = size;
     arch_fpu_save(fpu_of(f));
-    uint32_t *sp = (uint32_t *)(((uint32_t)stack + size - 64) & ~15u);
-    *--sp = 0;
-    *--sp = (uint32_t)fiber_entry;
-    for (int i = 0; i < 4; i++)
-        *--sp = 0;
-    *--sp = 0x202;
-    f->esp = (uint32_t)sp;
+    f->esp = w32_switch_frame(fiber_entry, stack + size);
     return f;
 }
 

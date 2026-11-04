@@ -1,3 +1,4 @@
+#include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
@@ -24,6 +25,7 @@ extern const struct w32_sig __start_w32sigs[], __stop_w32sigs[];
 extern uint32_t __start_w32vtbl[], __stop_w32vtbl[];
 extern char __start_text32[], __stop_text32[], __text_start[], w32_gate32[];
 uint32_t crt_cxx_frame_gate;
+const void *w32_gate_current;
 
 void w32_native_call(const void *fn, const uint64_t ints[6], const uint64_t sse[8], const uint64_t *stack,
                      size_t words, struct gate_ret *out);
@@ -175,7 +177,21 @@ uint32_t w32_gate_dispatch(uint32_t index, uint32_t args, struct gate_ret *r)
     }
     memset(r, 0, sizeof(*r));
     r->kind = s->ret == R_F80 ? 2 : 0;
+    if (w32_trace) {
+        static const char **names;
+        if (!names)
+            names = kzalloc(sizeof(*names) * (sig_count ? sig_count : 1));
+        if (names && index < sig_count) {
+            if (!names[index])
+                names[index] = w32_builtin_name(s->fn);
+            if (names[index])
+                w32_trace_api(names[index]);
+        }
+    }
+    const void *outer = w32_gate_current;
+    w32_gate_current = s->fn;
     w32_native_call(s->fn, ints, sse, stack, ns, r);
+    w32_gate_current = outer;
     switch (s->ret) {
     case R_VOID: r->kind = 0; break;
     case R_I32:

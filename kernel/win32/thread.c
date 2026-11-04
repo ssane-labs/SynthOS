@@ -90,27 +90,31 @@ void w32_threads_end(void)
     arch_set_irq_depth(0);
 }
 
-void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_top)
+/* the stack arch_switch starts a thread or fiber from: it pops the flags and the saved registers, then returns into
+   entry */
+uint32_t w32_switch_frame(void (*entry)(void), uint8_t *stack_top)
 {
-    arch_fpu_save((uint8_t *)(((uintptr_t)t->fpu_area + 15) & ~(uintptr_t)15));
 #ifdef __x86_64__
-    /* what arch_switch pops: rflags, r15-r12, rbx, rbp, then it returns into entry */
     uint64_t *sp = (uint64_t *)(((uintptr_t)stack_top - 64) & ~(uintptr_t)15);
     *--sp = 0;
     *--sp = (uint64_t)(uintptr_t)entry;
     for (int i = 0; i < 6; i++)
         *--sp = 0;
-    *--sp = 0x202;
-    t->esp = (uint32_t)(uintptr_t)sp;
 #else
     uint32_t *sp = (uint32_t *)(((uint32_t)stack_top - 64) & ~15u);
     *--sp = 0;
     *--sp = (uint32_t)entry;
     for (int i = 0; i < 4; i++)
         *--sp = 0;
-    *--sp = 0x202;
-    t->esp = (uint32_t)sp;
 #endif
+    *--sp = 0x202;
+    return (uint32_t)(uintptr_t)sp;
+}
+
+void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_top)
+{
+    arch_fpu_save((uint8_t *)(((uintptr_t)t->fpu_area + 15) & ~(uintptr_t)15));
+    t->esp = w32_switch_frame(entry, stack_top);
 }
 
 void w32_idle(int ms)

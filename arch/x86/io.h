@@ -159,12 +159,18 @@ struct x86_bootinfo {
     uint32_t id[2];
     uint32_t fb_addr_high;
     uint32_t boot_nonce;
+    uint32_t more_count;
+    struct {
+        uint32_t addr, addr_high, width, height, pitch, bpp;
+        uint8_t shift[4];
+    } more[3];
 };
 
 #define BOOT_UEFI 0x1u
 #define BOOT_SYSTEM 0x2u
 #define BOOT_FB_HIGH 0x4u
 #define BOOT_SAFE 0x8u
+#define BOOT_MORE_FB 0x10u
 
 static inline uint64_t x86_fb_phys(const struct x86_bootinfo *bi)
 {
@@ -246,6 +252,7 @@ bool vbe_enter(int width, int height, struct framebuffer *fb);
 int vbe_modes(struct display_mode *out, int max);
 void vbe_leave(void);
 const struct framebuffer *uefi_framebuffer(void);
+const struct framebuffer *uefi_more_framebuffer(int index);
 void nvme_init(void);
 void e1000_init(void);
 void realtek_init(void);

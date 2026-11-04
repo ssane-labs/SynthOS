@@ -245,6 +245,7 @@ $(OUT)/kernel.bin: $(OUT)/kernel.elf $(BUILD)/ramdisk.bin $(BUILD)/tools/mkrd
 
 $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/$(if $(X64),64/)linker.ld
 	@echo "  LD      $@"
+	@$(if $(X64),$(if $(filter 1,$(W32)),python3 -I tools/w32sigcheck.py $(wildcard $(OUT)/obj/kernel/win32/*.sig.h $(OUT)/obj/kernel/win32/*/*.sig.h)))
 	@$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
 
 $(OUT)/obj/%_fp.o: CFLAGS += $(if $(X64),-msse -msse2 -mfpmath=sse,-m80387 -mfpmath=387)

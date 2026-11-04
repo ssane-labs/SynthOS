@@ -55,6 +55,18 @@ static unsigned __stdcall producer(void *arg)
     return 0;
 }
 
+static LPVOID main_fiber;
+static int fiber_steps;
+
+static void WINAPI fiber_body(LPVOID arg)
+{
+    volatile double half = 0.5;
+    for (;;) {
+        fiber_steps += (int)(INT_PTR)arg + (int)(half * 2) - 1;
+        SwitchToFiber(main_fiber);
+    }
+}
+
 int main(void)
 {
     InitializeCriticalSection(&lock);
@@ -97,5 +109,12 @@ int main(void)
     LeaveCriticalSection(&lock);
     WaitForSingleObject(p, INFINITE);
     printf("condition variable: consumed=%d\n", consumed);
+    main_fiber = ConvertThreadToFiber(NULL);
+    LPVOID f = CreateFiber(0, fiber_body, (LPVOID)2);
+    for (int i = 0; i < 3 && f; i++)
+        SwitchToFiber(f);
+    if (f)
+        DeleteFiber(f);
+    printf("fibers: steps=%d back=%d\n", fiber_steps, GetCurrentFiber() == main_fiber);
     return 0;
 }

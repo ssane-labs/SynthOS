@@ -1,4 +1,5 @@
 #include <synth/heap.h>
+#include <synth/string.h>
 
 #include "win32.h"
 
@@ -10,7 +11,6 @@ struct point {
 
 struct sink;
 typedef void(WINAPI *fill_fn)(struct sink *, int);
-typedef void(WINAPI *begin_fn)(struct sink *, struct point, int);
 typedef void(WINAPI *lines_fn)(struct sink *, const struct point *, UINT);
 typedef void(WINAPI *beziers_fn)(struct sink *, const struct point *, UINT);
 typedef void(WINAPI *end_fn)(struct sink *, int);
@@ -18,6 +18,15 @@ typedef void(WINAPI *end_fn)(struct sink *, int);
 struct sink {
     void **vtbl;
 };
+
+static uint64_t pack(struct point p)
+{
+    uint64_t v;
+    memcpy(&v, &p, sizeof(v));
+    return v;
+}
+
+typedef void(WINAPI *begin_bits_fn)(struct sink *, uint64_t, int);
 
 static float as_float(uint32_t v)
 {
@@ -38,7 +47,7 @@ static void quad(struct sink *s, struct point p0, struct point c, struct point p
     struct point b[3] = {{p0.x + (c.x - p0.x) * 2 / 3, p0.y + (c.y - p0.y) * 2 / 3},
                          {p1.x + (c.x - p1.x) * 2 / 3, p1.y + (c.y - p1.y) * 2 / 3},
                          p1};
-    ((beziers_fn)s->vtbl[7])(s, b, 1);
+    W32_CALL(beziers_fn, s->vtbl[7], s, b, 1);
 }
 
 static void contour(struct sink *s, const struct point *p, const uint8_t *on, int n)
@@ -53,7 +62,7 @@ static void contour(struct sink *s, const struct point *p, const uint8_t *on, in
         start = p[n - 1], to = n - 1;
     else
         start = mid(p[n - 1], p[0]);
-    ((begin_fn)s->vtbl[5])(s, start, 0);
+    W32_CALL(begin_bits_fn, s->vtbl[5], s, pack(start), 0);
     struct point cur = start, ctrl = start;
     bool pending = false;
     for (int i = from; i < to; i++) {
@@ -61,7 +70,7 @@ static void contour(struct sink *s, const struct point *p, const uint8_t *on, in
             if (pending)
                 quad(s, cur, ctrl, p[i]);
             else
-                ((lines_fn)s->vtbl[6])(s, &p[i], 1);
+                W32_CALL(lines_fn, s->vtbl[6], s, &p[i], 1);
             cur = p[i];
             pending = false;
         } else {
@@ -76,7 +85,7 @@ static void contour(struct sink *s, const struct point *p, const uint8_t *on, in
     }
     if (pending)
         quad(s, cur, ctrl, start);
-    ((end_fn)s->vtbl[8])(s, 1);
+    W32_CALL(end_fn, s->vtbl[8], s, 1);
 }
 
 uint32_t dwrite_outline(int face, uint32_t em_bits, const uint16_t *glyphs, const uint32_t *advances,
@@ -94,7 +103,7 @@ uint32_t dwrite_outline(int face, uint32_t em_bits, const uint16_t *glyphs, cons
         kfree(on);
         return 0x8007000eu;
     }
-    ((fill_fn)s->vtbl[3])(s, 1);
+    W32_CALL(fill_fn, s->vtbl[3], s, 1);
     float em = as_float(em_bits), pen = 0;
     const float *offs = offsets;
     for (UINT g = 0; g < count; g++) {

@@ -162,6 +162,8 @@ a=$(date); config timezone +12:00; b=$(date); config timezone UTC; test "$a" != 
 zone-applied
 config dnd on; config dnd; config dnd off
 dnd = on
+config desktopdrives off; config desktopdisk off; config desktopdrives; config desktopdisk on; config desktopdrives on
+desktopdrives = off
 config browser chrome; config browser; config browser chromium
 browser = chrome
 config dockdots off; config dockbounce off; config dockdots; config dockdots on
@@ -514,6 +516,8 @@ winthread | grep semaphore
 semaphore: got=3 waiter=7
 winthread | grep condition
 condition variable: consumed=5
+winthread | grep fibers
+fibers: steps=6 back=1
 wingdi | head -n 2 | tail -n 1
 red rect=100
 wingdi | grep ellipse

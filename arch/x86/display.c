@@ -43,6 +43,7 @@ struct output {
     uint32_t fb_phys, vram;
     uint8_t *fb_virt;
     bool primary, active;
+    int more;
     uint16_t boot_w, boot_h;
     struct framebuffer fb;
 };
@@ -147,6 +148,12 @@ static void probe(void)
     memmove(&outputs[1], &outputs[0], sizeof(outputs[0]) * (size_t)output_count);
     outputs[0] = o;
     output_count++;
+    for (int i = 0; is_uefi() && i < 3 && output_count < MAX_OUTPUTS; i++)
+        if (uefi_more_framebuffer(i)) {
+            struct output m = {.kind = K_GOP, .more = i + 1};
+            ksnprintf(m.name, sizeof(m.name), "UEFI display %d", i + 2);
+            outputs[output_count++] = m;
+        }
 #endif
 }
 
@@ -176,7 +183,7 @@ int hal_screen_modes(int index, struct display_mode *out, int max)
     if (o->kind == K_VBE)
         return vbe_modes(out, max);
     if (o->kind == K_GOP) {
-        const struct framebuffer *fb = uefi_framebuffer();
+        const struct framebuffer *fb = o->more ? uefi_more_framebuffer(o->more - 1) : uefi_framebuffer();
         if (!fb || max < 1)
             return 0;
         out[0] = (struct display_mode){(uint16_t)fb->width, (uint16_t)fb->height};
@@ -237,12 +244,14 @@ bool hal_screen_open(int index, int width, int height, struct framebuffer *fb)
     bool ok = false;
     switch (o->kind) {
     case K_VBE: ok = vbe_enter(width, height, fb); break;
-    case K_GOP:
-        if (uefi_framebuffer()) {
-            *fb = *uefi_framebuffer();
+    case K_GOP: {
+        const struct framebuffer *g = o->more ? uefi_more_framebuffer(o->more - 1) : uefi_framebuffer();
+        if (g) {
+            *fb = *g;
             ok = true;
         }
         break;
+    }
     case K_BOCHS: {
         int w = width, h = height;
         if (!w || !bochs_set(o, w, h, fb)) {
@@ -269,7 +278,8 @@ void hal_screen_close(int index)
     struct output *o = &outputs[index];
     o->active = false;
     if (o->kind == K_GOP) {
-        fbcon_invalidate();
+        if (!o->more)
+            fbcon_invalidate();
         return;
     }
     if (o->kind == K_VBE) {

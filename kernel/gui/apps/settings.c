@@ -927,6 +927,10 @@ static void pane_dock(struct page *p)
     if (button(p, title, "Each look keeps its own Dock and menu bar", "Reset Layout"))
         look_reset();
     end(p, NULL);
+    section(p, "Desktop");
+    toggle_setting(p, "Show SynthOS HD", NULL, "desktopdisk");
+    toggle_setting(p, "Show other disks and USB drives", NULL, "desktopdrives");
+    end(p, "A right click on a disk icon hides it too.");
     section(p, "Windows");
     toggle_setting(p, "Tile windows at the screen edges", "Drag a window to a side, a corner or the top; Super+arrows "
                                                           "do it from the keyboard", "snap");
@@ -1005,7 +1009,9 @@ static void pane_displays(struct page *p)
             gfx_text_box(p->ui->c, r, &font_title, label, RGB(255, 255, 255), ALIGN_CENTER);
         }
         gfx_text_box(p->ui->c, (struct rect){g.x, g.y + 148, g.w, 18}, &font_small,
-                     n > 1 ? "Display 1 is the main display with the Dock" : "One display in use", style.secondary,
+                     n > 1                                             ? "Display 1 is the main display with the Dock"
+                     : !strcmp(hal_screen_name(0), "UEFI framebuffer") ? "The firmware lights only this monitor"
+                                                                         : "One display in use", style.secondary,
                      ALIGN_CENTER);
     }
     if (hal_screen_count() > 1) {

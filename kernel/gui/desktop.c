@@ -385,19 +385,24 @@ void gui_make_app_shortcut(const char *name)
     scan_desktop();
 }
 
+/* Like Finder's "Show these items on the desktop": the system disk and the other drives can each be hidden. */
+static bool show_system_disk = true, show_drives = true;
+
 static void scan_desktop(void)
 {
     struct desktop_icon fresh[MAX_ICONS];
     char dir[PATH_MAX_LEN];
     desktop_dir(dir, sizeof(dir));
     int n = 0;
-    str_copy(fresh[n].label, "SynthOS HD", sizeof(fresh[n].label));
-    str_copy(fresh[n].path, "/", sizeof(fresh[n].path));
-    fresh[n].volume = false;
-    fresh[n++].icon = ICON_COMPUTER;
+    if (show_system_disk) {
+        memset(&fresh[n], 0, sizeof(fresh[n]));
+        str_copy(fresh[n].label, "SynthOS HD", sizeof(fresh[n].label));
+        str_copy(fresh[n].path, "/", sizeof(fresh[n].path));
+        fresh[n++].icon = ICON_COMPUTER;
+    }
     struct volume volumes[8];
     int volume_count = vfs_volumes(volumes, (int)ARRAY_SIZE(volumes));
-    for (int i = 0; i < volume_count && n < MAX_ICONS; i++, n++) {
+    for (int i = 0; i < volume_count && n < MAX_ICONS && show_drives; i++, n++) {
         memset(&fresh[n], 0, sizeof(fresh[n]));
         str_copy(fresh[n].label, volumes[i].label, sizeof(fresh[n].label));
         str_copy(fresh[n].path, volumes[i].path, sizeof(fresh[n].path));
@@ -901,11 +906,14 @@ void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
         band_y0 = band_y1 = y;
     }
     if (button == BUTTON_RIGHT && hit >= 0 && icons[hit].volume) {
-        static const char *const items[] = {"Open", "", "Eject"};
+        static const char *const items[] = {"Open", "", "Eject", "Hide Drives from Desktop"};
         ui_menu(NULL, x, y, items, ARRAY_SIZE(items), volume_pick);
+    } else if (button == BUTTON_RIGHT && hit >= 0 && !strcmp(icons[hit].path, "/")) {
+        static const char *const items[] = {"Open", "", "Hide from Desktop"};
+        ui_menu(NULL, x, y, items, ARRAY_SIZE(items), file_pick);
     } else if (button == BUTTON_RIGHT && hit >= 0) {
         static const char *const items[] = {"Open", "", "Move to Trash"};
-        ui_menu(NULL, x, y, items, strcmp(icons[hit].path, "/") ? ARRAY_SIZE(items) : 1, file_pick);
+        ui_menu(NULL, x, y, items, ARRAY_SIZE(items), file_pick);
     } else if (button == BUTTON_RIGHT) {
         static const char *const items[] = {"New Folder", "Open Desktop in Files", "", "Clean Up", "Sort by Name",
                                             "", "Change Wallpaper…", "Edit Widgets…", "Open Terminal"};
@@ -921,7 +929,10 @@ static void file_pick(struct window *owner, int index)
             continue;
         if (index == 0) {
             gui_open_file(icons[i].path);
-        } else if (index == 2 && !icons[i].volume && strcmp(icons[i].path, "/")) {
+        } else if (index == 2 && !strcmp(icons[i].path, "/")) {
+            gui_setting("desktopdisk", "off");
+            return;
+        } else if (index == 2 && !icons[i].volume) {
             char to[PATH_MAX_LEN];
             vfs_mkdirs("/home/.Trash");
             path_join("/home/.Trash", path_basename(icons[i].path), to, sizeof(to));
@@ -987,6 +998,8 @@ static void volume_pick(struct window *owner, int index)
         gui_open_file(path);
     else if (index == 2)
         gui_eject(path);
+    else if (index == 3)
+        gui_setting("desktopdrives", "off");
 }
 
 static void desktop_pick(struct window *owner, int index)
@@ -2213,6 +2226,42 @@ static int set_dnd(struct shell *sh, const char *value)
     UNUSED(sh);
     return setting_flag(value, &do_not_disturb);
 }
+
+static void get_desktopdisk(char *buf, size_t cap)
+{
+    setting_flag_get(show_system_disk, buf, cap);
+}
+
+static int set_desktopdisk(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int err = setting_flag(value, &show_system_disk);
+    if (!err && gui_active())
+        scan_desktop();
+    return err;
+}
+
+static void get_desktopdrives(char *buf, size_t cap)
+{
+    setting_flag_get(show_drives, buf, cap);
+}
+
+static int set_desktopdrives(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int err = setting_flag(value, &show_drives);
+    if (!err && gui_active())
+        scan_desktop();
+    return err;
+}
+
+static const struct setting s_desktopdisk = {"desktopdisk", "on|off", "show SynthOS HD on the desktop",
+                                             get_desktopdisk, set_desktopdisk};
+SETTING(s_desktopdisk);
+static const struct setting s_desktopdrives = {"desktopdrives", "on|off",
+                                               "show other disks and USB drives on the desktop", get_desktopdrives,
+                                               set_desktopdrives};
+SETTING(s_desktopdrives);
 
 static const struct setting s_dnd = {"dnd", "on|off", "Do Not Disturb: no notification banners", get_dnd, set_dnd};
 SETTING(s_dnd);
