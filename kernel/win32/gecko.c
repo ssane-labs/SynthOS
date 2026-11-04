@@ -338,7 +338,6 @@ STUB(CloseGestureInfoHandle, 1, 1, 0)
 STUB(CreateCaret, 4, 1, 0)
 STUB0(DestroyCaret, 1)
 STUB(ShowCaret, 1, 1, 0)
-STUB(SetCaretPos, 2, 1, 0)
 STUB(CreateSyntheticPointerDevice, 3, 0, ERROR_NOT_SUPPORTED)
 STUB(InjectSyntheticPointerInput, 3, 0, ERROR_NOT_SUPPORTED)
 STUB(GetAutoRotationState, 1, 0, ERROR_NOT_SUPPORTED)
@@ -446,7 +445,7 @@ static const struct w32_export gecko_shlwapi[] = {W32_FN(PathIsNetworkPathW), W3
 static const struct w32_export gecko_user32[] = {
     W32_FN(ActivateKeyboardLayout), W32_FN(LoadKeyboardLayoutA), W32_FN(UnloadKeyboardLayout), W32_FN(AnimateWindow),
     W32_FN(BroadcastSystemMessageW), W32_FN(CloseGestureInfoHandle), W32_FN(CreateCaret), W32_FN(DestroyCaret),
-    W32_FN(ShowCaret), W32_FN(SetCaretPos), W32_FN(CreateSyntheticPointerDevice), W32_FN(InjectSyntheticPointerInput),
+    W32_FN(ShowCaret), W32_FN(CreateSyntheticPointerDevice), W32_FN(InjectSyntheticPointerInput),
     W32_FN(GetAutoRotationState), W32_FN(GetClassWord), W32_FN(GetGUIThreadInfo), W32_FN(GetGestureInfo),
     W32_FN(GetOpenClipboardWindow), W32_FN(GetPointerFrameTouchInfo), W32_FN(GetRawInputDeviceInfoA),
     W32_FN(GetTopWindow), W32_FN(GetTouchInputInfo), W32_FN(InSendMessage), W32_FN(InSendMessageEx),

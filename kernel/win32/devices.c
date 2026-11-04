@@ -292,6 +292,7 @@ static const struct w32_export winspool_exports[] = {
 STUB(Theme5, 5, E_HANDLE, 0)
 STUB(Theme6, 6, E_HANDLE, 0)
 STUB(Theme7, 7, E_HANDLE, 0)
+STUB(Theme2, 2, E_HANDLE, 0)
 STUB(Theme3, 3, E_HANDLE, 0)
 STUB(Theme4, 4, E_HANDLE, 0)
 STUB(Theme8, 8, E_HANDLE, 0)
@@ -375,6 +376,14 @@ static const struct w32_export uxtheme_exports[] = {
     W32_AS("GetThemeString", Theme6),
     W32_AS("GetThemeFilename", Theme6),
     W32_AS("GetThemeMargins", Theme7),
+    W32_AS("DrawThemeTextEx", Theme9),
+    W32_AS("BeginBufferedPaint", w32_zero5),
+    W32_AS("EndBufferedPaint", Theme2),
+    W32_AS("BufferedPaintSetAlpha", Theme3),
+    W32_AS("BeginBufferedAnimation", w32_zero8),
+    W32_AS("EndBufferedAnimation", Theme2),
+    W32_AS("BufferedPaintRenderAnimation", w32_zero2),
+    W32_AS("BufferedPaintStopAllAnimations", w32_zero1),
 };
 
 static const struct w32_export dcomp_exports[] = {

@@ -509,6 +509,16 @@ static HANDLE WINAPI CreateHatchBrush(int hatch, COLORREF color)
     return CreateSolidBrush(color);
 }
 
+/* a pattern brush paints with the pattern's first pixel */
+static HANDLE WINAPI CreatePatternBrush(HANDLE bitmap)
+{
+    struct gdi_obj *b = obj(bitmap);
+    if (!b || b->kind != OBJ_BITMAP)
+        return NULL;
+    uint32_t px = b->bits && b->canvas.w > 0 ? ((const uint32_t *)b->bits)[0] : 0;
+    return CreateSolidBrush((px >> 16 & 0xff) | (px & 0xff00) | (px & 0xff) << 16);
+}
+
 static HANDLE WINAPI CreateBrushIndirect(const uint32_t *lb)
 {
     struct gdi_obj *o = new_obj(OBJ_BRUSH);
@@ -831,6 +841,36 @@ static int WINAPI SetMapMode(HANDLE h, int mode)
     return 1;
 }
 
+static int WINAPI GetMapMode(HANDLE h)
+{
+    return dc_of(h) ? 1 : 0;
+}
+
+static BOOL WINAPI LPtoDP(HANDLE h, POINT *p, int n)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || !p)
+        return FALSE;
+    for (int i = 0; i < n; i++)
+        p[i] = (POINT){p[i].x - d->s.org_x, p[i].y - d->s.org_y};
+    return TRUE;
+}
+
+static BOOL WINAPI DPtoLP(HANDLE h, POINT *p, int n)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || !p)
+        return FALSE;
+    for (int i = 0; i < n; i++)
+        p[i] = (POINT){p[i].x + d->s.org_x, p[i].y + d->s.org_y};
+    return TRUE;
+}
+
+static COLORREF WINAPI GetNearestColor(HANDLE h, COLORREF color)
+{
+    return dc_of(h) ? color & 0xffffff : 0xffffffffu;
+}
+
 static int WINAPI SetStretchBltMode(HANDLE h, int mode)
 {
     UNUSED(h);
@@ -1011,6 +1051,18 @@ static int WINAPI OffsetRgn(HANDLE rgn, int x, int y)
     o->region.x += x;
     o->region.y += y;
     return region_kind(o->region);
+}
+
+static int WINAPI OffsetClipRgn(HANDLE h, int x, int y)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d)
+        return 0;
+    if (!d->s.clipped)
+        return 2;
+    d->s.clip.x += x;
+    d->s.clip.y += y;
+    return region_kind(d->s.clip);
 }
 
 static BOOL WINAPI FillRgn(HANDLE dc, HANDLE rgn, HANDLE brush)
@@ -1208,6 +1260,30 @@ static BOOL WINAPI Polyline(HANDLE h, const POINT *p, int n)
         for (int i = 1; i < n; i++)
             line(d, &t, p[i - 1].x, p[i - 1].y, p[i].x, p[i].y);
     return TRUE;
+}
+
+/* cubic Bezier segments flattened into 16 lines each (fixed point, no floating point here) */
+static BOOL WINAPI PolyBezier(HANDLE h, const POINT *p, DWORD n)
+{
+    if (!p || n < 4 || (n - 1) % 3)
+        return FALSE;
+    DWORD segments = (n - 1) / 3, count = segments * 16 + 1;
+    POINT *out = w32_alloc(count * sizeof(POINT));
+    if (!out)
+        return FALSE;
+    out[0] = p[0];
+    for (DWORD s = 0; s < segments; s++) {
+        const POINT *c = p + s * 3;
+        for (int i = 1; i <= 16; i++) {
+            int64_t t = i, u = 16 - i;
+            int64_t x = u * u * u * c[0].x + 3 * u * u * t * c[1].x + 3 * u * t * t * c[2].x + t * t * t * c[3].x;
+            int64_t y = u * u * u * c[0].y + 3 * u * u * t * c[1].y + 3 * u * t * t * c[2].y + t * t * t * c[3].y;
+            out[s * 16 + (DWORD)i] = (POINT){(int)((x + 2048) / 4096), (int)((y + 2048) / 4096)};
+        }
+    }
+    BOOL ok = Polyline(h, out, (int)count);
+    w32_free(out);
+    return ok;
 }
 
 static BOOL WINAPI PolylineTo(HANDLE h, const POINT *p, DWORD n)
@@ -3365,23 +3441,36 @@ static void *WINAPI ImageList_GetDragImage(POINT *pt, POINT *hot)
 }
 
 /* ImageList_Read/Write: the ILHEAD record and BMP images that Windows stores in resources and forms */
+/* IStream::Read/Write on the caller's object: a 64-bit program's has a table of 64-bit pointers */
+static uint32_t stream_call(void *stream, int slot, const void *buf, uint32_t n, uint32_t *done)
+{
+#ifdef __x86_64__
+    if (w32->win64) {
+        extern uint64_t w64_call(uint64_t fn, int argc, const uint64_t *args);
+        const uint64_t *vt = *(const uint64_t **)stream;
+        uint64_t args[4] = {(uintptr_t)stream, (uintptr_t)buf, n, (uintptr_t)done};
+        return (uint32_t)w64_call(vt[slot], 4, args);
+    }
+#endif
+    void **vt = *(void ***)stream;
+    uint32_t args[4] = {(uint32_t)(uintptr_t)stream, (uint32_t)(uintptr_t)buf, n, (uint32_t)(uintptr_t)done};
+    return w32_call(vt[slot], 4, args);
+}
+
 static bool istream_read(void *stream, void *buf, uint32_t n)
 {
-    void **vt = *(void ***)stream;
     uint32_t *got = w32_alloc(4);
     if (!got)
         return false;
     *got = 0;
-    uint32_t hr = W32_CALL(uint32_t(WINAPI *)(void *, void *, uint32_t, uint32_t *), vt[3], stream, buf, n, got);
-    bool ok = hr == 0 && *got == n;
+    bool ok = stream_call(stream, 3, buf, n, got) == 0 && *got == n;
     w32_free(got);
     return ok;
 }
 
 static bool istream_write(void *stream, const void *buf, uint32_t n)
 {
-    void **vt = *(void ***)stream;
-    return W32_CALL(uint32_t(WINAPI *)(void *, const void *, uint32_t, uint32_t *), vt[4], stream, buf, n, NULL) == 0;
+    return stream_call(stream, 4, buf, n, NULL) == 0;
 }
 
 static uint8_t *read_bmp(void *stream, struct bitmap_info **info)
@@ -3545,7 +3634,11 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(CreateFontIndirectW), W32_FN(CreateFontA), W32_FN(CreateFontW), W32_FN(SelectObject), W32_FN(DeleteObject),
     W32_FN(GetObjectType), W32_FN(GetObjectA), W32_FN(GetObjectW), W32_FN(SetTextColor),
     W32_FN(GetTextColor), W32_FN(SetBkColor), W32_FN(GetBkColor), W32_FN(SetBkMode), W32_FN(GetBkMode),
-    W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode),
+    W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode), W32_FN(GetMapMode), W32_FN(LPtoDP), W32_FN(DPtoLP), W32_FN(GetNearestColor),
+    W32_FN(OffsetClipRgn), W32_FN(CreatePatternBrush), W32_FN(PolyBezier), W32_AS("AngleArc", w32_one6),
+    W32_AS("ArcTo", w32_one9), W32_AS("PathToRegion", w32_zero1), W32_AS("CopyEnhMetaFileW", w32_zero2),
+    W32_AS("GetEnhMetaFileDescriptionW", w32_zero3), W32_AS("GetEnhMetaFilePaletteEntries", w32_zero3),
+    W32_AS("GetWinMetaFileBits", w32_zero5), W32_AS("SetWinMetaFileBits", w32_zero4),
     W32_FN(SetStretchBltMode), W32_FN(SetGraphicsMode), W32_FN(SetViewportOrgEx), W32_FN(SetWindowOrgEx), W32_FN(OffsetWindowOrgEx), W32_FN(CreateRoundRectRgn), W32_FN(OffsetRgn),
     W32_FN(FillRgn), W32_FN(FrameRgn),
     W32_FN(OffsetViewportOrgEx), W32_FN(SaveDC), W32_FN(RestoreDC), W32_FN(CreateRectRgn),

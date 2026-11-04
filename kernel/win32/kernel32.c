@@ -682,6 +682,20 @@ static BOOL WINAPI DosDateTimeToFileTime(uint16_t date, uint16_t time, FILETIME 
     return SystemTimeToFileTime(&st, ft);
 }
 
+static BOOL WINAPI FileTimeToDosDateTime(const FILETIME *ft, uint16_t *date, uint16_t *time)
+{
+    SYSTEMTIME st;
+    if (!ft || !FileTimeToSystemTime(ft, &st) || st.year < 1980 || st.year > 2107) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (date)
+        *date = (uint16_t)((st.year - 1980) << 9 | st.month << 5 | st.day);
+    if (time)
+        *time = (uint16_t)(st.hour << 11 | st.minute << 5 | st.second / 2);
+    return TRUE;
+}
+
 static int WINAPI MulDiv(int a, int b, int c)
 {
     if (!c)
@@ -1622,12 +1636,12 @@ static const struct w32_export kernel32_core[] = {
     W32_FN(OutputDebugStringA), W32_FN(OutputDebugStringW), W32_FN(DebugBreak), W32_FN(GetTickCount), W32_FN(GetTickCount64), W32_FN(QueryPerformanceCounter),
     W32_FN(QueryPerformanceFrequency), W32_FN(GetSystemTimeAsFileTime), W32_FN(GetSystemTimePreciseAsFileTime),
     W32_FN(GetSystemTime), W32_FN(GetLocalTime), W32_FN(FileTimeToSystemTime), W32_FN(SystemTimeToFileTime),
-    W32_FN(FileTimeToLocalFileTime), W32_FN(DosDateTimeToFileTime), W32_FN(MulDiv),
+    W32_FN(FileTimeToLocalFileTime), W32_FN(DosDateTimeToFileTime), W32_FN(FileTimeToDosDateTime), W32_FN(MulDiv),
     W32_FN(GetCurrentThreadStackLimits), W32_AS("SetProcessWorkingSetSize", w32_one3), W32_FN(LocalFileTimeToFileTime), W32_FN(SystemTimeToTzSpecificLocalTime),
     W32_FN(GetTimeZoneInformation), W32_FN(GetComputerNameA), W32_FN(GetComputerNameW), W32_FN(Beep),
     W32_FN(GetProcessHeap), W32_FN(HeapCreate), W32_FN(HeapDestroy), W32_FN(HeapAlloc), W32_FN(HeapReAlloc),
     W32_FN(HeapFree), W32_FN(HeapSize), W32_FN(HeapValidate), W32_FN(HeapSetInformation), W32_FN(GlobalAlloc),
-    W32_FN(GlobalReAlloc), W32_FN(GlobalFree), W32_FN(GlobalLock), W32_FN(GlobalUnlock), W32_FN(GlobalSize),
+    W32_FN(GlobalReAlloc), W32_FN(GlobalFree), W32_FN(GlobalLock), W32_AS("GlobalHandle", GlobalLock), W32_FN(GlobalUnlock), W32_FN(GlobalSize),
     W32_FN(GlobalMemoryStatus), W32_FN(GlobalMemoryStatusEx), W32_FN(LocalAlloc), W32_FN(LocalReAlloc),
     W32_FN(LocalFree), W32_AS("LocalLock", GlobalLock), W32_AS("LocalUnlock", GlobalUnlock),
     W32_AS("LocalSize", GlobalSize), W32_FN(TlsAlloc), W32_FN(TlsFree), W32_FN(TlsGetValue), W32_FN(TlsSetValue),

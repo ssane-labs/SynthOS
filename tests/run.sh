@@ -601,6 +601,10 @@ sys64 | grep cpuinfo
 cpuinfo first=0 err=122 ok=1 stride=0 cores=1 caches=4 l2=256k
 sys64 | grep uilang
 uilang thread=409 class=1 proc=1 name=1
+sys64 | grep codehook
+codehook protect=1 old=20 rwx=40 result=40
+config w32headless on; sys64 | grep tabs | cut -d " " -f 2-; config w32headless off
+del=1 count=2 text=Three param=33 page=1 click=0 notify=1
 config w32headless on; proc64; config w32headless off
 proc64 create=1 custom=1 r=42 enum=1 timer=1
 winshell2 | grep volume
@@ -625,6 +629,8 @@ config w32headless on; winctl | grep richedit | cut -d " " -f 1-4,6-8; config w3
 richedit chars=25 text=Hello bold||Café end euro=1 lines=2
 config w32headless on; winctl | grep subclass; config w32headless off
 subclass calls=1 notify=1
+config w32headless on; winctl | grep tabs; config w32headless off
+tabs del=1 count=2 text=Three param=33 page=1 click=0 notify=1
 winctl | grep floodfill
 floodfill ok=1 inside=0000ff outside=ffffff
 winctl | grep palette

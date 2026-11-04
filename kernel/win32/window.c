@@ -444,7 +444,8 @@ static void builtin_classes(void)
                 {"RichEdit20W", CK_EDIT, 6, w32_richedit_proc}, {"RichEdit20A", CK_EDIT, 6, w32_richedit_proc},
                 {"RICHEDIT50W", CK_EDIT, 6, w32_richedit_proc}, {"RICHEDIT60W", CK_EDIT, 6, w32_richedit_proc},
                 {"RichEdit", CK_EDIT, 6, w32_richedit_proc}, {"ListBox", CK_LISTBOX, 6, w32_listbox_proc},
-                {"ComboBox", CK_COMBOBOX, 6, w32_combobox_proc}, {"ComboLBox", CK_LISTBOX, 6, w32_listbox_proc}};
+                {"ComboBox", CK_COMBOBOX, 6, w32_combobox_proc}, {"ComboLBox", CK_LISTBOX, 6, w32_listbox_proc},
+                {"SysTabControl32", CK_TAB, 16, w32_tab_proc}};
     if (!find_class("#32770")) {
         struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
         if (c)
@@ -2464,6 +2465,41 @@ static int WINAPI GetSystemMetrics(int index)
     case 49:
     case 50: return 16;
     case 80: return gui_active() ? wm_screen_count() : 1;
+    case 9:
+    case 10: return 15;
+    case 19:
+    case 75:
+    case 81:
+    case 83:
+    case 84:
+    case 91: return 1;
+    case 30:
+    case 31:
+    case 51:
+    case 52:
+    case 53: return 22;
+    case 34: return 136;
+    case 35: return 39;
+    case 38:
+    case 39: return 75;
+    case 45:
+    case 46: return 2;
+    case 47:
+    case 57: return 160;
+    case 48:
+    case 58: return 24;
+    case 54:
+    case 55: return 19;
+    case 56: return 8;
+    case 59:
+    case 61: return sw + 16;
+    case 60:
+    case 62: return sh + 16;
+    case 63: return 3;
+    case 68:
+    case 69: return 4;
+    case 71:
+    case 72: return 13;
     default: return 0;
     }
 }
@@ -2582,22 +2618,50 @@ static HANDLE load_bitmap(HANDLE inst, const void *name)
     return h;
 }
 
+static HANDLE named_bitmap(HANDLE inst, const void *name, bool wide)
+{
+    if ((uintptr_t)name < 0x10000 || !wide)
+        return load_bitmap(inst, name);
+    char *n = w32_narrow(name);
+    HANDLE h = n ? load_bitmap(inst, n) : NULL;
+    w32_free(n);
+    return h;
+}
+
+static HANDLE load_image(HANDLE inst, const void *name, UINT type, UINT flags, bool wide)
+{
+    if (type == 0)
+        return (flags & 0x10) ? NULL : named_bitmap(inst, name, wide);
+    return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
+}
+
 static HANDLE WINAPI LoadImageA(HANDLE inst, LPCSTR name, UINT type, int cx, int cy, UINT flags)
 {
     UNUSED(cx);
     UNUSED(cy);
-    if (type == 0)
-        return (flags & 0x10) || (uintptr_t)name >= 0x10000 ? NULL : load_bitmap(inst, name);
-    return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
+    return load_image(inst, name, type, flags, false);
+}
+
+static HANDLE WINAPI LoadImageW(HANDLE inst, LPCWSTR name, UINT type, int cx, int cy, UINT flags)
+{
+    UNUSED(cx);
+    UNUSED(cy);
+    return load_image(inst, name, type, flags, true);
 }
 
 static HANDLE WINAPI LoadBitmapA(HANDLE inst, LPCSTR name)
 {
     if (!inst && (uintptr_t)name == 32759)
         return w32_check_sheet();
-    return (uintptr_t)name < 0x10000 ? load_bitmap(inst, name) : NULL;
+    return named_bitmap(inst, name, false);
 }
 
+static HANDLE WINAPI LoadBitmapW(HANDLE inst, LPCWSTR name)
+{
+    if (!inst && (uintptr_t)name == 32759)
+        return w32_check_sheet();
+    return named_bitmap(inst, name, true);
+}
 
 /* Scroll bars keep their range, page and position for the program; the frame does not draw them. */
 struct scroll_info {
@@ -4193,8 +4257,8 @@ static const struct w32_export window_exports[] = {
     W32_FN(SetCursorPos), W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(GetSystemMetrics),
     W32_FN(SystemParametersInfoA), W32_FN(SystemParametersInfoW), W32_FN(SystemParametersInfoForDpi), W32_FN(LoadCursorA),
     W32_AS("LoadCursorW", LoadCursorA), W32_FN(LoadIconA), W32_AS("LoadIconW", LoadIconA), W32_FN(LoadImageA),
-    W32_AS("LoadImageW", LoadImageA),
-    W32_FN(LoadBitmapA), W32_AS("LoadBitmapW", LoadBitmapA), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(GetCursor), W32_FN(DestroyCursor),
+    W32_FN(LoadImageW),
+    W32_FN(LoadBitmapA), W32_FN(LoadBitmapW), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(GetCursor), W32_FN(DestroyCursor),
     W32_FN(SetScrollInfo), W32_FN(GetScrollInfo), W32_FN(SetScrollPos), W32_FN(GetScrollPos), W32_FN(SetScrollRange),
     W32_FN(GetScrollRange), W32_FN(ShowScrollBar), W32_FN(EnableScrollBar), W32_FN(GetScrollBarInfo), W32_FN(ScrollWindowEx),
     W32_FN(ScrollWindow), W32_FN(ScrollDC), W32_FN(IsWindowUnicode), W32_FN(ShowOwnedPopups), W32_FN(DefFrameProcW),

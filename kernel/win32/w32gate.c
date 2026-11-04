@@ -4,6 +4,7 @@
 #include <synth/vmm.h>
 
 #include "win32.h"
+#include "win64.h"
 
 #ifdef __x86_64__
 
@@ -226,6 +227,18 @@ const void *w32_native_fn(const void *fn)
     return target ? target : fn;
 }
 
+/* a 64-bit program's code handed to a built-in that has no 64-bit translation for it: never run it in compatibility mode */
+static bool call_code64(const void *fn, int n, const uint32_t *w, uint64_t *r)
+{
+    if (!w32->win64 || !w64_is_code64((uintptr_t)fn))
+        return false;
+    uint64_t a[32];
+    for (int i = 0; i < n && i < 32; i++)
+        a[i] = w[i];
+    *r = w64_call((uintptr_t)fn, n, a);
+    return true;
+}
+
 uint64_t w32_call_guest(const void *fn, int argc, const uint64_t *args, const uint8_t *sizes)
 {
     uint32_t words[32];
@@ -236,7 +249,7 @@ uint64_t w32_call_guest(const void *fn, int argc, const uint64_t *args, const ui
             words[n++] = (uint32_t)(args[i] >> 32);
     }
     uint64_t r;
-    if (w64_thunk_call(fn, words, n, &r))
+    if (w64_thunk_call(fn, words, n, &r) || call_code64(fn, n, words, &r))
         return r;
     if (!w32->jump.active)
         return arch_w32_call((void *)fn, n, words, w32->stack + w32->stack_size - 16, &w32->jump);
@@ -261,6 +274,9 @@ uint64_t w64_call32(void *fn, const uint32_t *args, int count)
 /* calls from the kernel into a program's (or a stub's) code with 32-bit arguments */
 uint32_t w32_call(void *fn, int argc, const uint32_t *args)
 {
+    uint64_t r;
+    if (w64_thunk_call(fn, args, argc, &r) || call_code64(fn, argc, args, &r))
+        return (uint32_t)r;
     if (!w32->jump.active)
         return arch_w32_call(fn, argc, args, w32->stack + w32->stack_size - (w32->win64 ? 4096 : 16), &w32->jump);
     return (uint32_t)arch_w32_enter((uint32_t)(uintptr_t)fn, argc, args, 0, 0, 0);

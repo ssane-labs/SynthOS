@@ -6,6 +6,7 @@
 #include <commctrl.h>
 
 static int measured, drawn, last_notify;
+static int tab_notify;
 
 static LRESULT CALLBACK parent_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
@@ -20,6 +21,8 @@ static LRESULT CALLBACK parent_proc(HWND h, UINT m, WPARAM w, LPARAM l)
     }
     if (m == WM_COMMAND)
         last_notify = HIWORD(w);
+    if (m == WM_NOTIFY && ((NMHDR *)l)->code == TCN_SELCHANGE)
+        tab_notify = TCN_SELCHANGE;
     return DefWindowProcA(h, m, w, l);
 }
 
@@ -107,6 +110,35 @@ static void controls_test(HWND parent)
     last_notify = -1;
     SendMessageA(st, WM_LBUTTONUP, 0, 0);
     printf("subclass calls=%d notify=%d\n", sub_calls > 0, last_notify == STN_CLICKED);
+}
+
+static void tab_test(HWND parent)
+{
+    HWND tc = CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD, 0, 0, 200, 100, parent, (HMENU)7, NULL, NULL);
+    const WCHAR *names[] = {L"One", L"Two", L"Three"};
+    for (int i = 0; i < 3; i++) {
+        TCITEMW it = {0};
+        it.mask = TCIF_TEXT | TCIF_PARAM;
+        it.pszText = (WCHAR *)names[i];
+        it.lParam = 11 * (i + 1);
+        SendMessageW(tc, TCM_INSERTITEMW, i, (LPARAM)&it);
+    }
+    BOOL del = (BOOL)SendMessageW(tc, TCM_DELETEITEM, 0, 0);
+    SendMessageW(tc, TCM_SETCURSEL, 1, 0);
+    WCHAR buf[16] = {0};
+    TCITEMW got = {0};
+    got.mask = TCIF_TEXT | TCIF_PARAM;
+    got.pszText = buf;
+    got.cchTextMax = 16;
+    SendMessageW(tc, TCM_GETITEMW, 1, (LPARAM)&got);
+    RECT page = {0, 0, 200, 100}, first;
+    SendMessageW(tc, TCM_ADJUSTRECT, FALSE, (LPARAM)&page);
+    SendMessageW(tc, TCM_GETITEMRECT, 0, (LPARAM)&first);
+    tab_notify = 0;
+    SendMessageW(tc, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(first.left + 3, first.top + 3));
+    printf("tabs del=%d count=%d text=%ls param=%d page=%d click=%d notify=%d\n", del,
+           (int)SendMessageW(tc, TCM_GETITEMCOUNT, 0, 0), buf, (int)got.lParam, page.top > first.bottom - 4,
+           (int)SendMessageW(tc, TCM_GETCURSEL, 0, 0), tab_notify == TCN_SELCHANGE);
 }
 
 static void gdi_test(void)
@@ -212,6 +244,7 @@ int main(void)
         printf("controls need the SynthOS desktop\n");
     } else {
         controls_test(parent);
+        tab_test(parent);
         DestroyWindow(parent);
     }
     gdi_test();

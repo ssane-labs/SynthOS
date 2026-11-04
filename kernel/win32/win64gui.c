@@ -362,6 +362,11 @@ static uint64_t h_enum_locales(uint64_t *a, const uint64_t *f, void *t)
     return (uint32_t)T32(t, to32(a[0], 1), (uint32_t)a[1]);
 }
 
+static uint64_t h_enum_calendar(uint64_t *a, const uint64_t *f, void *t)
+{
+    return (uint32_t)T32(t, to32(a[0], 1), (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3]);
+}
+
 static uint64_t h_enum_thread_windows(uint64_t *a, const uint64_t *f, void *t)
 {
     return (uint32_t)T32(t, (uint32_t)a[0], to32(a[1], 2), U(P(a[2])));
@@ -551,6 +556,8 @@ static const struct w64_export enum_exports[] = {
     W64_FN("EnumFontFamiliesExW", h_enum_fonts),
     W64_FN("EnumSystemLocalesA", h_enum_locales),
     W64_FN("EnumSystemLocalesW", h_enum_locales),
+    W64_FN("EnumCalendarInfoA", h_enum_calendar),
+    W64_FN("EnumCalendarInfoW", h_enum_calendar),
     W64_FN("EnumThreadWindows", h_enum_thread_windows),
 };
 W64_EXPORTS(enum_module, "*", enum_exports);

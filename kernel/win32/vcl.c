@@ -1,6 +1,7 @@
+#include <synth/fmt.h>
 #include <synth/string.h>
 
-#include "win32.h"
+#include "w32gui.h"
 
 /* Odds and ends Delphi/VCL programs and their installers import */
 
@@ -265,3 +266,239 @@ static const struct w32_export vcl_shell32[] = {
 };
 
 W32_EXPORTS(vcl_shell32_module, "shell32.dll", vcl_shell32);
+
+static uint32_t WINAPI shell_drag_cancel(void *w, void *data, void *source, DWORD effect, DWORD *out)
+{
+    UNUSED(w);
+    UNUSED(data);
+    UNUSED(source);
+    UNUSED(effect);
+    if (out)
+        *out = 0;
+    return 0x00040101u;
+}
+
+static DWORD WINAPI internet_error_dialog(HANDLE w, HANDLE request, DWORD error, DWORD flags, void **data)
+{
+    UNUSED(w);
+    UNUSED(request);
+    UNUSED(error);
+    UNUSED(flags);
+    UNUSED(data);
+    return 1223;
+}
+
+/* window positions are applied at once, so a deferred batch is just a token */
+typedef BOOL WINAPI (*set_pos_fn)(HANDLE, HANDLE, int, int, int, int, UINT);
+
+static HANDLE WINAPI BeginDeferWindowPos(int count)
+{
+    UNUSED(count);
+    return (HANDLE)0x5e7d0002u;
+}
+
+static HANDLE WINAPI DeferWindowPos(HANDLE batch, HANDLE w, HANDLE after, int x, int y, int cx, int cy, UINT flags)
+{
+    set_pos_fn set = (set_pos_fn)w32_builtin_lookup("user32.dll", "SetWindowPos");
+    if (!batch || !set || !set(w, after, x, y, cx, cy, flags))
+        return NULL;
+    return batch;
+}
+
+static BOOL WINAPI EndDeferWindowPos(HANDLE batch)
+{
+    return batch != NULL;
+}
+
+static BOOL WINAPI SubtractRect(RECT *out, const RECT *a, const RECT *b)
+{
+    RECT r = *a;
+    bool spans_x = b->left <= r.left && b->right >= r.right, spans_y = b->top <= r.top && b->bottom >= r.bottom;
+    if (spans_x && b->top <= r.top && b->bottom > r.top)
+        r.top = MIN(b->bottom, r.bottom);
+    else if (spans_x && b->bottom >= r.bottom && b->top < r.bottom)
+        r.bottom = MAX(b->top, r.top);
+    else if (spans_y && b->left <= r.left && b->right > r.left)
+        r.left = MIN(b->right, r.right);
+    else if (spans_y && b->right >= r.right && b->left < r.right)
+        r.right = MAX(b->left, r.left);
+    *out = r;
+    if (r.left >= r.right || r.top >= r.bottom) {
+        *out = (RECT){0, 0, 0, 0};
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static W32_STATE POINT caret_pos;
+
+static BOOL WINAPI SetCaretPos(int x, int y)
+{
+    caret_pos = (POINT){x, y};
+    return TRUE;
+}
+
+static BOOL WINAPI GetCaretPos(POINT *p)
+{
+    if (!p)
+        return FALSE;
+    *p = caret_pos;
+    return TRUE;
+}
+
+static HANDLE WINAPI CopyIcon(HANDLE icon)
+{
+    return icon;
+}
+
+static const struct w32_export vcl_user32_more[] = {
+    W32_FN(BeginDeferWindowPos), W32_FN(DeferWindowPos), W32_FN(EndDeferWindowPos), W32_FN(SubtractRect),
+    W32_FN(SetCaretPos), W32_FN(GetCaretPos), W32_AS("HideCaret", w32_one1), W32_FN(CopyIcon),
+    W32_AS("AttachThreadInput", w32_one3), W32_AS("DrawCaption", w32_one4), W32_AS("EndMenu", w32_one0),
+    W32_AS("LockWindowUpdate", w32_one1), W32_AS("PhysicalToLogicalPoint", w32_one2),
+    W32_AS("LogicalToPhysicalPoint", w32_one2),
+};
+
+W32_EXPORTS(vcl_user32_more_module, "user32.dll", vcl_user32_more);
+
+/* change notifications: a handle that is never signaled (nothing watches the file system for programs yet) */
+typedef HANDLE WINAPI (*event_fn)(void *, BOOL, BOOL, LPCWSTR);
+
+static HANDLE WINAPI FindFirstChangeNotificationW(LPCWSTR path, BOOL subtree, DWORD filter)
+{
+    UNUSED(subtree);
+    UNUSED(filter);
+    event_fn create = (event_fn)w32_builtin_lookup("kernel32.dll", "CreateEventW");
+    HANDLE h = path && create ? create(NULL, FALSE, FALSE, NULL) : NULL;
+    return h ? h : (HANDLE)(intptr_t)-1;
+}
+
+static HANDLE WINAPI FindFirstChangeNotificationA(LPCSTR path, BOOL subtree, DWORD filter)
+{
+    return FindFirstChangeNotificationW((LPCWSTR)path, subtree, filter);
+}
+
+static BOOL WINAPI FindCloseChangeNotification(HANDLE h)
+{
+    typedef BOOL WINAPI (*close_fn)(HANDLE);
+    close_fn close = (close_fn)w32_builtin_lookup("kernel32.dll", "CloseHandle");
+    return close ? close(h) : FALSE;
+}
+
+static const struct w32_export vcl_kernel32_more[] = {
+    W32_FN(FindFirstChangeNotificationW), W32_FN(FindFirstChangeNotificationA),
+    W32_AS("FindNextChangeNotification", w32_one1), W32_FN(FindCloseChangeNotification),
+};
+
+W32_EXPORTS(vcl_kernel32_more_module, "kernel32.dll", vcl_kernel32_more);
+
+static UINT WINAPI ExtractIconExW(LPCWSTR file, int index, HANDLE *large, HANDLE *small, UINT count)
+{
+    if (!file)
+        return 0;
+    if (index == -1 && !large && !small)
+        return 1;
+    if (large && count)
+        *large = ExtractIconW(NULL, file, 0);
+    if (small && count)
+        *small = ExtractIconW(NULL, file, 0);
+    return (large || small) && count ? 1 : 0;
+}
+
+static UINT WINAPI ExtractIconExA(LPCSTR file, int index, HANDLE *large, HANDLE *small, UINT count)
+{
+    return ExtractIconExW((LPCWSTR)file, index, large, small, count);
+}
+
+static const struct w32_export vcl_shell32_more[] = {
+    W32_FN(ExtractIconExW), W32_FN(ExtractIconExA), W32_AS("DragAcceptFiles", w32_zero2),
+    W32_AS("DragFinish", w32_zero1), W32_AS("DragQueryFileA", w32_zero4), W32_AS("DragQueryPoint", w32_zero2),
+    W32_AS("SHDoDragDrop", shell_drag_cancel),
+};
+
+W32_EXPORTS(vcl_shell32_more_module, "shell32.dll", vcl_shell32_more);
+
+/* "1 min 5 sec": the units Explorer uses, to the given number of significant digits */
+static int WINAPI StrFromTimeIntervalW(LPWSTR buf, UINT size, DWORD ms, int digits)
+{
+    char text[48];
+    DWORD s = ms / 1000, h = s / 3600, m = s / 60 % 60;
+    s %= 60;
+    int n = 0;
+    if (h)
+        n = ksnprintf(text, sizeof(text), " %u hr", (unsigned)h);
+    if (m || (h && s && digits > 2))
+        n += ksnprintf(text + n, sizeof(text) - (size_t)n, " %u min", (unsigned)m);
+    if (!h && (s || !m))
+        n += ksnprintf(text + n, sizeof(text) - (size_t)n, " %u sec", (unsigned)s);
+    if (!buf || !size)
+        return n;
+    UINT i = 0;
+    for (; i < (UINT)n && i + 1 < size; i++)
+        buf[i] = (WCHAR)(uint8_t)text[i];
+    buf[i] = 0;
+    return (int)i;
+}
+
+static const struct w32_export vcl_shlwapi[] = {W32_FN(StrFromTimeIntervalW)};
+
+W32_EXPORTS(vcl_shlwapi_module, "shlwapi.dll", vcl_shlwapi);
+
+static uint32_t WINAPI CreateDataAdviseHolder(void **out)
+{
+    if (out)
+        *out = NULL;
+    return 0x80004001u;
+}
+
+static const struct w32_export vcl_ole32_more[] = {W32_FN(CreateDataAdviseHolder)};
+
+W32_EXPORTS(vcl_ole32_more_module, "ole32.dll", vcl_ole32_more);
+
+static BOOL WINAPI InternetGetLastResponseInfoW(DWORD *error, LPWSTR buf, DWORD *len)
+{
+    if (error)
+        *error = 0;
+    if (buf && len && *len)
+        buf[0] = 0;
+    if (len)
+        *len = 0;
+    return TRUE;
+}
+
+static const struct w32_export vcl_wininet[] = {
+    W32_FN(InternetGetLastResponseInfoW), W32_AS("InternetGetLastResponseInfoA", InternetGetLastResponseInfoW),
+    W32_AS("InternetAttemptConnect", w32_zero1), W32_AS("InternetErrorDlg", internet_error_dialog),
+};
+
+W32_EXPORTS(vcl_wininet_module, "wininet.dll", vcl_wininet);
+
+/* font and print dialogs: the user cancelled (CommDlgExtendedError stays 0) */
+static const struct w32_export vcl_comdlg32[] = {
+    W32_AS("ChooseFontW", w32_zero1), W32_AS("ChooseFontA", w32_zero1), W32_AS("PrintDlgW", w32_zero1),
+    W32_AS("PrintDlgA", w32_zero1),
+};
+
+W32_EXPORTS(vcl_comdlg32_module, "comdlg32.dll", vcl_comdlg32);
+
+static BOOL WINAPI GetFileSecurityW(LPCWSTR name, DWORD info, void *sd, DWORD size, DWORD *need)
+{
+    UNUSED(name);
+    UNUSED(info);
+    UNUSED(sd);
+    UNUSED(size);
+    if (need)
+        *need = 0;
+    w32_set_error(50);
+    return FALSE;
+}
+
+static const struct w32_export vcl_advapi32[] = {W32_FN(GetFileSecurityW),
+                                                 W32_AS("GetFileSecurityA", GetFileSecurityW)};
+
+W32_EXPORTS(vcl_advapi32_module, "advapi32.dll", vcl_advapi32);
+
+static const struct w32_export vcl_imm32[] = {W32_AS("ImmAssociateContext", w32_zero2),
+                                              W32_AS("ImmGetVirtualKey", w32_zero1)};
+
+W32_EXPORTS(vcl_imm32_module, "imm32.dll", vcl_imm32);

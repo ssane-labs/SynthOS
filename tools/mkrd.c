@@ -99,28 +99,75 @@ static uint8_t *emit_sequence(uint8_t *o, const uint8_t *lit, size_t lit_len, si
     return o;
 }
 
-static size_t lz4_compress(const uint8_t *in, size_t n, uint8_t *out)
+/* hash chains over the 64 KiB window with one step of lazy matching: the plain LZ4 format, packed tighter */
+#define CHAIN_DEPTH 1024
+static uint32_t chain_head[1 << 16], chain_prev[1 << 16];
+
+static uint32_t hash4(const uint8_t *p)
 {
-    static uint32_t table[1 << 16];
-    memset(table, 0xff, sizeof(table));
-    uint8_t *o = out;
-    size_t anchor = 0, i = 0;
-    while (n >= 13 && i + 12 < n) {
-        uint32_t v;
-        memcpy(&v, in + i, 4);
-        uint32_t h = (v * 2654435761u) >> 16;
-        uint32_t cand = table[h];
-        table[h] = (uint32_t)i;
-        if (cand != 0xffffffffu && i - cand <= 65535 && !memcmp(in + cand, in + i, 4)) {
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return (v * 2654435761u) >> 16;
+}
+
+static void chain_insert(const uint8_t *in, size_t i)
+{
+    uint32_t h = hash4(in + i);
+    chain_prev[i & 0xffff] = chain_head[h];
+    chain_head[h] = (uint32_t)i;
+}
+
+static size_t chain_best(const uint8_t *in, size_t n, size_t i, size_t *dist)
+{
+    size_t best = 0;
+    uint32_t cand = chain_head[hash4(in + i)];
+    for (int depth = 0; depth < CHAIN_DEPTH && cand != 0xffffffffu && cand < i && i - cand <= 65535; depth++) {
+        if (in[cand + best] == in[i + best] && !memcmp(in + cand, in + i, 4)) {
             size_t len = 4;
             while (i + len + 5 < n && in[cand + len] == in[i + len])
                 len++;
-            o = emit_sequence(o, in + anchor, i - anchor, len, i - cand);
-            i += len;
-            anchor = i;
-        } else {
-            i++;
+            if (len > best) {
+                best = len;
+                *dist = i - cand;
+            }
         }
+        uint32_t next = chain_prev[cand & 0xffff];
+        if (next >= cand)
+            break;
+        cand = next;
+    }
+    return best;
+}
+
+static size_t lz4_compress(const uint8_t *in, size_t n, uint8_t *out)
+{
+    memset(chain_head, 0xff, sizeof(chain_head));
+    memset(chain_prev, 0xff, sizeof(chain_prev));
+    uint8_t *o = out;
+    size_t anchor = 0, i = 0;
+    while (n >= 13 && i + 12 < n) {
+        size_t dist = 0, len = chain_best(in, n, i, &dist);
+        if (len >= 4 && i + 13 < n) {
+            chain_insert(in, i);
+            size_t dist2 = 0, len2 = chain_best(in, n, i + 1, &dist2);
+            if (len2 > len + 1) {
+                i++;
+                len = len2;
+                dist = dist2;
+            }
+        }
+        if (len < 4) {
+            chain_insert(in, i);
+            i++;
+            continue;
+        }
+        o = emit_sequence(o, in + anchor, i - anchor, len, dist);
+        size_t end = i + len;
+        for (size_t k = i; k < end && k + 4 <= n; k++)
+            if (chain_head[hash4(in + k)] != (uint32_t)k)
+                chain_insert(in, k);
+        i = end;
+        anchor = i;
     }
     o = emit_sequence(o, in + anchor, n - anchor, 0, 0);
     return (size_t)(o - out);

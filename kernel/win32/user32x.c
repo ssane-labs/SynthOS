@@ -669,6 +669,68 @@ static UINT WINAPI MapVirtualKeyW(UINT code, UINT type)
     return 0;
 }
 
+/* US layout: the character a key makes with the given shift and caps lock state */
+static int key_char(UINT vk, const BYTE *state)
+{
+    bool shift = state && (state[0x10] & 0x80), caps = state && (state[0x14] & 1), ctrl = state && (state[0x11] & 0x80);
+    if (vk >= 'A' && vk <= 'Z')
+        return ctrl ? (int)(vk - 'A' + 1) : (shift != caps) ? (int)vk : (int)(vk + 32);
+    if (ctrl)
+        return 0;
+    if (vk >= '0' && vk <= '9')
+        return shift ? ")!@#$%^&*("[vk - '0'] : (int)vk;
+    if (vk >= 0x60 && vk <= 0x69)
+        return (int)('0' + vk - 0x60);
+    static const struct {
+        uint8_t vk;
+        char plain, shifted;
+    } keys[] = {
+        {0x20, ' ', ' '},  {0x0d, '\r', '\r'}, {0x08, 8, 8},     {0x09, '\t', '\t'}, {0x1b, 27, 27},
+        {0xba, ';', ':'},  {0xbb, '=', '+'},   {0xbc, ',', '<'}, {0xbd, '-', '_'},   {0xbe, '.', '>'},
+        {0xbf, '/', '?'},  {0xc0, '`', '~'},   {0xdb, '[', '{'}, {0xdc, '\\', '|'},  {0xdd, ']', '}'},
+        {0xde, '\'', '"'}, {0x6a, '*', '*'},   {0x6b, '+', '+'}, {0x6d, '-', '-'},   {0x6e, '.', '.'},
+        {0x6f, '/', '/'},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(keys); i++)
+        if (keys[i].vk == vk)
+            return shift ? keys[i].shifted : keys[i].plain;
+    return 0;
+}
+
+static int WINAPI ToUnicodeEx(UINT vk, UINT scan, const BYTE *state, LPWSTR out, int size, UINT flags, HANDLE layout)
+{
+    UNUSED(flags);
+    UNUSED(layout);
+    int c = (scan & 0x8000) ? 0 : key_char(vk, state);
+    if (!c || !out || size < 1)
+        return 0;
+    out[0] = (WCHAR)c;
+    if (size > 1)
+        out[1] = 0;
+    return 1;
+}
+
+static int WINAPI ToUnicode(UINT vk, UINT scan, const BYTE *state, LPWSTR out, int size, UINT flags)
+{
+    return ToUnicodeEx(vk, scan, state, out, size, flags, NULL);
+}
+
+static int WINAPI ToAsciiEx(UINT vk, UINT scan, const BYTE *state, uint16_t *out, UINT flags, HANDLE layout)
+{
+    UNUSED(flags);
+    UNUSED(layout);
+    int c = (scan & 0x8000) ? 0 : key_char(vk, state);
+    if (!c || !out)
+        return 0;
+    *out = (uint16_t)c;
+    return 1;
+}
+
+static int WINAPI ToAscii(UINT vk, UINT scan, const BYTE *state, uint16_t *out, UINT flags)
+{
+    return ToAsciiEx(vk, scan, state, out, flags, NULL);
+}
+
 static UINT WINAPI MapVirtualKeyExW(UINT code, UINT type, HANDLE layout)
 {
     UNUSED(layout);
@@ -1031,7 +1093,8 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(GetAncestor),
     W32_FN(IsChild),
     W32_FN(GetClassNameW),
-    W32_FN(GetClassInfoW), W32_FN(GetClassInfoA),
+    W32_FN(GetClassInfoW), W32_FN(GetClassInfoA), W32_FN(ToUnicode), W32_FN(ToUnicodeEx), W32_FN(ToAscii),
+    W32_FN(ToAsciiEx),
     W32_FN(GetWindowThreadProcessId),
     W32_FN(SetPropW),
     W32_FN(GetPropW),
@@ -1092,7 +1155,6 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("IsProcessDPIAware", w32_one0),
     W32_FN(EnumDisplaySettingsA),
     W32_FN(EnumDisplayDevicesA),
-    W32_AS("ToUnicodeEx", w32_zero7),
     W32_FN(GetLastInputInfo),
     W32_FN(GetCaretBlinkTime),
     W32_FN(GetDoubleClickTime),
