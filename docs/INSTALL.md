@@ -181,6 +181,12 @@ EFI → `SYNTHOS` → `synthos-key.cer` → **Continue** → **Yes** → **Reboo
 загрузчика SynthOS, поэтому BitLocker и обновления Windows ведут себя как обычно. Время ожидания —
 строка `timeout=` в `\SYNTHOS\SYSTEM.CFG` на разделе SynthOS EFI (0 — без меню).
 
+Что запускается само, если ничего не выбрать, задаёт **Настройки → General → Start up with**:
+**SynthOS** или **Windows**. С выбором Windows компьютер каждый раз сам уходит в Windows, а SynthOS
+запускается, только если за эти секунды выбрать его стрелками. То же из Терминала:
+`config bootdefault windows` (или `synthos`; можно слово из названия другой системы) — это строка
+`default=` в том же `SYSTEM.CFG`.
+
 Если обновление Windows поставило свой пункт первым — выберите SynthOS в меню загрузки прошивки
 (F12/F11/F8) или поднимите его в настройках UEFI (Boot Order).
 

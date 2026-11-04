@@ -69,11 +69,11 @@ static const char *mounted_at(struct blockdev *dev)
     return NULL;
 }
 
-static int try_counter(int tries, int *found)
+typedef int (*esp_fn)(const char *root, void *ctx);
+
+/* Calls fn for each EFI partition until one answers other than E_NOENT; mounts the ones nobody has mounted. */
+static int each_esp(esp_fn fn, void *ctx)
 {
-    uint32_t nonce = hal_boot_nonce();
-    if (!nonce)
-        return E_NOENT;
     static struct disk_map map;
     int err = E_NOENT;
     for (struct blockdev *disk = block_list(); disk && err == E_NOENT; disk = disk->next) {
@@ -92,7 +92,7 @@ static int try_counter(int tries, int *found)
                 own = true;
             }
             if (root)
-                err = visit(root, nonce, tries, found);
+                err = fn(root, ctx);
             if (own) {
                 vfs_umount("/mnt/recesp");
                 vfs_unlink("/mnt/recesp");
@@ -101,6 +101,37 @@ static int try_counter(int tries, int *found)
         }
     }
     return err;
+}
+
+struct counter {
+    uint32_t nonce;
+    int tries, *found;
+    esp_fn then;
+    void *ctx;
+};
+
+static int counter_visit(const char *root, void *ctx)
+{
+    struct counter *c = ctx;
+    int found = 0, err = visit(root, c->nonce, c->tries, &found);
+    if (!err && c->found)
+        *c->found = found;
+    return err || !c->then ? err : c->then(root, c->ctx);
+}
+
+/* fn runs on the EFI partition this start came from (its BOOT.TRY carries this start's nonce) */
+static int own_esp(int tries, int *found, esp_fn fn, void *ctx)
+{
+    uint32_t nonce = hal_boot_nonce();
+    if (!nonce)
+        return E_NOENT;
+    struct counter c = {nonce, tries, found, fn, ctx};
+    return each_esp(counter_visit, &c);
+}
+
+static int try_counter(int tries, int *found)
+{
+    return own_esp(tries, found, NULL, NULL);
 }
 
 static int write_tries(int tries)
@@ -118,6 +149,90 @@ void recovery_boot_ok(void)
     if (err && err != E_NOENT)
         klog("recovery: cannot reset the start counter: %s", err_str(err));
 }
+
+/* default= in SYSTEM.CFG: which system the UEFI boot menu starts when nobody picks one */
+struct boot_default {
+    const char *set;
+    char *out;
+    size_t cap;
+};
+
+static int boot_default_visit(const char *root, void *ctx)
+{
+    struct boot_default *b = ctx;
+    char path[PATH_MAX_LEN];
+    ksnprintf(path, sizeof(path), "%s/SYNTHOS/SYSTEM.CFG", root);
+    struct file *f;
+    int err = vfs_open(path, VFS_READ, &f);
+    if (err)
+        return err;
+    char text[1024], next[1100];
+    long n = vfs_read(f, text, sizeof(text) - 1);
+    vfs_close(f);
+    if (n < 0)
+        return (int)n;
+    text[n] = 0;
+    size_t len = 0;
+    if (b->out)
+        str_copy(b->out, "synthos", b->cap);
+    for (char *line = text; *line;) {
+        char *end = strchr(line, '\n');
+        size_t l = end ? (size_t)(end - line) + 1 : strlen(line);
+        if (!strncmp(line, "default=", 8)) {
+            if (b->out) {
+                size_t k = 0;
+                for (const char *v = line + 8; k + 1 < b->cap && *v && *v != '\n' && *v != '\r'; v++)
+                    b->out[k++] = *v;
+                b->out[k] = 0;
+            }
+        } else if (len + l < sizeof(next)) {
+            memcpy(next + len, line, l);
+            len += l;
+        }
+        line += l;
+    }
+    if (!b->set)
+        return 0;
+    if (len && next[len - 1] != '\n')
+        next[len++] = '\n';
+    if (strcmp(b->set, "synthos"))
+        len += (size_t)ksnprintf(next + len, sizeof(next) - len, "default=%s\n", b->set);
+    if ((err = vfs_open(path, VFS_WRITE | VFS_TRUNC, &f)))
+        return err;
+    n = vfs_write(f, next, len);
+    vfs_close(f);
+    return n == (long)len ? 0 : n < 0 ? (int)n : E_IO;
+}
+
+static void get_bootdefault(char *buf, size_t cap)
+{
+    struct boot_default b = {NULL, buf, cap};
+    if (own_esp(-1, NULL, boot_default_visit, &b))
+        str_copy(buf, "synthos", cap);
+}
+
+static int set_bootdefault(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    char v[32];
+    size_t k = 0;
+    for (; value[k] && k + 1 < sizeof(v); k++) {
+        char c = value[k];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')))
+            return E_INVAL;
+        v[k] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+    }
+    v[k] = 0;
+    if (!k)
+        return E_INVAL;
+    struct boot_default b = {v, NULL, 0};
+    return own_esp(-1, NULL, boot_default_visit, &b);
+}
+
+static const struct setting s_bootdefault = {"bootdefault", "synthos|windows|other|<word of a name>",
+                                             "the system the boot menu starts by itself (UEFI starts)",
+                                             get_bootdefault, set_bootdefault};
+SETTING(s_bootdefault);
 
 COMMAND(recovery, "safemode", "system", "recovery [safe|normal]",
         "safe mode state; 'safe' makes the next start use safe mode, 'normal' a normal one")

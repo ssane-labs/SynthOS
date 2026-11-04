@@ -125,6 +125,8 @@ sound
 no sound device found
 recovery
 Start counter: none (BIOS start)
+config bootdefault | grep =
+bootdefault = synthos
 recovery safe
 this start did not come from the UEFI loader
 faulttest; echo still running

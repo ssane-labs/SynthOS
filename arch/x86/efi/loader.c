@@ -536,6 +536,7 @@ static u8 *load_kernel(struct file *root, uintn *size)
    whether the loader still has to add itself to the firmware boot menu, and how long the boot menu waits. */
 struct config {
     int present, reg, timeout;
+    char def[32];
     u64 system, sectors;
     u8 id[8];
     uintn reg_offset;
@@ -587,6 +588,12 @@ static int read_config(struct file *root, struct config *cfg)
             cfg->sectors = n;
         else if (key_is(line, "timeout"))
             cfg->timeout = (int)n;
+        else if (key_is(line, "default")) {
+            uintn k = 0;
+            for (; k + 1 < sizeof(cfg->def) && v[k] && v[k] != '\n' && v[k] != '\r'; k++)
+                cfg->def[k] = v[k] >= 'A' && v[k] <= 'Z' ? (char)(v[k] + 32) : v[k];
+            cfg->def[k] = 0;
+        }
         else if (key_is(line, "register")) {
             cfg->reg = n != 0;
             cfg->reg_offset = (uintn)(v - text);
@@ -911,8 +918,27 @@ static void draw_menu(struct entry *list, int n, int chosen, int seconds, int fa
     say("\n");
 }
 
+/* The entry SYSTEM.CFG's default= names: "synthos", or a word of another system's name ("windows"); "other" is
+   the first other system. */
+static int default_entry(const char *def, const struct entry *list, int n)
+{
+    if (!def[0] || !n || key_is(def, "synthos"))
+        return 0;
+    if (key_is(def, "other"))
+        return 2;
+    for (int i = 0; i < n; i++)
+        for (const char16 *p = list[i].name; *p; p++) {
+            int k = 0;
+            while (def[k] && lower16(p[k]) == (char16)def[k])
+                k++;
+            if (!def[k])
+                return i + 2;
+        }
+    return 2;
+}
+
 /* Returns 1 for safe mode. Shown when other systems are on the disks or the last starts failed. */
-static int boot_menu(int timeout, int failed)
+static int boot_menu(int timeout, int failed, const char *def)
 {
     struct entry list[8];
     int n = other_systems(list, 8);
@@ -920,7 +946,7 @@ static int boot_menu(int timeout, int failed)
         timeout = 5;
     if ((!n && !failed) || timeout <= 0 || !st->con_in)
         return failed;
-    int chosen = failed ? 1 : 0, ticks = timeout * 10;
+    int chosen = failed ? 1 : default_entry(def, list, n), ticks = timeout * 10;
     draw_menu(list, n, chosen, timeout, failed);
     for (;;) {
         struct input_key key;
@@ -1080,7 +1106,7 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     if (read_config(root, &cfg)) {
         if (cfg.reg && register_self(image, root))
             clear_register(root, &cfg);
-        safe = boot_menu(cfg.timeout, safe);
+        safe = boot_menu(cfg.timeout, safe, cfg.def);
     } else {
         start_new_installation(image, li->device);
         if (safe)

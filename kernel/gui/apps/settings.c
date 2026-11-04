@@ -1,3 +1,4 @@
+#include <synth/hal.h>
 #include <synth/bundle.h>
 #include <synth/codepage.h>
 #include <synth/config.h>
@@ -662,6 +663,18 @@ static void pane_general(struct page *p)
         s->computer.len)
         apply("hostname", s->computer.buf);
     toggle_setting(p, "Start the desktop when SynthOS starts", NULL, "desktop");
+    if (hal_boot_nonce()) {
+        static char boot_default[32];
+        if (!boot_default[0])
+            current("bootdefault", boot_default, sizeof(boot_default));
+        static const char *const systems[] = {"SynthOS", "Windows"};
+        struct rect r = row(p, "Start up with", "What the boot menu starts when no other system is picked", 0, 170);
+        int sel = strcmp(boot_default, "synthos") ? 1 : 0;
+        if (!p->measure && ui_segmented(p->ui, ctl(r, 170, 24), systems, 2, &sel)) {
+            str_copy(boot_default, sel ? "windows" : "synthos", sizeof(boot_default));
+            apply("bootdefault", boot_default);
+        }
+    }
     end(p, NULL);
     section(p, NULL);
     if (button(p, "Install SynthOS", "Copy SynthOS onto another disk of this computer", "Install..."))
