@@ -1059,6 +1059,14 @@ const struct gui_app *gui_app_find(const char *name)
     return NULL;
 }
 
+bool gui_app_builtin(const struct gui_app *app)
+{
+    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, it)
+        if (it == app)
+            return true;
+    return false;
+}
+
 void gui_app_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx)
 {
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)

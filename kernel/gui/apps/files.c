@@ -570,6 +570,13 @@ static void pick_item(struct window *w, int index)
     wm_invalidate(w);
 }
 
+static void remember(const struct files *f)
+{
+    app_state_set_on("files", "sidebar", f->sidebar);
+    app_state_set_on("files", "icons", f->icons);
+    app_state_set_on("files", "hidden", f->hidden);
+}
+
 static void pick_space(struct window *w, int index)
 {
     struct files *f = w->data;
@@ -581,6 +588,7 @@ static void pick_space(struct window *w, int index)
         open_terminal_here(f);
     else if (index == 4 || index == 5)
         f->icons = index == 4;
+    remember(f);
     wm_invalidate(w);
 }
 
@@ -620,6 +628,7 @@ static void command(struct window *w, struct files *f, int cmd)
         break;
     case CMD_SIDEBAR: f->sidebar = !f->sidebar; break;
     }
+    remember(f);
 }
 
 static void draw_row(struct canvas *c, struct rect row, int index, bool sel, void *ctx)
@@ -976,9 +985,9 @@ static void frame(struct ui *ui, void *data)
     else if (key == KEY_CTRL(']'))
         go_forward(w, f);
     else if (key == ('1' | KEY_MOD_SUPER) || key == ('1' | KEY_MOD_CTRL))
-        f->icons = true;
+        command(w, f, CMD_ICONS);
     else if (key == ('2' | KEY_MOD_SUPER) || key == ('2' | KEY_MOD_CTRL))
-        f->icons = false;
+        command(w, f, CMD_LIST);
 }
 
 static void paint(struct window *w, struct canvas *c)
@@ -1008,7 +1017,9 @@ static void launch(const char *arg)
     struct files *f = kzalloc(sizeof(*f));
     if (!f)
         return;
-    f->icons = true;
+    f->icons = app_state_on("files", "icons", true);
+    f->sidebar = app_state_on("files", "sidebar", false);
+    f->hidden = app_state_on("files", "hidden", false);
     f->list.selected = -1;
     struct window *w = wm_open("Files", ICON_FILES, 760, 480, &ops, f, WIN_RESIZABLE);
     if (!w) {

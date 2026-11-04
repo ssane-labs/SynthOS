@@ -146,6 +146,13 @@ int gui_glass_frost(void);
 #define ABS(v) ((v) < 0 ? -(v) : (v))
 #endif
 void glass_invalidate_all(void);
+const char *app_state(const char *app, const char *key, const char *fallback);
+long app_state_number(const char *app, const char *key, long fallback);
+bool app_state_on(const char *app, const char *key, bool fallback);
+void app_state_set(const char *app, const char *key, const char *value);
+void app_state_set_number(const char *app, const char *key, long value);
+void app_state_set_on(const char *app, const char *key, bool on);
+bool gui_app_builtin(const struct gui_app *app);
 void display_tick(void);
 int display_brightness(void);
 bool display_night(void);

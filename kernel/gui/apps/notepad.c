@@ -384,6 +384,7 @@ static void key(struct window *w, struct notepad *n, int k)
         return;
     } else if (k == KEY_COMMAND(CMD_NUMBERS)) {
         n->numbers = !n->numbers;
+        app_state_set_on("notepad", "numbers", n->numbers);
         return;
     } else if (k == KEY_BACKSPACE) {
         if (has_selection(n))
@@ -558,6 +559,7 @@ static void launch(const char *arg)
         return;
     n->st.focus = -1;
     load_text(n, "", 0);
+    n->numbers = app_state_on("notepad", "numbers", false);
     struct window *w = wm_open("Untitled", ICON_NOTEPAD, 680, 460, &ops, n, WIN_RESIZABLE);
     if (!w) {
         kfree(n->text);

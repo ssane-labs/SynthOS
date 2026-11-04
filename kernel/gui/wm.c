@@ -1004,6 +1004,62 @@ static void best_spot(struct window *w, struct rect work, int cx, int cy)
     w->frame.y = by;
 }
 
+/* A built-in app's first window opens where and as big as its last one was when it closed. */
+static bool remembers_frame(const struct window *w)
+{
+    return w->app && (w->flags & WIN_RESIZABLE) && !(w->flags & (WIN_DIALOG | WIN_POPUP | WIN_HIDDEN | WIN_BARE)) &&
+           !w->owner && gui_app_builtin(w->app);
+}
+
+static bool next_number(const char **s, long *out)
+{
+    const char *p = *s;
+    bool neg = *p == '-';
+    p += neg;
+    if (*p < '0' || *p > '9')
+        return false;
+    long v = 0;
+    while (*p >= '0' && *p <= '9' && v < 100000)
+        v = v * 10 + (*p++ - '0');
+    *out = neg ? -v : v;
+    *s = *p == ',' ? p + 1 : p;
+    return true;
+}
+
+static void restore_frame(struct window *w)
+{
+    if (!remembers_frame(w))
+        return;
+    for (struct window *it = bottom; it; it = it->above)
+        if (it != w && it->app == w->app)
+            return;
+    long v[4];
+    const char *s = app_state("win", w->app->name, NULL);
+    for (int i = 0; i < 4; i++) {
+        if (!s || !next_number(&s, &v[i]))
+            return;
+    }
+    struct rect f = {(int)v[0], (int)v[1], (int)v[2], (int)v[3]};
+    int screen = wm_screen_at(f.x + f.w / 2, f.y + 20);
+    struct rect work = wm_work_area(screen);
+    if (!rect_inside((struct rect){f.x + f.w / 2, f.y + 10, 1, 1}, work))
+        return;
+    f.w = CLAMP(f.w, w->min_w, work.w);
+    f.h = CLAMP(f.h, w->min_h, work.h);
+    f.x = CLAMP(f.x, work.x, work.x + work.w - f.w);
+    f.y = CLAMP(f.y, work.y, work.y + work.h - f.h);
+    w->frame = f;
+}
+
+static void remember_frame(const struct window *w)
+{
+    if (!remembers_frame(w) || (w->flags & (WIN_FULLSCREEN | WIN_MAXIMIZED | WIN_TILED | WIN_MINIMIZED)))
+        return;
+    char buf[48];
+    ksnprintf(buf, sizeof(buf), "%d,%d,%d,%d", w->frame.x, w->frame.y, w->frame.w, w->frame.h);
+    app_state_set("win", w->app->name, buf);
+}
+
 void wm_set_app(const struct gui_app *app)
 {
     launching_app = app;
@@ -1035,6 +1091,7 @@ struct window *wm_open(const char *title, enum icon_id icon, int cw, int ch, con
     if (flags & WIN_DIALOG)
         w->owner = focus;
     place(w);
+    restore_frame(w);
     if (!alloc_surface(w)) {
         kfree(w);
         return NULL;
@@ -1116,6 +1173,7 @@ void wm_destroy(struct window *w)
     }
     if (!wm_window_alive(w))
         return;
+    remember_frame(w);
     release_window(w, ANIM_CLOSE, w->frame);
     ghost_forget(w);
     wm_damage(outer_rect(w));
@@ -2289,6 +2347,8 @@ static void mouse_up(unsigned button)
         set_snap_zone(SNAP_NONE);
         wm_snap(w, z);
     }
+    if ((mode == DRAG_MOVE || mode == DRAG_RESIZE) && wm_window_alive(w))
+        remember_frame(w);
 }
 
 static int cursor_for_edges(int edges)

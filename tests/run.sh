@@ -176,6 +176,12 @@ config glassedge 80; config glassfrost 20; config glassedge
 glassedge = 80
 config glasseffect regular; config glassedge 50; config glassfrost 50; config glassfrost
 glassfrost = 50
+appstate demo sidebar on; appstate demo sidebar off; appstate demo sidebar
+off
+appstate demo nothing
+demo.nothing is not set
+appstate | grep -c demo.sidebar
+1
 config browser chrome; config browser; config browser chromium
 browser = chrome
 config dockdots off; config dockbounce off; config dockdots; config dockdots on

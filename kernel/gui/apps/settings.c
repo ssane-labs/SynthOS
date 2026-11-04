@@ -493,6 +493,7 @@ static void go(struct settings *s, int pane)
     s->forward_n = 0;
     s->pane = pane;
     s->scroll = 0;
+    app_state_set_number("settings", "pane", pane);
 }
 
 /* ---- Network */
@@ -1935,12 +1936,14 @@ static void toolbar(struct ui *ui, struct settings *s, int cx, int W)
                 s->forward[s->forward_n++] = s->pane;
             s->pane = to;
             s->scroll = 0;
+            app_state_set_number("settings", "pane", to);
         } else if (ui_hover(ui, fwd) && can_fwd) {
             ui->consumed = true;
             if (s->back_n < HISTORY)
                 s->back[s->back_n++] = s->pane;
             s->pane = s->forward[--s->forward_n];
             s->scroll = 0;
+            app_state_set_number("settings", "pane", s->pane);
         }
     }
     ui_label(ui, (struct rect){cx + 82, 0, W - cx - 100, TOOLBAR_HEIGHT}, panes[s->pane].name, &font_bold, style.text,
@@ -2084,7 +2087,7 @@ static void launch(const char *arg)
     if (!s)
         return;
     load_themes(s);
-    s->pane = P_APPEARANCE;
+    s->pane = (int)CLAMP(app_state_number("settings", "pane", P_APPEARANCE), 0, P_COUNT - 1);
     select_pane(s, arg);
     s->back_n = 0;
     char wp[PATH_MAX_LEN];

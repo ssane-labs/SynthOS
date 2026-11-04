@@ -312,7 +312,10 @@ static void command(struct window *w, struct video *v, int cmd)
         seek(v, 0);
         play(v, true);
         break;
-    case CMD_LOOP: v->loop = !v->loop; break;
+    case CMD_LOOP:
+        v->loop = !v->loop;
+        app_state_set_on("video", "loop", v->loop);
+        break;
     case CMD_SHOW: {
         char dir[PATH_MAX_LEN];
         path_dirname(v->path, dir, sizeof(dir));
@@ -430,6 +433,7 @@ static void launch(const char *arg)
     if (!v)
         return;
     v->tick = hal_ticks_ms();
+    v->loop = app_state_on("video", "loop", false);
     spring_set(&v->bar, 1024);
     struct window *w = wm_open("Video", ICON_VIDEO, 640, 380, &ops, v, WIN_RESIZABLE);
     if (!w) {

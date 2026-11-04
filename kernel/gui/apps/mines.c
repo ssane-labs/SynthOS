@@ -309,8 +309,10 @@ static void frame(struct ui *ui, void *data)
     if (ui->e && ui->e->type == EV_KEY && ui->e->key >= KEY_COMMAND(0) && ui->e->key <= KEY_COMMAND(3)) {
         int cmd = ui->e->key - KEY_COMMAND(0);
         ui->consumed = true;
-        if (cmd)
+        if (cmd) {
             m->level = cmd - 1;
+            app_state_set_number("mines", "level", m->level);
+        }
         reset(m);
         wm_set_timer(w, 0);
         if (cmd)
@@ -372,6 +374,7 @@ static void frame(struct ui *ui, void *data)
         wm_set_timer(w, 0);
     } else if (k >= '1' && k <= '3') {
         m->level = k - '1';
+        app_state_set_number("mines", "level", m->level);
         reset(m);
         wm_set_timer(w, 0);
         fit(w, m);
@@ -411,6 +414,7 @@ static void launch(const char *arg)
     if (!m)
         return;
     m->seed = (uint32_t)hal_ticks_ms() | 1;
+    m->level = (int)CLAMP(app_state_number("mines", "level", 0), 0, (long)ARRAY_SIZE(levels) - 1);
     reset(m);
     struct window *w = wm_open("Minesweeper", ICON_MINES, MAX(m->w * CELL + 2 * PAD, MIN_W), HEADER + m->h * CELL + PAD * 2,
                                &ops, m, WIN_FULLSIZE | WIN_NOTITLE);

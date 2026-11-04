@@ -196,6 +196,7 @@ static void frame(struct ui *ui, void *data)
                 tab = i;
         if (tab >= 0 && tab != m->tab) {
             m->tab = tab;
+            app_state_set_number("monitor", "tab", tab);
             char title[48];
             ksnprintf(title, sizeof(title), tab ? "System Monitor \xc2\xb7 %s" : "System Monitor", tab_names[tab]);
             wm_set_title(ui->win, title);
@@ -240,6 +241,7 @@ static void launch(const char *arg)
         return;
     m->tasks.selected = -1;
     sample(m);
+    m->tab = (int)CLAMP(app_state_number("monitor", "tab", 0), 0, TAB_COUNT - 1);
     if (arg && !strcmp(arg, "windows"))
         m->tab = 1;
     struct window *w = wm_open(m->tab ? "System Monitor \xc2\xb7 Windows" : "System Monitor", ICON_MONITOR, 600, 500,
