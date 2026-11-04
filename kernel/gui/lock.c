@@ -1,6 +1,7 @@
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
+#include <synth/net.h>
 #include <synth/string.h>
 #include <synth/time.h>
 #include <synth/users.h>
@@ -18,6 +19,7 @@ struct lockscreen {
     bool choosing;
     bool login;
     bool error;
+    bool asleep;
     uint64_t shake_until;
     struct canvas backdrop;
 };
@@ -51,7 +53,7 @@ void gui_blurred_wallpaper(struct canvas *out)
         return;
     out->clip = (struct rect){0, 0, w, h};
     gfx_scale(out, (struct rect){0, 0, w, h}, wp, 255);
-    for (int pass = 0; pass < 2; pass++)
+    for (int pass = 0; pass < 3; pass++)
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
                 unsigned r = 0, g = 0, b = 0, n = 0;
@@ -90,10 +92,126 @@ static bool attempt(struct window *w, struct lockscreen *l)
     char name[USER_NAME_MAX];
     str_copy(name, u->name, sizeof(name));
     bool login = l->login;
+    wm_crossfade();
     wm_destroy(w);
     if (login)
         gui_session_login(name);
     return true;
+}
+
+static void ago(uint64_t when, char *buf, size_t cap)
+{
+    uint64_t sec = (hal_ticks_ms() - when) / 1000;
+    if (sec < 60)
+        str_copy(buf, "now", cap);
+    else if (sec < 3600)
+        ksnprintf(buf, cap, "%um ago", (unsigned)(sec / 60));
+    else
+        ksnprintf(buf, cap, "%uh ago", (unsigned)(sec / 3600));
+}
+
+/* Top right, as on the desktop: the keyboard layout and the network. */
+static void draw_status(struct canvas *c, int W)
+{
+    const char *title = NULL;
+    const char *code = keymap_layout_name(keymap_active(), &title);
+    int x = W - 22;
+    gfx_symbol(c, x - 16, 12, net_enabled() ? SYM_WIFI : SYM_WIFI_OFF, 16, ALPHA(0xffffffffu, 220));
+    x -= 30;
+    if (code) {
+        char up[8];
+        int n = 0;
+        for (; code[n] && n < 7; n++)
+            up[n] = (char)(code[n] >= 'a' && code[n] <= 'z' ? code[n] - 32 : code[n]);
+        up[n] = 0;
+        int tw = gfx_text_width(&font_bold, up) + 12;
+        struct rect r = {x - tw, 10, tw, 20};
+        gfx_round(c, r, 6, ALPHA(0xffffffffu, 40));
+        gfx_text_box(c, r, &font_small, up, ALPHA(0xffffffffu, 230), ALIGN_CENTER);
+    }
+}
+
+/* Notifications of this session as glass cards under the clock; returns the height used. */
+static int draw_notes(struct canvas *c, int W, int y, int max_h)
+{
+    int card_w = MIN(380, W - 48), x = (W - card_w) / 2, used = 0, shown = 0, total = 0;
+    const char *title, *text;
+    uint64_t when;
+    while (notify_history(total, &title, &text, &when))
+        total++;
+    for (int i = 0; i < total && shown < 3; i++) {
+        if (used + 66 > max_h)
+            break;
+        notify_history(i, &title, &text, &when);
+        struct rect r = {x, y + used, card_w, 58};
+        if (c) {
+            gfx_round(c, r, 18, ALPHA(0xffffffffu, 34));
+            gfx_round_frame(c, r, 18, ALPHA(0xffffffffu, 40));
+            char t[16];
+            ago(when, t, sizeof(t));
+            int tw = gfx_text_width(&font_small, t);
+            gfx_text_box(c, (struct rect){r.x + 16, r.y + 9, r.w - tw - 44, 18}, &font_bold, title,
+                         RGB(255, 255, 255), ALIGN_LEFT);
+            gfx_text_box(c, (struct rect){r.x + r.w - tw - 16, r.y + 9, tw, 18}, &font_small, t,
+                         ALPHA(0xffffffffu, 170), ALIGN_RIGHT);
+            gfx_text_box(c, (struct rect){r.x + 16, r.y + 30, r.w - 32, 18}, &font_sans, text,
+                         ALPHA(0xffffffffu, 210), ALIGN_LEFT);
+        }
+        used += 66;
+        shown++;
+    }
+    if (total > shown && used + 20 <= max_h) {
+        char more[48];
+        ksnprintf(more, sizeof(more), "%d more notification%s", total - shown, total - shown == 1 ? "" : "s");
+        if (c)
+            gfx_text_box(c, (struct rect){0, y + used, W, 18}, &font_small, more, ALPHA(0xffffffffu, 170),
+                         ALIGN_CENTER);
+        used += 24;
+    }
+    return used;
+}
+
+/* What is playing, with its three buttons. */
+static void now_playing(struct ui *ui, int W, int y)
+{
+    const struct media_track *t = media_track();
+    if (!t || !t->title || (!t->playing && t->position_ms <= 0))
+        return;
+    int card_w = MIN(380, W - 48), x = (W - card_w) / 2;
+    struct rect r = {x, y, card_w, 64};
+    if (ui->c) {
+        gfx_round(ui->c, r, 18, ALPHA(0xffffffffu, 34));
+        gfx_round_frame(ui->c, r, 18, ALPHA(0xffffffffu, 40));
+        gfx_text_box(ui->c, (struct rect){r.x + 16, r.y + 12, r.w - 150, 18}, &font_bold, t->title, RGB(255, 255, 255),
+                     ALIGN_LEFT);
+        gfx_text_box(ui->c, (struct rect){r.x + 16, r.y + 33, r.w - 150, 18}, &font_sans, t->artist ? t->artist : "",
+                     ALPHA(0xffffffffu, 190), ALIGN_LEFT);
+        if (t->length_ms > 0) {
+            struct rect bar = {r.x + 16, r.y + r.h - 7, r.w - 32, 3};
+            gfx_round(ui->c, bar, 1, ALPHA(0xffffffffu, 50));
+            gfx_round(ui->c, (struct rect){bar.x, bar.y, bar.w * CLAMP(t->position_ms, 0, t->length_ms) / t->length_ms,
+                                           bar.h}, 1, ALPHA(0xffffffffu, 200));
+        }
+    }
+    static const enum symbol_id syms[3] = {SYM_PREV, SYM_PLAY, SYM_NEXT};
+    for (int i = 0; i < 3; i++) {
+        struct rect b = {r.x + r.w - 128 + i * 40, r.y + 16, 32, 32};
+        enum symbol_id sym = i == 1 && t->playing ? SYM_PAUSE : syms[i];
+        if (ui->c) {
+            if (ui_hover(ui, b))
+                gfx_circle(ui->c, b.x + 16, b.y + 16, 16, ALPHA(0xffffffffu, 40));
+            gfx_symbol(ui->c, b.x + 6, b.y + 6, sym, 20, RGB(255, 255, 255));
+        }
+        if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, b)) {
+            ui->consumed = true;
+            if (i == 0)
+                media_prev();
+            else if (i == 1)
+                media_toggle();
+            else
+                media_next();
+        }
+    }
 }
 
 static void frame(struct ui *ui, void *data)
@@ -101,36 +219,59 @@ static void frame(struct ui *ui, void *data)
     struct lockscreen *l = data;
     struct window *w = ui->win;
     int W = w->surface.w, H = w->surface.h;
+    if (l->asleep) {
+        if (ui->c)
+            gfx_clear(ui->c, (struct rect){0, 0, W, H}, RGB(0, 0, 0));
+        if (ui->e && (ui->e->type == EV_KEY || ui->e->type == EV_MOUSE_DOWN || ui->e->type == EV_MOUSE_MOVE)) {
+            ui->consumed = true;
+            l->asleep = false;
+            wm_set_cursor_visible(true);
+            wm_crossfade();
+            wm_invalidate(w);
+        }
+        return;
+    }
     if (ui->c) {
         if (l->backdrop.px)
             gfx_scale(ui->c, (struct rect){0, 0, W, H}, &l->backdrop, 255);
         else
             gfx_clear(ui->c, (struct rect){0, 0, W, H}, RGB(30, 30, 40));
-        gfx_fill(ui->c, (struct rect){0, 0, W, H}, ALPHA(0, 70));
+        gfx_fill(ui->c, (struct rect){0, 0, W, H}, ALPHA(0, 60));
+        gfx_gradient(ui->c, (struct rect){0, 0, W, H / 3}, ALPHA(0, 70), ALPHA(0, 0));
+        gfx_gradient(ui->c, (struct rect){0, H * 2 / 3, W, H - H * 2 / 3}, ALPHA(0, 0), ALPHA(0, 90));
+        draw_status(ui->c, W);
         struct rtc_time t;
         time_local(&t);
         int m = CLAMP((int)t.month, 1, 12);
         char date[64], clock[16];
-        ksnprintf(date, sizeof(date), "%s %u %s", day_names[weekday((int)t.year, m, (int)t.day)], t.day, month_names[m - 1]);
+        ksnprintf(date, sizeof(date), "%s, %u %s", day_names[weekday((int)t.year, m, (int)t.day)], t.day,
+                  month_names[m - 1]);
         gui_clock_time(&t, clock, sizeof(clock), false, false);
-        gfx_text_box(ui->c, (struct rect){0, H / 10, W, 30}, &font_title, date, ALPHA(0xffffffffu, 230), ALIGN_CENTER);
-        gfx_text_box(ui->c, (struct rect){0, H / 10 + 26, W, font_clock.height}, &font_clock, clock,
+        int top = MAX(40, H / 12);
+        gfx_text_box(ui->c, (struct rect){0, top, W, 30}, &font_title, date, ALPHA(0xffffffffu, 215), ALIGN_CENTER);
+        gfx_text_box(ui->c, (struct rect){0, top + 28, W, font_clock.height}, &font_clock, clock,
                      ALPHA(0xffffffffu, 235), ALIGN_CENTER);
     }
     int count = users_count();
-    int base_y = H - 340;
+    int base_y = H - 250;
+    int notes_y = MAX(40, H / 12) + 28 + font_clock.height + 24;
+    int notes_room = base_y - 30 - notes_y - (media_track() && media_track()->title && (media_track()->playing || media_track()->position_ms > 0) ? 76 : 0);
+    int used = draw_notes(ui->c, W, notes_y, notes_room);
+    now_playing(ui, W, notes_y + used + (used ? 8 : 0));
     if (l->choosing) {
         for (int i = 0; i < count; i++) {
             struct rect slot = user_slot(W, i, count);
             slot.y = base_y;
             const struct user *u = users_get(i);
+            bool hot = ui_hover(ui, slot);
             if (ui->c) {
-                gfx_drop_shadow(ui->c, (struct rect){slot.x + (slot.w - AVATAR) / 2, slot.y, AVATAR, AVATAR}, AVATAR / 2, 14, 90, 4);
-                gfx_icon(ui->c, slot.x + (slot.w - AVATAR) / 2, slot.y, ICON_USER, AVATAR);
-                gfx_text_box(ui->c, (struct rect){slot.x, slot.y + AVATAR + 10, slot.w, 20}, &font_bold, u->full,
+                if (hot || i == l->user)
+                    gfx_round(ui->c, rect_inset(slot, 6), 18, ALPHA(0xffffffffu, hot ? 34 : 20));
+                gfx_icon(ui->c, slot.x + (slot.w - AVATAR) / 2, slot.y + 6, ICON_USER, AVATAR);
+                gfx_text_box(ui->c, (struct rect){slot.x, slot.y + AVATAR + 14, slot.w, 20}, &font_bold, u->full,
                              RGB(255, 255, 255), ALIGN_CENTER);
             }
-            if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, slot)) {
+            if (ui->e && ui->e->type == EV_MOUSE_DOWN && hot) {
                 ui->consumed = true;
                 l->user = i;
                 l->choosing = false;
@@ -143,9 +284,8 @@ static void frame(struct ui *ui, void *data)
         const struct user *u = users_get(l->user);
         int cx = W / 2;
         if (ui->c && u) {
-            gfx_drop_shadow(ui->c, (struct rect){cx - AVATAR / 2, base_y, AVATAR, AVATAR}, AVATAR / 2, 14, 90, 4);
             gfx_icon(ui->c, cx - AVATAR / 2, base_y, ICON_USER, AVATAR);
-            gfx_text_box(ui->c, (struct rect){0, base_y + AVATAR + 10, W, 22}, &font_title, u->full, RGB(255, 255, 255),
+            gfx_text_box(ui->c, (struct rect){0, base_y + AVATAR + 10, W, 22}, &font_bold, u->full, RGB(255, 255, 255),
                          ALIGN_CENTER);
         }
         int shake = 0;
@@ -155,23 +295,34 @@ static void frame(struct ui *ui, void *data)
             shake = (phase & 1 ? 8 : -8) * (int)(l->shake_until - now) / 450;
         } else if (l->shake_until) {
             l->shake_until = 0;
-            wm_set_timer(w, 1000);
+            wm_set_timer(w, 500);
         }
-        struct rect field = {cx - FIELD_W / 2 + shake, base_y + AVATAR + 44, FIELD_W, FIELD_H};
+        struct rect field = {cx - FIELD_W / 2 + shake, base_y + AVATAR + 42, FIELD_W, FIELD_H};
         if (ui->c) {
-            gfx_round(ui->c, field, FIELD_H / 2, ALPHA(0xffffffffu, 46));
-            gfx_round_frame(ui->c, field, FIELD_H / 2, ALPHA(0xffffffffu, 90));
-            const char *hint = u && u->has_password ? "Enter Password" : "Press Enter to log in";
+            gfx_round(ui->c, field, FIELD_H / 2, ALPHA(0xffffffffu, 40));
+            gfx_round_frame(ui->c, field, FIELD_H / 2, ALPHA(0xffffffffu, 70));
+            bool blink = hal_ticks_ms() / 500 % 2 == 0;
             if (!l->pass.len) {
-                gfx_text_box(ui->c, rect_inset(field, 4), &font_sans, hint, ALPHA(0xffffffffu, 170), ALIGN_CENTER);
+                const char *hint = u && u->has_password ? "Enter Password" : "Press Enter to unlock";
+                if (l->login && !(u && u->has_password))
+                    hint = "Press Enter to log in";
+                gfx_text_box(ui->c, rect_inset(field, 4), &font_sans, hint, ALPHA(0xffffffffu, 150), ALIGN_CENTER);
+                if (blink && u && u->has_password) {
+                    int tw = gfx_text_width(&font_sans, hint);
+                    gfx_fill(ui->c, (struct rect){field.x + (field.w - tw) / 2 - 4, field.y + 8, 2, field.h - 16},
+                             ALPHA(0xffffffffu, 220));
+                }
             } else {
                 char dots[3 * 64 + 1];
                 int n = MIN(l->pass.len, 64);
                 for (int i = 0; i < n; i++)
                     memcpy(dots + i * 3, "•", 3);
                 dots[n * 3] = 0;
-                gfx_text_box(ui->c, (struct rect){field.x + 14, field.y, field.w - 48, field.h}, &font_bold, dots,
-                             RGB(255, 255, 255), ALIGN_LEFT);
+                struct rect tr = {field.x + 14, field.y, field.w - 48, field.h};
+                gfx_text_box(ui->c, tr, &font_bold, dots, RGB(255, 255, 255), ALIGN_LEFT);
+                if (blink)
+                    gfx_fill(ui->c, (struct rect){MIN(tr.x + gfx_text_width(&font_bold, dots) + 2, tr.x + tr.w),
+                                                  field.y + 8, 2, field.h - 16}, ALPHA(0xffffffffu, 220));
                 gfx_circle(ui->c, field.x + field.w - 17, field.y + field.h / 2, 11, ALPHA(0xffffffffu, 80));
                 gfx_symbol(ui->c, field.x + field.w - 25, field.y + field.h / 2 - 8, SYM_RIGHT, 16, RGB(255, 255, 255));
             }
@@ -186,10 +337,11 @@ static void frame(struct ui *ui, void *data)
                 ui->win = NULL;
             return;
         }
-        if (count > 1 && l->login) {
-            struct rect back = {cx - 60, field.y + FIELD_H + 34, 120, 24};
+        if (count > 1) {
+            struct rect back = {cx - 70, field.y + FIELD_H + 34, 140, 24};
             if (ui->c)
-                gfx_text_box(ui->c, back, &font_sans, "‹  Other users", ALPHA(0xffffffffu, 200), ALIGN_CENTER);
+                gfx_text_box(ui->c, back, &font_sans, l->login ? "‹  Other users" : "Switch User",
+                             ALPHA(0xffffffffu, 200), ALIGN_CENTER);
             if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, back)) {
                 ui->consumed = true;
                 l->choosing = true;
@@ -197,20 +349,26 @@ static void frame(struct ui *ui, void *data)
             }
         }
     }
-    if (l->login) {
-        static const char *const labels[2] = {"Restart", "Shut Down"};
-        static const enum symbol_id syms[2] = {SYM_RESTART, SYM_POWER};
-        for (int i = 0; i < 2; i++) {
-            struct rect b = {W / 2 - 110 + i * 120, H - 44, 100, 40};
+    {
+        static const char *const labels[3] = {"Sleep", "Restart", "Shut Down"};
+        static const enum symbol_id syms[3] = {SYM_MOON, SYM_RESTART, SYM_POWER};
+        int first = l->login ? 1 : 0, n = 3 - first;
+        for (int i = first; i < 3; i++) {
+            struct rect b = {W / 2 - n * 60 + (i - first) * 120 + 10, H - 44, 100, 40};
+            bool hot = ui_hover(ui, (struct rect){b.x, b.y - 32, b.w, 56});
             if (ui->c) {
-                gfx_circle(ui->c, b.x + b.w / 2, b.y - 14, 16, ALPHA(0xffffffffu, 50));
+                gfx_circle(ui->c, b.x + b.w / 2, b.y - 14, 16, ALPHA(0xffffffffu, hot ? 80 : 46));
                 gfx_symbol(ui->c, b.x + b.w / 2 - 8, b.y - 22, syms[i], 16, RGB(255, 255, 255));
-                gfx_text_box(ui->c, (struct rect){b.x, b.y + 6, b.w, 16}, &font_small, labels[i], ALPHA(0xffffffffu, 210),
-                             ALIGN_CENTER);
+                gfx_text_box(ui->c, (struct rect){b.x, b.y + 6, b.w, 16}, &font_small, labels[i],
+                             ALPHA(0xffffffffu, 200), ALIGN_CENTER);
             }
-            if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, (struct rect){b.x, b.y - 32, b.w, 56})) {
+            if (ui->e && ui->e->type == EV_MOUSE_DOWN && hot) {
                 ui->consumed = true;
-                gui_quit(i ? QUIT_POWEROFF : QUIT_REBOOT);
+                if (i == 0) {
+                    l->asleep = true;
+                    wm_set_cursor_visible(false);
+                } else
+                    gui_quit(i == 2 ? QUIT_POWEROFF : QUIT_REBOOT);
                 return;
             }
         }
@@ -285,6 +443,7 @@ static void show(bool login)
             l->user = i;
     l->choosing = login && users_count() > 1;
     gui_blurred_wallpaper(&l->backdrop);
+    wm_crossfade();
     struct rect s = wm_screen_rect(0);
     lock_win = wm_popup(s.x, s.y, s.w, s.h, &ops, l, NULL);
     if (!lock_win) {
@@ -301,7 +460,7 @@ static void show(bool login)
     }
     lock_win->radius = 0;
     wm_move(lock_win, s.x, s.y);
-    wm_set_timer(lock_win, 1000);
+    wm_set_timer(lock_win, 500);
 }
 
 void gui_lock(void)

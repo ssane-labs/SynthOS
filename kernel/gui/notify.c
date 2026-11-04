@@ -43,6 +43,18 @@ int notify_unseen(void)
     return unseen;
 }
 
+/* The i-th newest notification of this session; false past the last one. */
+bool notify_history(int i, const char **title, const char **text, uint64_t *when)
+{
+    if (i < 0 || i >= history_count)
+        return false;
+    const struct past_note *n = &history[history_count - 1 - i];
+    *title = n->title;
+    *text = n->text;
+    *when = n->when;
+    return true;
+}
+
 static void ago(uint64_t when, char *buf, size_t cap)
 {
     uint64_t s = (hal_ticks_ms() - when) / 1000;
