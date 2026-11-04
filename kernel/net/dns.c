@@ -151,6 +151,8 @@ static bool has_v4(void)
 
 static bool has_v6(void)
 {
+    if (wg_blocks_v6(0))
+        return false;
     for (int i = 0; i < net_interface_count(); i++)
         if (net_v6_info(i)->global_ok)
             return true;

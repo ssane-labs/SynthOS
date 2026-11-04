@@ -77,6 +77,9 @@ Commands
   topng pic.jpg out.png     convert a picture to PNG
   config brightness 70      dim the screen; nightshift on|off|auto
   config network off        networking off like airplane mode
+  vpn import my.conf        add a WireGuard VPN (Settings > Network > VPN too)
+  vpn up my / vpn down      turn the VPN on and off (vpn status shows it)
+  config ipv6 off           IPv4 only; config dnsserver 1.1.1.1 (or auto)
   config glassstrength 90   how strong Liquid Glass is (0..100, 70 normal)
   config glasseffect smoky  regular, clear, tinted, smoky or prism glass
   config glassedge 80       brightness of glass edges (0..100, 50 normal)

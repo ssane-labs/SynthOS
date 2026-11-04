@@ -27,6 +27,7 @@ static const struct hash_alg *alg(const char *s)
 {
     return !strcmp(s, "sha256") ? &hash_sha256 : !strcmp(s, "sha384") ? &hash_sha384 : !strcmp(s, "sha1") ? &hash_sha1
            : !strcmp(s, "md5")    ? &hash_md5
+           : !strcmp(s, "blake2s") ? &hash_blake2s
                                   : &hash_sha512;
 }
 static uint8_t a[4096], b[4096], c[4096], d[4096], e[4096], o[8192];
@@ -72,6 +73,16 @@ int main(int argc, char **argv)
         uint8_t back[4096];
         printf("%s\n",
                gcm_open(&g, b, c, al, o, pl, back, tag) && !memcmp(back, d, pl) ? "open-ok" : "open-bad");
+    } else if (!strcmp(cmd, "b2key")) {
+        size_t kl = unhex(argv[2], a), n = unhex(argv[3], b);
+        int len = atoi(argv[4]);
+        blake2s(o, (size_t)len, a, kl, b, n);
+        hex(o, (size_t)len);
+    } else if (!strcmp(cmd, "hmac")) {
+        const struct hash_alg *h = alg(argv[2]);
+        size_t kl = unhex(argv[3], a), n = unhex(argv[4], b);
+        hmac(h, a, kl, b, n, o);
+        hex(o, h->digest);
     } else if (!strcmp(cmd, "chacha")) {
         unhex(argv[2], a);
         unhex(argv[3], b);

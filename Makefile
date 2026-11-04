@@ -463,7 +463,7 @@ test:
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools
-	@$(HOSTCC) -O2 -Iinclude -o $(BUILD)/tools/cryptotest tests/crypto/driver.c kernel/crypto/hash.c kernel/crypto/aes.c \
+	@$(HOSTCC) -O2 -Iinclude -o $(BUILD)/tools/cryptotest tests/crypto/driver.c kernel/crypto/hash.c kernel/crypto/blake2s.c kernel/crypto/aes.c \
 	    kernel/crypto/chacha.c kernel/crypto/x25519.c kernel/crypto/pk.c kernel/lib/sha256.c kernel/lib/sha1.c kernel/lib/md5.c
 	@python3 -I tests/crypto/check.py $(BUILD)/tools/cryptotest
 

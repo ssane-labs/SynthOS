@@ -425,6 +425,8 @@ int ip6_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, siz
     uint8_t d[16], s[16], chosen[16];
     if (!net_v6_addr(dst, d) || v6_off)
         return E_UNREACH;
+    if (wg_blocks_v6(dst) && !(d[0] == 0xfe && (d[1] & 0xc0) == 0x80))
+        return E_UNREACH;
     struct net_iface *ifc = pick(d, chosen);
     if (!ifc)
         return E_UNREACH;

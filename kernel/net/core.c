@@ -155,7 +155,7 @@ int net_configure(struct net_iface *ifc, uint32_t ip, uint32_t mask, uint32_t ga
 
 bool net_is_local(uint32_t ip)
 {
-    if ((ip >> 24) == 127 || net_v6_local(ip))
+    if ((ip >> 24) == 127 || net_v6_local(ip) || (ip && ip == wg_address()))
         return true;
     for (int i = 0; i < iface_count; i++)
         if (ifaces[i].configured && ifaces[i].ip == ip)
@@ -182,12 +182,16 @@ uint32_t net_source_for(uint32_t dst)
         return dst;
     if (net_is_v6(dst))
         return net_source6_for(dst);
+    if (wg_routes(dst))
+        return wg_address();
     struct net_iface *ifc = route(dst);
     return ifc ? ifc->ip : 0;
 }
 
 uint16_t net_mss_for(uint32_t dst)
 {
+    if (wg_routes(dst))
+        return wg_mss();
     return net_is_v6(dst) && !net_is_local(dst) ? 1440 : 1460;
 }
 
@@ -314,6 +318,8 @@ int ip_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, size
     }
     if (net_is_v6(dst))
         return ip6_send(src, dst, proto, payload, length);
+    if (wg_routes(dst))
+        return wg_output(packet, total);
     struct net_iface *ifc = route(dst);
     if (!ifc)
         return E_UNREACH;
@@ -404,6 +410,11 @@ static void ip_input(struct net_iface *ifc, const uint8_t *p, size_t length)
     }
 }
 
+void net_ip_input(const uint8_t *p, size_t length)
+{
+    ip_input(NULL, p, length);
+}
+
 static void eth_input(struct net_iface *ifc, const uint8_t *frame, size_t length)
 {
     if (length < 14)
@@ -457,6 +468,7 @@ static int poll_frames(void)
     tcp_tick(now);
     dhcp_tick(now);
     ip6_tick(now);
+    wg_tick(now);
     polling = false;
     return frames;
 }

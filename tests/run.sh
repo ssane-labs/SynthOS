@@ -20,6 +20,9 @@ cat > "$work/page.html" <<'EOF'
 <pre>  keep   spaces</pre><p>Caf&eacute; &mdash; &#x41;&#66;</p></body></html>
 EOF
 mcopy -i "$work/fat.img" "$work/page.html" ::/page.html
+# a WireGuard server on the host (tests/wgpeer.py); the configuration for it goes on the FAT drive
+wgport=$((20000 + $$ % 9000))
+python3 -I tests/wgpeer.py --config "$wgport" > "$work/test-vpn.conf" && mcopy -i "$work/fat.img" "$work/test-vpn.conf" ::/test-vpn.conf
 python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.writestr('pkg/readme.txt','zipped hello '*20); z.writestr('pkg/sub/a.txt','A'); z.close()" "$work/t.zip" &&
     mcopy -i "$work/fat.img" "$work/t.zip" ::/t.zip
 
@@ -646,6 +649,28 @@ config dnsserver 2001:db8:1::53; wget -O - http://six.test/x | tail -n 1; config
 dnsserver = auto
 config ipv6 off; ping -c 1 fec0::2 | grep -c from; config ipv6 on
 0
+vpn import /mnt/hdb/test-vpn.conf; vpn list
+test-vpn
+vpn up test-vpn | head -n 1
+VPN test-vpn: connected
+ping -c 1 10.99.0.1 | grep from
+64 bytes from 10.99.0.1: icmp_seq=1
+wget -O - http://10.99.0.1/hi.txt
+hello through the tunnel
+nslookup vpn.test
+vpn.test has address 10.99.0.1
+vpn status | grep -c handshake; ping -c 1 10.0.2.2 | grep -c from
+1
+vpn down; ping -c 1 10.99.0.1 | grep -c from; nslookup vpn.test | grep -c 10.99
+0
+config vpn test-vpn; echo via-setting $(ping -c 1 10.99.0.1 | grep -c from)
+via-setting 1
+config vpn off; config vpn
+vpn = off
+vpn key | grep -c Key
+2
+echo nope > /tmp/bad.conf; vpn import /tmp/bad.conf
+vpn: no valid PrivateKey in [Interface]
 lsusb
 QEMU USB Keyboard
 hello64 a b | grep longjmp
@@ -931,6 +956,8 @@ echo "shutdown" >> "$work/input"
 v6port=$((40000 + $$ % 20000))
 python3 -I tests/v6peer.py "$v6port" "$((v6port + 1))" >/dev/null 2>&1 &
 v6peer=$!
+python3 -I tests/wgpeer.py "$wgport" >/dev/null 2>&1 &
+v6peer="$v6peer $!"
 timeout 90 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
     -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
     -netdev socket,id=v6,udp=127.0.0.1:$v6port,localaddr=127.0.0.1:$((v6port + 1)) \

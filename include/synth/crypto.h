@@ -14,9 +14,16 @@ struct sha512 {
     size_t fill;
 };
 
+struct blake2s {
+    uint32_t h[8], t[2];
+    uint8_t buf[64];
+    uint32_t fill, outlen;
+};
+
 union hash_ctx {
     struct sha256 s256;
     struct sha512 s512;
+    struct blake2s b2s;
 };
 
 struct hash_alg {
@@ -28,7 +35,12 @@ struct hash_alg {
     K64(void (*final)(union hash_ctx *c, uint8_t *out));
 };
 
-extern const struct hash_alg hash_sha256, hash_sha384, hash_sha512, hash_sha1, hash_md5;
+extern const struct hash_alg hash_sha256, hash_sha384, hash_sha512, hash_sha1, hash_md5, hash_blake2s;
+
+void blake2s_init_key(struct blake2s *s, size_t outlen, const void *key, size_t keylen);
+void blake2s_update(struct blake2s *s, const void *data, size_t n);
+void blake2s_final(struct blake2s *s, uint8_t *out);
+void blake2s(uint8_t *out, size_t outlen, const void *key, size_t keylen, const void *data, size_t n);
 
 void sha384_init(struct sha512 *s);
 void sha512_init(struct sha512 *s);

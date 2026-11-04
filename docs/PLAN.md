@@ -54,7 +54,11 @@
   выкладывается в релиз CI), Настройки → General → Software Update и команда `update`: загрузочные
   секторы, ядро и файлы EFI (раздел внутри системы, перед разделом SynthOS или `\EFI\SynthOS` на
   разделе Windows), проверка SHA-256, автопроверка раз в день.
-- [ ] **VPN и IPv6.**
+- [x] **VPN и IPv6.** Сделано: IPv6 рядом с IPv4 (адрес от роутера по SLAAC, DNS из RA, NDP, ping6, TCP/UDP/
+  DNS/HTTP и Winsock по IPv6, `config ipv6`, `config dnsserver`); VPN WireGuard (`vpn import/up/down/status`,
+  Настройки → Network → VPN, `config vpn`): трафик для AllowedIPs идёт через туннель, DNS — через сервер VPN,
+  IPv6 мимо туннеля перекрыт, когда VPN забирает весь трафик. Пока без cookie-ответов сервера под нагрузкой и
+  без IPv6 внутри туннеля.
 - [ ] **Магазин приложений.**
 
 ## Заход «Black Hole» (версия 1.1)

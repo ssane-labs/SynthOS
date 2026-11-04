@@ -19,6 +19,8 @@
 
 #include <synth/keys.h>
 
+#include <synth/vpn.h>
+
 #include "../internal.h"
 
 /* System Settings: a sidebar of panes and, on the right, groups of rows - a label (and a line of explanation) on the
@@ -150,7 +152,7 @@ struct settings {
     char themes[48][24];
     int theme_count;
     struct ui_list theme_list;
-    struct ui_text wallpaper_file, wallpaper_url, computer, lang_filter;
+    struct ui_text wallpaper_file, wallpaper_url, computer, lang_filter, vpn_file;
     struct canvas thumbs[WALLS];
     bool thumbs_dark;
     const struct gui_look *thumbs_look;
@@ -501,6 +503,50 @@ static void go(struct settings *s, int pane)
 
 /* ---- Network */
 
+static void vpn_section(struct page *p)
+{
+    struct settings *s = p->s;
+    struct vpn_status st;
+    vpn_status(&st);
+    char names[16][32];
+    int n = vpn_list(names, 16);
+    section(p, "VPN");
+    for (int i = 0; i < n; i++) {
+        bool mine = st.on && !strcmp(st.name, names[i]), on = mine;
+        char desc[128], addr[48];
+        net_format_ip(st.address, addr, sizeof(addr));
+        if (mine && st.connected)
+            ksnprintf(desc, sizeof(desc), "Connected as %s through %s", addr, st.host);
+        else if (mine)
+            ksnprintf(desc, sizeof(desc), "%s", st.error[0] ? st.error : "Connecting...");
+        else
+            ksnprintf(desc, sizeof(desc), "WireGuard");
+        if (toggle(p, names[i], desc, &on)) {
+            int err = gui_setting("vpn", on ? names[i] : "off");
+            if (err)
+                gui_notify("VPN", "This configuration cannot be used; open it in Notepad to check it.");
+        }
+    }
+    if (!n)
+        info(p, "No VPN yet", "Add the .conf file your VPN service gives");
+    field(p, "Add a configuration", "The path of a WireGuard .conf file", &s->vpn_file, "/home/me/vpn.conf", 200);
+    if (button(p, "Add it to the list", NULL, "Add VPN") && s->vpn_file.len) {
+        char name[32], why[96];
+        if (vpn_import(s->vpn_file.buf, NULL, name, why, sizeof(why)))
+            gui_notify("VPN", why);
+        else {
+            gui_notify("VPN", "The VPN is added; turn it on here.");
+            ui_text_set(&s->vpn_file, "");
+        }
+    }
+    if (st.on && n && button(p, "Remove the VPN that is on", NULL, "Remove")) {
+        vpn_remove(st.name);
+        gui_setting("vpn", "off");
+    }
+    end(p, "While a VPN is on, the traffic it covers goes through it, names are looked up by its DNS server, and "
+           "IPv6 outside it stops when it takes all traffic.");
+}
+
 static void pane_network(struct page *p)
 {
     if (!net_interface_count()) {
@@ -509,20 +555,14 @@ static void pane_network(struct page *p)
                "cards (QEMU's default card is an e1000).");
         return;
     }
+    section(p, NULL);
     for (int i = 0; i < net_interface_count(); i++) {
         struct net_iface *ifc = net_interface(i);
         struct netdev *d = ifc->dev;
         bool link_up = !d->link || d->link(d);
-        char title[48], ip[16], mask[16], gw[16], dns[16], mac[24];
+        char title[48];
         ksnprintf(title, sizeof(title), "Ethernet %d", i + 1);
-        net_format_ip(ifc->ip, ip, sizeof(ip));
-        net_format_ip(ifc->mask, mask, sizeof(mask));
-        net_format_ip(ifc->gateway, gw, sizeof(gw));
-        net_format_ip(ifc->dns, dns, sizeof(dns));
-        ksnprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", d->mac[0], d->mac[1], d->mac[2], d->mac[3],
-                  d->mac[4], d->mac[5]);
         const char *status = !link_up ? "Cable unplugged" : ifc->configured ? "Connected" : "Getting an address";
-        section(p, NULL);
         struct rect r = row(p, title, status, 60, 0);
         if (!p->measure && p->ui->c) {
             uint32_t dot = ifc->configured && link_up ? RGB(52, 199, 89)
@@ -534,8 +574,21 @@ static void pane_network(struct page *p)
             gfx_text_box(p->ui->c, (struct rect){r.x + r.w / 2, r.y, r.w / 2 - 44, r.h}, &font_small, drv,
                          style.tertiary, ALIGN_RIGHT);
         }
-        end(p, NULL);
-        section(p, "TCP/IP");
+    }
+    end(p, NULL);
+    vpn_section(p);
+    for (int i = 0; i < net_interface_count(); i++) {
+        struct net_iface *ifc = net_interface(i);
+        struct netdev *d = ifc->dev;
+        char title[48], ip[16], mask[16], gw[16], dns[16], mac[24];
+        ksnprintf(title, sizeof(title), net_interface_count() > 1 ? "Ethernet %d" : "TCP/IP", i + 1);
+        net_format_ip(ifc->ip, ip, sizeof(ip));
+        net_format_ip(ifc->mask, mask, sizeof(mask));
+        net_format_ip(ifc->gateway, gw, sizeof(gw));
+        net_format_ip(ifc->dns, dns, sizeof(dns));
+        ksnprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", d->mac[0], d->mac[1], d->mac[2], d->mac[3],
+                  d->mac[4], d->mac[5]);
+        section(p, title);
         info(p, "Configure IPv4", ifc->dhcp ? "Using DHCP" : "Manually");
         info(p, "IP address", ifc->configured ? ip : "-");
         info(p, "Subnet mask", mask);
@@ -547,6 +600,19 @@ static void pane_network(struct page *p)
             gui_notify(d->name, "Asking the network for a new address.");
         }
         end(p, NULL);
+        struct net6 *v6 = net_v6_info(i);
+        if (v6->ll_ok) {
+            char g[48], ll[48], r6[48];
+            net_format_ip6(v6->global, g, sizeof(g));
+            net_format_ip6(v6->ll, ll, sizeof(ll));
+            net_format_ip6(v6->router, r6, sizeof(r6));
+            section(p, "IPv6");
+            info(p, "IPv6 address", v6->global_ok ? g : "Not offered by the network");
+            if (v6->router_ok)
+                info(p, "Router", r6);
+            info(p, "Link-local address", ll);
+            end(p, NULL);
+        }
     }
 }
 
@@ -2000,6 +2066,9 @@ static void frame(struct ui *ui, void *data)
     if (!ui->win)
         return;
     toolbar(ui, s, cx, W);
+    uint32_t tick = s->pane == P_NETWORK ? 1000 : 0;
+    if (ui->win->timer_ms != tick)
+        wm_set_timer(ui->win, tick);
     struct rect content = {cx, TOOLBAR_HEIGHT, W - cx, H - TOOLBAR_HEIGHT};
     if (ui->e && ui->e->type == EV_WHEEL && rect_contains(content, ui->e->x, ui->e->y)) {
         s->scroll += ui->e->wheel * 40;

@@ -19,6 +19,14 @@ for n in [0,1,55,56,63,64,65,119,120,1000]:
     d=os.urandom(n)
     check('sha1-'+str(n), run('sha1',d.hex())[0] if n else run('sha1','')[0], hashlib.sha1(d).hexdigest())
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+for n in [0,1,63,64,65,128,129,1000]:
+    d=os.urandom(n)
+    check('blake2s'+str(n), run('hash','blake2s',d.hex())[0] if n else run('hash','blake2s','')[0], hashlib.blake2s(d).hexdigest())
+    k=os.urandom(32)
+    check('blake2s-key'+str(n), run('b2key',k.hex(),d.hex(),'16')[0] if n else run('b2key',k.hex(),'','16')[0],
+          hashlib.blake2s(d,key=k,digest_size=16).hexdigest())
+    check('hmac-blake2s'+str(n), run('hmac','blake2s',k.hex(),d.hex())[0] if n else run('hmac','blake2s',k.hex(),'')[0],
+          hmac.new(k,d,hashlib.blake2s).hexdigest())
 for kl in [16,24,32]:
     for i in range(4):
         k,pt=os.urandom(kl),os.urandom(16)

@@ -107,20 +107,16 @@ int net_set_broadcast(int id, bool on)
     return 0;
 }
 
-static int udp_send(struct sock *s, const void *buf, size_t n, uint32_t ip, uint16_t port)
+static int udp_build(uint32_t src, uint16_t sport, const void *buf, size_t n, uint32_t ip, uint16_t port)
 {
     if (n + 8 > NET_MTU - IP_HEADER)
         return E_RANGE;
-    if (!s->bound) {
-        int err = net_bind((int)(s - net_socks), 0, 0);
-        if (err)
-            return err;
-    }
     uint8_t *p = kmalloc(n + 8);
     if (!p)
         return E_NOMEM;
-    uint32_t src = s->lip ? s->lip : net_source_for(ip);
-    wr16(p, s->lport);
+    if (!src)
+        src = net_source_for(ip);
+    wr16(p, sport);
     wr16(p + 2, port);
     wr16(p + 4, (uint16_t)(n + 8));
     wr16(p + 6, 0);
@@ -132,6 +128,22 @@ static int udp_send(struct sock *s, const void *buf, size_t n, uint32_t ip, uint
     return err ? err : (int)n;
 }
 
+int udp_send_raw(uint32_t dst, uint16_t dport, uint16_t sport, const void *data, size_t n)
+{
+    int r = udp_build(0, sport, data, n, dst, dport);
+    return r < 0 ? r : 0;
+}
+
+static int udp_send(struct sock *s, const void *buf, size_t n, uint32_t ip, uint16_t port)
+{
+    if (!s->bound) {
+        int err = net_bind((int)(s - net_socks), 0, 0);
+        if (err)
+            return err;
+    }
+    return udp_build(s->lip, s->lport, buf, n, ip, port);
+}
+
 void udp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
 {
     if (length < 8)
@@ -141,6 +153,10 @@ void udp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
         return;
     if (rd16(p + 6) && net_checksum(p, ulen, net_pseudo_sum(src, dst, IP_UDP, ulen)) != 0)
         return;
+    if (wg_claims(src, sport, dport)) {
+        wg_input(p + 8, ulen - 8u);
+        return;
+    }
     for (int i = 0; i < NET_MAX_SOCKETS; i++) {
         struct sock *s = &net_socks[i];
         if (!s->used || s->type != NET_UDP || !s->bound || s->lport != dport)
