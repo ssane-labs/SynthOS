@@ -1734,6 +1734,7 @@ static void pump(int timeout_ms)
     if (pumping)
         return;
     pumping = true;
+    input_pump_mark();
     bool busy = false;
     for (int i = 0; i < 64; i++) {
         int key = hal_key_read(0);
@@ -1779,15 +1780,27 @@ static void pump(int timeout_ms)
     }
     recovery_boot_ok();
     pumping = false;
+    /* a turn given from inside long work only draws and lets programs run; the next job waits until that work ends */
+    if (input_yielding) {
+#if CONFIG_WIN32
+        w32_background();
+#endif
+        return;
+    }
     if (autostart_pending && session && session->idle && !gui_locked()) {
         autostart_pending = false;
         autostart_run();
     }
-    wallpaper_fetch_run();
-    sysupdate_run();
-    store_run();
-    chrome_install_run();
-    chromium_run();
+    static bool in_jobs;
+    if (!in_jobs) {
+        in_jobs = true;
+        wallpaper_fetch_run();
+        sysupdate_run();
+        store_run();
+        chrome_install_run();
+        chromium_run();
+        in_jobs = false;
+    }
     open_queued();
     /* While something moves, frames start every 16 ms whatever drawing one took; otherwise wait up to 8 ms. */
     static uint64_t frame_start;

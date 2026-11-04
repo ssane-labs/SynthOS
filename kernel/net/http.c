@@ -3,6 +3,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/http.h>
+#include <synth/input.h>
 #include <synth/inflate.h>
 #include <synth/net.h>
 #include <synth/string.h>
@@ -569,6 +570,7 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
             }
             if (have_headers && req->progress)
                 req->progress(req->ctx, "downloading", streamed + got - header_len, expected == (size_t)-1 ? 0 : expected);
+            input_yield();
             if (have_headers && expected != (size_t)-1 && streamed + got - header_len >= expected)
                 break;
             if (have_headers && chunked && chunked_done(buf + header_len, got - header_len))

@@ -1,6 +1,7 @@
 #include <synth/error.h>
 #include <synth/heap.h>
 #include <synth/inflate.h>
+#include <synth/input.h>
 #include <synth/string.h>
 
 #define FAST_BITS 9
@@ -138,7 +139,9 @@ static const uint8_t dist_extra[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5,
 
 static int codes(struct state *s, const struct huff *lit, const struct huff *dist)
 {
-    for (;;) {
+    for (unsigned n = 0;; n++) {
+        if (!(n & 0x7fff))
+            input_yield();
         int sym = decode(s, lit);
         if (sym < 0)
             return E_INVAL;

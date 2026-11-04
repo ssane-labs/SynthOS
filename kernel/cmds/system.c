@@ -397,12 +397,19 @@ static void prof_report(struct shell *sh, uint32_t *buf, uint32_t n, const char 
 
 static uint32_t *prof_running;
 
-COMMAND(prof, NULL, "dev", "prof [-c] [-o file|-k] command [args...] | prof [-c] start | prof [-o file|-k] stop",
+COMMAND(prof, NULL, "dev",
+        "prof [-s] [-c] [-o file|-k] command [args...] | prof [-s] [-c] start | prof [-o file|-k] stop",
         "list where the CPU spent its time while a command ran, or between start and stop (addresses for addr2line); "
-        "-k writes to the kernel log, -c counts kernel time at the caller of the function it was in")
+        "-k writes to the kernel log, -c counts kernel time at the caller of the function it was in, -s counts only "
+        "while the desktop waits for its turn (over 50 ms)")
 {
     const char *report = NULL;
-    bool to_log = false, callers = false;
+    bool to_log = false, callers = false, stalls = false;
+    if (argc > 2 && !strcmp(argv[1], "-s")) {
+        stalls = true;
+        argc--;
+        argv++;
+    }
     if (argc > 2 && !strcmp(argv[1], "-c")) {
         callers = true;
         argc--;
@@ -425,13 +432,19 @@ COMMAND(prof, NULL, "dev", "prof [-c] [-o file|-k] command [args...] | prof [-c]
         if (!(prof_running = kmalloc(PROF_SAMPLES * sizeof(uint32_t))))
             return sh_error(sh, "prof", "out of memory");
         hal_profile_callers(callers);
+        hal_profile_gate(stalls ? &input_pump_at : NULL, 50);
+        input_lag_take(&(uint32_t){0});
         hal_profile_start(prof_running, PROF_SAMPLES);
         return 0;
     }
     if (argc == 2 && !strcmp(argv[1], "stop")) {
         if (!prof_running)
             return sh_error(sh, "prof", "not running");
-        uint32_t n = hal_profile_stop();
+        uint32_t n = hal_profile_stop(), slow, lag = input_lag_take(&slow);
+        if (input_pump_at && to_log)
+            klog("desktop: longest wait %u ms, %u waits of 100 ms or more", lag, slow);
+        else if (input_pump_at)
+            sh_printf(sh, "desktop: longest wait %u ms, %u waits of 100 ms or more\n", lag, slow);
         prof_report(sh, prof_running, n, report, to_log);
         kfree(prof_running);
         prof_running = NULL;
@@ -443,6 +456,7 @@ COMMAND(prof, NULL, "dev", "prof [-c] [-o file|-k] command [args...] | prof [-c]
     if (!buf)
         return sh_error(sh, "prof", "out of memory");
     hal_profile_callers(callers);
+    hal_profile_gate(stalls ? &input_pump_at : NULL, 50);
     hal_profile_start(buf, PROF_SAMPLES);
     int rc = run_argv(sh, argc - 1, argv + 1);
     uint32_t n = hal_profile_stop();

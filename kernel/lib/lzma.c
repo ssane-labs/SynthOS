@@ -1,5 +1,6 @@
 #include <synth/error.h>
 #include <synth/heap.h>
+#include <synth/input.h>
 #include <synth/lzma.h>
 #include <synth/string.h>
 
@@ -138,7 +139,9 @@ int lzma_decode(const uint8_t props[5], const uint8_t *in, size_t in_size, uint8
     uint32_t rep0 = 0, rep1 = 0, rep2 = 0, rep3 = 0;
     unsigned state = 0;
     unsigned pb_mask = (1u << pb) - 1, lp_mask = (1u << lp) - 1;
-    while (pos < out_size && !rc.bad) {
+    for (unsigned n = 0; pos < out_size && !rc.bad; n++) {
+        if (!(n & 0xffff))
+            input_yield();
         unsigned pos_state = (unsigned)pos & pb_mask;
         if (!bit(&rc, &m->is_match[state][pos_state])) {
             unsigned prev = pos ? out[pos - 1] : 0;

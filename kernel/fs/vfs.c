@@ -1,5 +1,6 @@
 #include <synth/error.h>
 #include <synth/heap.h>
+#include <synth/input.h>
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -465,6 +466,10 @@ void vfs_closedir(struct vdir *dir)
     dir->vn = NULL;
 }
 
+/* big files move in pieces, with the desktop getting its turns in between */
+#define BIG_PIECE (1u << 20)
+#define COPY_PIECE (64u << 10)
+
 int vfs_read_all(const char *path, char **data, size_t *size)
 {
     struct file *f;
@@ -480,7 +485,9 @@ int vfs_read_all(const char *path, char **data, size_t *size)
             vfs_close(f);
             return E_NOMEM;
         }
-        long n = vfs_read(f, buf + len, cap - len - 1);
+        long n = vfs_read(f, buf + len, MIN(cap - len - 1, (size_t)BIG_PIECE));
+        if (cap > BIG_PIECE)
+            input_yield();
         if (n < 0) {
             kfree(buf);
             vfs_close(f);
@@ -511,11 +518,17 @@ int vfs_write_all(const char *path, const void *data, size_t size)
     int err = vfs_open(path, VFS_WRITE | VFS_CREATE | VFS_TRUNC, &f);
     if (err)
         return err;
-    long n = size ? vfs_write(f, data, size) : 0;
+    size_t done = 0;
+    long n = 0;
+    while (done < size && (n = vfs_write(f, (const char *)data + done, MIN(size - done, (size_t)BIG_PIECE))) > 0) {
+        done += (size_t)n;
+        if (size > BIG_PIECE)
+            input_yield();
+    }
     vfs_close(f);
     if (n < 0)
         return (int)n;
-    return (size_t)n == size ? 0 : E_NOSPC;
+    return done == size ? 0 : E_NOSPC;
 }
 
 static int copy_file(const char *from, const char *to)
@@ -529,14 +542,15 @@ static int copy_file(const char *from, const char *to)
         vfs_close(src);
         return err;
     }
-    char *buf = kmalloc(4096);
+    char *buf = kmalloc(COPY_PIECE);
     long n = buf ? 0 : E_NOMEM;
-    while (buf && (n = vfs_read(src, buf, 4096)) > 0) {
+    while (buf && (n = vfs_read(src, buf, COPY_PIECE)) > 0) {
         long w = vfs_write(dst, buf, (size_t)n);
         if (w != n) {
             n = w < 0 ? w : E_NOSPC;
             break;
         }
+        input_yield();
     }
     kfree(buf);
     vfs_close(src);

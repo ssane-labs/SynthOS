@@ -16,6 +16,39 @@ void input_set_pump(void (*fn)(int timeout_ms))
     pump = fn;
 }
 
+volatile uint64_t input_pump_at;
+static uint32_t lag_max, lag_slow;
+
+void input_pump_mark(void)
+{
+    uint64_t now = hal_ticks_ms();
+    uint32_t gap = input_pump_at ? (uint32_t)(now - input_pump_at) : 0;
+    if (gap > lag_max)
+        lag_max = gap;
+    lag_slow += gap >= 100;
+    input_pump_at = now;
+}
+
+bool input_yielding;
+
+void input_yield(void)
+{
+    if (!pump || input_yielding || hal_ticks_ms() - input_pump_at < 25 || hal_in_interrupt())
+        return;
+    input_yielding = true;
+    pump(0);
+    input_yielding = false;
+}
+
+uint32_t input_lag_take(uint32_t *slow)
+{
+    uint32_t open = input_pump_at ? (uint32_t)(hal_ticks_ms() - input_pump_at) : 0;
+    uint32_t max = MAX(lag_max, open);
+    *slow = lag_slow + (open >= 100);
+    lag_max = lag_slow = 0;
+    return max;
+}
+
 static bool push(int key)
 {
     if (key == KEY_RESIZE && !pump) {

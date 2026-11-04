@@ -1,5 +1,6 @@
 #include <synth/error.h>
 #include <synth/heap.h>
+#include <synth/input.h>
 #include <synth/lzma.h>
 #include <synth/path.h>
 #include <synth/sevenzip.h>
@@ -746,6 +747,7 @@ int sevenzip_extract(const char *archive, int64_t base, const char *dest, const 
                 at += n;
                 if (progress)
                     progress(ctx, rel, done + at, total);
+                input_yield();
             }
             vfs_close(o);
             if (!err)

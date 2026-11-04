@@ -108,6 +108,8 @@ uint64_t hal_ticks_ms(void);
 void hal_profile_start(uint32_t *buf, uint32_t cap);
 uint32_t hal_profile_stop(void);
 void hal_profile_callers(bool on);
+/* samples only while `since` (a time in ms) is at least ms old; NULL samples always */
+void hal_profile_gate(volatile const uint64_t *since, uint32_t ms);
 void hal_sleep_ms(uint32_t ms);
 void hal_rtc(struct rtc_time *t);
 void hal_beep(uint32_t hz, uint32_t ms);

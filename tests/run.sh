@@ -567,6 +567,8 @@ config w32precise | head -n 1
 w32precise = on
 prof start; calc 6 * 7; prof stop | grep -c "prof: .* samples"
 1
+prof -s calc 111 * 3 | grep -x 333
+333
 config w32errors on; config w32errors | head -n 1
 w32errors = on
 config w32errors off; config w32trace | head -n 1

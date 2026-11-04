@@ -20,6 +20,8 @@ void timer_hook(void (*fn)(void))
 static uint32_t *prof_buf;
 static volatile uint32_t prof_len, prof_cap;
 static bool prof_callers;
+static volatile const uint64_t *prof_gate;
+static uint32_t prof_gate_ms;
 extern const uint8_t __text_end[];
 
 void hal_profile_callers(bool on)
@@ -45,6 +47,12 @@ static uint32_t caller_of(struct regs *r)
     return (uint32_t)r->eip;
 }
 
+void hal_profile_gate(volatile const uint64_t *since, uint32_t ms)
+{
+    prof_gate = since;
+    prof_gate_ms = ms;
+}
+
 void hal_profile_start(uint32_t *buf, uint32_t cap)
 {
     prof_len = 0;
@@ -60,7 +68,7 @@ uint32_t hal_profile_stop(void)
 
 static void pit_tick(struct regs *r)
 {
-    if (prof_buf && prof_len < prof_cap)
+    if (prof_buf && prof_len < prof_cap && (!prof_gate || hal_ticks_ms() - *prof_gate >= prof_gate_ms))
         prof_buf[prof_len++] = prof_callers ? caller_of(r) : (uint32_t)r->eip;
     ticks++;
     if (ticks * 1000u / tick_hz % 2 == 0)
