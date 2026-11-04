@@ -168,6 +168,14 @@ config minbutton
 minbutton = off
 config magnify
 magnify = off
+config glasseffect prism; config glasseffect
+glasseffect = prism
+config glasseffect fog
+glasseffect: invalid value 'fog'
+config glassedge 80; config glassfrost 20; config glassedge
+glassedge = 80
+config glasseffect regular; config glassedge 50; config glassfrost 50; config glassfrost
+glassfrost = 50
 config browser chrome; config browser; config browser chromium
 browser = chrome
 config dockdots off; config dockbounce off; config dockdots; config dockdots on

@@ -822,6 +822,18 @@ static void pane_appearance(struct page *p)
                    100, "Subtle", "Strong"))
             apply_number("glassstrength", k);
     }
+    if (strcmp(material, "solid")) {
+        static const char *const effects[] = {"Regular", "Clear", "Tinted", "Smoky", "Prism"};
+        static const char *const effect_values[] = {"regular", "clear", "tinted", "smoky", "prism"};
+        choice(p, "Effect", "The kind of glass", "glasseffect", effects, effect_values, 5,
+               360);
+        int e = (int)number("glassedge", 50);
+        if (slider(p, "Edge brightness", "How bright the rim of light along the glass is", &e, 0, 100, "None", "Bright"))
+            apply_number("glassedge", e);
+        int f = (int)number("glassfrost", 50);
+        if (slider(p, "Frost", "How much the glass blurs what lies behind it", &f, 0, 100, "Sharp", "Frosted"))
+            apply_number("glassfrost", f);
+    }
     end(p, !strcmp(material, "solid") ? "Reduce transparency is on in Accessibility, so menus and the Dock are solid."
                                       : NULL);
     wallpaper_sections(p);

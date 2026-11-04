@@ -160,48 +160,59 @@ def tint_mask(mask, top, bottom):
 
 
 class Icon:
+    """Layers stack from back to front: blur() is out of focus far behind, glass() frosts what lies under it,
+    fill() is crisp and opaque. Each plate gets a thin opaque rim of light, so the layers stay apart."""
+
     def __init__(self, top, bottom, box=BODY):
         self.mask = squircle_mask(box)
         self.img = blank()
         self.img.paste(gradient((S, S), top, bottom), (0, 0), self.mask)
 
     def blur(self, draw, color, radius, dx=0, dy=0):
-        """A shape far behind, out of focus."""
         layer = colored(mask_of(draw), color).filter(ImageFilter.GaussianBlur(radius))
         self.img.alpha_composite(layer, (dx, dy)) if dx or dy else self.img.alpha_composite(layer)
         return self
 
-    def fill(self, draw, top, bottom=None, shadow=0):
-        """A crisp shape; shadow lifts it off what is behind."""
+    def rim(self, m, color, width=3):
+        edge = ImageChops.subtract(m, m.filter(ImageFilter.MinFilter(width * 2 - 1)))
+        fade = gradient((S, S), (255, 255, 255, 255), (255, 255, 255, 90)).getchannel("A")
+        self.img.alpha_composite(colored(ImageChops.multiply(edge, fade), color))
+
+    def fill(self, draw, top, bottom=None, shadow=0, rim=None):
         m = mask_of(draw)
         if shadow:
-            sh = colored(m, (0, 0, 0, shadow)).filter(ImageFilter.GaussianBlur(7))
-            self.img.alpha_composite(sh, (0, 6))
+            sh = colored(m, (0, 0, 0, shadow)).filter(ImageFilter.GaussianBlur(6))
+            self.img.alpha_composite(sh, (0, 5))
         self.img.alpha_composite(tint_mask(m, top, bottom or top))
+        if rim:
+            self.rim(m, rim, 2)
         return self
 
-    def glass(self, draw, tint=(255, 255, 255, 70), blur=12, shadow=40):
-        """A frosted plate: what lies under it, blurred and lightened, with a faint light from above."""
+    def glass(self, draw, tint=(255, 255, 255, 70), blur=12, shadow=40, rim=(255, 255, 255, 200)):
         m = mask_of(draw)
         if shadow:
             sh = colored(m, (0, 0, 0, shadow)).filter(ImageFilter.GaussianBlur(9))
-            self.img.alpha_composite(sh, (0, 8))
+            self.img.alpha_composite(sh, (0, 7))
         under = self.img.filter(ImageFilter.GaussianBlur(blur))
         plate = Image.composite(under, blank(), m)
         plate.alpha_composite(colored(m, tint))
-        light = gradient((S, S), (255, 255, 255, 60), (255, 255, 255, 0))
+        light = gradient((S, S), (255, 255, 255, 46), (255, 255, 255, 0))
         light.putalpha(ImageChops.multiply(light.getchannel("A"), m))
         plate.alpha_composite(light)
-        edge = ImageChops.subtract(m, m.filter(ImageFilter.MinFilter(3)))
-        plate.alpha_composite(colored(edge, (255, 255, 255, 70)))
         self.img.alpha_composite(plate)
+        if rim:
+            self.rim(m, rim)
         return self
 
     def done(self):
         out = Image.composite(self.img, blank(), self.mask)
+        inner = ImageChops.subtract(self.mask.filter(ImageFilter.MinFilter(3)), self.mask.filter(ImageFilter.MinFilter(7)))
+        fade = gradient((S, S), (255, 255, 255, 150), (255, 255, 255, 20)).getchannel("A")
+        out.alpha_composite(colored(ImageChops.multiply(inner, fade), (255, 255, 255, 120)))
         edge = ImageChops.subtract(self.mask, self.mask.filter(ImageFilter.MinFilter(3)))
-        out.alpha_composite(colored(edge, (0, 0, 0, 28)))
+        out.alpha_composite(colored(edge, (0, 0, 0, 40)))
         return out
+
 
 
 def rr4(box, r, outline=False, width=0):
@@ -237,27 +248,6 @@ def text4(s, path, size, xy):
     return draw
 
 
-WHITE = (255, 255, 255, 255)
-
-
-def files_icon():
-    return (Icon((96, 186, 255, 255), (20, 98, 230, 255))
-            .blur(rr4((40, 60, 200, 150), 24), (10, 60, 170, 200), 14, 0, 10)
-            .fill(rr4((52, 74, 120, 104), 12), (200, 230, 255, 255))
-            .glass(rr4((52, 92, 204, 190), 20), (220, 238, 255, 110))
-            .fill(rr4((106, 136, 150, 146), 5), (30, 120, 235, 255))
-            .done())
-
-
-def terminal_icon():
-    return (Icon((70, 72, 82, 255), (20, 20, 24, 255))
-            .blur(ellipse4((120, 120, 230, 230)), (60, 220, 120, 170), 26)
-            .glass(rr4((44, 56, 212, 200), 18), (40, 44, 52, 120), 10)
-            .fill(lambda d: d.line([(72, 98), (104, 124), (72, 150)], fill=255, width=13, joint="curve"), WHITE)
-            .fill(rr4((116, 146, 172, 158), 6), (130, 255, 160, 255))
-            .done())
-
-
 def gear_mask(cx, cy, r_out, r_in, teeth, hole):
     def draw(d):
         pts = []
@@ -281,14 +271,6 @@ def gear_shape(d, cx, cy, r_out, r_in, teeth, fill, hole_r=0, hole=None):
         d.ellipse([cx - hole_r, cy - hole_r, cx + hole_r, cy + hole_r], fill=hole)
 
 
-def settings_icon():
-    return (Icon((176, 178, 188, 255), (96, 98, 108, 255))
-            .blur(gear_mask(150, 150, 110, 90, 14, 40), (255, 255, 255, 110), 12)
-            .glass(ellipse4((54, 54, 202, 202)), (255, 255, 255, 60), 12)
-            .fill(gear_mask(128, 128, 62, 50, 12, 22), (250, 250, 252, 255), (210, 212, 220, 255), 60)
-            .done())
-
-
 def calc_icon():
     icon = (Icon((70, 70, 78, 255), (22, 22, 26, 255))
             .blur(ellipse4((130, 20, 250, 140)), (255, 150, 20, 190), 24))
@@ -299,82 +281,6 @@ def calc_icon():
                 icon.fill(ellipse4((x, y, x + 38, y + 38)), (255, 176, 40, 255), (250, 140, 0, 255), 40)
             else:
                 icon.glass(ellipse4((x, y, x + 38, y + 38)), (255, 255, 255, 46 if row else 80), 6, 0)
-    return icon.done()
-
-
-def notepad_icon():
-    icon = (Icon((255, 240, 170, 255), (250, 200, 50, 255))
-            .blur(rr4((70, 40, 220, 180), 16), (255, 255, 255, 170), 12, 10, -6)
-            .glass(rr4((50, 58, 206, 206), 16), (255, 255, 255, 170), 10)
-            .fill(rr4((50, 58, 206, 86), 14), (255, 214, 10, 255)))
-    for i in range(4):
-        y = 118 + i * 22
-        icon.fill(rr4((72, y - 3, 184 - (i % 2) * 34, y + 3), 3), (180, 160, 120, 255))
-    return icon.done()
-
-
-def paint_icon():
-    icon = Icon((255, 160, 130, 255), (236, 70, 120, 255))
-    for (x, y, c) in [(40, 40, (255, 59, 48)), (150, 30, (255, 214, 10)), (170, 150, (52, 199, 89)),
-                      (30, 160, (0, 122, 255))]:
-        icon.blur(ellipse4((x, y, x + 70, y + 70)), c + (230,), 18)
-    icon.glass(ellipse4((46, 64, 210, 200)), (255, 255, 255, 120), 12)
-    for (x, y, c) in [(70, 102, (255, 59, 48)), (104, 80, (255, 204, 0)), (146, 82, (52, 199, 89)),
-                      (176, 110, (0, 122, 255)), (78, 142, (175, 82, 222))]:
-        icon.fill(ellipse4((x, y, x + 28, y + 28)), c + (255,), None, 50)
-    return icon.done()
-
-
-def monitor_icon():
-    pts = [(56, 170), (84, 150), (106, 162), (130, 100), (152, 132), (174, 84), (202, 110)]
-    return (Icon((44, 52, 58, 255), (12, 16, 18, 255))
-            .blur(line4(pts, 30), (80, 245, 140, 200), 14)
-            .glass(rr4((40, 56, 216, 200), 20), (255, 255, 255, 26), 8, 0)
-            .fill(line4(pts, 11), (150, 255, 180, 255), (60, 220, 120, 255))
-            .done())
-
-
-def browser_icon():
-    return (Icon((110, 210, 255, 255), (12, 96, 230, 255))
-            .blur(ellipse4((30, 30, 226, 226)), (255, 255, 255, 120), 18)
-            .glass(ellipse4((48, 48, 208, 208)), (255, 255, 255, 80), 12)
-            .fill(ellipse4((52, 52, 204, 204), True, 7), WHITE)
-            .fill(poly4([(128, 128), (176, 80), (140, 140)]), (255, 80, 70, 255), None, 50)
-            .fill(poly4([(128, 128), (80, 176), (116, 116)]), WHITE, None, 50)
-            .fill(ellipse4((121, 121, 135, 135)), WHITE)
-            .done())
-
-
-def mines_icon():
-    cx, cy = 122, 138
-
-    def mine(d):
-        for a in range(0, 360, 45):
-            r = math.radians(a)
-            d.line([(cx, cy), (cx + 52 * math.cos(r), cy + 52 * math.sin(r))], fill=255, width=12)
-        d.ellipse([cx - 38, cy - 38, cx + 38, cy + 38], fill=255)
-    icon = Icon((160, 230, 120, 255), (40, 150, 70, 255))
-    for i in range(3):
-        for j in range(3):
-            icon.glass(rr4((30 + i * 68, 30 + j * 68, 90 + i * 68, 90 + j * 68), 12), (255, 255, 255, 40), 8, 0)
-    return (icon.blur(mine, (0, 0, 0, 120), 10, 0, 8)
-            .fill(mine, (40, 44, 52, 255), (16, 18, 22, 255))
-            .fill(ellipse4((cx - 22, cy - 22, cx - 4, cy - 4)), (230, 236, 244, 255))
-            .fill(rr4((178, 52, 186, 126), 3), WHITE)
-            .fill(poly4([(186, 54), (222, 72), (186, 90)]), (255, 59, 48, 255), None, 40)
-            .done())
-
-
-def launchpad_icon():
-    colors = [(255, 69, 58), (255, 159, 10), (255, 214, 10), (48, 209, 88), (100, 210, 255), (10, 132, 255),
-              (191, 90, 242), (255, 55, 95), (172, 142, 104)]
-    icon = Icon((250, 250, 252, 255), (206, 210, 222, 255))
-    for i, c in enumerate(colors):
-        x, y = 40 + (i % 3) * 62, 40 + (i // 3) * 62
-        icon.blur(rr4((x, y, x + 52, y + 52), 14), c + (255,), 10)
-    for i, c in enumerate(colors):
-        x, y = 60 + (i % 3) * 50, 60 + (i // 3) * 50
-        icon.fill(rr4((x, y, x + 38, y + 38), 11), c + (255,), None, 30)
     return icon.done()
 
 
@@ -395,22 +301,167 @@ def mirage_mask(size, cx, cy, r):
     return m
 
 
+WHITE = (255, 255, 255, 255)
+
+# A quiet palette: grounds are paper, stone or graphite; each icon gets at most one muted accent.
+PAPER = ((250, 250, 251, 255), (218, 219, 224, 255))
+STONE = ((204, 206, 211, 255), (146, 148, 156, 255))
+GRAPHITE = ((86, 88, 96, 255), (28, 29, 33, 255))
+BLUE = (92, 136, 196)
+RED = (206, 92, 86)
+GREEN = (104, 172, 128)
+AMBER = (224, 178, 92)
+ROSE = (206, 98, 122)
+TEAL = (90, 160, 168)
+VIOLET = (132, 116, 186)
+INK = (64, 66, 74, 255)
+FROST = (255, 255, 255, 120)
+SMOKE = (52, 54, 62, 150)
+
+
+def a(c, alpha=255):
+    return c + (alpha,)
+
+
+def deeper(c, k=0.78):
+    return tuple(int(v * k) for v in c[:3]) + (255,)
+
+
+def top_rounded(box, r):
+    return lambda d: d.rounded_rectangle(box, radius=r, fill=255, corners=(True, True, False, False))
+
+
+def files_icon():
+    return (Icon(*PAPER)
+            .blur(rr4((44, 70, 212, 196), 30), a(BLUE, 150), 18, 0, 10)
+            .fill(rr4((52, 64, 126, 104), 18), (176, 198, 228, 255), (150, 178, 216, 255))
+            .glass(rr4((48, 84, 208, 200), 28), (196, 214, 238, 170), 12, 34)
+            .fill(rr4((104, 128, 152, 141), 6.5), a(BLUE), deeper(BLUE))
+            .done())
+
+
+def terminal_icon():
+    return (Icon(*GRAPHITE)
+            .blur(ellipse4((126, 126, 236, 236)), (120, 196, 150, 80), 30)
+            .glass(rr4((40, 52, 216, 204), 28), (50, 52, 60, 150), 10, 50, (255, 255, 255, 70))
+            .fill(lambda d: d.line([(76, 100), (108, 126), (76, 152)], fill=255, width=14, joint="curve"),
+                  (244, 244, 246, 255), (204, 206, 212, 255))
+            .fill(ellipse4((69, 93, 83, 107)), (244, 244, 246, 255))
+            .fill(ellipse4((69, 145, 83, 159)), (214, 216, 222, 255))
+            .fill(rr4((120, 145, 176, 159), 7), (156, 216, 174, 255), (118, 190, 142, 255))
+            .done())
+
+
+def settings_icon():
+    return (Icon(*STONE)
+            .blur(gear_mask(150, 150, 110, 90, 14, 40), (70, 72, 80, 90), 14)
+            .glass(ellipse4((50, 50, 206, 206)), (255, 255, 255, 70), 12, 30)
+            .fill(gear_mask(128, 128, 64, 52, 12, 24), (248, 248, 250, 255), (206, 208, 214, 255), 60,
+                  (255, 255, 255, 255))
+            .fill(ellipse4((114, 114, 142, 142)), (120, 122, 130, 255), (86, 88, 96, 255))
+            .done())
+
+
+def notepad_icon():
+    icon = (Icon(*PAPER)
+            .blur(rr4((74, 42, 226, 184), 24), a(AMBER, 120), 16, 8, -4)
+            .glass(rr4((50, 54, 206, 210), 28), (255, 255, 255, 190), 10, 34)
+            .fill(top_rounded((50, 54, 206, 94), 28), a(AMBER), deeper(AMBER, 0.9)))
+    for i in range(4):
+        y = 122 + i * 22
+        icon.fill(rr4((74, y - 3.5, 182 - (i % 2) * 34, y + 3.5), 3.5), (190, 192, 200, 255))
+    return icon.done()
+
+
+def paint_icon():
+    icon = Icon(*PAPER)
+    for (x, y, c) in [(40, 46, RED), (150, 36, AMBER), (156, 150, BLUE)]:
+        icon.blur(ellipse4((x, y, x + 74, y + 74)), a(c, 150), 22)
+
+    def palette(d):
+        d.ellipse([44, 62, 212, 202], fill=255)
+        d.ellipse([146, 140, 178, 172], fill=0)
+    icon.glass(palette, (255, 255, 255, 150), 12, 34)
+    for (x, y, c) in [(74, 98, RED), (110, 80, AMBER), (150, 86, GREEN), (78, 140, BLUE)]:
+        icon.fill(ellipse4((x, y, x + 28, y + 28)), a(c), deeper(c, 0.85), 40)
+    return icon.done()
+
+
+def monitor_icon():
+    pts = [(58, 168), (86, 148), (108, 160), (132, 102), (154, 132), (176, 86), (200, 108)]
+    return (Icon(*GRAPHITE)
+            .blur(line4(pts, 30), a(GREEN, 120), 16)
+            .glass(rr4((40, 56, 216, 200), 28), (255, 255, 255, 22), 8, 0, (255, 255, 255, 60))
+            .fill(line4(pts, 11), (176, 226, 192, 255), a(GREEN))
+            .done())
+
+
+def browser_icon():
+    icon = (Icon(*PAPER)
+            .blur(ellipse4((36, 36, 220, 220)), a(BLUE, 140), 20)
+            .glass(ellipse4((46, 46, 210, 210)), (236, 241, 248, 130), 12, 34))
+    for i in range(12):
+        r = math.radians(i * 30)
+        cx, cy = 128 + 66 * math.cos(r), 128 + 66 * math.sin(r)
+        dx, dy = 8 * math.cos(r), 8 * math.sin(r)
+        icon.fill(line4([(cx - dx, cy - dy), (cx, cy)], 4), (150, 154, 164, 255))
+    return (icon.fill(poly4([(128, 128), (176, 80), (140, 140)]), a(RED), deeper(RED), 40)
+            .fill(poly4([(128, 128), (80, 176), (116, 116)]), (236, 236, 240, 255), (196, 198, 206, 255), 40)
+            .fill(ellipse4((120, 120, 136, 136)), INK)
+            .done())
+
+
+def mines_icon():
+    cx, cy = 124, 138
+
+    def mine(d):
+        for ang in range(0, 360, 45):
+            r = math.radians(ang)
+            d.line([(cx, cy), (cx + 52 * math.cos(r), cy + 52 * math.sin(r))], fill=255, width=12)
+        d.ellipse([cx - 38, cy - 38, cx + 38, cy + 38], fill=255)
+    icon = Icon(*STONE)
+    for i in range(3):
+        for j in range(3):
+            icon.glass(rr4((32 + i * 66, 32 + j * 66, 92 + i * 66, 92 + j * 66), 16), (255, 255, 255, 50), 8, 0,
+                       (255, 255, 255, 110))
+    return (icon.blur(mine, (0, 0, 0, 110), 10, 0, 8)
+            .fill(mine, (66, 68, 76, 255), (28, 29, 33, 255))
+            .fill(ellipse4((cx - 22, cy - 22, cx - 4, cy - 4)), (226, 228, 234, 255))
+            .fill(rr4((180, 52, 188, 126), 4), (244, 244, 246, 255))
+            .fill(poly4([(188, 54), (222, 72), (188, 90)]), a(RED), deeper(RED), 30)
+            .done())
+
+
+def launchpad_icon():
+    tones = [(150, 154, 164), (196, 198, 206), a(BLUE)[:3], (196, 198, 206), (96, 98, 108), (170, 172, 180),
+             a(AMBER)[:3], (170, 172, 180), (196, 198, 206)]
+    icon = Icon(*PAPER)
+    for i, c in enumerate(tones):
+        x, y = 40 + (i % 3) * 62, 40 + (i // 3) * 62
+        icon.blur(rr4((x, y, x + 52, y + 52), 16), c + (150,), 12)
+    for i, c in enumerate(tones):
+        x, y = 60 + (i % 3) * 50, 60 + (i // 3) * 50
+        icon.fill(rr4((x, y, x + 38, y + 38), 13), c + (255,), deeper(c, 0.86), 30, (255, 255, 255, 120))
+    return icon.done()
+
+
 def logo_icon():
-    icon = (Icon((255, 128, 96, 255), (64, 28, 132, 255))
-            .blur(ellipse4((50, 40, 210, 200)), (255, 220, 140, 200), 26))
+    icon = (Icon((118, 106, 132, 255), (42, 38, 52, 255))
+            .blur(ellipse4((50, 40, 210, 200)), (255, 226, 176, 130), 28))
     m = mirage_mask((S, S), 128, 126, 66)
     sh = colored(m, (0, 0, 0, 60)).filter(ImageFilter.GaussianBlur(7))
     icon.img.alpha_composite(sh, (0, 6))
-    icon.img.alpha_composite(tint_mask(m, (255, 255, 246, 255), (255, 196, 92, 255)))
+    icon.img.alpha_composite(tint_mask(m, (255, 252, 244, 255), (236, 200, 146, 255)))
     return icon.done()
 
 
 def photos_icon():
-    return (Icon((120, 200, 255, 255), (230, 110, 180, 255))
-            .blur(ellipse4((130, 40, 210, 120)), (255, 236, 150, 255), 14)
-            .blur(poly4([(20, 230), (90, 110), (150, 190), (180, 150), (250, 230)]), (90, 60, 140, 200), 10)
-            .glass(poly4([(36, 216), (104, 112), (150, 172), (176, 140), (222, 216)]), (255, 255, 255, 90), 10)
-            .fill(ellipse4((150, 64, 190, 104)), (255, 244, 190, 255))
+    return (Icon(*PAPER)
+            .blur(rr4((40, 50, 216, 160), 40), a(BLUE, 120), 20)
+            .blur(ellipse4((138, 48, 206, 116)), a(AMBER, 170), 14)
+            .fill(ellipse4((150, 66, 186, 102)), (246, 222, 170, 255), a(AMBER))
+            .glass(poly4([(36, 214), (102, 118), (148, 172), (176, 142), (222, 214)]), (255, 255, 255, 120), 10, 30)
+            .glass(poly4([(70, 214), (132, 150), (196, 214)]), (120, 124, 134, 90), 8, 20, (255, 255, 255, 140))
             .done())
 
 
@@ -421,50 +472,50 @@ def music_icon():
         d.line([(178, 60), (178, 150)], fill=255, width=14)
         d.ellipse([56, 150, 106, 192], fill=255)
         d.ellipse([136, 130, 186, 172], fill=255)
-    return (Icon((255, 120, 130, 255), (176, 32, 120, 255))
-            .blur(note, (255, 200, 220, 160), 16, 14, 10)
-            .fill(note, WHITE, (255, 226, 236, 255), 70)
+    return (Icon(*PAPER)
+            .blur(note, a(ROSE, 120), 16, 12, 10)
+            .fill(note, (222, 118, 140, 255), deeper(ROSE, 0.8), 50)
             .done())
 
 
 def video_icon():
-    return (Icon((80, 80, 104, 255), (18, 18, 28, 255))
-            .blur(ellipse4((30, 40, 140, 150)), (255, 90, 120, 200), 24)
-            .blur(ellipse4((120, 110, 230, 220)), (90, 140, 255, 200), 24)
-            .glass(rr4((44, 66, 212, 190), 26), (255, 255, 255, 60), 12)
-            .fill(poly4([(110, 98), (110, 158), (162, 128)]), WHITE, None, 50)
+    return (Icon(*GRAPHITE)
+            .blur(ellipse4((60, 60, 200, 200)), a(VIOLET, 120), 28)
+            .glass(rr4((44, 66, 212, 190), 30), (255, 255, 255, 46), 12, 30, (255, 255, 255, 80))
+            .fill(lambda d: d.polygon([(112, 100), (112, 156), (160, 128)], fill=255), (246, 246, 248, 255),
+                  (210, 212, 218, 255), 50)
             .done())
 
 
 def viewer_icon():
-    return (Icon((50, 210, 196, 255), (20, 110, 150, 255))
-            .blur(ellipse4((40, 40, 190, 190)), (200, 255, 250, 150), 18)
-            .glass(ellipse4((56, 56, 172, 172)), (255, 255, 255, 80), 12)
-            .fill(ellipse4((56, 56, 172, 172), True, 14), WHITE)
-            .fill(line4([(156, 156), (204, 204)], 24), WHITE, None, 50)
+    return (Icon(*PAPER)
+            .blur(ellipse4((40, 40, 190, 190)), a(TEAL, 120), 18)
+            .fill(line4([(158, 158), (202, 202)], 24), (110, 112, 120, 255), (60, 62, 70, 255), 40)
+            .glass(ellipse4((56, 56, 172, 172)), (240, 246, 248, 120), 12, 30)
+            .fill(ellipse4((56, 56, 172, 172), True, 12), (120, 122, 132, 255), (78, 80, 90, 255))
             .done())
 
 
 def installer_icon():
-    return (Icon((120, 156, 255, 255), (70, 40, 200, 255))
-            .blur(rr4((40, 120, 216, 230), 26), (20, 10, 90, 160), 14)
-            .glass(rr4((50, 146, 206, 206), 20), (255, 255, 255, 110), 10)
-            .fill(ellipse4((168, 168, 184, 184)), (90, 110, 240, 255))
-            .fill(rr4((116, 40, 140, 120), 8), WHITE, None, 50)
-            .fill(poly4([(82, 100), (174, 100), (128, 148)]), WHITE, None, 50)
+    return (Icon(*PAPER)
+            .blur(rr4((40, 124, 216, 230), 30), (60, 62, 72, 120), 14)
+            .glass(rr4((50, 148, 206, 208), 24), (255, 255, 255, 140), 10, 30)
+            .fill(ellipse4((170, 170, 184, 184)), a(GREEN))
+            .fill(rr4((114, 40, 142, 112), 14), a(BLUE), deeper(BLUE), 40)
+            .fill(lambda d: d.polygon([(80, 96), (176, 96), (128, 146)], fill=255), a(BLUE), deeper(BLUE), 40)
             .done())
 
 
 def exe_icon():
-    icon = (Icon((130, 150, 182, 255), (70, 86, 120, 255))
-            .blur(rr4((70, 40, 230, 170), 18), (255, 255, 255, 120), 14)
-            .glass(rr4((46, 62, 210, 196), 16), (255, 255, 255, 150), 10)
-            .fill(rr4((46, 62, 210, 92), 16), (225, 228, 236, 255)))
-    for i, c in enumerate([(255, 95, 87), (254, 188, 46), (40, 200, 64)]):
-        icon.fill(ellipse4((60 + i * 22, 70, 74 + i * 22, 84)), c + (255,))
-    return (icon.fill(rr4((64, 110, 130, 124), 4), (100, 130, 210, 255))
-            .fill(rr4((64, 138, 186, 146), 4), (170, 182, 210, 255))
-            .fill(rr4((64, 158, 166, 166), 4), (170, 182, 210, 255))
+    icon = (Icon(*STONE)
+            .blur(rr4((70, 40, 230, 170), 22), (255, 255, 255, 120), 14)
+            .glass(rr4((46, 62, 210, 196), 22), (255, 255, 255, 160), 10, 34)
+            .fill(top_rounded((46, 62, 210, 94), 22), (232, 233, 238, 255)))
+    for i in range(3):
+        icon.fill(ellipse4((62 + i * 22, 71, 76 + i * 22, 85)), (150, 152, 160, 255))
+    return (icon.fill(rr4((64, 112, 132, 126), 7), a(BLUE))
+            .fill(rr4((64, 140, 186, 149), 4.5), (180, 182, 190, 255))
+            .fill(rr4((64, 160, 166, 169), 4.5), (180, 182, 190, 255))
             .done())
 
 
@@ -472,66 +523,70 @@ def screenshot_icon():
     def brackets(d):
         for x0, y0, dx, dy in ((52, 60, 1, 1), (204, 60, -1, 1), (52, 196, 1, -1), (204, 196, -1, -1)):
             d.line([(x0, y0 + dy * 34), (x0, y0), (x0 + dx * 34, y0)], fill=255, width=11, joint="curve")
-    return (Icon((176, 182, 196, 255), (74, 80, 96, 255))
-            .blur(ellipse4((60, 60, 200, 200)), (140, 200, 255, 160), 22)
-            .fill(brackets, WHITE, None, 40)
-            .glass(rr4((84, 100, 172, 164), 14), (255, 255, 255, 120), 8)
-            .fill(rr4((110, 90, 146, 106), 5), (255, 255, 255, 230))
-            .fill(ellipse4((110, 114, 146, 150)), (60, 70, 92, 255))
-            .fill(ellipse4((119, 123, 137, 141)), (170, 210, 255, 255))
+    return (Icon(*STONE)
+            .blur(ellipse4((60, 60, 200, 200)), (255, 255, 255, 120), 22)
+            .fill(brackets, (250, 250, 252, 255), None, 30)
+            .glass(rr4((82, 98, 174, 166), 18), (255, 255, 255, 120), 8)
+            .fill(rr4((110, 88, 146, 106), 6), (250, 250, 252, 255))
+            .fill(ellipse4((110, 114, 146, 150)), (80, 82, 92, 255), (50, 52, 60, 255))
+            .fill(ellipse4((120, 124, 136, 140)), (190, 204, 224, 255))
             .done())
 
 
 def computer_icon():
-    return (Icon((236, 236, 242, 255), (176, 176, 184, 255), (20, 60, 236, 196))
-            .blur(rr4((40, 80, 216, 180), 20), (255, 255, 255, 180), 12)
-            .glass(rr4((34, 74, 222, 150), 16), (255, 255, 255, 70), 8, 0)
-            .fill(rr4((44, 150, 212, 153), 1), (150, 150, 158, 255))
-            .fill(ellipse4((186, 160, 200, 174)), (52, 199, 89, 255))
+    return (Icon((238, 238, 242, 255), (180, 180, 188, 255), (20, 60, 236, 196))
+            .blur(rr4((40, 80, 216, 180), 24), (255, 255, 255, 180), 12)
+            .glass(rr4((34, 74, 222, 150), 20), (255, 255, 255, 70), 8, 0)
+            .fill(rr4((44, 150, 212, 153), 1.5), (156, 158, 166, 255))
+            .fill(ellipse4((186, 160, 200, 174)), a(GREEN))
             .done())
 
 
 def usb_icon():
-    cx, cy = 128, 130
+    cx, cy = 128, 132
 
     def mark(d):
-        d.line([(cx, cy - 40), (cx, cy + 40)], fill=255, width=8)
-        d.polygon([(cx - 14, cy - 34), (cx + 14, cy - 34), (cx, cy - 56)], fill=255)
-        d.line([(cx, cy + 6), (cx - 30, cy - 14), (cx - 30, cy - 26)], fill=255, width=7)
-        d.line([(cx, cy + 20), (cx + 30, cy), (cx + 30, cy - 12)], fill=255, width=7)
-        d.ellipse([cx - 12, cy + 34, cx + 12, cy + 58], fill=255)
-    return (Icon((255, 170, 70, 255), (230, 110, 20, 255), (30, 54, 226, 206))
-            .blur(ellipse4((70, 70, 190, 190)), (255, 230, 180, 170), 20)
-            .fill(mark, WHITE, None, 50)
+        d.line([(cx, cy - 40), (cx, cy + 40)], fill=255, width=9)
+        d.polygon([(cx - 15, cy - 34), (cx + 15, cy - 34), (cx, cy - 58)], fill=255)
+        d.line([(cx, cy + 6), (cx - 30, cy - 14), (cx - 30, cy - 26)], fill=255, width=8, joint="curve")
+        d.line([(cx, cy + 20), (cx + 30, cy), (cx + 30, cy - 12)], fill=255, width=8, joint="curve")
+        d.ellipse([cx - 13, cy + 33, cx + 13, cy + 59], fill=255)
+        d.ellipse([cx - 38, cy - 36, cx - 22, cy - 20], fill=255)
+        d.rectangle([cx + 22, cy - 26, cx + 38, cy - 10], fill=255)
+    return (Icon(*STONE)
+            .blur(ellipse4((70, 70, 190, 190)), a(AMBER, 120), 22)
+            .glass(rr4((56, 56, 200, 200), 34), (255, 255, 255, 60), 10, 20)
+            .fill(mark, (252, 252, 253, 255), (222, 224, 230, 255), 50)
             .done())
 
 
-FOLDER_TOP = (126, 196, 252, 255)
-FOLDER_BOTTOM = (83, 166, 240, 255)
+
+FOLDER_TOP = (176, 202, 232, 255)
+FOLDER_BOTTOM = (128, 162, 206, 255)
 
 
 def folder_base(emblem=None):
     """A folder of two layers: the back with its tab, and a frosted front plate that blurs it."""
     img = blank()
-    back = rounded_mask((24, 52, 232, 214), 18)
-    tab = rounded_mask((24, 38, 108, 80), 14)
-    back_layer = gradient((S, S), (88, 164, 236, 255), (54, 128, 214, 255))
+    back = rounded_mask((24, 52, 232, 214), 22)
+    tab = rounded_mask((24, 38, 108, 80), 16)
+    back_layer = gradient((S, S), (132, 164, 204, 255), (100, 132, 178, 255))
     img.paste(back_layer, (0, 0), ImageChops.lighter(back, tab))
     sheet = colored(rounded_mask((40, 62, 216, 150), 10), (255, 255, 255, 220))
     img.alpha_composite(sheet.filter(ImageFilter.GaussianBlur(2)))
-    front = rounded_mask((24, 80, 232, 220), 18)
+    front = rounded_mask((24, 80, 232, 220), 22)
     under = img.filter(ImageFilter.GaussianBlur(10))
     plate = Image.composite(under, blank(), front)
     plate.alpha_composite(tint_mask(front, FOLDER_TOP[:3] + (200,), FOLDER_BOTTOM[:3] + (230,)))
     edge = ImageChops.subtract(front, front.filter(ImageFilter.MinFilter(3)))
-    plate.alpha_composite(colored(edge, (255, 255, 255, 110)))
+    plate.alpha_composite(colored(edge, (255, 255, 255, 170)))
     shadow = colored(front, (0, 0, 0, 50)).filter(ImageFilter.GaussianBlur(6))
     img.alpha_composite(shadow, (0, -2))
     img.alpha_composite(plate)
     if emblem:
         e = blank()
         emblem(e, ImageDraw.Draw(e))
-        tint = Image.new("RGBA", (S, S), (40, 110, 196, 255))
+        tint = Image.new("RGBA", (S, S), (76, 108, 152, 255))
         tint.putalpha(e.getchannel("A").point(lambda v: v * 200 // 255))
         img.alpha_composite(tint)
     return img
@@ -607,9 +662,9 @@ def blank_doc():
 
 def image_doc():
     def emblem(img, d):
-        rr(d, (72, 96, 184, 196), 8, fill=(120, 190, 250, 255))
-        d.polygon([(72, 196), (112, 140), (146, 176), (162, 158), (184, 196)], fill=(70, 170, 90, 255))
-        d.ellipse([146, 108, 170, 132], fill=(255, 214, 10, 255))
+        rr(d, (72, 96, 184, 196), 14, fill=(170, 196, 228, 255))
+        d.polygon([(72, 196), (112, 140), (146, 176), (162, 158), (184, 196)], fill=(122, 156, 136, 255))
+        d.ellipse([146, 108, 170, 132], fill=(232, 196, 120, 255))
     return page_base(emblem)
 
 
@@ -621,7 +676,7 @@ def dll_doc():
 
 def dos_doc():
     def emblem(img, d):
-        rr(d, (70, 100, 186, 190), 8, fill=(20, 20, 24, 255))
+        rr(d, (70, 100, 186, 190), 16, fill=(44, 45, 50, 255))
         f = font(MONO_BOLD, 34)
         d.text((80, 126), "C:\\>", font=f, fill=(200, 200, 205, 255))
     return page_base(emblem)
@@ -629,7 +684,7 @@ def dos_doc():
 
 def sx_doc():
     def emblem(img, d):
-        rr(d, (78, 110, 178, 180), 14, fill=(150, 80, 230, 255))
+        rr(d, (78, 110, 178, 180), 18, fill=(126, 112, 178, 255))
         f = font(INTER_BOLD, 44)
         d.text((92, 118), "SX", font=f, fill=(255, 255, 255, 255))
     return page_base(emblem)
@@ -637,9 +692,9 @@ def sx_doc():
 
 def script_doc():
     def emblem(img, d):
-        rr(d, (74, 106, 182, 184), 10, fill=(40, 40, 44, 255))
+        rr(d, (74, 106, 182, 184), 16, fill=(44, 45, 50, 255))
         f = font(MONO_BOLD, 40)
-        d.text((88, 118), ">_", font=f, fill=(120, 255, 140, 255))
+        d.text((88, 118), ">_", font=f, fill=(170, 222, 184, 255))
     return page_base(emblem)
 
 
@@ -647,26 +702,28 @@ def info_icon():
     def draw(img, d):
         d.ellipse([116, 62, 140, 86], fill=(255, 255, 255, 255))
         rr(d, (114, 102, 142, 194), 10, fill=(255, 255, 255, 255))
-    return circle_badge((90, 180, 255, 255), (10, 110, 240, 255), draw)
+    return circle_badge((130, 168, 218, 255), (78, 120, 184, 255), draw)
 
 
 def power_icon():
     def draw(img, d):
         d.arc([76, 76, 180, 180], 300, 240, fill=(255, 255, 255, 255), width=14)
         d.line([(128, 60), (128, 128)], fill=(255, 255, 255, 255), width=14)
-    return circle_badge((255, 105, 97, 255), (220, 40, 40, 255), draw)
+    return circle_badge((222, 120, 112, 255), (182, 74, 70, 255), draw)
 
 
 def warning_icon():
     img = blank()
     mask = Image.new("L", (S * 4, S * 4), 0)
     md = ImageDraw.Draw(mask)
-    md.polygon([(128 * 4, 30 * 4), (232 * 4, 214 * 4), (24 * 4, 214 * 4)], fill=255)
+    tri = [(128, 34), (230, 210), (26, 210)]
+    md.polygon([(x * 4, y * 4) for x, y in tri], fill=255)
+    md.line([(x * 4, y * 4) for x, y in tri + tri[:1]], fill=255, width=40, joint="curve")
     mask = mask.resize((S, S), Image.LANCZOS)
-    img.paste(flat((S, S), (255, 214, 10, 255), (255, 170, 0, 255)), (0, 0), mask)
+    img.paste(flat((S, S), (240, 204, 100, 255), (226, 176, 70, 255)), (0, 0), mask)
     d = ImageDraw.Draw(img)
-    rr(d, (118, 92, 138, 168), 8, fill=(30, 30, 30, 255))
-    d.ellipse([116, 178, 140, 202], fill=(30, 30, 30, 255))
+    rr(d, (118, 92, 138, 166), 10, fill=(60, 54, 44, 255))
+    d.ellipse([116, 176, 140, 200], fill=(60, 54, 44, 255))
     return img
 
 
@@ -689,88 +746,76 @@ def user_icon():
 
 
 def trash_icon(full=False):
-    """A tapered frosted-glass bin seen slightly from above: an oval rim with the dark opening, ribs that follow
-    the taper, a soft cylinder light; when full, crumpled paper shows over the rim."""
-    k = 4
-
-    def mask(draw):
-        m = Image.new("L", (S * k, S * k), 0)
-        draw(ImageDraw.Draw(m))
-        return m.resize((S, S), Image.LANCZOS)
-
-    def sc(pts):
-        return [(x * k, y * k) for x, y in pts]
-
-    top_l, top_r, bot_l, bot_r, top_y, bot_y = 58, 198, 80, 176, 72, 224
-    body = mask(lambda d: (d.polygon(sc([(top_l, top_y), (top_r, top_y), (bot_r, bot_y - 8), (bot_l, bot_y - 8)]), fill=255),
-                           d.ellipse([bot_l * k, (bot_y - 20) * k, bot_r * k, (bot_y + 6) * k], fill=255)))
+    """A tapered bin with a rounded foot: a thick oval rim over the dark opening, rounded slots pressed into
+    the side, and a soft cylinder light; when full, crumpled paper shows over the rim."""
     img = blank()
-    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 255))
-    shadow.putalpha(mask(lambda d: d.ellipse([70 * k, 214 * k, 186 * k, 240 * k], fill=255))
-                    .point(lambda v: v * 70 // 255).filter(ImageFilter.GaussianBlur(6)))
-    img.alpha_composite(shadow)
-    glass = gradient((S, S), (238, 243, 250, 214), (186, 198, 216, 228))
-    side = Image.linear_gradient("L").rotate(90).resize((S, S))
-    side = side.point(lambda v: int(abs(v - 128) * 0.9))
-    shade = Image.new("RGBA", (S, S), (70, 84, 108, 255))
-    shade.putalpha(side.point(lambda v: v * 90 // 255))
-    layer = blank()
-    layer.paste(glass, (0, 0), body)
-    layer.alpha_composite(Image.composite(shade, blank(), body))
-    light = Image.new("RGBA", (S, S), (255, 255, 255, 255))
-    light.putalpha(mask(lambda d: d.polygon(sc([(92, 80), (112, 80), (118, 214), (100, 214)]), fill=255))
-                   .filter(ImageFilter.GaussianBlur(5)).point(lambda v: v * 120 // 255))
-    layer.alpha_composite(Image.composite(light, blank(), body))
-    ribs = blank()
-    rd = ImageDraw.Draw(ribs)
-    n = 6
-    for i in range(1, n):
-        x0 = top_l + (top_r - top_l) * i / n
-        x1 = bot_l + (bot_r - bot_l) * i / n
-        rd.line([(x0, top_y + 14), (x1, bot_y - 10)], fill=(255, 255, 255, 110), width=3)
-    ribs = ribs.filter(ImageFilter.GaussianBlur(0.6))
-    layer.alpha_composite(Image.composite(ribs, blank(), body))
+    img.alpha_composite(colored(mask_of(ellipse4((70, 210, 186, 236))), (0, 0, 0, 70))
+                        .filter(ImageFilter.GaussianBlur(6)))
+    tl, tr, bl, br, ty, by = 60, 196, 80, 176, 78, 222
+
+    def body_draw(d):
+        d.polygon([(tl, ty), (tr, ty), (br + 1, by - 22), (bl - 1, by - 22)], fill=255)
+        d.rounded_rectangle((bl - 1, by - 44, br + 1, by), radius=22, fill=255)
+    body = mask_of(body_draw)
+    profile = Image.new("L", (S, 1))
+    for x in range(S):
+        t = (x - 128) / 74.0
+        v = 1 - min(1.0, abs(t)) ** 2.2
+        hl = math.exp(-((t + 0.34) / 0.16) ** 2)
+        profile.putpixel((x, 0), int(min(255, 178 + 66 * v + 22 * hl)))
+    shade = profile.resize((S, S))
+    grey = Image.merge("RGBA", (shade.point(lambda v: v - 4), shade.point(lambda v: v - 2), shade,
+                                Image.new("L", (S, S), 255)))
+    layer = Image.composite(grey, blank(), body)
+    fall = gradient((S, S), (0, 0, 0, 0), (0, 0, 0, 40))
+    layer.alpha_composite(Image.composite(fall, blank(), body))
+    slots = Image.new("L", (S, S), 0)
+    n = 7
+    for i in range(n):
+        f = (i + 0.5) / n
+        x0, x1 = tl + 16 + (tr - tl - 32) * f, bl + 12 + (br - bl - 24) * f
+        slots = ImageChops.lighter(slots, mask_of(line4([(x0, 104), (x1, 196)], 8)))
+        slots = ImageChops.lighter(slots, mask_of(ellipse4((x0 - 4.5, 99.5, x0 + 4.5, 108.5))))
+        slots = ImageChops.lighter(slots, mask_of(ellipse4((x1 - 4.5, 191.5, x1 + 4.5, 200.5))))
+    lip = ImageChops.subtract(ImageChops.offset(slots, 2, 2), slots)
+    layer.alpha_composite(colored(ImageChops.multiply(lip, body), (255, 255, 255, 200)))
+    layer.alpha_composite(tint_mask(ImageChops.multiply(slots, body), (158, 162, 172, 255), (182, 186, 194, 255)))
+    inner = ImageChops.subtract(slots, ImageChops.offset(slots, 0, 3))
+    layer.alpha_composite(colored(ImageChops.multiply(inner, body), (80, 84, 94, 110)))
     edge = ImageChops.subtract(body, body.filter(ImageFilter.MinFilter(3)))
-    ring = Image.new("RGBA", (S, S), (70, 82, 104, 255))
-    ring.putalpha(edge.point(lambda v: v * 110 // 255))
-    layer.alpha_composite(ring)
+    layer.alpha_composite(colored(edge, (70, 74, 84, 110)))
     img.alpha_composite(layer)
-    rim_box = (50, 52, 206, 92)
-    hole_box = (62, 58, 194, 84)
-    rim = mask(lambda d: d.ellipse([v * k for v in rim_box], fill=255))
-    hole = mask(lambda d: d.ellipse([v * k for v in hole_box], fill=255))
-    img.paste(gradient((S, S), (250, 252, 255, 255), (206, 214, 228, 255)), (0, 0), rim)
-    img.paste(gradient((S, S), (44, 50, 62, 255), (96, 106, 124, 255)), (0, 0), hole)
+    rim_box, hole_box = (50, 58, 206, 100), (64, 65, 192, 91)
+    rim, hole = mask_of(ellipse4(rim_box)), mask_of(ellipse4(hole_box))
+    img.alpha_composite(tint_mask(rim, (252, 252, 253, 255), (200, 202, 210, 255)))
+    img.alpha_composite(tint_mask(hole, (52, 54, 62, 255), (104, 108, 118, 255)))
     if full:
-        paper = Image.new("RGBA", (S * k, S * k), (0, 0, 0, 0))
+        paper = Image.new("RGBA", (S * 4, S * 4), (0, 0, 0, 0))
         pd = Scaled(ImageDraw.Draw(paper))
-        balls = [(98, 62, 24, (255, 255, 255, 255), 1), (134, 52, 28, (246, 240, 226, 255), 2),
-                 (168, 64, 22, (228, 238, 252, 255), 3)]
+        balls = [(98, 66, 24, (252, 252, 252, 255), 1), (134, 56, 28, (240, 238, 232, 255), 2),
+                 (168, 68, 22, (230, 233, 240, 255), 3)]
         for cx, cy, r, c, seed in balls:
             pts = []
             for i in range(14):
-                a = math.tau * i / 14
-                jit = 0.78 + 0.22 * ((i * 7 + seed * 5) % 5) / 4
-                pts.append((cx + math.cos(a) * r * jit, cy + math.sin(a) * r * jit * 0.9))
+                ang = math.tau * i / 14
+                jit = 0.8 + 0.2 * ((i * 7 + seed * 5) % 5) / 4
+                pts.append((cx + math.cos(ang) * r * jit, cy + math.sin(ang) * r * jit * 0.9))
             pd.polygon(pts, fill=c)
-            pd.line(pts + [pts[0]], fill=(150, 160, 178, 255), width=2)
+            pd.line(pts + [pts[0]], fill=(160, 164, 174, 255), width=2)
             for i in range(3):
-                a = math.tau * (i * 0.31 + seed * 0.17)
-                x0, y0 = cx + math.cos(a) * r * 0.55, cy + math.sin(a) * r * 0.5
-                pd.line([(x0, y0), (cx + math.cos(a + 2.2) * r * 0.2, cy + math.sin(a + 2.2) * r * 0.2)],
-                        fill=(176, 184, 198, 255), width=2)
+                ang = math.tau * (i * 0.31 + seed * 0.17)
+                x0, y0 = cx + math.cos(ang) * r * 0.55, cy + math.sin(ang) * r * 0.5
+                pd.line([(x0, y0), (cx + math.cos(ang + 2.2) * r * 0.2, cy + math.sin(ang + 2.2) * r * 0.2)],
+                        fill=(184, 188, 198, 255), width=2)
         paper = paper.resize((S, S), Image.LANCZOS)
-        clip = mask(lambda d: (d.rectangle([0, 0, S * k, 72 * k], fill=255),
-                               d.ellipse([v * k for v in hole_box], fill=255)))
+        clip = ImageChops.lighter(mask_of(rr4((0, 0, 256, 78), 0)), hole)
         img.alpha_composite(Image.composite(paper, blank(), clip))
-    front = ImageChops.subtract(rim, hole)
-    lower = mask(lambda d: d.rectangle([0, 71 * k, S * k, S * k], fill=255))
-    front = ImageChops.multiply(front, lower)
-    img.paste(gradient((S, S), (250, 252, 255, 255), (214, 222, 234, 255)), (0, 0), front)
+    front = ImageChops.multiply(ImageChops.subtract(rim, hole), mask_of(rr4((0, 77, 256, 256), 0)))
+    img.alpha_composite(tint_mask(front, (250, 250, 252, 255), (212, 214, 222, 255)))
+    hole_edge = ImageChops.subtract(hole.filter(ImageFilter.MaxFilter(3)), hole)
+    img.alpha_composite(colored(ImageChops.multiply(hole_edge, mask_of(rr4((0, 0, 256, 79), 0))), (150, 154, 164, 200)))
     rim_edge = ImageChops.subtract(rim, rim.filter(ImageFilter.MinFilter(3)))
-    ring = Image.new("RGBA", (S, S), (80, 92, 114, 255))
-    ring.putalpha(rim_edge.point(lambda v: v * 120 // 255))
-    img.alpha_composite(ring)
+    img.alpha_composite(colored(rim_edge, (90, 94, 104, 130)))
     return img
 
 

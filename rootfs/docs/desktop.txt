@@ -78,6 +78,9 @@ Commands
   config brightness 70      dim the screen; nightshift on|off|auto
   config network off        networking off like airplane mode
   config glassstrength 90   how strong Liquid Glass is (0..100, 70 normal)
+  config glasseffect smoky  regular, clear, tinted, smoky or prism glass
+  config glassedge 80       brightness of glass edges (0..100, 50 normal)
+  config glassfrost 30      how much glass blurs (0..100, 50 normal)
   config animspeed 140      animation speed in percent (50..200)
   config snap off           no tiling at the screen edges
   config dockstyle side     bottom, corner or side Dock for this look

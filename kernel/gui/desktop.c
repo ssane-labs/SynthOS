@@ -2077,6 +2077,99 @@ static const struct setting s_strength = {"glassstrength", "0..100",
                                           get_strength, set_strength};
 SETTING(s_strength);
 
+static const char *const glass_effects[] = {"regular", "clear", "tinted", "smoky", "prism"};
+static int glass_effect, glass_edge = 50, glass_frost = 50;
+
+int gui_glass_effect(void)
+{
+    return glass_effect;
+}
+
+int gui_glass_edge(void)
+{
+    return glass_edge;
+}
+
+int gui_glass_frost(void)
+{
+    return glass_frost;
+}
+
+static void glass_changed(void)
+{
+    if (!active)
+        return;
+    glass_invalidate_all();
+    wm_foreach(invalidate_one, NULL);
+    wm_damage_all();
+}
+
+static void get_effect(char *buf, size_t cap)
+{
+    str_copy(buf, glass_effects[glass_effect], cap);
+}
+
+static int set_effect(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    for (int i = 0; i < (int)ARRAY_SIZE(glass_effects); i++)
+        if (!strcmp(value, glass_effects[i])) {
+            if (glass_effect != i) {
+                glass_effect = i;
+                glass_changed();
+            }
+            return 0;
+        }
+    return E_INVAL;
+}
+
+static const struct setting s_effect = {"glasseffect", "regular|clear|tinted|smoky|prism",
+                                        "the kind of glass: clear, tinted with the accent, smoky, or prism edges",
+                                        get_effect, set_effect};
+SETTING(s_effect);
+
+static int set_percent(const char *value, int *out)
+{
+    long v;
+    if (!str_parse_long(value, &v) || v < 0 || v > 100)
+        return E_INVAL;
+    if (*out != (int)v) {
+        *out = (int)v;
+        glass_changed();
+    }
+    return 0;
+}
+
+static void get_edge(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", glass_edge);
+}
+
+static int set_edge(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return set_percent(value, &glass_edge);
+}
+
+static const struct setting s_edge = {"glassedge", "0..100", "brightness of the glass edges (50 normal)", get_edge,
+                                      set_edge};
+SETTING(s_edge);
+
+static void get_frost(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", glass_frost);
+}
+
+static int set_frost(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return set_percent(value, &glass_frost);
+}
+
+static const struct setting s_frost = {"glassfrost", "0..100", "how much the glass blurs what is behind (50 normal)",
+                                       get_frost, set_frost};
+SETTING(s_frost);
+
 static void get_autostart(char *buf, size_t cap)
 {
     str_copy(buf, autostart ? "on" : "off", cap);

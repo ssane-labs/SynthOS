@@ -655,6 +655,80 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
         gfx_round_frame(c, (struct rect){f.x - 1, f.y - 1, f.w + 2, f.h + 2}, radius + 1, look->outline);
 }
 
+static void apply_strength(struct glass_look *look)
+{
+    int k = gui_glass_strength();
+    if (!look->liquid || k == 70)
+        return;
+    if (!k) {
+        look->liquid = false;
+        look->dispersion = false;
+        look->rim = 40;
+        return;
+    }
+    look->refract = look->refract * k / 70;
+    look->band = MAX(4, look->band * (k + 70) / 140);
+    look->rim = MIN(255, look->rim * k / 70);
+    look->pointer_light = MIN(255, look->pointer_light * k / 70);
+    look->dispersion = look->dispersion && k >= 40;
+    unsigned a = look->tint >> 24;
+    a = k < 70 ? a + (255 - a) * (unsigned)(70 - k) / 110 : a * (unsigned)(170 - k) / 100;
+    look->tint = (look->tint & 0xffffffu) | MIN(a, 255u) << 24;
+}
+
+static uint32_t with_alpha(uint32_t c, int a)
+{
+    return (c & 0xffffffu) | (uint32_t)CLAMP(a, 0, 255) << 24;
+}
+
+/* The look's effect, edge brightness and frost from the glasseffect, glassedge and glassfrost settings. */
+static void apply_effect(struct glass_look *look, enum glass_kind kind)
+{
+    int a = (int)(look->tint >> 24);
+    bool dark = style.dark;
+    switch (gui_glass_effect()) {
+    case GLASS_FX_CLEAR:
+        look->tint = with_alpha(look->tint, a * 45 / 100);
+        look->blur = MAX(1, look->blur - 1);
+        look->saturation = look->saturation * 85 / 100;
+        look->refract = look->refract * 5 / 4;
+        break;
+    case GLASS_FX_TINTED:
+        look->tint = with_alpha(color_mix(look->tint | 0xff000000u, style.accent | 0xff000000u, dark ? 80 : 64),
+                                MIN(255, a + 40));
+        break;
+    case GLASS_FX_SMOKY:
+        look->tint = with_alpha(color_mix(look->tint | 0xff000000u, dark ? RGB(8, 8, 10) : RGB(150, 150, 158), dark ? 150 : 100),
+                                MIN(255, a + 30));
+        look->brightness -= dark ? 6 : 12;
+        break;
+    case GLASS_FX_PRISM:
+        if (look->liquid) {
+            look->dispersion = true;
+            look->refract = look->refract * 3 / 2;
+            look->band = MIN(40, look->band + 6);
+        }
+        look->rim = MIN(255, look->rim + 50);
+        break;
+    default:
+        break;
+    }
+    int e = gui_glass_edge();
+    if (e != 50) {
+        if (!look->rim && e > 50 && kind != GLASS_MENUBAR)
+            look->rim = (e - 50) * 2;
+        look->rim = MIN(255, look->rim * e / 50);
+        look->pointer_light = MIN(255, look->pointer_light * (e + 50) / 100);
+        if (look->outline)
+            look->outline = with_alpha(look->outline, (int)(look->outline >> 24) * e / 50);
+        if (e >= 85 && kind != GLASS_MENUBAR)
+            look->edge_line = true;
+    }
+    int f = gui_glass_frost();
+    if (f != 50)
+        look->blur = CLAMP(look->blur * f / 50, f ? 1 : 0, 9);
+}
+
 void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
 {
     memset(look, 0, sizeof(*look));
@@ -741,21 +815,7 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         look->brightness = 0;
         break;
     }
-    int k = gui_glass_strength();
-    if (!look->liquid || k == 70)
-        return;
-    if (!k) {
-        look->liquid = false;
-        look->dispersion = false;
-        look->rim = 40;
-        return;
-    }
-    look->refract = look->refract * k / 70;
-    look->band = MAX(4, look->band * (k + 70) / 140);
-    look->rim = MIN(255, look->rim * k / 70);
-    look->pointer_light = MIN(255, look->pointer_light * k / 70);
-    look->dispersion = look->dispersion && k >= 40;
-    unsigned a = look->tint >> 24;
-    a = k < 70 ? a + (255 - a) * (unsigned)(70 - k) / 110 : a * (unsigned)(170 - k) / 100;
-    look->tint = (look->tint & 0xffffffu) | MIN(a, 255u) << 24;
+    apply_strength(look);
+    if (kind != GLASS_WINDOW && kind != GLASS_OVERLAY && !look->solid)
+        apply_effect(look, kind);
 }

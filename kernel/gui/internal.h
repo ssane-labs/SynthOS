@@ -138,6 +138,10 @@ struct window *wm_top_popup(void);
 void wm_damage_all(void);
 void wm_set_tint(int brightness, int warmth);
 int gui_glass_strength(void);
+enum glass_effect { GLASS_FX_REGULAR, GLASS_FX_CLEAR, GLASS_FX_TINTED, GLASS_FX_SMOKY, GLASS_FX_PRISM };
+int gui_glass_effect(void);
+int gui_glass_edge(void);
+int gui_glass_frost(void);
 #ifndef ABS
 #define ABS(v) ((v) < 0 ? -(v) : (v))
 #endif
