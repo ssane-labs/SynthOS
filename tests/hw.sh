@@ -155,6 +155,23 @@ if [ -n "$ovmf_vars" ]; then
     out=$(EXTRA="-nic none" boot uefi ide any "cat /home/readme.txt | head -n 1")
     check "install from Windows is in the boot menu" "$out" "\\EFI\\SynthOS\\"
     check "install from Windows boots again" "$out" "Shell ready"
+    # A system update on that install: the new files go to \EFI\SynthOS and \SYNTHOS, \EFI\BOOT stays Windows'.
+    esp="$work/disk.img@@$((2048 * 512))"
+    printf 'windows boot manager' > "$work/winboot.efi"
+    mmd -i "$esp" ::/EFI/BOOT 2>/dev/null
+    mcopy -o -i "$esp" "$work/winboot.efi" ::/EFI/BOOT/BOOTX64.EFI
+    sys=$(dirname "$image")
+    BUILD_ID=hwtest python3 -I tools/mkupdate.py "$work/u.sup" $([ "$KERNEL64" = 1 ] && echo 64 || echo 32) \
+        "$sys/stage1.bin" "$sys/stage2.bin" "$sys/kernel.bin" "$sys/esp.img" >/dev/null
+    rm -f "$work/upd.img"
+    truncate -s 32M "$work/upd.img"
+    mkfs.fat "$work/upd.img" >/dev/null
+    mcopy -i "$work/upd.img" "$work/u.sup" ::/u.sup
+    out=$(EXTRA="-nic none -drive format=raw,file=$work/upd.img" boot uefi ide any "update apply /mnt/hdb/u.sup")
+    check "update of the install from Windows" "$out" "Updated to hwtest (boot sectors, EFI partition)"
+    check "update keeps the Windows loader" "$(mtype -i "$esp" ::/EFI/BOOT/BOOTX64.EFI)" "windows boot manager"
+    out=$(EXTRA="-nic none" boot uefi ide any "cat /home/readme.txt | head -n 1")
+    check "install from Windows boots after the update" "$out" "Shell ready"
 else
     echo "  skip  install (no OVMF variable store)"
 fi

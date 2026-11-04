@@ -1784,6 +1784,7 @@ static void pump(int timeout_ms)
         autostart_run();
     }
     wallpaper_fetch_run();
+    sysupdate_run();
     chrome_install_run();
     chromium_run();
     open_queued();

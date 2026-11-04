@@ -182,6 +182,10 @@ appstate demo nothing
 demo.nothing is not set
 appstate | grep -c demo.sidebar
 1
+config autoupdate off; config autoupdate on; config autoupdate
+autoupdate = on
+update verify /mnt/hdb/page.html
+update: not a SynthOS update
 config browser chrome; config browser; config browser chromium
 browser = chrome
 config dockdots off; config dockbounce off; config dockdots; config dockdots on
@@ -784,6 +788,14 @@ if command -v openssl >/dev/null; then
         -quiet -tls1_2 -cipher ECDHE-ECDSA-AES256-GCM-SHA384) >/dev/null 2>&1 &
     server="$server $!"
     cp "$work/page.html" "$work/www/page.html"
+    sfx=$([ "$KERNEL64" = 1 ] && echo "" || echo 32)
+    sys=$(dirname "$image")
+    mkdir -p "$work/www/new"
+    BUILD_ID=test python3 -I tools/mkupdate.py "$work/www/synthos-update$sfx.sup" $([ "$KERNEL64" = 1 ] && echo 64 || echo 32) \
+        "$sys/stage1.bin" "$sys/stage2.bin" "$sys/kernel.bin" "$sys/esp.img" >/dev/null
+    cp "$work/www/synthos-update$sfx.sup" "$work/www/new/"
+    sed 's/^kernel-sha256=.*/kernel-sha256=0000/' "$work/www/synthos-update$sfx.txt" > "$work/www/new/synthos-update$sfx.txt"
+    printf 'SYNUPD01 broken' > "$work/www/bad.sup"
     if command -v python3 >/dev/null; then
         cat > "$work/cookie.py" <<'PYEOF'
 import gzip, http.server, sys
@@ -854,6 +866,23 @@ wget -O /tmp/t12.txt https://10.0.2.2:$((port + 1))/hello.txt | grep TLS; cat /t
 TLS 1.2, AES-256-GCM, certificate for 10.0.2.2 (verified)
 browse -n https://10.0.2.2:$port/page.html | grep bold
 A bold word and a link.
+config updateurl https://10.0.2.2:$port/; update check
+SynthOS is up to date (test)
+config updateurl https://10.0.2.2:$port/new/; update check
+SynthOS test is available
+wget -O /tmp/bad.sup https://10.0.2.2:$port/bad.sup >/dev/null; update verify /tmp/bad.sup; rm /tmp/bad.sup
+update: not a SynthOS update
+EOF
+    # the 32-bit test machine has 64 MB with a fragmented heap: no room for a 5 MB package in one piece there
+    [ "$KERNEL64" = 1 ] && cat >> "$work/cases" <<EOF
+wget -O /tmp/u.sup https://10.0.2.2:$port/synthos-update$sfx.sup >/dev/null; update verify /tmp/u.sup | grep -c checksum
+1
+rm /tmp/u.sup; update install | tail -n 1
+Updated to test (boot sectors, EFI partition). Restart to use it.
+EOF
+    cat >> "$work/cases" <<EOF
+config updateurl default; config updateurl
+updateurl = https://github.com/ssane-labs/synthos/releases/latest/download/
 cd /tmp; winnet https://10.0.2.2:$port/hello.txt | grep wininet
 wininet: status 200, 16 bytes, first line 'secret over tls'
 cd /tmp; winnet64 https://10.0.2.2:$port/hello.txt | grep winhttp

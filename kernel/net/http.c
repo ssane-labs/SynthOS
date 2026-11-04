@@ -536,6 +536,14 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
                     err = E_NOMEM;
                     break;
                 }
+                if (have_headers && !stream && expected != (size_t)-1 && expected <= limit &&
+                    header_len + expected > cap) {
+                    char *sized = krealloc(buf, header_len + expected + 1);
+                    if (sized) {
+                        buf = sized;
+                        cap = header_len + expected;
+                    }
+                }
             }
             if (stream && (got - header_len >= (256u << 10) || got - header_len + streamed >= expected)) {
                 size_t n = MIN(got - header_len, expected - streamed);
@@ -605,22 +613,33 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         body = (const char *)plain;
         body_len = plain_len;
     }
-    resp->body = kmalloc(body_len + 1);
-    if (!resp->headers || !resp->body) {
+    if (!resp->headers) {
         kfree(plain);
         kfree(buf);
-        http_free(resp);
         return E_NOMEM;
     }
     memcpy(resp->headers, buf, header_len);
     resp->headers[header_len] = 0;
     if (!(req->flags & HTTP_NO_COOKIES))
         cookies_from(&u, resp->headers);
-    memcpy(resp->body, body, body_len);
-    resp->body[body_len] = 0;
+    /* A big body stays in the receive buffer (moved to its start) instead of a second copy beside it. */
+    if (!plain && body_len >= (256u << 10)) {
+        memmove(buf, body, body_len);
+        char *fit = krealloc(buf, body_len + 1);
+        resp->body = fit ? fit : buf;
+    } else {
+        resp->body = kmalloc(body_len + 1);
+        if (resp->body)
+            memcpy(resp->body, body, body_len);
+        kfree(buf);
+    }
     kfree(plain);
+    if (!resp->body) {
+        http_free(resp);
+        return E_NOMEM;
+    }
+    resp->body[body_len] = 0;
     resp->length = stream ? streamed : body_len;
-    kfree(buf);
     return 0;
 }
 

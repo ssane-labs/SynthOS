@@ -30,13 +30,13 @@ jobs:
             chmod 600 keys/db.key
           fi
       - name: Build
-        run: make usb && make windows && make ARCH=i686 usb
+        run: make usb && make windows && make update && make ARCH=i686 usb && make ARCH=i686 update
       - name: Pack
         run: |
           cd build
           python3 -m zipfile -c synthos-usb.zip synthos-usb.img synthos-usb.img.sha256
           python3 -m zipfile -c synthos-usb32.zip synthos-usb32.img synthos-usb32.img.sha256
-          sha256sum synthos-windows.zip synthos-usb.zip synthos-usb32.zip > SHA256SUMS
+          sha256sum synthos-windows.zip synthos-usb.zip synthos-usb32.zip synthos-update.sup synthos-update32.sup > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: synthos-usb
@@ -67,5 +67,5 @@ jobs:
         run: |
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest --target "$GITHUB_SHA" --latest --title "SynthOS (latest build)" --notes \
-            "Newest build of ${GITHUB_SHA::7}. synthos-windows.zip: install from Windows without a USB stick (Install SynthOS.cmd). synthos-usb.zip: image for a USB stick (Rufus in DD mode or balenaEtcher). synthos-usb32.zip: 32-bit system for old PCs. Guide: docs/INSTALL.md." \
-            build/synthos-windows.zip build/synthos-usb.zip build/synthos-usb32.zip build/SHA256SUMS
+            "Newest build of ${GITHUB_SHA::7}. synthos-windows.zip: install from Windows without a USB stick (Install SynthOS.cmd). synthos-usb.zip: image for a USB stick (Rufus in DD mode or balenaEtcher). synthos-usb32.zip: 32-bit system for old PCs. synthos-update*.sup: system update, installed copies fetch it themselves (Settings > General > Software Update). Guide: docs/INSTALL.md." \
+            build/synthos-windows.zip build/synthos-usb.zip build/synthos-usb32.zip build/synthos-update.sup build/synthos-update.txt build/synthos-update32.sup build/synthos-update32.txt build/SHA256SUMS

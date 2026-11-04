@@ -263,6 +263,11 @@ int wallpaper_download(const char *source, char *saved, size_t cap, char *title,
                        void (*progress)(void *ctx, const char *stage, size_t done, size_t total), void *ctx);
 void wallpaper_fetch(const char *source);
 void wallpaper_fetch_run(void);
+enum { SYSUPDATE_IDLE, SYSUPDATE_BUSY, SYSUPDATE_CURRENT, SYSUPDATE_AVAILABLE, SYSUPDATE_INSTALLED, SYSUPDATE_FAILED };
+void sysupdate_request(bool install);
+void sysupdate_run(void);
+int sysupdate_state(void);
+const char *sysupdate_note(void);
 void gui_wallpaper_use(const char *path);
 void gui_draw_file_icon(struct canvas *c, const char *path, struct rect r, int alpha);
 void gui_file_label(const char *path, char *out, size_t cap);

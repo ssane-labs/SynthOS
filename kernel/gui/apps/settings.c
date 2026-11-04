@@ -70,6 +70,7 @@ enum pane {
     P_ABOUT,
     P_STORAGE,
     P_DATETIME,
+    P_UPDATE,
     P_KEYBOARD,
     P_MOUSE,
     P_TERMINAL,
@@ -97,6 +98,7 @@ static void pane_screenshot(struct page *p);
 static void pane_about(struct page *p);
 static void pane_storage(struct page *p);
 static void pane_datetime(struct page *p);
+static void pane_update(struct page *p);
 static void browser_popup(struct page *p);
 static void wallpaper_sections(struct page *p);
 
@@ -126,6 +128,7 @@ static const struct {
     {"About", "about", SYM_INFO, RGB(142, 142, 148), 2, P_GENERAL, pane_about},
     {"Storage", "storage", SYM_DISK, RGB(142, 142, 148), 2, P_GENERAL, pane_storage},
     {"Date & Time", "datetime", SYM_CLOCK, RGB(28, 118, 240), 2, P_GENERAL, pane_datetime},
+    {"Software Update", "update", SYM_DOWNLOAD, RGB(142, 142, 148), 2, P_GENERAL, pane_update},
     {"Keyboard", "keyboard", SYM_KEYBOARD, RGB(142, 142, 148), 4, P_DEVICES, pane_keyboard},
     {"Mouse", "mouse", SYM_MOUSE, RGB(142, 142, 148), 4, P_DEVICES, pane_mouse},
     {"Terminal", "terminal", SYM_TERMINAL, RGB(60, 60, 64), 4, P_APPS, pane_terminal},
@@ -576,9 +579,9 @@ static void pane_general(struct page *p)
 {
     struct settings *s = p->s;
     header(p, SYM_GEAR, panes[P_GENERAL].color, "General",
-           "The name of this computer, its storage, and the date and time.");
+           "The name of this computer, its storage, the date and time, and system updates.");
     section(p, NULL);
-    static const int pages[] = {P_ABOUT, P_STORAGE, P_DATETIME};
+    static const int pages[] = {P_ABOUT, P_UPDATE, P_STORAGE, P_DATETIME};
     for (size_t i = 0; i < ARRAY_SIZE(pages); i++)
         if (link(p, panes[pages[i]].sym, panes[pages[i]].color, panes[pages[i]].name, NULL))
             go(s, pages[i]);
@@ -642,6 +645,39 @@ static void pane_about(struct page *p)
     if (button(p, "Memory, disks, windows and the kernel log", NULL, "System Report..."))
         gui_app_launch(gui_app_find("System Monitor"), NULL);
     end(p, NULL);
+}
+
+static void pane_update(struct page *p)
+{
+    int st = sysupdate_state();
+    section(p, NULL);
+    struct rect r = custom(p, 76, "software update version system new");
+    if (!p->measure && p->ui->c) {
+        gfx_icon(p->ui->c, r.x + 16, r.y + 14, ICON_LOGO, 48);
+        gfx_text_box(p->ui->c, (struct rect){r.x + 78, r.y + 16, r.w - 92, 20}, &font_bold,
+                     "SynthOS " SYNTH_VERSION " \"" SYNTH_CODENAME "\"", style.text, ALIGN_LEFT);
+        const char *line = st == SYSUPDATE_BUSY        ? "Working..."
+                           : st == SYSUPDATE_IDLE      ? "Updates come from the SynthOS releases on the internet."
+                           : st == SYSUPDATE_INSTALLED ? "The update is installed. Restart to use it."
+                                                       : sysupdate_note();
+        gfx_text_box(p->ui->c, (struct rect){r.x + 78, r.y + 40, r.w - 92, 18}, &font_small, line,
+                     st == SYSUPDATE_FAILED ? style.error : style.secondary, ALIGN_LEFT);
+    }
+    end(p, NULL);
+    section(p, NULL);
+    if (st == SYSUPDATE_INSTALLED) {
+        if (button(p, "Restart now", "The settings, files and apps stay as they are", "Restart"))
+            gui_quit(QUIT_REBOOT);
+    } else if (st == SYSUPDATE_AVAILABLE) {
+        if (button(p, "Install the update", "Downloads it, then asks for a restart; files and settings stay",
+                   "Update Now"))
+            sysupdate_request(true);
+    } else if (button(p, "Look for a newer SynthOS", NULL, "Check Now")) {
+        sysupdate_request(false);
+    }
+    toggle_setting(p, "Check for updates automatically", "Once a day, with a notification", "autoupdate");
+    end(p, "Updating replaces the system files only. If Secure Boot asks to enroll a key after the restart, choose "
+           "the SynthOS key the same way as during the installation.");
 }
 
 static void pane_storage(struct page *p)

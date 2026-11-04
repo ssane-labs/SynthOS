@@ -82,6 +82,8 @@ Commands
   config glassedge 80       brightness of glass edges (0..100, 50 normal)
   config glassfrost 30      how much glass blurs (0..100, 50 normal)
   appstate                  what apps remember (sidebars, views, window places)
+  update check              is a newer SynthOS out? (update install gets it)
+  config autoupdate off     no daily check for system updates
   config animspeed 140      animation speed in percent (50..200)
   config snap off           no tiling at the screen edges
   config dockstyle side     bottom, corner or side Dock for this look

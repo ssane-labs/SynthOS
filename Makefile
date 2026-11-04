@@ -2,6 +2,7 @@
 #
 #  make            build the bootable disk image (build/vga/synthos.img, 64-bit; ARCH=i686 for old PCs)
 #  make usb        the image for a USB stick (build/synthos-usb.img)
+#  make update     a system update for installed copies (build/synthos-update.sup)
 #  make run        boot it in QEMU
 #  make test       build a serial-console image and run the automated tests
 #  make clean      remove build output
@@ -118,7 +119,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs usb windows
+.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs usb windows update
 all: $(IMAGE)
 
 ESP_LBA     := 8192
@@ -286,7 +287,8 @@ endif
 $(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
 # desktop code that runs on clicks, not per frame: small rather than fast (the 32-bit kernel must stay below 3.5 MiB)
 GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.o screenshot.o mission.o notify.o \
-             dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o)
+             dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o \
+             sysupdate.o)
 $(OUT)/obj/kernel/gui/apps/%.o $(GUI_SMALL): CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
@@ -481,6 +483,13 @@ run-uefi: $(IMAGE)
 # the image to write to a USB stick (Rufus in DD mode, balenaEtcher or dd); the data partition grows to the stick
 usb: $(IMAGE)
 	@python3 -I tools/mkusb.py $(IMAGE) $(BUILD)/synthos-usb$(SUFFIX).img
+
+# A system update for installed copies ('update' inside SynthOS reads it from the release): the boot sectors, the
+# kernel and the EFI files, with a manifest next to it.
+update: $(IMAGE) $(OUT)/esp.img
+	@python3 -I tools/mkupdate.py $(BUILD)/synthos-update$(SUFFIX).sup $(if $(X64),64,32) $(OUT)/stage1.bin \
+	    $(OUT)/stage2.bin $(OUT)/kernel.bin $(OUT)/esp.img
+	@echo "  ready   $(BUILD)/synthos-update$(SUFFIX).sup"
 
 # Install from Windows without a USB stick (tools/windows): the system area and the bundle, the EFI files and the
 # scripts that put them next to Windows.
