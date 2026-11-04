@@ -33,11 +33,6 @@ def blank(size=S):
     return Image.new("RGBA", (size, size), (0, 0, 0, 0))
 
 
-def flat(size, top, bottom):
-    """One even color between the two: icons have no light from above and no shade below."""
-    return Image.new("RGBA", size, tuple((top[k] + bottom[k]) // 2 for k in range(4)))
-
-
 def squircle_mask(box, n=5.0):
     x0, y0, x1, y1 = box
     w, h = x1 - x0, y1 - y0
@@ -83,17 +78,21 @@ def lighter(c, k):
 
 
 def page_base(emblem=None):
-    """A sheet with rounded corners: a white page over a soft shadow, the emblem in front."""
-    mask = rounded_mask((52, 20, 204, 236), 26)
+    """A sheet with its top right corner folded over, on a soft shadow, the emblem in front."""
+    def sheet(d):
+        d.rounded_rectangle([52, 20, 204, 236], radius=16, fill=255)
+        d.polygon([(158, 16), (210, 16), (210, 68)], fill=0)
+    mask = mask_of(sheet)
     img = blank()
-    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 255))
-    shadow.putalpha(mask.point(lambda v: v * 50 // 255).filter(ImageFilter.GaussianBlur(7)))
-    img.alpha_composite(shadow, (0, 5))
-    img.paste(gradient((S, S), (255, 255, 255, 255), (236, 238, 244, 255)), (0, 0), mask)
+    img.alpha_composite(colored(mask, (0, 0, 0, 60)).filter(ImageFilter.GaussianBlur(6)), (0, 5))
+    img.alpha_composite(paint_of((hexc("ffffff"), hexc("eceff4")), mask))
     edge = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(3)))
-    ring = Image.new("RGBA", (S, S), (0, 0, 0, 255))
-    ring.putalpha(edge.point(lambda v: v * 34 // 255))
-    img.alpha_composite(ring)
+    img.alpha_composite(colored(edge, (0, 0, 0, 40)))
+    fold = mask_of(lambda d: d.rounded_rectangle([156, 20, 206, 70], radius=6, fill=255,
+                                                 corners=(True, False, False, False)))
+    fold = ImageChops.multiply(fold, mask_of(poly4([(156, 20), (156, 70), (206, 70)])))
+    img.alpha_composite(colored(fold, (0, 0, 0, 50)).filter(ImageFilter.GaussianBlur(4)), (-2, 3))
+    img.alpha_composite(paint_of((hexc("f4f6f9"), hexc("cfd5de")), fold))
     if emblem:
         emblem(img, ImageDraw.Draw(img))
     return img
@@ -102,13 +101,7 @@ def rr(d, box, r, fill=None, outline=None, width=1):
     d.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=width)
 
 
-# ---------------------------------------------------------------- app icons
-
-# ---------------------------------------------------------------- layered app icons
-#
-# Every app icon is a stack of layers on a rounded squircle, the way current macOS and iOS icons are built:
-# a soft gradient ground, shapes far behind that are out of focus (blurred), frosted glass plates that blur
-# whatever lies under them, and a crisp symbol in front lifted by a soft shadow. No shine along the rim.
+# ---------------------------------------------------------------- drawing helpers
 
 class Scaled:
     """Draws on a 4x canvas with 256-unit coordinates, for smooth (antialiased) masks."""
@@ -127,6 +120,8 @@ class Scaled:
             for key in ("width", "radius"):
                 if key in kw:
                     kw[key] = kw[key] * 4
+            if "width" in kw:
+                kw["width"] = int(round(kw["width"]))
             return orig(*args, **kw)
         return call
 
@@ -157,61 +152,6 @@ def tint_mask(mask, top, bottom):
     img = gradient((S, S), top, bottom)
     img.putalpha(ImageChops.multiply(img.getchannel("A"), mask))
     return img
-
-
-class Icon:
-    """Layers stack from back to front: blur() is out of focus far behind, glass() frosts what lies under it,
-    fill() is crisp and opaque. Each plate gets a thin opaque rim of light, so the layers stay apart."""
-
-    def __init__(self, top, bottom, box=BODY):
-        self.mask = squircle_mask(box)
-        self.img = blank()
-        self.img.paste(gradient((S, S), top, bottom), (0, 0), self.mask)
-
-    def blur(self, draw, color, radius, dx=0, dy=0):
-        layer = colored(mask_of(draw), color).filter(ImageFilter.GaussianBlur(radius))
-        self.img.alpha_composite(layer, (dx, dy)) if dx or dy else self.img.alpha_composite(layer)
-        return self
-
-    def rim(self, m, color, width=3):
-        edge = ImageChops.subtract(m, m.filter(ImageFilter.MinFilter(width * 2 - 1)))
-        fade = gradient((S, S), (255, 255, 255, 255), (255, 255, 255, 90)).getchannel("A")
-        self.img.alpha_composite(colored(ImageChops.multiply(edge, fade), color))
-
-    def fill(self, draw, top, bottom=None, shadow=0, rim=None):
-        m = mask_of(draw)
-        if shadow:
-            sh = colored(m, (0, 0, 0, shadow)).filter(ImageFilter.GaussianBlur(6))
-            self.img.alpha_composite(sh, (0, 5))
-        self.img.alpha_composite(tint_mask(m, top, bottom or top))
-        if rim:
-            self.rim(m, rim, 2)
-        return self
-
-    def glass(self, draw, tint=(255, 255, 255, 70), blur=12, shadow=40, rim=(255, 255, 255, 200)):
-        m = mask_of(draw)
-        if shadow:
-            sh = colored(m, (0, 0, 0, shadow)).filter(ImageFilter.GaussianBlur(9))
-            self.img.alpha_composite(sh, (0, 7))
-        under = self.img.filter(ImageFilter.GaussianBlur(blur))
-        plate = Image.composite(under, blank(), m)
-        plate.alpha_composite(colored(m, tint))
-        light = gradient((S, S), (255, 255, 255, 46), (255, 255, 255, 0))
-        light.putalpha(ImageChops.multiply(light.getchannel("A"), m))
-        plate.alpha_composite(light)
-        self.img.alpha_composite(plate)
-        if rim:
-            self.rim(m, rim)
-        return self
-
-    def done(self):
-        out = Image.composite(self.img, blank(), self.mask)
-        inner = ImageChops.subtract(self.mask.filter(ImageFilter.MinFilter(3)), self.mask.filter(ImageFilter.MinFilter(7)))
-        fade = gradient((S, S), (255, 255, 255, 150), (255, 255, 255, 20)).getchannel("A")
-        out.alpha_composite(colored(ImageChops.multiply(inner, fade), (255, 255, 255, 120)))
-        edge = ImageChops.subtract(self.mask, self.mask.filter(ImageFilter.MinFilter(3)))
-        out.alpha_composite(colored(edge, (0, 0, 0, 40)))
-        return out
 
 
 
@@ -271,17 +211,6 @@ def gear_shape(d, cx, cy, r_out, r_in, teeth, fill, hole_r=0, hole=None):
         d.ellipse([cx - hole_r, cy - hole_r, cx + hole_r, cy + hole_r], fill=hole)
 
 
-def calc_icon():
-    icon = (Icon((70, 70, 78, 255), (22, 22, 26, 255))
-            .blur(ellipse4((130, 20, 250, 140)), (255, 150, 20, 190), 24))
-    for row in range(3):
-        for col in range(3):
-            x, y = 62 + col * 46, 62 + row * 46
-            if col == 2:
-                icon.fill(ellipse4((x, y, x + 38, y + 38)), (255, 176, 40, 255), (250, 140, 0, 255), 40)
-            else:
-                icon.glass(ellipse4((x, y, x + 38, y + 38)), (255, 255, 255, 46 if row else 80), 6, 0)
-    return icon.done()
 
 
 def mirage_mask(size, cx, cy, r):
@@ -301,310 +230,93 @@ def mirage_mask(size, cx, cy, r):
     return m
 
 
-WHITE = (255, 255, 255, 255)
-
-# A quiet palette: grounds are paper, stone or graphite; each icon gets at most one muted accent.
-PAPER = ((250, 250, 251, 255), (218, 219, 224, 255))
-STONE = ((204, 206, 211, 255), (146, 148, 156, 255))
-GRAPHITE = ((86, 88, 96, 255), (28, 29, 33, 255))
-BLUE = (92, 136, 196)
-RED = (206, 92, 86)
-GREEN = (104, 172, 128)
-AMBER = (224, 178, 92)
-ROSE = (206, 98, 122)
-TEAL = (90, 160, 168)
-VIOLET = (132, 116, 186)
-INK = (64, 66, 74, 255)
-FROST = (255, 255, 255, 120)
-SMOKE = (52, 54, 62, 150)
-
-
 def a(c, alpha=255):
     return c + (alpha,)
-
-
-def deeper(c, k=0.78):
-    return tuple(int(v * k) for v in c[:3]) + (255,)
 
 
 def top_rounded(box, r):
     return lambda d: d.rounded_rectangle(box, radius=r, fill=255, corners=(True, True, False, False))
 
 
-def files_icon():
-    return (Icon(*PAPER)
-            .blur(rr4((44, 70, 212, 196), 30), a(BLUE, 150), 18, 0, 10)
-            .fill(rr4((52, 64, 126, 104), 18), (176, 198, 228, 255), (150, 178, 216, 255))
-            .glass(rr4((48, 84, 208, 200), 28), (196, 214, 238, 170), 12, 34)
-            .fill(rr4((104, 128, 152, 141), 6.5), a(BLUE), deeper(BLUE))
-            .done())
-
-
-def terminal_icon():
-    return (Icon(*GRAPHITE)
-            .blur(ellipse4((126, 126, 236, 236)), (120, 196, 150, 80), 30)
-            .glass(rr4((40, 52, 216, 204), 28), (50, 52, 60, 150), 10, 50, (255, 255, 255, 70))
-            .fill(lambda d: d.line([(76, 100), (108, 126), (76, 152)], fill=255, width=14, joint="curve"),
-                  (244, 244, 246, 255), (204, 206, 212, 255))
-            .fill(ellipse4((69, 93, 83, 107)), (244, 244, 246, 255))
-            .fill(ellipse4((69, 145, 83, 159)), (214, 216, 222, 255))
-            .fill(rr4((120, 145, 176, 159), 7), (156, 216, 174, 255), (118, 190, 142, 255))
-            .done())
-
-
-def settings_icon():
-    return (Icon(*STONE)
-            .blur(gear_mask(150, 150, 110, 90, 14, 40), (70, 72, 80, 90), 14)
-            .glass(ellipse4((50, 50, 206, 206)), (255, 255, 255, 70), 12, 30)
-            .fill(gear_mask(128, 128, 64, 52, 12, 24), (248, 248, 250, 255), (206, 208, 214, 255), 60,
-                  (255, 255, 255, 255))
-            .fill(ellipse4((114, 114, 142, 142)), (120, 122, 130, 255), (86, 88, 96, 255))
-            .done())
-
-
-def notepad_icon():
-    icon = (Icon(*PAPER)
-            .blur(rr4((74, 42, 226, 184), 24), a(AMBER, 120), 16, 8, -4)
-            .glass(rr4((50, 54, 206, 210), 28), (255, 255, 255, 190), 10, 34)
-            .fill(top_rounded((50, 54, 206, 94), 28), a(AMBER), deeper(AMBER, 0.9)))
-    for i in range(4):
-        y = 122 + i * 22
-        icon.fill(rr4((74, y - 3.5, 182 - (i % 2) * 34, y + 3.5), 3.5), (190, 192, 200, 255))
-    return icon.done()
-
-
-def paint_icon():
-    icon = Icon(*PAPER)
-    for (x, y, c) in [(40, 46, RED), (150, 36, AMBER), (156, 150, BLUE)]:
-        icon.blur(ellipse4((x, y, x + 74, y + 74)), a(c, 150), 22)
-
-    def palette(d):
-        d.ellipse([44, 62, 212, 202], fill=255)
-        d.ellipse([146, 140, 178, 172], fill=0)
-    icon.glass(palette, (255, 255, 255, 150), 12, 34)
-    for (x, y, c) in [(74, 98, RED), (110, 80, AMBER), (150, 86, GREEN), (78, 140, BLUE)]:
-        icon.fill(ellipse4((x, y, x + 28, y + 28)), a(c), deeper(c, 0.85), 40)
-    return icon.done()
-
-
-def monitor_icon():
-    pts = [(58, 168), (86, 148), (108, 160), (132, 102), (154, 132), (176, 86), (200, 108)]
-    return (Icon(*GRAPHITE)
-            .blur(line4(pts, 30), a(GREEN, 120), 16)
-            .glass(rr4((40, 56, 216, 200), 28), (255, 255, 255, 22), 8, 0, (255, 255, 255, 60))
-            .fill(line4(pts, 11), (176, 226, 192, 255), a(GREEN))
-            .done())
-
-
-def browser_icon():
-    icon = (Icon(*PAPER)
-            .blur(ellipse4((36, 36, 220, 220)), a(BLUE, 140), 20)
-            .glass(ellipse4((46, 46, 210, 210)), (236, 241, 248, 130), 12, 34))
-    for i in range(12):
-        r = math.radians(i * 30)
-        cx, cy = 128 + 66 * math.cos(r), 128 + 66 * math.sin(r)
-        dx, dy = 8 * math.cos(r), 8 * math.sin(r)
-        icon.fill(line4([(cx - dx, cy - dy), (cx, cy)], 4), (150, 154, 164, 255))
-    return (icon.fill(poly4([(128, 128), (176, 80), (140, 140)]), a(RED), deeper(RED), 40)
-            .fill(poly4([(128, 128), (80, 176), (116, 116)]), (236, 236, 240, 255), (196, 198, 206, 255), 40)
-            .fill(ellipse4((120, 120, 136, 136)), INK)
-            .done())
-
-
-def mines_icon():
-    cx, cy = 124, 138
-
-    def mine(d):
-        for ang in range(0, 360, 45):
-            r = math.radians(ang)
-            d.line([(cx, cy), (cx + 52 * math.cos(r), cy + 52 * math.sin(r))], fill=255, width=12)
-        d.ellipse([cx - 38, cy - 38, cx + 38, cy + 38], fill=255)
-    icon = Icon(*STONE)
-    for i in range(3):
-        for j in range(3):
-            icon.glass(rr4((32 + i * 66, 32 + j * 66, 92 + i * 66, 92 + j * 66), 16), (255, 255, 255, 50), 8, 0,
-                       (255, 255, 255, 110))
-    return (icon.blur(mine, (0, 0, 0, 110), 10, 0, 8)
-            .fill(mine, (66, 68, 76, 255), (28, 29, 33, 255))
-            .fill(ellipse4((cx - 22, cy - 22, cx - 4, cy - 4)), (226, 228, 234, 255))
-            .fill(rr4((180, 52, 188, 126), 4), (244, 244, 246, 255))
-            .fill(poly4([(188, 54), (222, 72), (188, 90)]), a(RED), deeper(RED), 30)
-            .done())
-
-
-def launchpad_icon():
-    tones = [(150, 154, 164), (196, 198, 206), a(BLUE)[:3], (196, 198, 206), (96, 98, 108), (170, 172, 180),
-             a(AMBER)[:3], (170, 172, 180), (196, 198, 206)]
-    icon = Icon(*PAPER)
-    for i, c in enumerate(tones):
-        x, y = 40 + (i % 3) * 62, 40 + (i // 3) * 62
-        icon.blur(rr4((x, y, x + 52, y + 52), 16), c + (150,), 12)
-    for i, c in enumerate(tones):
-        x, y = 60 + (i % 3) * 50, 60 + (i // 3) * 50
-        icon.fill(rr4((x, y, x + 38, y + 38), 13), c + (255,), deeper(c, 0.86), 30, (255, 255, 255, 120))
-    return icon.done()
-
-
-def logo_icon():
-    icon = (Icon((118, 106, 132, 255), (42, 38, 52, 255))
-            .blur(ellipse4((50, 40, 210, 200)), (255, 226, 176, 130), 28))
-    m = mirage_mask((S, S), 128, 126, 66)
-    sh = colored(m, (0, 0, 0, 60)).filter(ImageFilter.GaussianBlur(7))
-    icon.img.alpha_composite(sh, (0, 6))
-    icon.img.alpha_composite(tint_mask(m, (255, 252, 244, 255), (236, 200, 146, 255)))
-    return icon.done()
-
-
-def photos_icon():
-    return (Icon(*PAPER)
-            .blur(rr4((40, 50, 216, 160), 40), a(BLUE, 120), 20)
-            .blur(ellipse4((138, 48, 206, 116)), a(AMBER, 170), 14)
-            .fill(ellipse4((150, 66, 186, 102)), (246, 222, 170, 255), a(AMBER))
-            .glass(poly4([(36, 214), (102, 118), (148, 172), (176, 142), (222, 214)]), (255, 255, 255, 120), 10, 30)
-            .glass(poly4([(70, 214), (132, 150), (196, 214)]), (120, 124, 134, 90), 8, 20, (255, 255, 255, 140))
-            .done())
-
-
-def music_icon():
-    def note(d):
-        d.polygon([(92, 70), (184, 48), (184, 74), (92, 96)], fill=255)
-        d.line([(98, 80), (98, 170)], fill=255, width=14)
-        d.line([(178, 60), (178, 150)], fill=255, width=14)
-        d.ellipse([56, 150, 106, 192], fill=255)
-        d.ellipse([136, 130, 186, 172], fill=255)
-    return (Icon(*PAPER)
-            .blur(note, a(ROSE, 120), 16, 12, 10)
-            .fill(note, (222, 118, 140, 255), deeper(ROSE, 0.8), 50)
-            .done())
-
-
-def video_icon():
-    return (Icon(*GRAPHITE)
-            .blur(ellipse4((60, 60, 200, 200)), a(VIOLET, 120), 28)
-            .glass(rr4((44, 66, 212, 190), 30), (255, 255, 255, 46), 12, 30, (255, 255, 255, 80))
-            .fill(lambda d: d.polygon([(112, 100), (112, 156), (160, 128)], fill=255), (246, 246, 248, 255),
-                  (210, 212, 218, 255), 50)
-            .done())
-
-
-def viewer_icon():
-    return (Icon(*PAPER)
-            .blur(ellipse4((40, 40, 190, 190)), a(TEAL, 120), 18)
-            .fill(line4([(158, 158), (202, 202)], 24), (110, 112, 120, 255), (60, 62, 70, 255), 40)
-            .glass(ellipse4((56, 56, 172, 172)), (240, 246, 248, 120), 12, 30)
-            .fill(ellipse4((56, 56, 172, 172), True, 12), (120, 122, 132, 255), (78, 80, 90, 255))
-            .done())
-
-
-def installer_icon():
-    return (Icon(*PAPER)
-            .blur(rr4((40, 124, 216, 230), 30), (60, 62, 72, 120), 14)
-            .glass(rr4((50, 148, 206, 208), 24), (255, 255, 255, 140), 10, 30)
-            .fill(ellipse4((170, 170, 184, 184)), a(GREEN))
-            .fill(rr4((114, 40, 142, 112), 14), a(BLUE), deeper(BLUE), 40)
-            .fill(lambda d: d.polygon([(80, 96), (176, 96), (128, 146)], fill=255), a(BLUE), deeper(BLUE), 40)
-            .done())
-
-
-def exe_icon():
-    icon = (Icon(*STONE)
-            .blur(rr4((70, 40, 230, 170), 22), (255, 255, 255, 120), 14)
-            .glass(rr4((46, 62, 210, 196), 22), (255, 255, 255, 160), 10, 34)
-            .fill(top_rounded((46, 62, 210, 94), 22), (232, 233, 238, 255)))
-    for i in range(3):
-        icon.fill(ellipse4((62 + i * 22, 71, 76 + i * 22, 85)), (150, 152, 160, 255))
-    return (icon.fill(rr4((64, 112, 132, 126), 7), a(BLUE))
-            .fill(rr4((64, 140, 186, 149), 4.5), (180, 182, 190, 255))
-            .fill(rr4((64, 160, 166, 169), 4.5), (180, 182, 190, 255))
-            .done())
-
-
-def screenshot_icon():
-    def brackets(d):
-        for x0, y0, dx, dy in ((52, 60, 1, 1), (204, 60, -1, 1), (52, 196, 1, -1), (204, 196, -1, -1)):
-            d.line([(x0, y0 + dy * 34), (x0, y0), (x0 + dx * 34, y0)], fill=255, width=11, joint="curve")
-    return (Icon(*STONE)
-            .blur(ellipse4((60, 60, 200, 200)), (255, 255, 255, 120), 22)
-            .fill(brackets, (250, 250, 252, 255), None, 30)
-            .glass(rr4((82, 98, 174, 166), 18), (255, 255, 255, 120), 8)
-            .fill(rr4((110, 88, 146, 106), 6), (250, 250, 252, 255))
-            .fill(ellipse4((110, 114, 146, 150)), (80, 82, 92, 255), (50, 52, 60, 255))
-            .fill(ellipse4((120, 124, 136, 140)), (190, 204, 224, 255))
-            .done())
-
-
-def computer_icon():
-    return (Icon((238, 238, 242, 255), (180, 180, 188, 255), (20, 60, 236, 196))
-            .blur(rr4((40, 80, 216, 180), 24), (255, 255, 255, 180), 12)
-            .glass(rr4((34, 74, 222, 150), 20), (255, 255, 255, 70), 8, 0)
-            .fill(rr4((44, 150, 212, 153), 1.5), (156, 158, 166, 255))
-            .fill(ellipse4((186, 160, 200, 174)), a(GREEN))
-            .done())
-
-
-def usb_icon():
-    cx, cy = 128, 132
-
-    def mark(d):
-        d.line([(cx, cy - 40), (cx, cy + 40)], fill=255, width=9)
-        d.polygon([(cx - 15, cy - 34), (cx + 15, cy - 34), (cx, cy - 58)], fill=255)
-        d.line([(cx, cy + 6), (cx - 30, cy - 14), (cx - 30, cy - 26)], fill=255, width=8, joint="curve")
-        d.line([(cx, cy + 20), (cx + 30, cy), (cx + 30, cy - 12)], fill=255, width=8, joint="curve")
-        d.ellipse([cx - 13, cy + 33, cx + 13, cy + 59], fill=255)
-        d.ellipse([cx - 38, cy - 36, cx - 22, cy - 20], fill=255)
-        d.rectangle([cx + 22, cy - 26, cx + 38, cy - 10], fill=255)
-    return (Icon(*STONE)
-            .blur(ellipse4((70, 70, 190, 190)), a(AMBER, 120), 22)
-            .glass(rr4((56, 56, 200, 200), 34), (255, 255, 255, 60), 10, 20)
-            .fill(mark, (252, 252, 253, 255), (222, 224, 230, 255), 50)
-            .done())
 
 
 
-FOLDER_TOP = (176, 202, 232, 255)
-FOLDER_BOTTOM = (128, 162, 206, 255)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def folder_base(emblem=None):
-    """A folder of two layers: the back with its tab, and a frosted front plate that blurs it."""
+    """A folder: the back with its tab, a sheet of paper in it, and the lighter front with the emblem pressed in."""
     img = blank()
-    back = rounded_mask((24, 52, 232, 214), 22)
-    tab = rounded_mask((24, 38, 108, 80), 16)
-    back_layer = gradient((S, S), (132, 164, 204, 255), (100, 132, 178, 255))
-    img.paste(back_layer, (0, 0), ImageChops.lighter(back, tab))
-    sheet = colored(rounded_mask((40, 62, 216, 150), 10), (255, 255, 255, 220))
-    img.alpha_composite(sheet.filter(ImageFilter.GaussianBlur(2)))
-    front = rounded_mask((24, 80, 232, 220), 22)
-    under = img.filter(ImageFilter.GaussianBlur(10))
-    plate = Image.composite(under, blank(), front)
-    plate.alpha_composite(tint_mask(front, FOLDER_TOP[:3] + (200,), FOLDER_BOTTOM[:3] + (230,)))
-    edge = ImageChops.subtract(front, front.filter(ImageFilter.MinFilter(3)))
-    plate.alpha_composite(colored(edge, (255, 255, 255, 170)))
-    shadow = colored(front, (0, 0, 0, 50)).filter(ImageFilter.GaussianBlur(6))
-    img.alpha_composite(shadow, (0, -2))
-    img.alpha_composite(plate)
+    back = ImageChops.lighter(rounded_mask((24, 52, 232, 214), 20), rounded_mask((24, 38, 106, 80), 14))
+    img.alpha_composite(colored(back, (0, 0, 0, 60)).filter(ImageFilter.GaussianBlur(5)), (0, 4))
+    img.alpha_composite(paint_of((hexc("5aaaf0"), hexc("2f7fd4")), back))
+    sheet = rounded_mask((38, 60, 218, 150), 8)
+    img.alpha_composite(colored(sheet, (0, 0, 0, 40)).filter(ImageFilter.GaussianBlur(3)), (0, -1))
+    img.alpha_composite(paint_of((hexc("ffffff"), hexc("e6edf6")), sheet))
+    front = rounded_mask((24, 78, 232, 220), 20)
+    img.alpha_composite(colored(front, (0, 0, 0, 50)).filter(ImageFilter.GaussianBlur(4)), (0, -3))
+    img.alpha_composite(paint_of((hexc("a6d8ff"), hexc("62b2f6")), front))
+    hi, lo = bands(front, 4)
+    img.alpha_composite(colored(ImageChops.multiply(hi, front), (255, 255, 255, 170)))
+    img.alpha_composite(colored(ImageChops.multiply(lo, front), (20, 70, 140, 70)))
     if emblem:
         e = blank()
         emblem(e, ImageDraw.Draw(e))
-        tint = Image.new("RGBA", (S, S), (76, 108, 152, 255))
-        tint.putalpha(e.getchannel("A").point(lambda v: v * 200 // 255))
-        img.alpha_composite(tint)
+        m = e.getchannel("A")
+        img.alpha_composite(colored(ImageChops.offset(m, 0, 2), (255, 255, 255, 110)))
+        img.alpha_composite(colored(m, (40, 116, 200, 210)))
     return img
 
 
 def circle_badge(c_top, c_bottom, draw):
     m = mask_of(ellipse4((30, 30, 226, 226)))
     img = blank()
-    img.paste(gradient((S, S), c_top, c_bottom), (0, 0), m)
-    glow = colored(mask_of(ellipse4((50, 30, 200, 150))), (255, 255, 255, 90)).filter(ImageFilter.GaussianBlur(20))
-    img.alpha_composite(Image.composite(glow, blank(), m))
+    img.alpha_composite(colored(m, (0, 0, 0, 60)).filter(ImageFilter.GaussianBlur(5)), (0, 4))
+    img.alpha_composite(paint_of((c_top, c_bottom), m))
+    img.alpha_composite(paint_of(((255, 255, 255, 110), (255, 255, 255, 0)), mask_of(gloss((30, 30, 226, 226)))))
     g = blank()
     draw(g, ImageDraw.Draw(g))
     sh = Image.new("RGBA", (S, S), (0, 0, 0, 255))
-    sh.putalpha(g.getchannel("A").point(lambda v: v * 60 // 255).filter(ImageFilter.GaussianBlur(6)))
-    img.alpha_composite(Image.composite(sh, blank(), m), (0, 0))
+    sh.putalpha(g.getchannel("A").point(lambda v: v * 70 // 255).filter(ImageFilter.GaussianBlur(5)))
+    img.alpha_composite(Image.composite(sh, blank(), m), (0, 3))
     img.alpha_composite(g)
-    return Image.composite(img, blank(), m)
+    hi, lo = bands(m, 4)
+    img.alpha_composite(colored(ImageChops.multiply(hi, m), (255, 255, 255, 120)))
+    img.alpha_composite(colored(ImageChops.multiply(lo, m), (0, 0, 0, 50)))
+    return img
 
 
 def folder_icon():
@@ -720,7 +432,11 @@ def warning_icon():
     md.polygon([(x * 4, y * 4) for x, y in tri], fill=255)
     md.line([(x * 4, y * 4) for x, y in tri + tri[:1]], fill=255, width=40, joint="curve")
     mask = mask.resize((S, S), Image.LANCZOS)
-    img.paste(flat((S, S), (240, 204, 100, 255), (226, 176, 70, 255)), (0, 0), mask)
+    img.alpha_composite(colored(mask, (0, 0, 0, 60)).filter(ImageFilter.GaussianBlur(5)), (0, 4))
+    img.alpha_composite(paint_of((hexc("ffd65c"), hexc("f2a516")), mask))
+    hi, lo = bands(mask, 4)
+    img.alpha_composite(colored(ImageChops.multiply(hi, mask), (255, 255, 255, 140)))
+    img.alpha_composite(colored(ImageChops.multiply(lo, mask), (120, 60, 0, 60)))
     d = ImageDraw.Draw(img)
     rr(d, (118, 92, 138, 166), 10, fill=(60, 54, 44, 255))
     d.ellipse([116, 176, 140, 200], fill=(60, 54, 44, 255))
@@ -735,8 +451,8 @@ def user_icon():
     mask = Image.new("L", (S * 4, S * 4), 0)
     ImageDraw.Draw(mask).ellipse([16 * 4, 16 * 4, 240 * 4, 240 * 4], fill=255)
     mask = mask.resize((S, S), Image.LANCZOS)
-    body = flat((S, S), (176, 180, 190, 255), (128, 132, 142, 255))
-    img.paste(body, (0, 0), mask)
+    img.alpha_composite(colored(mask, (0, 0, 0, 50)).filter(ImageFilter.GaussianBlur(5)), (0, 4))
+    img.alpha_composite(paint_of((hexc("c3c8d2"), hexc("838a97")), mask))
     g = blank()
     draw(g, ImageDraw.Draw(g))
     clip = blank()
@@ -824,64 +540,517 @@ def trash_full_icon():
 
 
 
-def store_icon():
-    """A shopping bag: the handle behind, a frosted bag in front with a crisp tag."""
-    return (Icon((70, 70, 78, 255), (22, 22, 26, 255))
-            .blur(ellipse4((120, 130, 250, 250)), a(BLUE, 170), 26)
-            .fill(lambda d: d.arc((90, 40, 166, 118), 180, 360, fill=255, width=13), (236, 236, 240, 255),
-                  (196, 198, 206, 255))
-            .glass(rr4((54, 82, 202, 214), 30), (255, 255, 255, 58), 10, 40)
-            .fill(ellipse4((84, 106, 100, 122)), (236, 236, 240, 255))
-            .fill(ellipse4((156, 106, 172, 122)), (236, 236, 240, 255))
-            .fill(lambda d: d.line([(100, 160), (124, 182), (160, 144)], fill=255, width=13, joint="curve"),
-                  (156, 200, 244, 255), (110, 160, 220, 255), 30)
-            .done())
 
 
-def code_icon():
-    """Developer tools: angle brackets around a slash on a dark frosted card."""
-    return (Icon(*GRAPHITE)
-            .blur(ellipse4((30, 120, 160, 250)), (150, 130, 220, 90), 30)
-            .glass(rr4((40, 52, 216, 204), 28), (50, 52, 60, 150), 10, 50, (255, 255, 255, 70))
-            .fill(lambda d: d.line([(98, 96), (68, 128), (98, 160)], fill=255, width=13, joint="curve"),
-                  (244, 244, 246, 255), (204, 206, 212, 255))
-            .fill(lambda d: d.line([(158, 96), (188, 128), (158, 160)], fill=255, width=13, joint="curve"),
-                  (244, 244, 246, 255), (204, 206, 212, 255))
-            .fill(lambda d: d.line([(140, 86), (116, 170)], fill=255, width=12), (186, 172, 236, 255),
-                  (146, 130, 210, 255))
-            .done())
 
 
-def games_icon():
-    """A game controller: a frosted body over a soft glow, a crisp pad and buttons."""
+
+
+# ---------------------------------------------------------------- detailed app icons
+#
+# Drawn like real objects on a colored squircle: a rich vertical gradient lit from above, objects with their
+# own gradients, a bevel (light along the top edge, shade along the bottom), soft contact shadows and small
+# details. The designs are SynthOS's own.
+
+def hexc(s, alpha=255):
+    s = s.lstrip("#")
+    return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), alpha)
+
+
+def radial(cx, cy, r, inner, outer):
+    """inner at (cx, cy) fading to outer at distance r."""
+    k = 64
+    small = Image.new("L", (k, k), 0)
+    px = small.load()
+    for y in range(k):
+        for x in range(k):
+            dx, dy = (x + 0.5) * S / k - cx, (y + 0.5) * S / k - cy
+            px[x, y] = int(255 * min(1.0, math.hypot(dx, dy) / r))
+    ramp = small.resize((S, S), Image.BICUBIC)
+    return Image.composite(Image.new("RGBA", (S, S), outer), Image.new("RGBA", (S, S), inner), ramp)
+
+
+def paint_of(p, m):
+    """p is a color, a (top, bottom) pair or an image; returns it cut to the mask m."""
+    if isinstance(p, Image.Image):
+        img = p.copy()
+    elif isinstance(p[0], tuple):
+        img = gradient((S, S), p[0], p[1])
+    else:
+        img = Image.new("RGBA", (S, S), p)
+    img.putalpha(ImageChops.multiply(img.getchannel("A"), m))
+    return img
+
+
+def bands(m, k):
+    """Light along the top inside edge and shade along the bottom inside edge of a shape."""
+    top = ImageChops.subtract(m, ImageChops.offset(m, 0, k))
+    bottom = ImageChops.subtract(m, ImageChops.offset(m, 0, -k))
+    return top.filter(ImageFilter.GaussianBlur(k / 2)), bottom.filter(ImageFilter.GaussianBlur(k / 2))
+
+
+def rotated(draw, angle, cx=128, cy=128):
+    m = mask_of(draw)
+    return m.rotate(angle, resample=Image.BICUBIC, center=(cx, cy))
+
+
+class Art:
+    def __init__(self, top, bottom, box=BODY, glow=70):
+        self.box = box
+        self.mask = squircle_mask(box)
+        self.img = gradient((S, S), top, bottom)
+        if glow:
+            x0, y0, x1, y1 = box
+            self.img.alpha_composite(radial((x0 + x1) / 2, y0, (y1 - y0) * 0.9, (255, 255, 255, glow),
+                                            (255, 255, 255, 0)))
+
+    def m(self, shape):
+        return shape if isinstance(shape, Image.Image) else mask_of(shape)
+
+    def shadow(self, shape, alpha=70, blur=6, dy=5, dx=0):
+        sh = colored(self.m(shape), (0, 0, 0, alpha)).filter(ImageFilter.GaussianBlur(blur))
+        self.img.alpha_composite(sh, (dx, dy))
+        return self
+
+    def put(self, shape, paint, shadow=0, bevel=0, light=110, shade=60, stroke=None, blur=0):
+        m = self.m(shape)
+        if shadow:
+            self.shadow(m, shadow, 4 + shadow // 20, 3 + shadow // 25)
+        layer = paint_of(paint, m)
+        if blur:
+            layer = layer.filter(ImageFilter.GaussianBlur(blur))
+        self.img.alpha_composite(layer)
+        if bevel:
+            hi, lo = bands(m, bevel)
+            self.img.alpha_composite(colored(ImageChops.multiply(hi, m), (255, 255, 255, light)))
+            self.img.alpha_composite(colored(ImageChops.multiply(lo, m), (0, 0, 0, shade)))
+        if stroke:
+            edge = ImageChops.subtract(m, m.filter(ImageFilter.MinFilter(3)))
+            self.img.alpha_composite(colored(edge, stroke))
+        return self
+
+    def clip(self, shape, paint, within):
+        """paint the shape only where the mask within is."""
+        m = ImageChops.multiply(self.m(shape), self.m(within))
+        self.img.alpha_composite(paint_of(paint, m))
+        return self
+
+    def done(self, shadow=60):
+        out = blank()
+        if shadow:
+            sh = colored(self.mask, (0, 0, 0, shadow)).filter(ImageFilter.GaussianBlur(5))
+            out.alpha_composite(sh, (0, 4))
+        out.alpha_composite(Image.composite(self.img, blank(), self.mask))
+        hi, lo = bands(self.mask, 4)
+        out.alpha_composite(colored(ImageChops.multiply(hi, self.mask), (255, 255, 255, 90)))
+        out.alpha_composite(colored(ImageChops.multiply(lo, self.mask), (0, 0, 0, 50)))
+        return out
+
+
+def gloss(box):
+    """The soft reflection on the upper half of a round or glassy object."""
+    x0, y0, x1, y1 = box
+    return ellipse4((x0 + (x1 - x0) * 0.12, y0 + (y1 - y0) * 0.04, x1 - (x1 - x0) * 0.12, y0 + (y1 - y0) * 0.5))
+
+
+def files_art():
+    """A file drawer pulled open, colored folder tabs standing in it."""
+    art = Art(hexc("7cc8ff"), hexc("1f6fe0"))
+    art.put(rr4((50, 96, 206, 214), 18), (hexc("e9eef6"), hexc("b9c4d4")), 70, 3)
+    for i, (c1, c2) in enumerate((("ffd45a", "f2a91c"), ("7fd98c", "35a853"), ("ff8a80", "e2483d"))):
+        x = 66 + i * 40
+        art.put(top_rounded((x, 62 + i * 6, x + 64, 140), 9), (hexc(c1), hexc(c2)), 40, 3)
+        art.put(rr4((x + 6, 78 + i * 6, x + 58, 140), 4), (hexc("ffffff"), hexc("e8e8e8")), 0)
+    art.put(rr4((44, 124, 212, 220), 20), (hexc("ffffff"), hexc("d6dde8")), 60, 4)
+    art.put(rr4((100, 150, 156, 166), 8), (hexc("6d7a8c"), hexc("9aa6b6")), 0, 2, 40, 80)
+    art.put(rr4((104, 153, 152, 157), 2), (255, 255, 255, 120))
+    return art.done()
+
+
+def terminal_art():
+    art = Art(hexc("eceef2"), hexc("a9adb6"))
+    art.put(rr4((40, 48, 216, 208), 22), (hexc("50545c"), hexc("2a2c31")), 60, 3)
+    art.put(rr4((46, 66, 210, 202), 16), (hexc("23262c"), hexc("0b0c0e")))
+    for i, c in enumerate(("ff5f57", "febc2e", "28c840")):
+        art.put(ellipse4((54 + i * 15, 53, 64 + i * 15, 63)), hexc(c))
+    art.put(line4([(68, 98), (98, 122), (68, 146)], 13), (hexc("f4f5f7"), hexc("c9ccd2")))
+    art.put(rr4((108, 140, 156, 153), 4), (hexc("7cf29a"), hexc("2fbf5a")))
+    art.put(rr4((68, 172, 188, 178), 3), (255, 255, 255, 40))
+    art.put(rr4((50, 70, 206, 120), 14), ((255, 255, 255, 28), (255, 255, 255, 0)))
+    return art.done()
+
+
+def settings_art():
+    art = Art(hexc("e6e8ec"), hexc("8d929c"))
+    art.put(ellipse4((40, 40, 216, 216)), (hexc("7a7f89"), hexc("3f434a")), 50, 3, 70, 60)
+    art.put(gear_mask(128, 128, 82, 68, 16, 0), radial(110, 96, 110, hexc("ffffff"), hexc("9ca1ab")), 70, 3)
+    art.put(ellipse4((76, 76, 180, 180)), (hexc("5e636c"), hexc("2c2f35")), 0, 3, 60, 40)
+    art.put(gear_mask(128, 128, 46, 38, 10, 0), radial(116, 108, 64, hexc("f4f5f7"), hexc("8a8f98")), 40, 2)
+    art.put(ellipse4((110, 110, 146, 146)), (hexc("4a4e56"), hexc("6c717a")), 0, 2)
+    art.put(ellipse4((120, 120, 136, 136)), (hexc("d8dbe0"), hexc("a4a9b2")))
+    return art.done()
+
+
+def calc_art():
+    art = Art(hexc("56585f"), hexc("1d1e22"))
+    art.put(rr4((46, 44, 210, 92), 12), (hexc("2b3a34"), hexc("1c2622")), 0, 2, 30, 60)
+    art.put(text4("42", INTER_BOLD, 34, (156, 46)), (hexc("e8fff1"), hexc("a9d9bc")))
+    for row in range(3):
+        for col in range(4):
+            x, y = 48 + col * 41, 106 + row * 36
+            if col == 3:
+                p = (hexc("ffb340"), hexc("f07c00"))
+            elif row == 0:
+                p = (hexc("c7c9ce"), hexc("9a9da4"))
+            else:
+                p = (hexc("6b6e75"), hexc("45474d"))
+            art.put(rr4((x, y, x + 34, y + 29), 10), p, 40, 2, 90, 60)
+    art.put(rr4((120, 115, 140, 119), 2), hexc("ffffff"))
+    art.put(rr4((128, 107, 132, 127), 2), hexc("ffffff"))
+    return art.done()
+
+
+def notepad_art():
+    art = Art(hexc("fffdf6"), hexc("efe9d8"), glow=0)
+    art.put(top_rounded((24, 24, 232, 84), 44), (hexc("ffd95a"), hexc("f3b313")), 0, 3, 90, 40)
+    art.put(rr4((24, 82, 232, 88), 0), (0, 0, 0, 40), blur=2)
+    for i in range(6):
+        art.put(ellipse4((52 + i * 28, 60, 62 + i * 28, 70)), (hexc("b88a10"), hexc("e0ae2a")))
+    for i in range(6):
+        y = 110 + i * 19
+        art.put(rr4((44, y, 212, y + 2.4), 1.2), hexc("c9d6ea"))
+    art.put(rr4((70, 92, 72.5, 224), 1), hexc("f1a3a3"))
+    pencil = rotated(rr4((78, 120, 238, 142), 4), 38, 150, 140)
+    art.shadow(pencil, 70, 5, 6)
+    art.clip(rotated(rr4((78, 120, 238, 142), 4), 38, 150, 140), (hexc("ffcc33"), hexc("e99a00")), pencil)
+    art.clip(rotated(rr4((206, 120, 238, 142), 4), 38, 150, 140), (hexc("f7a6b4"), hexc("e07a8c")), pencil)
+    art.clip(rotated(rr4((196, 120, 208, 142), 0), 38, 150, 140), (hexc("d9dce2"), hexc("9aa0aa")), pencil)
+    tip = rotated(poly4([(78, 120), (78, 142), (52, 131)]), 38, 150, 140)
+    art.put(tip, (hexc("f3d3a1"), hexc("d9a868")))
+    art.put(rotated(poly4([(62, 126), (62, 136), (52, 131)]), 38, 150, 140), hexc("3a3a3e"))
+    art.clip(rotated(rr4((78, 120, 196, 126), 0), 38, 150, 140), (255, 255, 255, 90), pencil)
+    return art.done()
+
+
+def paint_art():
+    art = Art(hexc("8fd3ff"), hexc("3a7bd5"))
+
+    def palette(d):
+        d.ellipse([36, 58, 220, 214], fill=255)
+        d.ellipse([170, 168, 230, 228], fill=0)
+        d.ellipse([140, 150, 166, 176], fill=0)
+    art.put(palette, (hexc("f2c98f"), hexc("c98d4f")), 70, 4)
+    for (x, y, c1, c2) in ((64, 104, "ff6b5e", "d6372b"), (98, 76, "ffd84a", "f0a500"), (140, 80, "6fe08b", "26a64a"),
+                           (178, 108, "6db8ff", "1f6fe0"), (72, 150, "b98cff", "7a4be0")):
+        art.put(ellipse4((x, y, x + 32, y + 28)), (hexc(c1), hexc(c2)), 30, 2)
+        art.put(ellipse4((x + 7, y + 5, x + 17, y + 12)), (255, 255, 255, 170))
+    k = (-40, 168, 170)
+    brush = rotated(rr4((104, 164, 222, 176), 6), *k)
+    art.shadow(brush, 60, 4, 5)
+    art.clip(rotated(rr4((104, 164, 186, 176), 6), *k), (hexc("ff9a3c"), hexc("d0631a")), brush)
+    art.clip(rotated(rr4((184, 162, 206, 178), 3), *k), (hexc("eef0f3"), hexc("9aa0aa")), brush)
+    art.put(rotated(poly4([(204, 161), (236, 170), (204, 179)]), *k), (hexc("4a4e57"), hexc("1d1f24")))
+    return art.done()
+
+
+def monitor_art():
+    art = Art(hexc("3a3e46"), hexc("121316"))
+    art.put(rr4((40, 50, 216, 206), 18), (hexc("13161b"), hexc("07080a")), 40, 2, 30, 0)
+    for i in range(1, 4):
+        art.put(rr4((48, 50 + i * 39, 208, 51 + i * 39), 0), (120, 255, 160, 30))
+        art.put(rr4((40 + i * 44, 58, 41 + i * 44, 198), 0), (120, 255, 160, 30))
+    pts = [(48, 170), (74, 150), (98, 160), (124, 108), (148, 134), (172, 84), (208, 104)]
+
+    def area(d):
+        d.polygon(pts + [(208, 198), (48, 198)], fill=255)
+    art.put(area, ((90, 255, 140, 120), (90, 255, 140, 0)))
+    art.put(line4(pts, 9), (hexc("b6ffcb"), hexc("37d06a")))
+    art.put(line4(pts, 22), (80, 255, 140, 60), blur=6)
+    art.put(ellipse4((166, 78, 178, 90)), hexc("ffffff"))
+    return art.done()
+
+
+def mines_art():
+    art = Art(hexc("a9b6c6"), hexc("5d6b7e"))
+    for i in range(3):
+        for j in range(3):
+            x, y = 38 + i * 62, 38 + j * 62
+            art.put(rr4((x, y, x + 56, y + 56), 12), (hexc("e8edf3"), hexc("b7c2cf")), 30, 3)
+    cx, cy = 128, 128
+
+    def mine(d):
+        for ang in range(0, 360, 45):
+            r = math.radians(ang)
+            d.line([(cx, cy), (cx + 40 * math.cos(r), cy + 40 * math.sin(r))], fill=255, width=9)
+        d.ellipse([cx - 28, cy - 28, cx + 28, cy + 28], fill=255)
+    art.put(mine, radial(118, 116, 50, hexc("5a5e66"), hexc("101114")), 70)
+    art.put(ellipse4((cx - 18, cy - 18, cx - 4, cy - 4)), (255, 255, 255, 220), blur=1)
+    art.put(rr4((182, 44, 187, 84), 2), hexc("3a3d44"))
+    art.put(poly4([(187, 44), (214, 54), (187, 66)]), (hexc("ff5a4f"), hexc("c62a20")), 30)
+    art.put(text4("1", INTER_BOLD, 34, (54, 160)), hexc("2f7ae5"))
+    art.put(text4("2", INTER_BOLD, 34, (178, 160)), hexc("2aa356"))
+    return art.done()
+
+
+def browser_art():
+    """A globe with an orbit around it."""
+    art = Art(hexc("5bd0ff"), hexc("0a58d6"))
+    g = ellipse4((54, 54, 202, 202))
+    art.put(g, radial(104, 92, 160, hexc("9fe7ff"), hexc("0b62c9")), 80)
+    land = mask_of(lambda d: (d.polygon([(70, 100), (98, 76), (126, 84), (118, 112), (92, 124), (80, 150), (66, 136)],
+                                        fill=255),
+                              d.polygon([(132, 128), (168, 116), (190, 136), (176, 170), (148, 186), (138, 160)],
+                                        fill=255),
+                              d.ellipse([140, 74, 170, 96], fill=255)))
+    art.clip(land.filter(ImageFilter.GaussianBlur(1.2)), (hexc("8ff0a8"), hexc("2fae5c")), g)
+    for k in (0.42, 0.75):
+        art.clip(ellipse4((128 - 74 * k, 54, 128 + 74 * k, 202), True, 2.5), (255, 255, 255, 90), g)
+    for y in (90, 128, 166):
+        art.clip(rr4((40, y - 1.2, 216, y + 1.2), 1), (255, 255, 255, 80), g)
+    art.put(gloss((54, 54, 202, 202)), ((255, 255, 255, 120), (255, 255, 255, 0)))
+    orbit = rotated(ellipse4((26, 106, 230, 150), True, 7), -18)
+    front = ImageChops.multiply(orbit, mask_of(rr4((0, 128, 256, 256), 0)).rotate(-18, center=(128, 128)))
+    back = ImageChops.subtract(orbit, front)
+    art.clip(back, (255, 255, 255, 110), back)
+    art.put(front, (hexc("ffffff"), hexc("dcefff")), 40)
+    art.put(ellipse4((196, 82, 216, 102)), radial(202, 88, 14, hexc("ffffff"), hexc("ffd45a")), 40)
+    return art.done()
+
+
+def photos_art():
+    """Two instant photos, the front one a sunny lake view."""
+    art = Art(hexc("ffffff"), hexc("e3e6ec"))
+    back = rotated(rr4((60, 52, 200, 204), 8), 12)
+    art.put(back, (hexc("ffffff"), hexc("eceef2")), 60, 2)
+    art.clip(rotated(rr4((72, 64, 188, 166), 3), 12), (hexc("ffb36b"), hexc("ff6f91")), back)
+    front = rotated(rr4((52, 58, 192, 212), 8), -8)
+    art.put(front, (hexc("ffffff"), hexc("f0f1f4")), 80, 2)
+    pic = rotated(rr4((64, 70, 180, 172), 3), -8)
+    art.clip(pic, (hexc("7fd1ff"), hexc("d9f2ff")), front)
+    art.clip(rotated(ellipse4((136, 82, 162, 108)), -8), radial(146, 92, 18, hexc("fff6c2"), hexc("ffc531")), pic)
+    art.clip(rotated(poly4([(60, 160), (98, 108), (124, 138), (146, 116), (186, 160)]), -8),
+             (hexc("5ccf7b"), hexc("23894a")), pic)
+    art.clip(rotated(rr4((60, 150, 186, 176), 0), -8), (hexc("4aa8e8"), hexc("2a74c8")), pic)
+    art.clip(rotated(rr4((70, 156, 120, 159), 1), -8), (255, 255, 255, 140), pic)
+    return art.done()
+
+
+def music_art():
+    """A vinyl record with a warm label and a note in front."""
+    art = Art(hexc("ff8a5c"), hexc("d92e6b"))
+    disc = ellipse4((44, 44, 212, 212))
+    art.put(disc, radial(110, 100, 130, hexc("3a3b40"), hexc("0b0b0d")), 80)
+    for r in range(78, 40, -7):
+        art.clip(ellipse4((128 - r, 128 - r, 128 + r, 128 + r), True, 1.2), (255, 255, 255, 26), disc)
+
+    def sheen(d):
+        d.pieslice([44, 44, 212, 212], 200, 245, fill=255)
+        d.pieslice([44, 44, 212, 212], 20, 65, fill=255)
+    art.clip(lambda d: sheen(d), (255, 255, 255, 46), disc)
+    art.put(ellipse4((96, 96, 160, 160)), (hexc("ffd36b"), hexc("ff8c32")), 0, 2)
+    art.put(ellipse4((122, 122, 134, 134)), hexc("1a1a1d"))
+
+    def note(d):
+        d.polygon([(162, 94), (214, 82), (214, 96), (162, 108)], fill=255)
+        d.line([(166, 100), (166, 176)], fill=255, width=9)
+        d.line([(210, 88), (210, 164)], fill=255, width=9)
+        d.ellipse([140, 166, 172, 190], fill=255)
+        d.ellipse([184, 154, 216, 178], fill=255)
+    art.put(note, (hexc("ffffff"), hexc("f1e4ea")), 80)
+    return art.done()
+
+
+def video_art():
+    """A clapperboard with a play mark."""
+    art = Art(hexc("7f7bff"), hexc("3a2fc2"))
+    art.put(rr4((46, 96, 210, 206), 14), (hexc("2e3038"), hexc("121317")), 80, 3, 60)
+    top = rotated(rr4((46, 66, 210, 96), 6), -10, 50, 96)
+    art.put(top, (hexc("2e3038"), hexc("1a1b20")), 50, 2)
+    for i in range(5):
+        x = 52 + i * 34
+        art.clip(rotated(poly4([(x, 66), (x + 18, 66), (x + 6, 96), (x - 12, 96)]), -10, 50, 96), hexc("f4f5f7"), top)
+    art.put(rr4((46, 96, 210, 104), 0), (hexc("f4f5f7"), hexc("c9ccd2")))
+    art.put(poly4([(112, 126), (112, 182), (160, 154)]), (hexc("ffffff"), hexc("d9dbe2")), 40)
+    return art.done()
+
+
+def viewer_art():
+    """A picture under a magnifying glass."""
+    art = Art(hexc("f4f7fb"), hexc("cfd7e2"))
+    card = rr4((44, 56, 186, 186), 12)
+    art.put(card, (hexc("ffffff"), hexc("eef1f5")), 60, 2)
+    art.clip(rr4((56, 68, 174, 174), 6), (hexc("8fd6ff"), hexc("e6f6ff")), card)
+    art.clip(poly4([(56, 174), (96, 116), (122, 144), (142, 124), (174, 174)]), (hexc("7bd88f"), hexc("2f9b57")), card)
+    art.put(line4([(168, 168), (208, 208)], 22), (hexc("4b4f58"), hexc("1d1f24")), 60)
+    lens = ellipse4((104, 104, 188, 188))
+    art.put(lens, (hexc("e9f6ff", 120), hexc("bfe3ff", 90)), 50)
+    art.put(ellipse4((104, 104, 188, 188), True, 10), (hexc("e3e6ea"), hexc("8d939d")), 0, 2)
+    art.put(gloss((112, 112, 180, 180)), ((255, 255, 255, 150), (255, 255, 255, 0)))
+    return art.done()
+
+
+def installer_art():
+    """A drive with a download arrow over it."""
+    art = Art(hexc("eef0f4"), hexc("aeb4bf"))
+    art.put(rr4((46, 140, 210, 206), 16), (hexc("f6f7f9"), hexc("b8bdc6")), 70, 3)
+    art.put(rr4((60, 182, 150, 186), 2), (0, 0, 0, 40))
+    art.put(ellipse4((176, 176, 190, 190)), radial(181, 181, 8, hexc("b9ffcc"), hexc("27c25a")))
+    art.put(rr4((112, 40, 144, 112), 10), (hexc("6cc0ff"), hexc("1a6fe0")), 60, 2)
+    art.put(poly4([(82, 100), (174, 100), (128, 148)]), (hexc("4fb0ff"), hexc("165fd0")), 50, 2)
+    return art.done()
+
+
+def screenshot_art():
+    art = Art(hexc("e8eaee"), hexc("9aa0aa"))
+
+    def brackets(d):
+        for x0, y0, dx, dy in ((48, 56, 1, 1), (208, 56, -1, 1), (48, 200, 1, -1), (208, 200, -1, -1)):
+            d.line([(x0, y0 + dy * 34), (x0, y0), (x0 + dx * 34, y0)], fill=255, width=9, joint="curve")
+    art.put(brackets, (hexc("ffffff"), hexc("eceef2")), 50)
+    art.put(rr4((78, 96, 178, 170), 16), (hexc("4a4e57"), hexc("1d1f24")), 70, 3)
+    art.put(rr4((106, 84, 150, 100), 6), (hexc("4a4e57"), hexc("33363d")))
+    art.put(ellipse4((106, 108, 150, 152)), radial(122, 120, 30, hexc("6c9bd6"), hexc("0e1b2e")), 0, 2)
+    art.put(ellipse4((118, 116, 130, 128)), (255, 255, 255, 190))
+    art.put(ellipse4((156, 106, 166, 116)), hexc("ff9f2e"))
+    return art.done()
+
+
+def store_art():
+    """A shopping bag with a colored tag."""
+    art = Art(hexc("6fd0ff"), hexc("1660e6"))
+    art.put(lambda d: d.arc((92, 42, 164, 120), 180, 360, fill=255, width=11), (hexc("ffffff"), hexc("cfe3ff")), 40)
+    bag = poly4([(58, 84), (198, 84), (210, 214), (46, 214)])
+    art.put(bag, (hexc("ffffff"), hexc("dfe8f5")), 80, 4)
+    art.put(rr4((58, 84, 198, 96), 0), (0, 0, 0, 25))
+    art.put(ellipse4((88, 98, 102, 112)), hexc("8da3c2"))
+    art.put(ellipse4((154, 98, 168, 112)), hexc("8da3c2"))
+    star = []
+    for i in range(10):
+        ang = -math.pi / 2 + i * math.pi / 5
+        r = 34 if i % 2 == 0 else 15
+        star.append((128 + r * math.cos(ang), 160 + r * math.sin(ang)))
+    art.put(poly4(star), (hexc("ffd45a"), hexc("ff9a1f")), 40, 2)
+    return art.done()
+
+
+def code_art():
+    """An editor window with colored code and a tag in front."""
+    art = Art(hexc("3a3d52"), hexc("15161f"))
+    art.put(rr4((40, 48, 216, 196), 16), (hexc("262838"), hexc("181925")), 60, 2, 40)
+    for i, c in enumerate(("ff5f57", "febc2e", "28c840")):
+        art.put(ellipse4((52 + i * 14, 58, 61 + i * 14, 67)), hexc(c))
+    lines = [(56, 60, "ff7ab6"), (56, 110, "7cc4ff"), (72, 90, "ffd166"), (72, 130, "8ef0a5"), (56, 80, "b69cff"),
+             (72, 104, "7cc4ff")]
+    for i, (x, w, c) in enumerate(lines):
+        y = 82 + i * 17
+        art.put(rr4((x, y, x + w, y + 7), 3.5), hexc(c))
+    art.put(rr4((118, 150, 226, 214), 18), (hexc("8b7bff"), hexc("5236e0")), 70, 3)
+    art.put(line4([(150, 166), (136, 182), (150, 198)], 8), hexc("ffffff"))
+    art.put(line4([(194, 166), (208, 182), (194, 198)], 8), hexc("ffffff"))
+    art.put(line4([(178, 162), (166, 202)], 7), hexc("e5dcff"))
+    return art.done()
+
+
+def games_art():
+    """A glossy game controller."""
+    art = Art(hexc("ff8a73"), hexc("e0356b"))
+
     def body(d):
-        d.rounded_rectangle((40, 92, 216, 176), radius=42, fill=255)
-        d.ellipse((40, 120, 112, 206), fill=255)
-        d.ellipse((144, 120, 216, 206), fill=255)
-    icon = (Icon(*STONE)
-            .blur(ellipse4((50, 70, 210, 230)), (70, 72, 80, 110), 18)
-            .glass(body, (255, 255, 255, 90), 12, 36)
-            .fill(rr4((70, 128, 116, 142), 6), INK)
-            .fill(rr4((86, 112, 100, 158), 6), INK))
-    for cx, cy, c in ((164, 122, a(RED)), (184, 142, a(BLUE))):
-        icon.fill(ellipse4((cx - 10, cy - 10, cx + 10, cy + 10)), c, deeper(c))
-    return icon.done()
+        d.rounded_rectangle((38, 90, 218, 172), radius=40, fill=255)
+        d.ellipse((38, 118, 112, 206), fill=255)
+        d.ellipse((144, 118, 218, 206), fill=255)
+    art.put(body, (hexc("ffffff"), hexc("d9dde6")), 90, 4)
+    art.put(rr4((66, 124, 112, 140), 5), (hexc("4a4e57"), hexc("23252a")))
+    art.put(rr4((81, 109, 97, 155), 5), (hexc("4a4e57"), hexc("23252a")))
+    for cx, cy, c1, c2 in ((172, 116, "ff6b5e", "d6372b"), (192, 136, "6db8ff", "1f6fe0"), (152, 136, "ffd84a", "f0a500"),
+                           (172, 156, "6fe08b", "26a64a")):
+        art.put(ellipse4((cx - 10, cy - 10, cx + 10, cy + 10)), (hexc(c1), hexc(c2)), 30, 2)
+    art.put(gloss((60, 92, 196, 150)), ((255, 255, 255, 120), (255, 255, 255, 0)))
+    return art.done()
+
+
+def launchpad_art():
+    art = Art(hexc("4a4e58"), hexc("1a1b20"))
+    tones = [("ff6b5e", "d6372b"), ("ffd84a", "f0a500"), ("6fe08b", "26a64a"), ("6db8ff", "1f6fe0"),
+             ("b98cff", "7a4be0"), ("ff9ec4", "e0568e"), ("7ae7e0", "1aa8a0"), ("ffb36b", "f07c00"),
+             ("c7c9ce", "8d9098")]
+    for i, (c1, c2) in enumerate(tones):
+        x, y = 48 + (i % 3) * 56, 48 + (i // 3) * 56
+        art.put(rr4((x, y, x + 46, y + 46), 13), (hexc(c1), hexc(c2)), 40, 3)
+    return art.done()
+
+
+def logo_art():
+    art = Art(hexc("ffa46b"), hexc("6b3a8f"))
+    m = mirage_mask((S, S), 128, 124, 66)
+    art.put(m, (hexc("fffaf0"), hexc("ffd59a")), 60)
+    return art.done()
+
+
+def exe_art():
+    art = Art(hexc("e6e9ee"), hexc("9ca3ae"))
+    art.put(rr4((44, 58, 212, 200), 16), (hexc("ffffff"), hexc("eef1f5")), 70, 2)
+    art.put(top_rounded((44, 58, 212, 88), 16), (hexc("e9ecf1"), hexc("d2d7de")))
+    for i, c in enumerate(("ff5f57", "febc2e", "28c840")):
+        art.put(ellipse4((56 + i * 16, 67, 67 + i * 16, 78)), hexc(c))
+    art.put(rr4((60, 104, 120, 184), 8), (hexc("6cc0ff"), hexc("1a6fe0")))
+    for i, w in enumerate((70, 56, 64, 44)):
+        art.put(rr4((132, 108 + i * 20, 132 + w, 116 + i * 20), 4), hexc("c9ced6"))
+    return art.done()
+
+
+def computer_art():
+    """An internal disk: brushed aluminium with a light."""
+    img = blank()
+    body = mask_of(rr4((24, 70, 232, 186), 22))
+    img.alpha_composite(colored(body, (0, 0, 0, 70)).filter(ImageFilter.GaussianBlur(6)), (0, 6))
+    img.alpha_composite(paint_of((hexc("f7f8fa"), hexc("b6bbc4")), body))
+    streaks = Image.new("L", (1, S))
+    for y in range(S):
+        streaks.putpixel((0, y), int(128 + 14 * math.sin(y * 1.7) + 9 * math.sin(y * 4.3 + 1)))
+    streaks = streaks.resize((S, S))
+    img.alpha_composite(paint_of(Image.merge("RGBA", (streaks, streaks, streaks, Image.new("L", (S, S), 28))), body))
+    hi, lo = bands(body, 4)
+    img.alpha_composite(colored(ImageChops.multiply(hi, body), (255, 255, 255, 200)))
+    img.alpha_composite(colored(ImageChops.multiply(lo, body), (0, 0, 0, 70)))
+    img.alpha_composite(paint_of((0, 0, 0, 60), mask_of(rr4((40, 150, 216, 152), 1))))
+    img.alpha_composite(paint_of((255, 255, 255, 160), mask_of(rr4((40, 152, 216, 154), 1))))
+    img.alpha_composite(paint_of(radial(198, 168, 10, hexc("c4ffd4"), hexc("1fb455")), mask_of(ellipse4((190, 160, 206, 176)))))
+    return img
+
+
+def usb_art():
+    """An orange external drive with the USB mark."""
+    art = Art(hexc("ffb35c"), hexc("e8701a"))
+    cx, cy = 128, 130
+
+    def mark(d):
+        d.line([(cx, cy - 40), (cx, cy + 40)], fill=255, width=9)
+        d.polygon([(cx - 15, cy - 34), (cx + 15, cy - 34), (cx, cy - 58)], fill=255)
+        d.line([(cx, cy + 6), (cx - 30, cy - 14), (cx - 30, cy - 26)], fill=255, width=8, joint="curve")
+        d.line([(cx, cy + 20), (cx + 30, cy), (cx + 30, cy - 12)], fill=255, width=8, joint="curve")
+        d.ellipse([cx - 13, cy + 33, cx + 13, cy + 59], fill=255)
+        d.ellipse([cx - 38, cy - 36, cx - 22, cy - 20], fill=255)
+        d.rectangle([cx + 22, cy - 26, cx + 38, cy - 10], fill=255)
+    art.put(mark, (hexc("ffffff"), hexc("ffe9d2")), 70, 2, 60, 30)
+    return art.done()
+
 
 ICONS = [
-    ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_icon),
-    ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_icon),
-    ("ICON_SETTINGS", settings_icon), ("ICON_CALC", calc_icon), ("ICON_NOTEPAD", notepad_icon),
-    ("ICON_PAINT", paint_icon), ("ICON_COMPUTER", computer_icon), ("ICON_HOME", home_folder_icon),
-    ("ICON_MONITOR", monitor_icon), ("ICON_MINES", mines_icon), ("ICON_DOS", dos_doc), ("ICON_SX", sx_doc),
-    ("ICON_SCRIPT", script_doc), ("ICON_POWER", power_icon), ("ICON_LOGO", logo_icon), ("ICON_INFO", info_icon),
-    ("ICON_FILES", files_icon), ("ICON_LAUNCHPAD", launchpad_icon), ("ICON_WARNING", warning_icon),
+    ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_art),
+    ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_art),
+    ("ICON_SETTINGS", settings_art), ("ICON_CALC", calc_art), ("ICON_NOTEPAD", notepad_art),
+    ("ICON_PAINT", paint_art), ("ICON_COMPUTER", computer_art), ("ICON_HOME", home_folder_icon),
+    ("ICON_MONITOR", monitor_art), ("ICON_MINES", mines_art), ("ICON_DOS", dos_doc), ("ICON_SX", sx_doc),
+    ("ICON_SCRIPT", script_doc), ("ICON_POWER", power_icon), ("ICON_LOGO", logo_art), ("ICON_INFO", info_icon),
+    ("ICON_FILES", files_art), ("ICON_LAUNCHPAD", launchpad_art), ("ICON_WARNING", warning_icon),
     ("ICON_USER", user_icon), ("ICON_TRASH", trash_icon), ("ICON_TRASH_FULL", trash_full_icon),
-    ("ICON_USB", usb_icon), ("ICON_FOLDER_APPS", apps_folder_icon), ("ICON_FOLDER_DOCS", docs_folder_icon),
+    ("ICON_USB", usb_art), ("ICON_FOLDER_APPS", apps_folder_icon), ("ICON_FOLDER_DOCS", docs_folder_icon),
     ("ICON_FOLDER_DESKTOP", desktop_folder_icon), ("ICON_FOLDER_DOWNLOADS", downloads_folder_icon),
-    ("ICON_BROWSER", browser_icon), ("ICON_PHOTOS", photos_icon), ("ICON_MUSIC", music_icon),
-    ("ICON_VIDEO", video_icon), ("ICON_VIEWER", viewer_icon), ("ICON_INSTALLER", installer_icon),
-    ("ICON_SCREENSHOT", screenshot_icon), ("ICON_STORE", store_icon), ("ICON_CODE", code_icon),
-    ("ICON_GAMES", games_icon),
+    ("ICON_BROWSER", browser_art), ("ICON_PHOTOS", photos_art), ("ICON_MUSIC", music_art),
+    ("ICON_VIDEO", video_art), ("ICON_VIEWER", viewer_art), ("ICON_INSTALLER", installer_art),
+    ("ICON_SCREENSHOT", screenshot_art), ("ICON_STORE", store_art), ("ICON_CODE", code_art),
+    ("ICON_GAMES", games_art),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)
