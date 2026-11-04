@@ -269,8 +269,20 @@ static void round_rows(struct canvas *c, struct rect r, int radius, uint32_t top
                     put_a(c, x, y, color, alpha * (unsigned)MIN(cov, 256) >> 8);
                 continue;
             }
-            int cov = in_corner_rows || x < r.x + radius || x >= r.x + r.w - radius ? corner_coverage(r, radius, x, y)
-                                                                                     : 256;
+            int mid0 = in_corner_rows ? r.x + radius : r.x, mid1 = in_corner_rows ? r.x + r.w - radius : r.x + r.w;
+            if (x >= mid0 && x < mid1) {
+                int end = MIN(mid1, area.x + area.w);
+                if (mode == ROUND_CLEAR || alpha == 255) {
+                    for (; x < end; x++)
+                        row[x] = color;
+                } else {
+                    for (; x < end; x++)
+                        row[x] = over(row[x], color, alpha);
+                }
+                x--;
+                continue;
+            }
+            int cov = corner_coverage(r, radius, x, y);
             if (mode == ROUND_CLEAR) {
                 if (cov >= 256)
                     row[x] = color;

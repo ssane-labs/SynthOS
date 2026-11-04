@@ -681,7 +681,7 @@ static int ghost_ms(enum anim_kind kind, unsigned flags)
     bool small = flags & WIN_POPUP && !(flags & WIN_OVERLAY);
     int ms = 200;
     switch (kind) {
-    case ANIM_OPEN: ms = small ? 150 : 220; break;
+    case ANIM_OPEN: ms = small ? 120 : 170; break;
     case ANIM_CLOSE: ms = small ? 100 : 140; break;
     case ANIM_MINIMIZE: ms = 300; break;
     case ANIM_RESTORE: ms = 270; break;

@@ -2445,6 +2445,54 @@ COMMAND(launch, "xopen,open", "system", "launch [app|file] [file]", "start a des
     return gui_open_file(path) ? 0 : sh_error(sh, "launch", "nothing can open %s", argv[1]);
 }
 
+static void bench_app(struct shell *sh, const struct gui_app *app)
+{
+    struct window *before = wm_focused();
+    uint64_t t0 = hal_ticks_ms();
+    gui_app_launch(app, NULL);
+    uint64_t t1 = hal_ticks_ms();
+    struct window *w = wm_focused();
+    if (!w || w == before || wm_app_window(app) != w)
+        return;
+    wm_render();
+    uint64_t t2 = hal_ticks_ms();
+    int frames = 0;
+    do {
+        wm_animate_ghosts();
+        wm_render();
+        frames++;
+    } while (w->anim_hold && hal_ticks_ms() - t0 < 3000);
+    uint64_t t3 = hal_ticks_ms();
+    sh_printf(sh, "  %-14s start %4u ms, first frame %4u ms, shown %4u ms (%d frames)\n", app->name,
+              (unsigned)(t1 - t0), (unsigned)(t2 - t0), (unsigned)(t3 - t0), frames);
+    wm_destroy(w);
+    wm_damage_all();
+    wm_render();
+}
+
+COMMAND(appbench, NULL, "dev", "appbench [app...]", "time how long built-in apps take to open")
+{
+    if (!active)
+        return sh_error(sh, "appbench", "the desktop is not running");
+    if (argc > 1) {
+        for (int i = 1; i < argc; i++) {
+            const struct gui_app *app = gui_app_find(argv[i]);
+            if (!app)
+                return sh_error(sh, "appbench", "no such app: %s", argv[i]);
+            bench_app(sh, app);
+        }
+        return 0;
+    }
+    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
+        if (app->launch && !wm_app_window(app)
+#if CONFIG_WIN32
+            && !installed_shortcut(app)
+#endif
+        )
+            bench_app(sh, app);
+    return 0;
+}
+
 COMMAND(notify, NULL, "system", "notify <title> [text]", "show a desktop notification")
 {
     if (argc < 2)

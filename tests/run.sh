@@ -515,6 +515,8 @@ cd 'C:\Program Files'; pwd; cd
 /apps
 launch | grep Mine
 Clear the field without hitting a mine
+appbench Photos
+appbench: the desktop is not running
 launch paint
 the desktop is not running
 desktop

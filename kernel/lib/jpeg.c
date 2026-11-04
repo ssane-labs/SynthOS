@@ -1,4 +1,5 @@
 #include <synth/error.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/picture.h>
 #include <synth/string.h>
@@ -474,72 +475,140 @@ static void release(struct jpeg *j)
     }
 }
 
+/* Upsampling steps for a subsampled component: for each output column the two source columns and the weight. */
+struct upsample {
+    int32_t *x0, *x1;
+    uint8_t *tx;
+};
+
+struct convert {
+    struct jpeg *j;
+    struct picture *out;
+    struct upsample up[4];
+};
+
+static void idct_rows(void *ctx, int from, int to)
+{
+    struct convert *cv = ctx;
+    struct jpeg *j = cv->j;
+    for (int k = from; k < to; k++) {
+        int i = 0, y = k;
+        while (y >= j->comp[i].bh) {
+            y -= j->comp[i].bh;
+            i++;
+        }
+        struct comp *cp = &j->comp[i];
+        int stride = cp->bw * 8;
+        for (int x = 0; x < cp->bw; x++)
+            idct(cp->coef + ((size_t)y * (size_t)cp->bw + (size_t)x) * 64, j->quant[cp->tq],
+                 cp->plane + (size_t)y * 8 * (size_t)stride + (size_t)x * 8, stride);
+    }
+}
+
+static void sample_row(const struct jpeg *j, const struct comp *c, const struct upsample *u, int y, int from, int n,
+                       uint8_t *dst)
+{
+    size_t stride = (size_t)c->bw * 8;
+    if (!u->tx) {
+        memcpy(dst, c->plane + (size_t)y * stride + (size_t)from, (size_t)n);
+        return;
+    }
+    int fy = MAX(0, (2 * y + 1) * c->v * 8 / j->vmax - 8);
+    int y0 = fy >> 4, ty = fy & 15;
+    int y1 = MAX(MIN(y0 + 1, (j->h * c->v + j->vmax - 1) / j->vmax - 1), y0);
+    const uint8_t *r0 = c->plane + (size_t)y0 * stride, *r1 = c->plane + (size_t)y1 * stride;
+    for (int x = from; x < from + n; x++) {
+        int x0 = u->x0[x], x1 = u->x1[x], tx = u->tx[x];
+        int top = r0[x0] * (16 - tx) + r0[x1] * tx, bottom = r1[x0] * (16 - tx) + r1[x1] * tx;
+        *dst++ = (uint8_t)((top * (16 - ty) + bottom * ty + 128) >> 8);
+    }
+}
+
+static void convert_rows(void *ctx, int from, int to)
+{
+    struct convert *cv = ctx;
+    struct jpeg *j = cv->j;
+    uint8_t line[4][256];
+    for (int y = from; y < to; y++) {
+        uint32_t *row = cv->out->px + (size_t)y * (size_t)j->w;
+        for (int x0 = 0; x0 < j->w; x0 += 256) {
+            int n = MIN(256, j->w - x0);
+            for (int i = 0; i < j->ncomp; i++)
+                sample_row(j, &j->comp[i], &cv->up[i], y, x0, n, line[i]);
+            uint32_t *o = row + x0;
+            if (j->ncomp == 1) {
+                for (int x = 0; x < n; x++)
+                    o[x] = 0xff000000u | (uint32_t)line[0][x] * 0x010101u;
+            } else if (j->ncomp == 3 && !(j->adobe && j->transform == 0)) {
+                for (int x = 0; x < n; x++) {
+                    int yy = line[0][x] << 16, cb = line[1][x] - 128, cr = line[2][x] - 128;
+                    int r = clamp((yy + 91881 * cr + 32768) >> 16);
+                    int g = clamp((yy - 22554 * cb - 46802 * cr + 32768) >> 16);
+                    int b = clamp((yy + 116130 * cb + 32768) >> 16);
+                    o[x] = 0xff000000u | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+                }
+            } else if (j->ncomp == 3) {
+                for (int x = 0; x < n; x++)
+                    o[x] = 0xff000000u | (uint32_t)line[0][x] << 16 | (uint32_t)line[1][x] << 8 | line[2][x];
+            } else {
+                for (int x = 0; x < n; x++) {
+                    int cc = line[0][x], m = line[1][x], yy = line[2][x], k = line[3][x];
+                    if (j->transform == 2) {
+                        int Y = cc << 16, cb = m - 128, cr = yy - 128;
+                        cc = clamp((Y + 91881 * cr + 32768) >> 16);
+                        m = clamp((Y - 22554 * cb - 46802 * cr + 32768) >> 16);
+                        yy = clamp((Y + 116130 * cb + 32768) >> 16);
+                    }
+                    o[x] = 0xff000000u | (uint32_t)(cc * k / 255) << 16 | (uint32_t)(m * k / 255) << 8 |
+                           (uint32_t)(yy * k / 255);
+                }
+            }
+        }
+    }
+}
+
 static int finish(struct jpeg *j, struct picture *out)
 {
+    struct convert cv = {j, out, {{0}}};
+    int blocks = 0, err = E_NOMEM;
     for (int i = 0; i < j->ncomp; i++) {
         struct comp *c = &j->comp[i];
         c->plane = kmalloc((size_t)c->bw * (size_t)c->bh * 64);
         if (!c->plane)
             return E_NOMEM;
-        int stride = c->bw * 8;
-        for (int y = 0; y < c->bh; y++)
-            for (int x = 0; x < c->bw; x++)
-                idct(c->coef + ((size_t)y * (size_t)c->bw + (size_t)x) * 64, j->quant[c->tq],
-                     c->plane + (size_t)y * 8 * (size_t)stride + (size_t)x * 8, stride);
+        blocks += c->bh;
     }
+    hal_parallel(idct_rows, &cv, blocks, 4);
     out->px = kmalloc((size_t)j->w * (size_t)j->h * 4);
     if (!out->px)
         return E_NOMEM;
     out->w = j->w;
     out->h = j->h;
     out->frames = 1;
-    for (int y = 0; y < j->h; y++) {
-        uint32_t *row = out->px + (size_t)y * (size_t)j->w;
+    for (int i = 0; i < j->ncomp; i++) {
+        struct comp *c = &j->comp[i];
+        if (c->h == j->hmax && c->v == j->vmax)
+            continue;
+        struct upsample *u = &cv.up[i];
+        u->x0 = kmalloc((size_t)j->w * 9);
+        if (!u->x0)
+            goto done;
+        u->x1 = u->x0 + j->w;
+        u->tx = (uint8_t *)(u->x1 + j->w);
+        int last = (j->w * c->h + j->hmax - 1) / j->hmax - 1;
         for (int x = 0; x < j->w; x++) {
-            int s[4];
-            for (int i = 0; i < j->ncomp; i++) {
-                struct comp *c = &j->comp[i];
-                size_t stride = (size_t)c->bw * 8;
-                if (c->h == j->hmax && c->v == j->vmax) {
-                    s[i] = c->plane[(size_t)y * stride + (size_t)x];
-                    continue;
-                }
-                int fx = MAX(0, (2 * x + 1) * c->h * 8 / j->hmax - 8), fy = MAX(0, (2 * y + 1) * c->v * 8 / j->vmax - 8);
-                int x0 = fx >> 4, y0 = fy >> 4, tx = fx & 15, ty = fy & 15;
-                int x1 = MIN(x0 + 1, (j->w * c->h + j->hmax - 1) / j->hmax - 1);
-                int y1 = MIN(y0 + 1, (j->h * c->v + j->vmax - 1) / j->vmax - 1);
-                x1 = MAX(x1, x0);
-                y1 = MAX(y1, y0);
-                const uint8_t *r0 = c->plane + (size_t)y0 * stride, *r1 = c->plane + (size_t)y1 * stride;
-                int top = r0[x0] * (16 - tx) + r0[x1] * tx, bottom = r1[x0] * (16 - tx) + r1[x1] * tx;
-                s[i] = (top * (16 - ty) + bottom * ty + 128) >> 8;
-            }
-            int r, g, b;
-            if (j->ncomp == 1) {
-                r = g = b = s[0];
-            } else if (j->ncomp == 3 && !(j->adobe && j->transform == 0)) {
-                int yy = s[0] << 16, cb = s[1] - 128, cr = s[2] - 128;
-                r = clamp((yy + 91881 * cr + 32768) >> 16);
-                g = clamp((yy - 22554 * cb - 46802 * cr + 32768) >> 16);
-                b = clamp((yy + 116130 * cb + 32768) >> 16);
-            } else if (j->ncomp == 3) {
-                r = s[0], g = s[1], b = s[2];
-            } else {
-                int cc = s[0], m = s[1], yy = s[2], k = s[3];
-                if (j->transform == 2) {
-                    int Y = cc << 16, cb = m - 128, cr = yy - 128;
-                    cc = clamp((Y + 91881 * cr + 32768) >> 16);
-                    m = clamp((Y - 22554 * cb - 46802 * cr + 32768) >> 16);
-                    yy = clamp((Y + 116130 * cb + 32768) >> 16);
-                }
-                r = cc * k / 255;
-                g = m * k / 255;
-                b = yy * k / 255;
-            }
-            row[x] = 0xff000000u | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+            int fx = MAX(0, (2 * x + 1) * c->h * 8 / j->hmax - 8), x0 = fx >> 4;
+            u->x0[x] = x0;
+            u->x1[x] = MAX(MIN(x0 + 1, last), x0);
+            u->tx[x] = (uint8_t)(fx & 15);
         }
     }
-    return 0;
+    hal_parallel(convert_rows, &cv, j->h, 16);
+    err = 0;
+done:
+    for (int i = 0; i < j->ncomp; i++)
+        kfree(cv.up[i].x0);
+    return err;
 }
 
 int jpeg_decode(const uint8_t *data, size_t size, struct picture *out)

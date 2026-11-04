@@ -154,10 +154,6 @@ struct settings {
     int theme_count;
     struct ui_list theme_list;
     struct ui_text wallpaper_file, wallpaper_url, computer, lang_filter, vpn_file;
-    struct canvas thumbs[WALLS];
-    bool thumbs_dark;
-    const struct gui_look *thumbs_look;
-    struct canvas look_thumbs[8];
     char pending_user[USER_NAME_MAX];
     char popup_key[24];
     const char *const *popup_values;
@@ -828,13 +824,18 @@ static void pane_datetime(struct page *p)
 
 /* ---- Appearance */
 
+/* Wallpaper previews stay painted between openings of the window. */
+static struct canvas thumbs[WALLS], look_thumbs[8];
+static bool thumbs_dark;
+static const struct gui_look *thumbs_look;
+
 static void make_look_thumbs(struct settings *s)
 {
     for (int i = 0; i < look_count() && i < 8; i++) {
-        if (s->look_thumbs[i].px || !canvas_alloc(&s->look_thumbs[i], LOOK_W, LOOK_H))
+        if (look_thumbs[i].px || !canvas_alloc(&look_thumbs[i], LOOK_W, LOOK_H))
             continue;
         const struct gui_look *l = look_get(i);
-        wallpaper_paint(&s->look_thumbs[i], l->name, l->dark);
+        wallpaper_paint(&look_thumbs[i], l->name, l->dark);
     }
 }
 
@@ -878,8 +879,8 @@ static void pane_appearance(struct page *p)
             const struct gui_look *l = look_get(i);
             struct rect t = {x0 + i * (LOOK_W + gap), r.y + 14, LOOK_W, LOOK_H};
             bool sel = l == look_current();
-            if (p->ui->c && s->look_thumbs[i].px) {
-                gfx_blit_round(p->ui->c, t, &s->look_thumbs[i], 10, false);
+            if (p->ui->c && look_thumbs[i].px) {
+                gfx_blit_round(p->ui->c, t, &look_thumbs[i], 10, false);
                 draw_layout(p->ui->c, t, l);
                 gfx_round_frame(p->ui->c, t, 10, ALPHA(0, 30));
                 if (sel)
@@ -1190,15 +1191,15 @@ static void pane_displays(struct page *p)
 
 static void make_thumbs(struct settings *s)
 {
-    if (s->thumbs[0].px && s->thumbs_dark == style.dark && s->thumbs_look == look_current())
+    if (thumbs[0].px && thumbs_dark == style.dark && thumbs_look == look_current())
         return;
     for (int i = 0; i < WALLS; i++) {
-        if (!s->thumbs[i].px && !canvas_alloc(&s->thumbs[i], THUMB_W, THUMB_H))
+        if (!thumbs[i].px && !canvas_alloc(&thumbs[i], THUMB_W, THUMB_H))
             continue;
-        wallpaper_paint(&s->thumbs[i], i ? wall_values[i] : look_current()->name, style.dark);
+        wallpaper_paint(&thumbs[i], i ? wall_values[i] : look_current()->name, style.dark);
     }
-    s->thumbs_dark = style.dark;
-    s->thumbs_look = look_current();
+    thumbs_dark = style.dark;
+    thumbs_look = look_current();
 }
 
 static void wallpaper_sections(struct page *p)
@@ -1239,8 +1240,8 @@ static void wallpaper_sections(struct page *p)
             struct rect t = {x0 + (i % cols) * (THUMB_W + 16), r.y + 16 + (i / cols) * (THUMB_H + 34), THUMB_W,
                              THUMB_H};
             bool sel = !strcmp(value, wall_values[i]);
-            if (p->ui->c && s->thumbs[i].px) {
-                gfx_blit_round(p->ui->c, t, &s->thumbs[i], 8, false);
+            if (p->ui->c && thumbs[i].px) {
+                gfx_blit_round(p->ui->c, t, &thumbs[i], 8, false);
                 gfx_round_frame(p->ui->c, t, 8, ALPHA(0, 30));
                 if (sel)
                     gfx_round_frame(p->ui->c, rect_inset(t, -3), 11, style.accent);
@@ -2126,10 +2127,6 @@ static void event(struct window *w, struct gui_event *e)
 static void destroy(struct window *w)
 {
     struct settings *s = w->data;
-    for (int i = 0; i < WALLS; i++)
-        canvas_free(&s->thumbs[i]);
-    for (int i = 0; i < 8; i++)
-        canvas_free(&s->look_thumbs[i]);
     if (instance == w)
         instance = NULL;
     kfree(s);
