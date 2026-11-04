@@ -90,3 +90,48 @@ args = /S
 check = C:\Program Files\Steam\steam.exe
 uninstall = Steam
 bits = 64
+
+[putty]
+name = PuTTY
+developer = Simon Tatham
+category = Internet
+icon = terminal
+version = 0.85
+size = 4 MB
+summary = SSH and Telnet client with a terminal window
+about = The official 32-bit PuTTY package, unpacked into /home/apps/putty: PuTTY, PSCP, PSFTP, Plink, Pageant and PuTTYgen. plink and pscp are on the PATH for the Terminal.
+kind = zip
+url = https://the.earth.li/~sgtatham/putty/0.85/w32/putty.zip
+sha256 = a7a28753a4f91316a8deb8fdc08403b68852ad04a9d2753c413e8e8b8a1a72f1
+bin = .
+check = PUTTY.EXE
+open = PUTTY.EXE
+
+[hashmyfiles]
+name = HashMyFiles
+developer = NirSoft
+category = Utilities
+icon = files
+version = latest
+size = 100 KB
+summary = MD5, SHA-1 and SHA-256 of files and folders
+about = NirSoft's small portable tool: add files or a whole folder and see their checksums in a table, copy them or save a report.
+kind = zip
+url = https://www.nirsoft.net/utils/hashmyfiles.zip
+check = HashMyFiles.exe
+open = HashMyFiles.exe
+
+[reshacker]
+name = Resource Hacker
+developer = Angus Johnson
+category = Developer Tools
+icon = code
+version = 5.2
+size = 3 MB
+summary = View and edit resources in .exe and .dll files
+about = Opens Windows programs and libraries and shows their icons, dialogs, menus, strings and version info; resources can be replaced and saved.
+kind = zip
+url = https://www.angusj.com/resourcehacker/resource_hacker.zip
+sha256 = 52f81ee4778070d6aa72d8719a1a68fea2f288005deb02667542754f747776f8
+check = ResourceHacker.exe
+open = ResourceHacker.exe

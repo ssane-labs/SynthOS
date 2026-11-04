@@ -2088,8 +2088,12 @@ static void frame(struct ui *ui, void *data)
         clipped.clip = rect_intersect(ui->c->clip, content);
         ui->c = &clipped;
     }
+    struct gui_event *event = ui->e;
+    if (event && (event->type == EV_MOUSE_DOWN || event->type == EV_WHEEL) && !rect_contains(content, event->x, event->y))
+        ui->e = NULL;
     struct page p = {ui, s, x, TOOLBAR_HEIGHT + 6 - s->scroll, wdt, false, query, 0, 0, 0, 0, s->sec_h, s->sec_rows};
     panes[s->pane].fn(&p);
+    ui->e = event;
     if (ui->win && saved)
         ui->c = saved;
 }
