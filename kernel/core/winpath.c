@@ -1,6 +1,7 @@
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/path.h>
+#include <synth/sbsign.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -100,7 +101,7 @@ static bool is_drive(const char *p)
     return is_alpha((uint8_t)p[0]) && p[1] == ':';
 }
 
-int winpath_to_vfs(const char *cwd, const char *path, char *out, size_t cap)
+static int to_vfs(const char *cwd, const char *path, char *out, size_t cap)
 {
     char win[PATH_MAX_LEN];
     size_t n = 0;
@@ -174,7 +175,7 @@ int winpath_to_vfs(const char *cwd, const char *path, char *out, size_t cap)
         if (win[0] == '/') {
             char full[PATH_MAX_LEN + 2];
             ksnprintf(full, sizeof(full), "C:%s", win);
-            return winpath_to_vfs(cwd, full, out, cap);
+            return to_vfs(cwd, full, out, cap);
         }
         str_copy(upath, win, sizeof(upath));
     }
@@ -183,6 +184,15 @@ int winpath_to_vfs(const char *cwd, const char *path, char *out, size_t cap)
     if (err)
         return err;
     return vfs_resolve_nocase(abs, out, cap);
+}
+
+/* the Secure Boot key of this computer is out of reach of Windows programs */
+int winpath_to_vfs(const char *cwd, const char *path, char *out, size_t cap)
+{
+    int err = to_vfs(cwd, path, out, cap);
+    if (!err && str_starts(out, SB_KEY_DIR) && (!out[strlen(SB_KEY_DIR)] || out[strlen(SB_KEY_DIR)] == '/'))
+        return E_PERM;
+    return err;
 }
 
 void winpath_from_vfs(const char *path, char *out, size_t cap)

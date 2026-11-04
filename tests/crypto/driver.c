@@ -7,6 +7,13 @@ uint32_t hal_entropy(void)
 {
     return 0;
 }
+void random_bytes(void *out, size_t n)
+{
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f || fread(out, 1, n, f) != n)
+        abort();
+    fclose(f);
+}
 static size_t unhex(const char *s, uint8_t *o)
 {
     size_t n = strlen(s) / 2;
@@ -127,6 +134,18 @@ int main(int argc, char **argv)
         bool ok = !strcmp(cmd, "rsa") ? rsa_verify_pkcs1(a, nl, b, el, h, c, d, sl)
                                       : rsa_verify_pss(a, nl, b, el, h, c, d, sl);
         printf("%s\n", ok ? "valid" : "invalid");
+    } else if (!strcmp(cmd, "rsagen")) {
+        if (!rsa_generate(256, a, b))
+            return 1;
+        hex(a, 256);
+        hex(b, 256);
+    } else if (!strcmp(cmd, "rsasign")) {
+        unhex(argv[2], a);
+        unhex(argv[3], b);
+        unhex(argv[4], c);
+        if (!rsa_sign_pkcs1(a, b, 256, &hash_sha256, c, d))
+            return 1;
+        hex(d, 256);
     }
     return 0;
 }

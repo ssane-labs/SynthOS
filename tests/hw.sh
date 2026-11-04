@@ -226,6 +226,30 @@ if [ -f "$ms_code" ] && [ -f "$ms_vars" ] && mdir -i "$image@@$((8192 * 512))" :
     cp "$ms_vars" "$work/msvars.fd"
     out=$(python3 -I tests/mok.py "$ms_code" "$work/msvars.fd" "$work/disk.img")
     check "secure boot: shim and MokManager" "$out" "Shell ready"
+    # an update signed with another release key: SynthOS signs the loader with this computer's own key, whose
+    # certificate is enrolled the same way once
+    cp "$image" "$work/disk.img"
+    if [ -f "$sb_key" ]; then
+        sys=$(dirname "$image")
+        cp "$sys/esp.img" "$work/esp2.img"
+        mcopy -o -i "$work/esp2.img" ::/EFI/BOOT/grubx64.efi "$work/rel.efi"
+        python3 -I tools/sbsign.py --key "$sb_key" --pass snakeoil --cert "$sb_cert" "$work/rel.efi" "$work/rel2.efi"
+        mcopy -o -i "$work/esp2.img" "$work/rel2.efi" ::/EFI/BOOT/grubx64.efi
+        BUILD_ID=hwtest python3 -I tools/mkupdate.py "$work/u.sup" $([ "$KERNEL64" = 1 ] && echo 64 || echo 32) \
+            "$sys/stage1.bin" "$sys/stage2.bin" "$sys/kernel.bin" "$work/esp2.img" >/dev/null
+        rm -f "$work/upd.img"
+        truncate -s 32M "$work/upd.img"
+        mkfs.fat "$work/upd.img" >/dev/null
+        mcopy -i "$work/upd.img" "$work/u.sup" ::/u.sup
+        out=$(EXTRA="-nic none -drive format=raw,file=$work/upd.img" boot uefi ide any "update apply /mnt/hdb/u.sup")
+        check "secure boot: update with another release key" "$out" "enroll SYNTHOS\\synthos-key.cer once"
+    else
+        out=$(boot uefi ide any "secureboot sign")
+        check "secure boot: device key signs the loader" "$out" "loader signed; enroll"
+    fi
+    cp "$ms_vars" "$work/msvars.fd"
+    out=$(python3 -I tests/mok.py "$ms_code" "$work/msvars.fd" "$work/disk.img")
+    check "secure boot: device key enrolled in MokManager" "$out" "Shell ready"
 else
     echo "  skip  secure boot with shim (no OVMF with Microsoft keys or no shim in the image)"
 fi

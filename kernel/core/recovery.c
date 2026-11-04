@@ -129,6 +129,11 @@ static int own_esp(int tries, int *found, esp_fn fn, void *ctx)
     return each_esp(counter_visit, &c);
 }
 
+int recovery_own_esp(esp_fn fn, void *ctx)
+{
+    return own_esp(-1, NULL, fn, ctx);
+}
+
 static int try_counter(int tries, int *found)
 {
     return own_esp(tries, found, NULL, NULL);

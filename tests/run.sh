@@ -127,6 +127,8 @@ recovery
 Start counter: none (BIOS start)
 config bootdefault | grep =
 bootdefault = synthos
+secureboot
+device key: none (release keys are used)
 recovery safe
 this start did not come from the UEFI loader
 faulttest; echo still running

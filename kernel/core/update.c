@@ -8,6 +8,7 @@
 #include <synth/parttab.h>
 #include <synth/sha256.h>
 #include <synth/shell.h>
+#include <synth/sbsign.h>
 #include <synth/string.h>
 #include <synth/update.h>
 #include <synth/vfs.h>
@@ -238,6 +239,11 @@ static int write_files(const char *root, const struct update_pkg *pkg)
     bool has_shim = loader != NULL;
     if (!has_shim)
         loader = shim;
+    char installed[PATH_MAX_LEN];
+    ksnprintf(installed, sizeof(installed), "%s/%s", root,
+              windows ? (has_shim ? "EFI/SynthOS/grubx64.efi" : "EFI/SynthOS/synthos.efi")
+                      : (has_shim ? "EFI/BOOT/grubx64.efi" : "EFI/BOOT/BOOTX64.EFI"));
+    bool resign = loader && sb_resign_needed(installed, loader->data, loader->size);
     int err = 0;
     for (int i = 0; i < pkg->count && !err; i++) {
         const struct update_file *f = &pkg->files[i];
@@ -251,6 +257,8 @@ static int write_files(const char *root, const struct update_pkg *pkg)
         }
         err = put(root, rel, f);
     }
+    if (!err && !windows && resign)
+        err = sb_sign_esp(root, false, has_shim);
     if (err || !windows)
         return err;
     if (exists(root, "EFI/SynthOS/synthos.efi"))
@@ -263,6 +271,8 @@ static int write_files(const char *root, const struct update_pkg *pkg)
         if (!err && mm)
             err = put(root, "EFI/SynthOS/mmx64.efi", mm);
     }
+    if (!err && resign)
+        err = sb_sign_esp(root, true, has_shim);
     return err;
 }
 
@@ -367,8 +377,9 @@ int update_apply(const struct update_pkg *pkg, char *msg, size_t cap)
         ksnprintf(msg, cap, "writing the boot sectors failed: %s", err_str(err));
         return err;
     }
-    ksnprintf(msg, cap, "Updated to %s (boot sectors%s). Restart to use it.", pkg->build,
-              esps ? ", EFI partition" : "");
+    ksnprintf(msg, cap, "Updated to %s (boot sectors%s). Restart to use it.%s", pkg->build,
+              esps ? ", EFI partition" : "",
+              sb_key_created() ? " Secure Boot: enroll SYNTHOS\\synthos-key.cer once (the key of this PC)." : "");
     return 0;
 }
 
@@ -497,7 +508,7 @@ int update_install(const uint8_t *data, size_t size, char *msg, size_t cap)
 static int apply_bytes(struct shell *sh, uint8_t *data, size_t size, bool dry)
 {
     struct update_pkg *pkg = kmalloc(sizeof(*pkg));
-    char msg[160];
+    char msg[256];
     if (!pkg)
         return E_NOMEM;
     int err = update_parse(data, size, pkg, msg, sizeof(msg));

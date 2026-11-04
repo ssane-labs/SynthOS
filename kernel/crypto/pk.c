@@ -263,6 +263,197 @@ bool rsa_verify_pss(const uint8_t *n, size_t n_len, const uint8_t *e, size_t e_l
     return crypto_equal(check, hh, hl);
 }
 
+static uint32_t mp_mod_small(const uint32_t *a, int n, uint32_t m)
+{
+    uint64_t r = 0;
+    for (int i = n - 1; i >= 0; i--)
+        r = ((r << 32) | a[i]) % m;
+    return (uint32_t)r;
+}
+
+static uint32_t mp_add_small(uint32_t *a, int n, uint32_t v)
+{
+    for (int i = 0; i < n && v; i++) {
+        uint64_t x = (uint64_t)a[i] + v;
+        a[i] = (uint32_t)x;
+        v = (uint32_t)(x >> 32);
+    }
+    return v;
+}
+
+static void mp_mul(uint32_t *r, const uint32_t *a, const uint32_t *b, int n)
+{
+    memset(r, 0, (size_t)n * 8);
+    for (int i = 0; i < n; i++) {
+        uint64_t carry = 0;
+        for (int j = 0; j < n; j++) {
+            uint64_t x = (uint64_t)r[i + j] + (uint64_t)a[j] * b[i] + carry;
+            r[i + j] = (uint32_t)x;
+            carry = x >> 32;
+        }
+        r[i + n] = (uint32_t)carry;
+    }
+}
+
+static uint32_t small_pow(uint32_t b, uint32_t e, uint32_t m)
+{
+    uint64_t r = 1, x = b % m;
+    for (; e; e >>= 1, x = x * x % m)
+        if (e & 1)
+            r = r * x % m;
+    return (uint32_t)r;
+}
+
+static uint16_t small_primes[1000];
+
+static void small_primes_init(void)
+{
+    if (small_primes[0])
+        return;
+    int k = 0;
+    for (uint32_t c = 3; k < (int)ARRAY_SIZE(small_primes); c += 2) {
+        bool prime = true;
+        for (int i = 0; i < k && (uint32_t)small_primes[i] * small_primes[i] <= c; i++)
+            if (c % small_primes[i] == 0) {
+                prime = false;
+                break;
+            }
+        if (prime)
+            small_primes[k++] = (uint16_t)c;
+    }
+}
+
+static bool probable_prime(const uint32_t *p, int n, int rounds)
+{
+    static struct mont c;
+    uint32_t d[MP_MAX], minus_one[MP_MAX], a[MP_MAX], x[MP_MAX];
+    mont_init(&c, p, n);
+    mp_sub(minus_one, c.m, c.one, n);
+    memcpy(d, p, (size_t)n * 4);
+    d[0] &= ~1u;
+    int s = 0;
+    while (!(d[0] & 1)) {
+        for (int i = 0; i < n; i++)
+            d[i] = d[i] >> 1 | (i + 1 < n ? d[i + 1] << 31 : 0);
+        s++;
+    }
+    for (int r = 0; r < rounds; r++) {
+        random_bytes(a, (size_t)n * 4);
+        a[n - 1] &= 0x3fffffff;
+        a[0] |= 2;
+        to_mont(&c, x, a);
+        mont_pow(&c, x, x, d, n);
+        if (!mp_cmp(x, c.one, n) || !mp_cmp(x, minus_one, n))
+            continue;
+        bool witness = true;
+        for (int i = 1; i < s && witness; i++) {
+            mont_mul(&c, x, x, x);
+            if (!mp_cmp(x, minus_one, n))
+                witness = false;
+            else if (!mp_cmp(x, c.one, n))
+                break;
+        }
+        if (witness)
+            return false;
+    }
+    return true;
+}
+
+static void random_prime(uint32_t *p, int n, uint32_t e)
+{
+    static uint16_t rest[ARRAY_SIZE(small_primes)];
+    small_primes_init();
+    for (;;) {
+        random_bytes(p, (size_t)n * 4);
+        p[n - 1] |= 0xc0000000;
+        p[0] |= 1;
+        for (size_t i = 0; i < ARRAY_SIZE(small_primes); i++)
+            rest[i] = (uint16_t)mp_mod_small(p, n, small_primes[i]);
+        uint32_t step = 0;
+        for (uint32_t delta = 0; delta < 0x10000; delta += 2) {
+            bool ok = true;
+            for (size_t i = 0; i < ARRAY_SIZE(small_primes) && ok; i++)
+                ok = (rest[i] + delta) % small_primes[i] != 0;
+            if (!ok)
+                continue;
+            if (mp_add_small(p, n, delta - step))
+                break;
+            step = delta;
+            if (mp_mod_small(p, n, e) != 1 && probable_prime(p, n, 8))
+                return;
+        }
+    }
+}
+
+bool rsa_generate(size_t bytes, uint8_t *n_out, uint8_t *d_out)
+{
+    int limbs = (int)bytes / 4, half = limbs / 2;
+    if (bytes % 8 || limbs > MP_MAX || half < 8)
+        return false;
+    const uint32_t e = 65537;
+    uint32_t p[MP_MAX], q[MP_MAX], n[MP_MAX], phi[MP_MAX], d[MP_MAX];
+    do {
+        random_prime(p, half, e);
+        random_prime(q, half, e);
+    } while (!mp_cmp(p, q, half));
+    mp_mul(n, p, q, half);
+    p[0]--;
+    q[0]--;
+    mp_mul(phi, p, q, half);
+    uint32_t k = e - small_pow(mp_mod_small(phi, limbs, e), e - 2, e);
+    uint64_t carry = 1;
+    for (int i = 0; i < limbs; i++) {
+        uint64_t x = (uint64_t)phi[i] * k + carry;
+        phi[i] = (uint32_t)x;
+        carry = x >> 32;
+    }
+    uint64_t r = carry;
+    for (int i = limbs - 1; i >= 0; i--) {
+        uint64_t x = (r << 32) | phi[i];
+        d[i] = (uint32_t)(x / e);
+        r = x % e;
+    }
+    if (r)
+        return false;
+    mp_to_be(n_out, bytes, n, limbs);
+    mp_to_be(d_out, bytes, d, limbs);
+    memset(p, 0, sizeof(p));
+    memset(q, 0, sizeof(q));
+    memset(phi, 0, sizeof(phi));
+    memset(d, 0, sizeof(d));
+    return true;
+}
+
+bool rsa_sign_pkcs1(const uint8_t *n, const uint8_t *d, size_t len, const struct hash_alg *h, const uint8_t *hash,
+                    uint8_t *sig)
+{
+    static struct mont c;
+    static uint8_t em[MP_MAX * 4];
+    uint32_t m[MP_MAX], x[MP_MAX], exp[MP_MAX];
+    size_t info_len;
+    const uint8_t *info = digest_info(h, &info_len);
+    int limbs = (int)(len + 3) / 4;
+    if (len > MP_MAX * 4 || len < info_len + h->digest + 11 || !(n[len - 1] & 1))
+        return false;
+    size_t ps = len - info_len - h->digest - 3;
+    em[0] = 0;
+    em[1] = 1;
+    memset(em + 2, 0xff, ps);
+    em[2 + ps] = 0;
+    memcpy(em + 3 + ps, info, info_len);
+    memcpy(em + 3 + ps + info_len, hash, h->digest);
+    mp_from_be(m, limbs, n, len);
+    mont_init(&c, m, limbs);
+    mp_from_be(x, limbs, em, len);
+    mp_from_be(exp, limbs, d, len);
+    to_mont(&c, x, x);
+    mont_pow(&c, x, x, exp, limbs);
+    from_mont(&c, x, x);
+    mp_to_be(sig, len, x, limbs);
+    memset(exp, 0, sizeof(exp));
+    return true;
+}
+
 struct curve {
     int n;
     size_t bytes;

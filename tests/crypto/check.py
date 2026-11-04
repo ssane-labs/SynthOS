@@ -75,5 +75,16 @@ for bits in [2048,3072,4096]:
         check('pss%d%s'%(bits,h), run('pss',n.hex(),e.hex(),h,dig.hex(),s2.hex())[0],'valid')
         bad=bytearray(dig); bad[3]^=4
         check('pssbad', run('pss',n.hex(),e.hex(),h,bytes(bad).hex(),s2.hex())[0],'invalid')
+for i in range(3):
+    nh,dh=run('rsagen'); n=int(nh,16); d=int(dh,16)
+    check('rsagen-bits', n.bit_length(), 2048)
+    m=int.from_bytes(os.urandom(200),'big')
+    check('rsagen-key', pow(pow(m,65537,n),d,n), m)
+    msg=os.urandom(40); dig=hashlib.sha256(msg).digest()
+    sig=bytes.fromhex(run('rsasign',nh,dh,dig.hex())[0])
+    try:
+        rsa.RSAPublicNumbers(65537,n).public_key().verify(sig,msg,padding.PKCS1v15(),hashes.SHA256()); ok='valid'
+    except Exception: ok='invalid'
+    check('rsasign', ok, 'valid')
 print("crypto tests: %d failures" % fails)
 sys.exit(1 if fails else 0)

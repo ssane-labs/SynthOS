@@ -18,7 +18,7 @@ static int asked;
 static bool quiet;
 static int state = SYSUPDATE_IDLE;
 static struct update_status status;
-static char note[160];
+static char note[256];
 static bool auto_check = true;
 static bool auto_done;
 static uint64_t desktop_since;

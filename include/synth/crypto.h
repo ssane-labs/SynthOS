@@ -104,6 +104,10 @@ bool rsa_verify_pkcs1(const uint8_t *n, size_t n_len, const uint8_t *e, size_t e
 bool rsa_verify_pss(const uint8_t *n, size_t n_len, const uint8_t *e, size_t e_len, const struct hash_alg *h,
                     const uint8_t *hash, const uint8_t *sig, size_t sig_len);
 
+bool rsa_generate(size_t bytes, uint8_t *n, uint8_t *d);
+bool rsa_sign_pkcs1(const uint8_t *n, const uint8_t *d, size_t len, const struct hash_alg *h, const uint8_t *hash,
+                    uint8_t *sig);
+
 void random_bytes(void *out, size_t n);
 bool crypto_equal(const void *a, const void *b, size_t n);
 
