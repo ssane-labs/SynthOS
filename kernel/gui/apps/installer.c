@@ -13,7 +13,8 @@
 /* The installer walks through: welcome, disk, where on the disk (free space, a partition to replace or the whole
    disk), how much space, a summary, the copy and the restart. Nothing is written before the summary's button. */
 
-#define MAX_CHOICES 6
+#define MAX_CHOICES 12
+#define NAV_H 76
 
 enum page {
     PAGE_WELCOME,
@@ -43,6 +44,7 @@ struct installer {
     struct disk_map map;
     struct choice choices[MAX_CHOICES];
     int choice_count, choice;
+    int scroll;
     bool shrink_hint;
     int size_mb, min_mb, max_mb;
     bool copy_home;
@@ -53,6 +55,7 @@ static void go(struct installer *in, enum page page)
 {
     int dir = page > in->page ? 1 : -1;
     in->page = page;
+    in->scroll = 0;
     spring_set(&in->slide, dir * 1024);
     in->slide.target = 0;
 }
@@ -66,9 +69,18 @@ static void scan(struct installer *in)
         in->chosen = 0;
 }
 
+/* Sizes the way disk makers write them: "476 GB", "1.8 TB", "650 MB". */
 static void size_text(uint64_t sectors, char *buf, size_t cap)
 {
-    fmt_size(buf, cap, sectors * BLOCK_SIZE);
+    uint64_t mb = sectors / 2048;
+    if (mb >= 1024 * 1024)
+        ksnprintf(buf, cap, "%u.%u TB", (unsigned)(mb >> 20), (unsigned)((mb & 0xfffff) * 10 >> 20));
+    else if (mb >= 10240)
+        ksnprintf(buf, cap, "%u GB", (unsigned)(mb >> 10));
+    else if (mb >= 1024)
+        ksnprintf(buf, cap, "%u.%u GB", (unsigned)(mb >> 10), (unsigned)((mb & 1023) * 10 >> 10));
+    else
+        ksnprintf(buf, cap, "%u MB", (unsigned)mb);
 }
 
 static uint32_t min_sectors(void)
@@ -112,7 +124,8 @@ static void build_choices(struct installer *in)
     in->shrink_hint = editable && has_windows && in->choice_count == 0;
     for (int i = 0; editable && i < in->map.count; i++) {
         const struct part *p = &in->map.parts[i];
-        if (p->kind == PART_FREE || p->kind == PART_EFI || p->kind == PART_MSR || p->kind == PART_EXTENDED)
+        if (p->kind == PART_FREE || p->kind == PART_EFI || p->kind == PART_MSR || p->kind == PART_EXTENDED ||
+            p->kind == PART_RECOVERY)
             continue;
         uint32_t start = (p->start + PART_ALIGN - 1) / PART_ALIGN * PART_ALIGN;
         if (p->start + p->count < start + min_sectors())
@@ -141,11 +154,62 @@ static void build_choices(struct installer *in)
         in->choice = 0;
 }
 
+/* Everything above the buttons; on a small screen the margins shrink first. */
 static struct rect content(struct ui *ui, struct installer *in)
 {
     int W = ui->win->surface.w, H = ui->win->surface.h;
+    int pad = W < 600 ? 24 : 40, top = H < 480 ? 18 : 30;
     int dx = in->slide.pos * W / 1024 / 3;
-    return (struct rect){40 + dx, 30, W - 80, H - 100};
+    return (struct rect){pad + dx, top, W - 2 * pad, MAX(H - top - NAV_H, 40)};
+}
+
+/* A list of cards that scrolls when the window is too short for all of them. */
+struct card_list {
+    struct rect area;
+    struct canvas *saved, clipped;
+    int total, width;
+};
+
+static void list_begin(struct ui *ui, struct installer *in, struct card_list *l, struct rect area, int total)
+{
+    l->area = area;
+    l->total = total;
+    bool scrolls = total > area.h;
+    l->width = area.w - (scrolls ? 14 : 0);
+    if (ui->e && ui->e->type == EV_WHEEL && rect_contains(area, ui->e->x, ui->e->y)) {
+        in->scroll += ui->e->wheel * 40;
+        ui->changed = true;
+        ui->consumed = true;
+    }
+    in->scroll = CLAMP(in->scroll, 0, MAX(0, total - area.h));
+    l->saved = ui->c;
+    if (ui->c) {
+        l->clipped = *ui->c;
+        l->clipped.clip = rect_intersect(ui->c->clip, area);
+        ui->c = &l->clipped;
+    }
+}
+
+static bool list_hit(struct ui *ui, struct card_list *l, struct rect card)
+{
+    return ui_hover(ui, card) && ui->e && rect_contains(l->area, ui->e->x, ui->e->y);
+}
+
+static void list_end(struct ui *ui, struct installer *in, struct card_list *l)
+{
+    ui->c = l->saved;
+    if (l->total > l->area.h)
+        ui_scrollbar(ui, (struct rect){l->area.x + l->area.w - 12, l->area.y, 12, l->area.h}, &in->scroll, l->total,
+                     l->area.h);
+}
+
+/* Keeps the card picked with the keyboard in view. */
+static void list_show(struct installer *in, struct card_list *l, int top, int h)
+{
+    if (top < in->scroll)
+        in->scroll = top;
+    else if (top + h > in->scroll + l->area.h)
+        in->scroll = top + h - l->area.h;
 }
 
 static bool nav(struct ui *ui, const char *back, const char *next, bool next_enabled, bool *went_back)
@@ -210,11 +274,9 @@ static void draw_map(struct ui *ui, struct installer *in, struct rect r, const s
     gfx_round_frame(ui->c, r, 10, style.separator);
 }
 
-static void draw_legend(struct ui *ui, struct installer *in, int x, int y, int w)
+static int draw_legend(struct ui *ui, struct installer *in, int x, int y, int w)
 {
-    if (!ui->c)
-        return;
-    int cx = x;
+    int cx = x, y0 = y;
     for (int i = 0; i < in->map.count; i++) {
         const struct part *p = &in->map.parts[i];
         char size[16], text[80];
@@ -222,33 +284,38 @@ static void draw_legend(struct ui *ui, struct installer *in, int x, int y, int w
         if (p->kind == PART_FREE)
             ksnprintf(text, sizeof(text), "Free %s", size);
         else
-            ksnprintf(text, sizeof(text), "%d %s %s%s%s", p->slot + 1, part_kind_name(p->kind), size,
-                      p->label[0] ? " " : "", p->label);
-        int tw = gfx_text_width(&font_small, text) + 26;
-        if (cx + tw > x + w) {
+            ksnprintf(text, sizeof(text), "%d  %s  %s", p->slot + 1, p->label[0] ? p->label : part_kind_name(p->kind),
+                      size);
+        int tw = MIN(gfx_text_width(&font_small, text) + 26, w);
+        if (cx > x && cx + tw > x + w) {
             cx = x;
             y += 18;
         }
-        gfx_circle(ui->c, cx + 5, y + 8, 5, kind_color(p->kind));
-        gfx_text(ui->c, cx + 14, y + 1, &font_small, text, style.secondary);
+        if (ui->c) {
+            gfx_circle(ui->c, cx + 5, y + 8, 5, kind_color(p->kind));
+            gfx_text_box(ui->c, (struct rect){cx + 14, y, tw - 20, 17}, &font_small, text, style.secondary, ALIGN_LEFT);
+        }
         cx += tw;
     }
+    return in->map.count ? y + 18 - y0 : 0;
 }
 
 static void welcome(struct ui *ui, struct installer *in)
 {
     struct rect r = content(ui, in);
+    static const char about[] =
+        "Install SynthOS on a disk of this computer: next to Windows or another system in free space, "
+        "instead of a partition you no longer need, or on a whole disk. Nothing is written until you "
+        "confirm the summary.";
+    int text_h = ui_wrap_text(NULL, (struct rect){0, 0, r.w - 80, 200}, &font_sans, about, 0);
+    r.y += MAX(0, (r.h - 214 - text_h) / 2) - 20;
     if (ui->c) {
         struct rect logo = {r.x + (r.w - 96) / 2, r.y + 20, 96, 96};
         gfx_icon(ui->c, logo.x, logo.y, ICON_LOGO, 96);
     }
     ui_label(ui, (struct rect){r.x, r.y + 134, r.w, 34}, "SynthOS " SYNTH_VERSION, &font_large, style.text, ALIGN_CENTER);
     ui_label(ui, (struct rect){r.x, r.y + 172, r.w, 20}, "\"" SYNTH_CODENAME "\"", &font_title, style.accent, ALIGN_CENTER);
-    ui_wrap_text(ui->c, (struct rect){r.x + 40, r.y + 214, r.w - 80, 100}, &font_sans,
-                 "Install SynthOS on a disk of this computer: next to Windows or another system in free space, "
-                 "instead of a partition you no longer need, or on a whole disk. Nothing is written until you "
-                 "confirm the summary.",
-                 style.secondary);
+    ui_wrap_text(ui->c, (struct rect){r.x + 40, r.y + 214, r.w - 80, text_h}, &font_sans, about, style.secondary);
     bool back;
     if (nav(ui, NULL, "Continue", true, &back)) {
         scan(in);
@@ -270,9 +337,11 @@ static void disk_page(struct ui *ui, struct installer *in)
         if (ui_button(ui, (struct rect){r.x, r.y + 140, 120, 30}, "Look again"))
             scan(in);
     }
+    struct card_list l;
+    list_begin(ui, in, &l, (struct rect){r.x, r.y + 64, r.w, r.h - 64}, in->disk_count * 66 - 8);
     for (int i = 0; i < in->disk_count; i++) {
-        struct rect card = {r.x, r.y + 64 + i * 66, r.w, 58};
-        bool sel = in->chosen == i, hot = ui_hover(ui, card);
+        struct rect card = {r.x, r.y + 64 + i * 66 - in->scroll, l.width, 58};
+        bool sel = in->chosen == i, hot = list_hit(ui, &l, card);
         if (ui->c) {
             gfx_round(ui->c, card, 16, sel ? ALPHA(style.accent, 50) : hot ? style.hover : style.group);
             gfx_round_frame(ui->c, card, 16, sel ? style.accent : style.separator);
@@ -290,10 +359,12 @@ static void disk_page(struct ui *ui, struct installer *in)
             in->chosen = i;
         }
     }
+    list_end(ui, in, &l);
     int key = KEY_BASE(ui_key(ui));
     if ((key == KEY_UP || key == KEY_DOWN) && in->disk_count) {
         ui->consumed = true;
         in->chosen = CLAMP(in->chosen + (key == KEY_UP ? -1 : 1), 0, in->disk_count - 1);
+        list_show(in, &l, in->chosen * 66, 58);
     }
     bool back;
     if (nav(ui, "Back", "Continue", in->chosen >= 0, &back)) {
@@ -310,8 +381,7 @@ static void where_page(struct ui *ui, struct installer *in)
     ui_label(ui, (struct rect){r.x, r.y, r.w, 26}, "Where on the disk?", &font_title, style.text, ALIGN_LEFT);
     const struct choice *sel = in->choice >= 0 ? &in->choices[in->choice] : NULL;
     draw_map(ui, in, (struct rect){r.x, r.y + 40, r.w, 30}, sel, sel ? sel->count : 0);
-    draw_legend(ui, in, r.x, r.y + 78, r.w);
-    int y = r.y + 122;
+    int y = r.y + 82 + draw_legend(ui, in, r.x, r.y + 80, r.w);
     if (in->shrink_hint) {
         char need[16], hint[256];
         size_text(min_sectors(), need, sizeof(need));
@@ -322,10 +392,13 @@ static void where_page(struct ui *ui, struct installer *in)
                   need);
         y += 6 + ui_wrap_text(ui->c, (struct rect){r.x, y, r.w, 54}, &font_small, hint, style.warning);
     }
+    struct card_list l;
+    list_begin(ui, in, &l, (struct rect){r.x, y, r.w, r.y + r.h - y}, in->choice_count * 56 - 6);
+    y -= in->scroll;
     for (int i = 0; i < in->choice_count; i++) {
         const struct choice *c = &in->choices[i];
-        struct rect card = {r.x, y, r.w, 50};
-        bool on = in->choice == i, hot = ui_hover(ui, card);
+        struct rect card = {r.x, y, l.width, 50};
+        bool on = in->choice == i, hot = list_hit(ui, &l, card);
         if (ui->c) {
             gfx_round(ui->c, card, 14, on ? ALPHA(c->danger ? style.error : style.accent, 40) : hot ? style.hover : style.group);
             gfx_round_frame(ui->c, card, 14, on ? (c->danger ? style.error : style.accent) : style.separator);
@@ -343,10 +416,12 @@ static void where_page(struct ui *ui, struct installer *in)
         }
         y += 56;
     }
+    list_end(ui, in, &l);
     int key = KEY_BASE(ui_key(ui));
     if ((key == KEY_UP || key == KEY_DOWN) && in->choice_count) {
         ui->consumed = true;
         in->choice = CLAMP(in->choice + (key == KEY_UP ? -1 : 1), 0, in->choice_count - 1);
+        list_show(in, &l, in->choice * 56, 50);
     }
     bool back;
     if (nav(ui, "Back", "Continue", in->choice >= 0, &back)) {
@@ -415,14 +490,15 @@ static void confirm_page(struct ui *ui, struct installer *in)
     size_text(d->sectors, size, sizeof(size));
     ksnprintf(disk, sizeof(disk), "%s, %s (%s)", d->model[0] ? d->model : "Disk", size, d->name);
     size_text(c->whole ? d->sectors : plan.count, size, sizeof(size));
-    struct rect g = ui_group(ui, r.x, r.y + 40, r.w, 4, 44);
-    ui_group_label(ui, (struct rect){g.x, g.y, g.w, 44}, "Disk", disk, false);
-    ui_group_label(ui, (struct rect){g.x, g.y + 44, g.w, 44}, "Where", c->brief, false);
-    ui_group_label(ui, (struct rect){g.x, g.y + 88, g.w, 44}, "SynthOS gets", size, false);
-    ui_group_label(ui, (struct rect){g.x, g.y + 132, g.w, 44}, "Bring my files and settings", "", true);
-    ui_switch(ui, (struct rect){g.x + g.w - 50, g.y + 132 + 11, 36, 22}, &in->copy_home);
+    int row = r.h < 330 ? 36 : 44;
+    struct rect g = ui_group(ui, r.x, r.y + 40, r.w, 4, row);
+    ui_group_label(ui, (struct rect){g.x, g.y, g.w, row}, "Disk", disk, false);
+    ui_group_label(ui, (struct rect){g.x, g.y + row, g.w, row}, "Where", c->brief, false);
+    ui_group_label(ui, (struct rect){g.x, g.y + 2 * row, g.w, row}, "SynthOS gets", size, false);
+    ui_group_label(ui, (struct rect){g.x, g.y + 3 * row, g.w, row}, "Bring my files and settings", "", true);
+    ui_switch(ui, (struct rect){g.x + g.w - 50, g.y + 3 * row + (row - 22) / 2, 36, 22}, &in->copy_home);
     ksnprintf(where, sizeof(where), "%s.", c->detail);
-    int y = r.y + 40 + 4 * 44 + 14;
+    int y = r.y + 40 + 4 * row + 12;
     y += ui_wrap_text(ui->c, (struct rect){r.x, y, r.w, 40}, &font_small, where, c->danger ? style.error : style.secondary);
     if (!hal_uefi() && !c->whole)
         ui_wrap_text(ui->c, (struct rect){r.x, y + 6, r.w, 40}, &font_small,
