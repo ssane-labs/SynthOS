@@ -259,3 +259,6 @@ static const struct w32_export usp10_exports[] = {
 };
 
 W32_EXPORTS(usp10_module, "usp10.dll", usp10_exports);
+
+/* gdi32 exports the same functions (mingw's libgdi32.a links them from there) */
+W32_EXPORTS(usp10_gdi32_module, "gdi32.dll", usp10_exports);

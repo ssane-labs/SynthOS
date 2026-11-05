@@ -135,3 +135,21 @@ url = https://www.angusj.com/resourcehacker/resource_hacker.zip
 sha256 = 52f81ee4778070d6aa72d8719a1a68fea2f288005deb02667542754f747776f8
 check = ResourceHacker.exe
 open = ResourceHacker.exe
+
+[openttd]
+name = OpenTTD
+developer = The OpenTTD team
+category = Games
+icon = games
+version = 15.3
+size = 40 MB
+summary = Build a transport empire with trains, road vehicles, ships and aircraft
+about = The open-source transport simulation, unpacked into /home/apps/openttd together with OpenGFX, the free base graphics, so a new game starts right away.
+kind = zip
+url = https://cdn.openttd.org/openttd-releases/15.3/openttd-15.3-windows-win32.zip
+sha256 = 3f092edc8f381c3d2d3a59458703899da6f876345b3850a3c76c0dffe68f0e74
+strip = openttd-15.3-windows-win32/
+extra = https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip
+extra_to = baseset
+check = openttd.exe
+open = openttd.exe
