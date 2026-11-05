@@ -255,8 +255,27 @@ static BOOL WINAPI GetWindowPlacement(HANDLE h, uint32_t *wp)
     memset(wp + 1, 0, 40);
     wp[0] = 44;
     wp[2] = !w->visible ? 0 : (w->wm && (w->wm->flags & WIN_MINIMIZED)) ? 2 : (w->wm && (w->wm->flags & WIN_MAXIMIZED)) ? 3 : 1;
-    if (get_rect)
+    if (is_child(w))
+        *(RECT *)(wp + 7) = (RECT){w->rect.x, w->rect.y, w->rect.x + w->rect.w, w->rect.y + w->rect.h};
+    else if (get_rect)
         get_rect(h, (RECT *)(wp + 7));
+    return TRUE;
+}
+
+static BOOL WINAPI SetWindowPlacement(HANDLE h, const uint32_t *wp)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w || !wp)
+        return FALSE;
+    BOOL(WINAPI * move)(HANDLE, int, int, int, int, BOOL) =
+        (BOOL(WINAPI *)(HANDLE, int, int, int, int, BOOL))user32_fn("MoveWindow");
+    BOOL(WINAPI * show)(HANDLE, int) = (BOOL(WINAPI *)(HANDLE, int))user32_fn("ShowWindow");
+    const int32_t *rc = (const int32_t *)(wp + 7);
+    bool normal = !w->wm || !(w->wm->flags & (WIN_MINIMIZED | WIN_MAXIMIZED));
+    if (move && normal && rc[2] > rc[0] && rc[3] > rc[1])
+        move(h, rc[0], rc[1], rc[2] - rc[0], rc[3] - rc[1], TRUE);
+    if (show)
+        show(h, (int)wp[2]);
     return TRUE;
 }
 
@@ -1376,7 +1395,7 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("WinHelpA", w32_zero4),
     W32_AS("WinHelpW", w32_zero4),
     W32_FN(GetWindowPlacement),
-    W32_AS("SetWindowPlacement", w32_one2),
+    W32_FN(SetWindowPlacement),
     W32_AS("GetWindowRgn", w32_zero2),
     W32_AS("SetWindowRgn", w32_one3),
     W32_AS("GetWindowDisplayAffinity", w32_one2),

@@ -581,6 +581,13 @@ static BOOL WINAPI MoveFileExW(LPCWSTR from, LPCWSTR to, DWORD flags)
     return ok;
 }
 
+static BOOL WINAPI MoveFileWithProgressW(LPCWSTR from, LPCWSTR to, void *progress, void *data, DWORD flags)
+{
+    UNUSED(progress);
+    UNUSED(data);
+    return MoveFileExW(from, to, flags);
+}
+
 static BOOL copy_file(const char *from, const char *to, BOOL fail_if_exists)
 {
     char a[PATH_MAX_LEN], b[PATH_MAX_LEN];
@@ -721,6 +728,17 @@ static BOOL WINAPI GetFileAttributesExA(LPCSTR name, int level, uint8_t *data)
 {
     UNUSED(level);
     return attributes_ex(name, data);
+}
+
+static DWORD WINAPI GetCompressedFileSizeW(LPCWSTR name, DWORD *high)
+{
+    char *n = narrow(name);
+    struct vstat st;
+    DWORD a = attributes(n, &st);
+    w32_free(n);
+    if (high)
+        *high = 0;
+    return a == INVALID_ATTRIBUTES ? INVALID_ATTRIBUTES : st.size;
 }
 
 static BOOL WINAPI GetFileAttributesExW(LPCWSTR name, int level, uint8_t *data)
@@ -1580,7 +1598,7 @@ static const struct w32_export kernel32_files[] = {
     W32_FN(GetProcessIoCounters), W32_FN(SetFilePointer),
     W32_FN(SetFilePointerEx), W32_FN(GetFileSize), W32_FN(GetFileSizeEx), W32_FN(GetFileType), W32_FN(ReadFileEx), W32_FN(WriteFileEx),
     W32_FN(SetEndOfFile), W32_FN(FlushFileBuffers), W32_FN(DeleteFileA), W32_FN(DeleteFileW), W32_FN(MoveFileA),
-    W32_FN(MoveFileW), W32_FN(MoveFileExA), W32_FN(MoveFileExW), W32_FN(CopyFileA), W32_FN(CopyFileW),
+    W32_FN(MoveFileW), W32_FN(MoveFileExA), W32_FN(MoveFileExW), W32_FN(MoveFileWithProgressW), W32_FN(GetCompressedFileSizeW), W32_FN(CopyFileA), W32_FN(CopyFileW),
     W32_FN(CopyFileExA), W32_FN(CopyFileExW),
     W32_FN(CreateDirectoryA), W32_FN(CreateDirectoryW), W32_FN(RemoveDirectoryA), W32_FN(RemoveDirectoryW),
     W32_FN(GetFileAttributesA), W32_FN(GetFileAttributesW), W32_FN(GetFileAttributesExA),

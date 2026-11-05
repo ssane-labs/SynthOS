@@ -327,6 +327,38 @@ static const uint16_t *menu_items(HANDLE menu, const uint16_t *p, int depth)
     return p;
 }
 
+/* MENUEX items: DWORD type, state, id; WORD flags; text; DWORD-aligned, popups add a help id before their items */
+static const uint8_t *menuex_items(HANDLE menu, const uint8_t *base, const uint8_t *p, int depth)
+{
+    for (int guard = 0; guard < 256 && depth < 8; guard++) {
+        p = base + (((size_t)(p - base) + 3) & ~(size_t)3);
+        uint32_t type, state, id;
+        uint16_t res;
+        memcpy(&type, p, 4);
+        memcpy(&state, p + 4, 4);
+        memcpy(&id, p + 8, 4);
+        memcpy(&res, p + 12, 2);
+        const uint16_t *text = (const uint16_t *)(p + 14);
+        const uint16_t *t = text;
+        while (*t)
+            t++;
+        p = (const uint8_t *)(t + 1);
+        char *label = w32_narrow((LPCWSTR)text);
+        if (res & 1) {
+            p = base + (((size_t)(p - base) + 3) & ~(size_t)3) + 4;
+            HANDLE sub = w32_menu_new();
+            p = menuex_items(sub, base, p, depth + 1);
+            w32_menu_append(menu, 0x10 | (state & 0xb), (uintptr_t)sub, label);
+        } else {
+            w32_menu_append(menu, (type & 0x800) || !label || !*label ? 0x800 : (state & 0xb), id, label);
+        }
+        w32_free(label);
+        if (res & 0x80)
+            break;
+    }
+    return p;
+}
+
 static HANDLE load_menu(HANDLE inst, const void *name, bool wide)
 {
     const struct data_entry *e = find_entry(inst, (const void *)4, name, wide);
@@ -334,10 +366,12 @@ static HANDLE load_menu(HANDLE inst, const void *name, bool wide)
     if (!e || !base)
         return NULL;
     const uint16_t *p = (const uint16_t *)(base + e->rva);
-    if (p[0] != 0)
+    if (p[0] > 1)
         return NULL;
     HANDLE menu = w32_menu_new();
-    if (menu)
+    if (menu && p[0] == 1)
+        menuex_items(menu, (const uint8_t *)p, (const uint8_t *)p + 4 + p[1], 0);
+    else if (menu)
         menu_items(menu, p + 2 + p[1] / 2, 0);
     return menu;
 }
@@ -356,7 +390,9 @@ static HANDLE WINAPI LoadMenuIndirectA(const void *templ)
 {
     const uint16_t *p = templ;
     HANDLE menu = w32_menu_new();
-    if (menu && p[0] == 0)
+    if (menu && p[0] == 1)
+        menuex_items(menu, (const uint8_t *)p, (const uint8_t *)p + 4 + p[1], 0);
+    else if (menu && p[0] == 0)
         menu_items(menu, p + 2 + p[1] / 2, 0);
     return menu;
 }

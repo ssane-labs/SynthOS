@@ -53,8 +53,15 @@
   GetNamedPipeInfo), APC пользователя (QueueUserAPC, SleepEx/WaitFor*Ex с alertable, ReadFileEx/WriteFileEx),
   функции Бесселя msvcrt, ~60 функций shlwapi (Path*A, Str*, ColorHLS, SHRegGetUSValue), Uniscribe из gdi32,
   TabbedTextOut, GrayString, CreateBitmapIndirect, SHCreateDirectoryEx, класс подсказок tooltips_class32
-  (Notepad++). Магазин ставит программу из одного файла (поле `file`, не zip). Дальше: gdiplus (KeePass,
-  SumatraPDF), Everything, 7-Zip, HxD, foobar2000, Total Commander, Thunderbird.
+  (Notepad++). Магазин ставит программу из одного файла (поле `file`, не zip).
+  Ещё добавлены и проверены Notepad++ (меню, панель, вкладки, редактор, строка состояния), головоломки Саймона
+  Тэтхэма и 7-Zip (установщик, файловый менеджер: меню, адресная строка, переход по папкам) — 18 приложений.
+  Для них: ReBarWindow32 (полосы, строки, высота), ComboBoxEx32 (элементы, CBEN_ENDEDIT по Enter/Esc,
+  CCM_SETUNICODEFORMAT), меню из класса окна (lpszMenuName), шаблоны MENUEX, SetWindowPlacement и координаты
+  дочерних окон в GetWindowPlacement, WM_PRINT/WM_PRINTCLIENT для встроенных элементов (буферная отрисовка
+  Notepad++), вкладки с TCS_OWNERDRAWFIXED, перерисовка перекрытых соседних окон, ValidateRect с прямоугольником,
+  MoveFileWithProgressW, GetCompressedFileSizeW. Дальше: gdiplus (KeePass, SumatraPDF), Everything, HxD,
+  foobar2000, Total Commander, Thunderbird; столбцы списка 7-Zip (LVN_GETDISPINFO для подстолбцов).
 - [ ] **Собрать образы** (vga, usb, usb32, windows zip, пакеты обновления).
 - [ ] **11.** Потоки Windows‑программ на всех ядрах.
 - [ ] **13.** Ввод на других языках: раскладки (в том числе русская), переключение; IME — по возможности.

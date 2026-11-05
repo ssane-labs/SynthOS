@@ -6,6 +6,7 @@
 #include <wincrypt.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <commctrl.h>
 #include <propsys.h>
 #include <winhttp.h>
 #include <bcrypt.h>
@@ -819,6 +820,67 @@ static void extra_test(void)
     r = SleepEx(0, TRUE);
     printf("readfileex ok=%d bytes=%lu wait=%lx mz=%d\n", ok, io_bytes, r, buf[0] == 'M' && buf[1] == 'Z');
     CloseHandle(f);
+
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.lpszClassName = "wtextra";
+    RegisterClassA(&wc);
+    HWND top = CreateWindowExA(0, "wtextra", "", 0, 10, 10, 300, 200, HWND_MESSAGE, NULL, NULL, NULL);
+    HWND bar = CreateWindowExA(0, REBARCLASSNAMEA, "", WS_CHILD | CCS_NOPARENTALIGN | CCS_NODIVIDER, 0, 0, 0, 0, top,
+                               NULL, NULL, NULL);
+    HWND child = CreateWindowExA(0, "wtextra", "", WS_CHILD, 0, 0, 10, 10, top, NULL, NULL, NULL);
+    REBARBANDINFOA band = {sizeof(band)};
+    band.fMask = RBBIM_CHILD | RBBIM_CHILDSIZE;
+    band.hwndChild = child;
+    band.cxMinChild = 50;
+    band.cyMinChild = 24;
+    SendMessageA(bar, RB_INSERTBANDA, (WPARAM)-1, (LPARAM)&band);
+    MoveWindow(bar, 0, 0, 200, 0, TRUE);
+    RECT wr;
+    GetWindowRect(bar, &wr);
+    printf("rebar bands=%d height=%d window=%ld child=%s\n", (int)SendMessageA(bar, RB_GETBANDCOUNT, 0, 0),
+           (int)SendMessageA(bar, RB_GETBARHEIGHT, 0, 0), wr.bottom - wr.top, GetParent(child) == bar ? "rebar" : "other");
+    WINDOWPLACEMENT wp = {sizeof(wp)};
+    GetWindowPlacement(top, &wp);
+    wp.showCmd = SW_HIDE;
+    SetRect(&wp.rcNormalPosition, 20, 30, 220, 180);
+    SetWindowPlacement(top, &wp);
+    GetWindowRect(top, &wr);
+    printf("placement size=%ldx%ld visible=%d\n", wr.right - wr.left, wr.bottom - wr.top, IsWindowVisible(top));
+    HWND cbx = CreateWindowExW(0, L"ComboBoxEx32", L"", WS_CHILD | CBS_DROPDOWN, 0, 0, 200, 150, top, NULL, NULL, NULL);
+    COMBOBOXEXITEMW ci = {0};
+    ci.mask = CBEIF_TEXT | CBEIF_LPARAM;
+    ci.pszText = L"alpha";
+    ci.lParam = 7;
+    SendMessageW(cbx, CBEM_INSERTITEMW, 0, (LPARAM)&ci);
+    ci.iItem = 1;
+    ci.pszText = L"beta";
+    ci.lParam = 9;
+    SendMessageW(cbx, CBEM_INSERTITEMW, 0, (LPARAM)&ci);
+    WCHAR item[32] = {0};
+    COMBOBOXEXITEMW gi = {0};
+    gi.mask = CBEIF_TEXT | CBEIF_LPARAM;
+    gi.iItem = 1;
+    gi.pszText = item;
+    gi.cchTextMax = 32;
+    SendMessageW(cbx, CBEM_GETITEMW, 0, (LPARAM)&gi);
+    SetWindowTextW(cbx, L"C:\\x");
+    char field[32] = "";
+    GetWindowTextA(cbx, field, sizeof(field));
+    GetWindowRect(cbx, &wr);
+    printf("comboex count=%d item=%ls data=%ld text=%s short=%d\n", (int)SendMessageW(cbx, CB_GETCOUNT, 0, 0), item,
+           (long)gi.lParam, field, wr.bottom - wr.top < 60);
+    DestroyWindow(top);
+
+    static const BYTE menuex[] = {1, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x81, 0,
+                                  'F', 0, 'i', 0, 'l', 0, 'e', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 100, 0, 0, 0, 0x80, 0, 'O', 0, 'p', 0, 'e', 0, 'n', 0, 0, 0};
+    HMENU mx = LoadMenuIndirectW(menuex);
+    HMENU sub = mx ? GetSubMenu(mx, 0) : NULL;
+    char label[16] = "";
+    if (sub)
+        GetMenuStringA(sub, 0, label, sizeof(label), MF_BYPOSITION);
+    printf("menuex top=%d id=%u label=%s\n", mx ? GetMenuItemCount(mx) : -1, sub ? GetMenuItemID(sub, 0) : 0, label);
 }
 
 static void shell_test(void)

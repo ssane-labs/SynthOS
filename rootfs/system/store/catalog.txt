@@ -233,3 +233,50 @@ sha256 = 414ec99417830178bd2f6e77fc78b34de3b12fc6b6c3229f07038c5811307124
 file = jq.exe
 bin = .
 check = jq.exe
+
+[puzzles]
+name = Puzzle Collection
+developer = Simon Tatham
+category = Games
+icon = games
+version = 2026-09
+size = 8 MB
+summary = 40 small logic puzzles: Net, Bridges, Loopy, Solo, Mines and more
+about = Simon Tatham's Portable Puzzle Collection: one program per puzzle, unpacked into /home/apps/puzzles and put on the PATH (net is netgame). Every game has a Type menu with sizes and difficulty.
+kind = zip
+url = https://www.chiark.greenend.org.uk/~sgtatham/puzzles/puzzles.zip
+bin = .
+check = netgame.exe
+open = netgame.exe
+
+[notepadpp]
+name = Notepad++
+developer = Don Ho
+category = Developer Tools
+icon = code
+version = 8.8.8
+size = 24 MB
+summary = Source code editor with tabs, syntax highlighting and macros
+about = The portable 32-bit Notepad++ unpacked into /home/apps/notepadpp: tabs, syntax highlighting for dozens of languages, search and replace with regular expressions, macros. Settings stay next to the program.
+kind = zip
+url = https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.8/npp.8.8.8.portable.zip
+sha256 = 3095c6601e0a6f1eacb5828cc1489bf15bc6acb4de5c9ea651a78e16911ce175
+check = notepad++.exe
+open = notepad++.exe
+
+[7zip]
+name = 7-Zip
+developer = Igor Pavlov
+category = Utilities
+icon = files
+version = 26.05
+size = 5 MB
+summary = Archiver with a high compression ratio: 7z, ZIP, RAR, TAR and more
+about = The official installer puts 7-Zip into C:\Program Files\7-Zip: the 7-Zip File Manager and the 7z command line.
+kind = installer
+url = https://www.7-zip.org/a/7z2605.exe
+sha256 = 6435a470fe7c4769962dbed8a60c641ee21401c833ced06077c80e33e7845a5e
+file = 7z2605.exe
+args = /S
+check = C:\Program Files\7-Zip\7zFM.exe
+uninstall = 7-Zip

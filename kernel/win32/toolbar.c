@@ -912,6 +912,317 @@ static const struct w32_export toolbar_exports[] = {
 };
 
 W32_EXPORTS(toolbar_comctl_module, "comctl32.dll", toolbar_exports);
+/* ReBarWindow32: bands hold child windows (toolbars) in rows along the top of the parent */
+enum {
+    RB_INSERTBANDA = 0x401, RB_DELETEBAND = 0x402, RB_GETBARINFO = 0x403, RB_SETBARINFO = 0x404,
+    RB_SETBANDINFOA = 0x406, RB_GETRECT = 0x409, RB_INSERTBANDW = 0x40a, RB_SETBANDINFOW = 0x40b,
+    RB_GETBANDCOUNT = 0x40c, RB_GETROWCOUNT = 0x40d, RB_GETROWHEIGHT = 0x40e, RB_IDTOINDEX = 0x410,
+    RB_SETBKCOLOR = 0x413, RB_GETBKCOLOR = 0x414, RB_SETTEXTCOLOR = 0x415, RB_GETTEXTCOLOR = 0x416,
+    RB_SIZETORECT = 0x417, RB_GETBARHEIGHT = 0x41b, RB_GETBANDINFOW = 0x41c, RB_GETBANDINFOA = 0x41d,
+    RB_GETBANDBORDERS = 0x422, RB_SHOWBAND = 0x423, RB_GETBANDMARGINS = 0x428,
+    RBBS_BREAK = 1, RBBS_HIDDEN = 8, RBBS_VARIABLEHEIGHT = 0x40,
+    MAX_BANDS = 16,
+};
+
+struct rb_band {
+    uint32_t style, fore, back, id, image;
+    struct w32_window *child;
+    int cx_min, cy_min, cx, cy_child, cy_max, cx_ideal, cx_header;
+    uint64_t lparam;
+    char *text;
+    struct rect r;
+};
+
+struct rb {
+    struct rb_band b[MAX_BANDS];
+    int count, height, rows;
+    uint32_t bk, fg;
+};
+
+static struct rb *rb_of(struct w32_window *w)
+{
+    if (!w->list) {
+        struct rb *r = w32_zalloc(sizeof(*r));
+        if (!r)
+            return NULL;
+        r->bk = r->fg = 0xffffffffu;
+        w->list = r;
+    }
+    return w->list;
+}
+
+static int rb_off(int off32)
+{
+    if (!w32->win64)
+        return off32;
+    switch (off32) {
+    case 20: return 24;
+    case 24: return 32;
+    case 28: return 36;
+    case 32: return 40;
+    case 72: return 96;
+    case 76: return 104;
+    case 48: return 64;
+    default: return off32 < 20 ? off32 : off32 <= 44 ? off32 + 12 : off32 + 20;
+    }
+}
+
+typedef BOOL(WINAPI *rb_move_fn)(HANDLE, int, int, int, int, BOOL);
+
+static void rb_layout(struct w32_window *w, struct rb *r)
+{
+    rb_move_fn move = (rb_move_fn)w32_builtin_lookup("user32.dll", "MoveWindow");
+    int width = w->rect.w, y = 0, rows = 0;
+    for (int i = 0; i < r->count;) {
+        int end = i, x = 0, row_h = 0;
+        for (; end < r->count; end++) {
+            struct rb_band *b = &r->b[end];
+            if (b->style & RBBS_HIDDEN)
+                continue;
+            int bw = b->cx_min + b->cx_header + 4;
+            if (end > i && ((b->style & RBBS_BREAK) || x + bw > width))
+                break;
+            x += bw;
+            row_h = MAX(row_h, MAX(b->cy_min, b->cy_child) + 4);
+        }
+        if (end == i)
+            end++;
+        x = 0;
+        int last = end - 1;
+        while (last > i && (r->b[last].style & RBBS_HIDDEN))
+            last--;
+        for (int k = i; k < end; k++) {
+            struct rb_band *b = &r->b[k];
+            if (b->style & RBBS_HIDDEN) {
+                b->r = (struct rect){0, 0, 0, 0};
+                continue;
+            }
+            int rest = 0;
+            for (int j = k + 1; j < end; j++)
+                if (!(r->b[j].style & RBBS_HIDDEN))
+                    rest += r->b[j].cx_min + r->b[j].cx_header + 4;
+            int bw = k == last ? MAX(0, width - x) : MAX(b->cx, b->cx_min) + b->cx_header + 4;
+            if (k != last)
+                bw = MAX(b->cx_min + b->cx_header + 4, MIN(bw, width - x - rest));
+            b->r = (struct rect){x, y, bw, row_h};
+            if (b->child && move) {
+                int ch = (b->style & RBBS_VARIABLEHEIGHT) && b->cy_child ? b->cy_child : MAX(b->cy_min, 1);
+                ch = MIN(ch, row_h - 4);
+                move(b->child, x + 2 + b->cx_header, y + (row_h - ch) / 2, MAX(0, bw - 4 - b->cx_header), ch, TRUE);
+            }
+            x += bw;
+        }
+        if (row_h) {
+            y += row_h;
+            rows++;
+        }
+        i = end;
+    }
+    r->rows = rows;
+    if (y != r->height) {
+        r->height = y;
+        if (!(w->style & CCS_NORESIZE)) {
+            if (!(w->style & CCS_NOPARENTALIGN))
+                align_to_parent(w, y, (w->style & 3) == CCS_BOTTOM);
+            else if (move && w->rect.h != y)
+                move(w, w->rect.x, w->rect.y, w->rect.w, y, TRUE);
+        }
+        if (w->parent) {
+            int hs = w32->win64 ? 24 : 12, code = -831;
+            uint8_t *nm = w32_zalloc((size_t)hs);
+            if (nm) {
+                uint64_t hwnd = (uintptr_t)w, id = (uint64_t)w->id;
+                memcpy(nm, &hwnd, (size_t)ptr_size());
+                memcpy(nm + ptr_size(), &id, (size_t)ptr_size());
+                memcpy(nm + 2 * ptr_size(), &code, 4);
+                w32_send(w->parent, WM_NOTIFY, (WPARAM)w->id, (LPARAM)(uintptr_t)nm);
+                w32_free(nm);
+            }
+        }
+    }
+    w32_invalidate(w, NULL, true);
+}
+
+static void rb_band_info(struct w32_window *w, struct rb_band *b, uint8_t *p, bool wide, bool set)
+{
+    uint32_t mask = (uint32_t)get32(p + 4);
+    uint64_t v = 0;
+#define RB_FIELD(bit, off32, field)                                                                                \
+    if (mask & (bit)) {                                                                                            \
+        if (set)                                                                                                   \
+            b->field = get32(p + rb_off(off32));                                                                   \
+        else {                                                                                                     \
+            int x_ = (int)b->field;                                                                                \
+            memcpy(p + rb_off(off32), &x_, 4);                                                                     \
+        }                                                                                                          \
+    }
+    RB_FIELD(1, 8, style)
+    RB_FIELD(2, 12, fore)
+    RB_FIELD(2, 16, back)
+    RB_FIELD(8, 28, image)
+    RB_FIELD(0x20, 36, cx_min)
+    RB_FIELD(0x20, 40, cy_min)
+    RB_FIELD(0x40, 44, cx)
+    RB_FIELD(0x100, 52, id)
+    RB_FIELD(0x20, 56, cy_child)
+    RB_FIELD(0x20, 60, cy_max)
+    RB_FIELD(0x200, 68, cx_ideal)
+    RB_FIELD(0x800, 76, cx_header)
+#undef RB_FIELD
+    if (mask & 4) {
+        if (set) {
+            w32_free(b->text);
+            b->text = take_text(get_ptr(p + rb_off(20)), wide);
+        } else {
+            put_text((void *)get_ptr(p + rb_off(20)), get32(p + rb_off(24)), b->text ? b->text : "", wide);
+        }
+    }
+    if (mask & 0x10) {
+        if (set) {
+            struct w32_window *c = w32_win((HANDLE)get_ptr(p + rb_off(32)));
+            b->child = c;
+            if (c && c->parent != w) {
+                HANDLE(WINAPI * set_parent)(HANDLE, HANDLE) =
+                    (HANDLE(WINAPI *)(HANDLE, HANDLE))w32_builtin_lookup("user32.dll", "SetParent");
+                if (set_parent)
+                    set_parent(c, w);
+            }
+        } else {
+            v = (uintptr_t)b->child;
+            memcpy(p + rb_off(32), &v, (size_t)ptr_size());
+        }
+    }
+    if (mask & 0x400) {
+        if (set)
+            memcpy(&b->lparam, p + rb_off(72), (size_t)ptr_size());
+        else
+            memcpy(p + rb_off(72), &b->lparam, (size_t)ptr_size());
+    }
+}
+
+static void put_rect(uintptr_t p, struct rect r)
+{
+    if (p)
+        *(RECT *)p = (RECT){r.x, r.y, r.x + r.w, r.y + r.h};
+}
+
+int w32_rebar_height(struct w32_window *w)
+{
+    struct rb *r = w->list;
+    return r && !(w->style & CCS_NORESIZE) ? r->height : -1;
+}
+
+LRESULT WINAPI w32_rebar_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w)
+        return 0;
+    struct rb *r = rb_of(w);
+    if (!r)
+        return w32_def_window_proc(h, msg, wp, lp);
+    uint8_t *ptr = (uint8_t *)(uintptr_t)(uint32_t)lp;
+    int i = (int)wp;
+    bool valid = i >= 0 && i < r->count;
+    switch (msg) {
+    case RB_INSERTBANDA:
+    case RB_INSERTBANDW: {
+        if (!ptr || r->count >= MAX_BANDS)
+            return FALSE;
+        if (i < 0 || i > r->count)
+            i = r->count;
+        memmove(&r->b[i + 1], &r->b[i], sizeof(r->b[0]) * (size_t)(r->count - i));
+        memset(&r->b[i], 0, sizeof(r->b[0]));
+        r->count++;
+        rb_band_info(w, &r->b[i], ptr, msg == RB_INSERTBANDW, true);
+        rb_layout(w, r);
+        return TRUE;
+    }
+    case RB_DELETEBAND:
+        if (!valid)
+            return FALSE;
+        w32_free(r->b[i].text);
+        memmove(&r->b[i], &r->b[i + 1], sizeof(r->b[0]) * (size_t)(r->count - i - 1));
+        r->count--;
+        rb_layout(w, r);
+        return TRUE;
+    case RB_SETBANDINFOA:
+    case RB_SETBANDINFOW:
+        if (!valid || !ptr)
+            return FALSE;
+        rb_band_info(w, &r->b[i], ptr, msg == RB_SETBANDINFOW, true);
+        rb_layout(w, r);
+        return TRUE;
+    case RB_GETBANDINFOA:
+    case 0x405:
+    case RB_GETBANDINFOW:
+        if (!valid || !ptr)
+            return FALSE;
+        rb_band_info(w, &r->b[i], ptr, msg == RB_GETBANDINFOW, false);
+        return TRUE;
+    case RB_GETBANDCOUNT: return r->count;
+    case RB_GETROWCOUNT: return r->rows;
+    case RB_GETROWHEIGHT: return valid ? r->b[i].r.h : 0;
+    case RB_GETBARHEIGHT: return r->height;
+    case RB_IDTOINDEX:
+        for (int k = 0; k < r->count; k++)
+            if (r->b[k].id == (uint32_t)wp)
+                return k;
+        return -1;
+    case RB_GETRECT:
+        if (!valid)
+            return FALSE;
+        put_rect((uintptr_t)ptr, r->b[i].r);
+        return TRUE;
+    case RB_SHOWBAND:
+        if (!valid)
+            return FALSE;
+        r->b[i].style = lp ? r->b[i].style & ~(uint32_t)RBBS_HIDDEN : r->b[i].style | RBBS_HIDDEN;
+        if (r->b[i].child) {
+            BOOL(WINAPI * show)(HANDLE, int) =
+                (BOOL(WINAPI *)(HANDLE, int))w32_builtin_lookup("user32.dll", "ShowWindow");
+            if (show)
+                show(r->b[i].child, lp ? 5 : 0);
+        }
+        rb_layout(w, r);
+        return TRUE;
+    case RB_GETBANDBORDERS:
+    case RB_GETBANDMARGINS:
+        if (ptr)
+            memset(ptr, 0, 16);
+        return 0;
+    case RB_SETBKCOLOR: { uint32_t o = r->bk; r->bk = (uint32_t)lp; return o; }
+    case RB_GETBKCOLOR: return r->bk;
+    case RB_SETTEXTCOLOR: { uint32_t o = r->fg; r->fg = (uint32_t)lp; return o; }
+    case RB_GETTEXTCOLOR: return r->fg;
+    case RB_GETBARINFO:
+    case RB_SETBARINFO: return TRUE;
+    case RB_SIZETORECT: rb_layout(w, r); return TRUE;
+    case WM_SIZE: rb_layout(w, r); return 0;
+    case WM_COMMAND:
+    case WM_NOTIFY:
+        return w->parent ? w32_send(w->parent, msg, wp, lp) : 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        struct w32_paint p;
+        if (w32_ctl_begin(w, &p, 0)) {
+            gfx_fill(p.c, p.r, r->bk == 0xffffffffu ? style.window : w32_rgb(r->bk));
+            w32_ctl_end(w, &p);
+        }
+        return 0;
+    }
+    case WM_NCDESTROY_:
+        for (int k = 0; k < r->count; k++)
+            w32_free(r->b[k].text);
+        w32_free(r);
+        w->list = NULL;
+        break;
+    default:
+        if (msg >= 0x400 && msg < 0x500)
+            return 0;
+    }
+    return w32_def_window_proc(h, msg, wp, lp);
+}
+
 LRESULT WINAPI w32_tooltip_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {

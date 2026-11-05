@@ -385,6 +385,14 @@ wintest shell | grep shellexec
 shellexec ok=1 process=1 code=7
 wintest extra | grep shlwapi-a
 shlwapi-a name=wintest.exe ext=.exe rel=1 unc=1 root=C:\
+wintest extra | grep rebar
+rebar bands=1 height=28 window=28 child=rebar
+wintest extra | grep placement
+placement size=200x150 visible=0
+wintest extra | grep comboex
+comboex count=2 item=beta data=9 text=C:\x short=1
+wintest extra | grep menuex
+menuex top=1 id=100 label=Open
 wintest extra | grep compact
 compact=C:\...\file.txt size=1.50 KB hls=0,120,240 back=0000ff
 wintest extra | grep bessel

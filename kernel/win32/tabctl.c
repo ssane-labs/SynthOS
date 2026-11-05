@@ -311,6 +311,27 @@ static int hit(struct w32_window *w, struct tabs *s, int x, int y)
     return -1;
 }
 
+/* TCS_OWNERDRAWFIXED: the parent draws each tab from a DRAWITEMSTRUCT in the program's 32- or 64-bit layout */
+static void draw_owner(struct w32_window *w, struct tabs *s, HANDLE dc, int i, struct rect r, bool sel)
+{
+    uint8_t *d = w32_zalloc(64);
+    if (!d || !w->parent) {
+        w32_free(d);
+        return;
+    }
+    uint32_t head[5] = {101, (uint32_t)w->id, (uint32_t)i, 1, sel ? 1u : 0u};
+    memcpy(d, head, sizeof(head));
+    int ps = w32->win64 ? 8 : 4, at = w32->win64 ? 24 : 20;
+    uint64_t hwnd = (uintptr_t)w, hdc = (uintptr_t)dc;
+    memcpy(d + at, &hwnd, (size_t)ps);
+    memcpy(d + at + ps, &hdc, (size_t)ps);
+    RECT rc = {r.x, r.y, r.x + r.w, r.y + r.h};
+    memcpy(d + at + 2 * ps, &rc, sizeof(rc));
+    memcpy(d + at + 2 * ps + 16, &s->t[i].param, (size_t)ps);
+    w32_send(w->parent, 0x2b, (WPARAM)w->id, (LPARAM)(uintptr_t)d);
+    w32_free(d);
+}
+
 static void paint(struct w32_window *w, struct tabs *s)
 {
     struct w32_paint p;
@@ -340,6 +361,10 @@ static void paint(struct w32_window *w, struct tabs *s)
             gfx_round_frame(p.c, face, 5, style.separator);
             if (!buttons)
                 gfx_fill(p.c, (struct rect){t.x + 1, t.y + t.h, t.w - 2, 3}, style.content);
+        }
+        if (w->style & 0x2000) {
+            draw_owner(w, s, p.dc, i, (struct rect){r.x, 1, r.w - 2, h - 2}, i == s->cur);
+            continue;
         }
         int tx = t.x + s->pad_x;
         if (s->images && s->t[i].image >= 0) {

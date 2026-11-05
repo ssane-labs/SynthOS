@@ -301,7 +301,7 @@ static const char *cell_text(struct w32_window *w, struct lv *s, int i, int sub,
 {
     struct lv_item *it = &s->items[i];
     const char *t = it->sub && sub < MAX(s->ncols, 1) ? it->sub[sub] : NULL;
-    bool ask_text = owner_data(w) || t == CALLBACK_TEXT, ask_image = image && (owner_data(w) || it->image == -1);
+    bool ask_text = owner_data(w) || t == CALLBACK_TEXT || (sub > 0 && !t), ask_image = image && (owner_data(w) || it->image == -1);
     if (image)
         *image = it->image;
     if (!ask_text && !ask_image)

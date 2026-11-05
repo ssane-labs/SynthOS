@@ -71,18 +71,31 @@ const struct ui_font *w32_ctl_font(struct w32_window *w)
 
 #define paint_ctx w32_paint
 
+static HANDLE print_dc;
+
+/* WM_PRINT/WM_PRINTCLIENT: a built-in control paints into the caller's DC (buffered painting in subclasses) */
+void w32_ctl_print(struct w32_window *w, HANDLE dc)
+{
+    HANDLE saved = print_dc;
+    print_dc = dc;
+    w->cls->proc(w, WM_PAINT, 0, 0);
+    print_dc = saved;
+}
+
 bool w32_ctl_begin(struct w32_window *w, struct paint_ctx *p, UINT color_msg)
 {
     PAINTSTRUCT ps;
     extern HANDLE WINAPI w32_begin_paint(HANDLE, PAINTSTRUCT *);
     extern BOOL WINAPI w32_end_paint(HANDLE, const PAINTSTRUCT *);
-    p->dc = w32_begin_paint(w, &ps);
+    p->printing = print_dc != NULL;
+    p->dc = p->printing ? print_dc : w32_begin_paint(w, &ps);
     if (!p->dc)
         return false;
     int ox, oy;
     p->c = w32_dc_canvas(p->dc, &ox, &oy);
     if (!p->c) {
-        w32_end_paint(w, &ps);
+        if (!p->printing)
+            w32_end_paint(w, &ps);
         return false;
     }
     p->r = (struct rect){ox, oy, w->rect.w, w->rect.h};
@@ -102,6 +115,8 @@ bool w32_ctl_begin(struct w32_window *w, struct paint_ctx *p, UINT color_msg)
 void w32_ctl_end(struct w32_window *w, struct paint_ctx *p)
 {
     w32_dc_damage(p->dc, p->r);
+    if (p->printing)
+        return;
     extern BOOL WINAPI w32_end_paint(HANDLE, const PAINTSTRUCT *);
     PAINTSTRUCT ps = {.hdc = p->dc};
     w32_end_paint(w, &ps);

@@ -987,6 +987,8 @@ LRESULT WINAPI w32_combobox_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
             select_index(w, MAX(0, MIN(l->count - 1, l->cur + ((int16_t)(wp >> 16) > 0 ? -1 : 1))), true);
         return 0;
     case WM_KEYDOWN:
+        if ((wp == 0x0d || wp == 0x1b) && w32_comboex_key(w, wp))
+            return 0;
         if (wp == 0x73 || (wp == 0x28 && (w32_get_key_state(0x12) & 0x8000))) {
             drop_down(w);
             return 0;

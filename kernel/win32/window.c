@@ -448,7 +448,8 @@ static void builtin_classes(void)
                 {"SysTabControl32", CK_TAB, 16, w32_tab_proc}, {"SysListView32", CK_LISTVIEW, 6, w32_listview_proc},
                 {"ToolbarWindow32", CK_TOOLBAR, 16, w32_toolbar_proc},
                 {"msctls_statusbar32", CK_STATUS, 16, w32_status_proc},
-                {"tooltips_class32", CK_NONE, 0, w32_tooltip_proc}};
+                {"tooltips_class32", CK_NONE, 0, w32_tooltip_proc},
+                {"ReBarWindow32", CK_NONE, 16, w32_rebar_proc}, {"ComboBoxEx32", CK_NONE, 6, w32_comboex_proc}};
     if (!find_class("#32770")) {
         struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
         if (c)
@@ -496,6 +497,10 @@ static uint16_t register_class(const WNDCLASSEX *wc, bool unicode)
         return 0;
     c->icon = wc->hIcon;
     c->cursor = wc->hCursor;
+    if ((uintptr_t)wc->lpszMenuName >= 0x10000)
+        c->menu_name = unicode ? w32_narrow(wc->lpszMenuName) : w32_strdup(wc->lpszMenuName);
+    else
+        c->menu_ord = (uintptr_t)wc->lpszMenuName;
     return c->atom;
 }
 
@@ -642,6 +647,17 @@ typedef struct {
 
 static void apply_menu(struct w32_window *w);
 
+static HANDLE class_menu(struct w32_class *c, HANDLE inst)
+{
+    if (!c->menu_name && !c->menu_ord)
+        return NULL;
+    typedef HANDLE WINAPI (*menu_fn)(HANDLE, LPCSTR);
+    struct w32_image *u = w32_find_module("user32.dll");
+    menu_fn load = u ? (menu_fn)w32_get_proc(u, "LoadMenuA", 0) : NULL;
+    return load ? W32_CALL(menu_fn, load, inst ? inst : c->instance,
+                           c->menu_name ? c->menu_name : (LPCSTR)c->menu_ord) : NULL;
+}
+
 static HANDLE create_window(DWORD ex, const char *class_name, const char *title, const void *raw_title,
                             const void *raw_class, DWORD style, int x, int y, int width, int height, HANDLE parent_h,
                             HANDLE menu, HANDLE instance, void *param, bool unicode)
@@ -736,7 +752,7 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
             wm_move(w->wm, x, y);
         struct rect cr = wm_client_rect(w->wm);
         w->rect = (struct rect){0, 0, cr.w, cr.h};
-        w->menu = menu;
+        w->menu = menu ? menu : class_menu(cls, instance);
     }
 
     share(w);
@@ -1106,6 +1122,10 @@ static void send_pos_changed(struct w32_window *w, bool move, bool size)
 
 static void move_window(struct w32_window *w, int x, int y, int width, int height, bool move, bool size)
 {
+    if (size && w->cls && w->cls->proc == w32_rebar_proc && w32_rebar_height(w) >= 0)
+        height = w32_rebar_height(w);
+    if (size && w->cls && w->cls->proc == w32_comboex_proc && w32_comboex_height(w) >= 0)
+        height = w32_comboex_height(w);
     if (w->wm) {
         bool bare = w->wm->flags & WIN_BARE;
         if (move && bare)
@@ -1362,6 +1382,7 @@ static HANDLE WINAPI FindWindowW(LPCWSTR cls, LPCWSTR title)
 
 static int text_length(struct w32_window *w, bool unicode)
 {
+    w = w32_text_owner(w);
     if (!unicode)
         return (int)strlen(w->text);
     WCHAR *wide = w32_widen(w->text);
@@ -1372,6 +1393,7 @@ static int text_length(struct w32_window *w, bool unicode)
 
 static int copy_text(struct w32_window *w, void *out, int cap, bool unicode)
 {
+    w = w32_text_owner(w);
     if (cap <= 0 || !out)
         return 0;
     if (!unicode) {
@@ -1607,6 +1629,11 @@ static BOOL WINAPI RemoveWindowSubclass(HANDLE h, SUBCLASSPROC proc, uintptr_t i
 LRESULT WINAPI w32_def_window_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
     struct w32_window *w = w32_win(h);
+    if ((msg == 0x317 || msg == 0x318) && w && w->cls && wp &&
+        (w->cls->control || w->cls->proc == w32_rebar_proc)) {
+        w32_ctl_print(w, (HANDLE)wp);
+        return 0;
+    }
     return def_proc(h, msg, wp, lp, w && w->unicode);
 }
 
@@ -1677,6 +1704,11 @@ static LRESULT send_converted(struct w32_window *w, UINT msg, WPARAM wp, LPARAM 
     w32_free(n);
     w32_free(tmp);
     return (LRESULT)strlen((char *)lp);
+}
+
+LRESULT w32_send_as(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, bool unicode)
+{
+    return send_converted(w, msg, wp, lp, unicode);
 }
 
 static LRESULT WINAPI SendMessageA(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
@@ -1991,11 +2023,21 @@ static BOOL WINAPI InvalidateRgn(HANDLE h, HANDLE rgn, BOOL erase)
 
 static BOOL WINAPI ValidateRect(HANDLE h, const RECT *r)
 {
-    UNUSED(r);
     struct w32_window *w = w32_win(h);
-    if (w)
+    if (!w)
+        return FALSE;
+    w->validated++;
+    struct rect u = w->update;
+    if (!r || (r->left <= u.x && r->top <= u.y && r->right >= u.x + u.w && r->bottom >= u.y + u.h)) {
         w->need_paint = false;
-    return w != NULL;
+    } else if (r->left <= u.x && r->right >= u.x + u.w) {
+        int top = MAX(u.y, r->top), bottom = MIN(u.y + u.h, r->bottom);
+        if (top == u.y && bottom > top)
+            w->update = (struct rect){u.x, bottom, u.w, u.y + u.h - bottom};
+        else if (bottom == u.y + u.h && top < bottom)
+            w->update.h = top - u.y;
+    }
+    return TRUE;
 }
 
 static BOOL WINAPI GetUpdateRect(HANDLE h, RECT *out, BOOL erase)
@@ -2046,6 +2088,8 @@ HANDLE WINAPI w32_begin_paint(HANDLE h, PAINTSTRUCT *ps)
     bool erase = w->erase;
     w->need_paint = false;
     w->erase = false;
+    w->validated++;
+    w->painted = update;
     ps->hdc = w32_window_dc(w, clip);
     to_rect(&ps->rcPaint, update);
     ps->fErase = !erase;
@@ -2054,11 +2098,26 @@ HANDLE WINAPI w32_begin_paint(HANDLE h, PAINTSTRUCT *ps)
     return ps->hdc;
 }
 
+/* siblings made earlier are above in the z-order: what a lower sibling just painted over them is painted again */
 BOOL WINAPI w32_end_paint(HANDLE h, const PAINTSTRUCT *ps)
 {
-    UNUSED(h);
+    struct w32_window *w = w32_win(h);
     if (ps->hdc)
         w32_free_dc(ps->hdc);
+    if (!w || !is_child(w) || rect_empty(w->painted))
+        return TRUE;
+    struct rect a = w32_area(w);
+    struct rect abs = {a.x + w->painted.x, a.y + w->painted.y, w->painted.w, w->painted.h};
+    w->painted = (struct rect){0, 0, 0, 0};
+    for (struct w32_window *s = w->parent->child; s && s != w; s = s->sibling) {
+        if (!s->visible || s->destroyed)
+            continue;
+        struct rect sa = w32_area(s), o = rect_intersect(abs, sa);
+        if (!rect_empty(o)) {
+            struct rect local = {o.x - sa.x, o.y - sa.y, o.w, o.h};
+            w32_invalidate(s, &local, false);
+        }
+    }
     return TRUE;
 }
 
@@ -2385,8 +2444,9 @@ LRESULT WINAPI w32_dispatch(const MSG *msg)
     struct w32_window *w = w32_win(msg->hwnd);
     if (!w)
         return 0;
+    uint32_t validated = w->validated;
     LRESULT r = w32_send(w, msg->message, msg->wParam, msg->lParam);
-    if (msg->message == WM_PAINT && w32_win(msg->hwnd) && w->need_paint) {
+    if (msg->message == WM_PAINT && w32_win(msg->hwnd) && w->need_paint && w->validated == validated) {
         w->need_paint = false;
         w->erase = false;
     }
