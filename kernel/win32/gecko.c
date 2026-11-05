@@ -133,8 +133,6 @@ STUB(CreateDIBitmap, 6, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(ExtCreateRegion, 3, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(GetCharWidth32A, 4, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(GetFontUnicodeRanges, 2, 0, 0)
-STUB(GetGlyphIndicesW, 5, (uint32_t)-1, 0)
-STUB(GetGlyphOutlineW, 7, (uint32_t)-1, 0)
 STUB(GetOutlineTextMetricsA, 3, 0, 0)
 STUB(GetRandomRgn, 3, 0, 0)
 STUB(GetGraphicsMode, 1, 1, 0)
@@ -403,7 +401,7 @@ static const struct w32_export gecko_dwmapi[] = {W32_FN(DwmInvalidateIconicBitma
                                                  W32_FN(DwmSetIconicThumbnail)};
 static const struct w32_export gecko_gdi32[] = {
     W32_FN(AbortDoc), W32_FN(CreateDIBitmap), W32_FN(ExtCreateRegion), W32_FN(GetCharWidth32A),
-    W32_FN(GetFontUnicodeRanges), W32_FN(GetGlyphIndicesW), W32_FN(GetGlyphOutlineW), W32_FN(GetOutlineTextMetricsA),
+    W32_FN(GetFontUnicodeRanges), W32_FN(GetOutlineTextMetricsA),
     W32_FN(GetRandomRgn), W32_FN(GetGraphicsMode), W32_FN(ExtSelectClipRgn),
 };
 static const struct w32_export gecko_imm32[] = {

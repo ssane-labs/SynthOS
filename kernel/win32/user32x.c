@@ -363,8 +363,9 @@ static BOOL WINAPI EnumDisplaySettingsExW(const WCHAR *name, DWORD mode, uint8_t
     screen_size(&w, &h);
     uint16_t size;
     memcpy(&size, dm + 68, 2);
-    memset(dm, 0, MAX(size, 188));
-    size = 220;
+    /* programs leave dmSize unset now and then (OpenTTD): never write past a DEVMODEW */
+    size = size > 188 && size <= 220 ? size : 188;
+    memset(dm, 0, size);
     memcpy(dm + 68, &size, 2);
     uint32_t fields = 0x00040000u | 0x00080000u | 0x00100000u | 0x00400000u, bpp = 32, freq = 60;
     memcpy(dm + 72, &fields, 4);
@@ -1218,7 +1219,7 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("GetClipboardViewer", w32_zero0),
     W32_AS("ChangeClipboardChain", w32_zero2),
     W32_AS("FlashWindow", w32_zero2),
-    W32_AS("keybd_event", w32_zero4),
+    W32_AS("keybd_event", w32_zero4), W32_AS("mouse_event", w32_zero5), W32_AS("BlockInput", w32_zero1),
     W32_AS("IsProcessDPIAware", w32_one0),
     W32_FN(EnumDisplaySettingsA),
     W32_FN(EnumDisplayDevicesA),

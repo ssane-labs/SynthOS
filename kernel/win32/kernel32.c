@@ -390,7 +390,10 @@ static void *WINAPI SetUnhandledExceptionFilter(void *filter)
 
 static LONG WINAPI UnhandledExceptionFilter(void *info)
 {
-    UNUSED(info);
+    const uint32_t *rec = info ? *(uint32_t *GPTR *)info : NULL;
+    if (rec && w32_trace)
+        klog("win32: pid %u unhandled exception 0x%08x at 0x%08x (%u: 0x%x 0x%x)", w32_current_pid(), rec[0], rec[3],
+             rec[4], rec[4] ? rec[5] : 0, rec[4] > 1 ? rec[6] : 0);
     return 1;
 }
 

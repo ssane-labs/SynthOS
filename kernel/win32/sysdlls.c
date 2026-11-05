@@ -1433,18 +1433,40 @@ static uint32_t WINAPI OleLoadPicturePath(const WCHAR *path, void *unk, DWORD re
     return 0x80004001u;
 }
 
+/* The error object of the last failed call: SetErrorInfo keeps a reference, GetErrorInfo hands it over. */
+static W32_STATE void *error_info;
+
+static void com_unref(void *obj, int slot)
+{
+    typedef uint32_t WINAPI (*ref_fn)(void *);
+    if (obj)
+        W32_CALL(ref_fn, (*(void ***)obj)[slot], obj);
+}
+
+static uint32_t WINAPI SetErrorInfo(uint32_t reserved, void *info)
+{
+    UNUSED(reserved);
+    com_unref(info, 1);
+    void *old = error_info;
+    error_info = info;
+    com_unref(old, 2);
+    return 0;
+}
+
 static uint32_t WINAPI GetErrorInfo(uint32_t reserved, void **out)
 {
     UNUSED(reserved);
-    if (out)
-        *out = NULL;
-    return 1;
+    if (!out)
+        return 0x80070057u;
+    *out = error_info;
+    error_info = NULL;
+    return *out ? 0 : 1;
 }
 
 static const struct w32_export oleaut32_exports[] = {
     W32_FN(SysAllocString), W32_FN(SysAllocStringLen), W32_FN(SysFreeString),
     W32_FN(SysStringLen),   W32_FN(VariantClear),      W32_AS("VariantInit", VariantClear),
-    W32_FN(GetErrorInfo),   W32_FN(VariantCopy),       W32_FN(SysAllocStringByteLen),
+    W32_FN(GetErrorInfo),   W32_FN(SetErrorInfo),      W32_FN(VariantCopy),       W32_FN(SysAllocStringByteLen),
     W32_FN(SysStringByteLen), W32_FN(VarBstrCmp),      W32_FN(SafeArrayCreateVector),
     W32_FN(SafeArrayDestroy), W32_FN(SafeArrayGetDim), W32_FN(SafeArrayGetLBound),
     W32_FN(SafeArrayGetUBound), W32_FN(SafeArrayGetVartype), W32_FN(SafeArrayAccessData),
@@ -1467,7 +1489,7 @@ static const char *const oleaut32_ordinals[] = {
     [25] = "SafeArrayGetElement", [26] = "SafeArrayPutElement", [77] = "SafeArrayGetVartype",
     [149] = "SysStringByteLen", [150] = "SysAllocStringByteLen", [161] = "LoadTypeLib", [162] = "LoadRegTypeLib",
     [184] = "SystemTimeToVariantTime", [185] = "VariantTimeToSystemTime",
-    [200] = "GetErrorInfo",  [314] = "VarBstrCmp",      [411] = "SafeArrayCreateVector",
+    [200] = "GetErrorInfo",  [201] = "SetErrorInfo",  [314] = "VarBstrCmp",      [411] = "SafeArrayCreateVector",
 };
 
 static BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(const WCHAR *text, DWORD revision, void **sd,

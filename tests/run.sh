@@ -577,6 +577,12 @@ config w32errors off; config w32trace | head -n 1
 w32trace = off
 wingdi | grep extent
 text extent ok, ink ok
+wingdi | grep glyph
+glyph ok, outline metrics ok
+wingdi | grep "display mode"
+display mode ok
+wingdi | grep uniscribe
+uniscribe items=1 glyphs=11 pending=1 width ok break=2
 wingdi | grep blit
 blit red=100
 wingdi | grep stretch

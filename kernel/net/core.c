@@ -141,6 +141,15 @@ int net_interface_count(void)
     return iface_count;
 }
 
+bool net_interface_addr(int index, uint32_t *ip, uint32_t *mask)
+{
+    if (index < 0 || index >= iface_count || !ifaces[index].configured)
+        return false;
+    *ip = ifaces[index].ip;
+    *mask = ifaces[index].mask;
+    return true;
+}
+
 int net_configure(struct net_iface *ifc, uint32_t ip, uint32_t mask, uint32_t gateway, uint32_t dns)
 {
     ifc->ip = ip;

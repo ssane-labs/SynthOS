@@ -201,6 +201,40 @@ static int WINAPI StrCmpIW(const WCHAR *a, const WCHAR *b)
     return StrCmpNIW(a, b, 0x7fffffff);
 }
 
+/* Explorer's order: digit runs compare as numbers, the rest without case */
+static int WINAPI StrCmpLogicalW(const WCHAR *a, const WCHAR *b)
+{
+    if (!a || !b)
+        return a ? 1 : b ? -1 : 0;
+    while (*a && *b) {
+        if (*a >= '0' && *a <= '9' && *b >= '0' && *b <= '9') {
+            while (*a == '0' && a[1] >= '0' && a[1] <= '9')
+                a++;
+            while (*b == '0' && b[1] >= '0' && b[1] <= '9')
+                b++;
+            size_t na = 0, nb = 0;
+            while (a[na] >= '0' && a[na] <= '9')
+                na++;
+            while (b[nb] >= '0' && b[nb] <= '9')
+                nb++;
+            if (na != nb)
+                return na < nb ? -1 : 1;
+            for (size_t i = 0; i < na; i++)
+                if (a[i] != b[i])
+                    return a[i] < b[i] ? -1 : 1;
+            a += na;
+            b += nb;
+            continue;
+        }
+        WCHAR x = lower(*a), y = lower(*b);
+        if (x != y)
+            return x < y ? -1 : 1;
+        a++;
+        b++;
+    }
+    return *a ? 1 : *b ? -1 : 0;
+}
+
 static WCHAR *WINAPI StrStrIW(const WCHAR *hay, const WCHAR *needle)
 {
     size_t n = w32_wcslen(needle);
@@ -441,7 +475,7 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(PathFileExistsW),
     W32_FN(PathMatchSpecW),
     W32_FN(StrCmpNIW),
-    W32_FN(StrCmpIW),
+    W32_FN(StrCmpIW), W32_FN(StrCmpLogicalW),
     W32_FN(StrStrIW),
     W32_FN(AssocQueryStringW),
     W32_FN(AssocQueryStringA),

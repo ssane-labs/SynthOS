@@ -1124,6 +1124,26 @@ static void draw_glyph(struct canvas *c, int x, int y, const struct ui_font *f, 
     }
 }
 
+bool gfx_glyph_bitmap(const struct ui_font *f, uint32_t code, struct ui_glyph *info, uint8_t *out, int stride, int top)
+{
+    const struct ui_glyph *g = find_glyph(f, code);
+    const uint8_t *alpha = g ? font_alpha(f) : NULL;
+    if (!alpha)
+        return false;
+    *info = *g;
+    if (!out)
+        return true;
+    const uint8_t *data = alpha + g->offset;
+    int src = (g->w + 1) / 2;
+    for (int row = 0; row < g->h; row++)
+        for (int col = 0; col < g->w; col++) {
+            uint8_t nib = data[row * src + col / 2];
+            unsigned a = col & 1 ? nib & 0x0f : nib >> 4;
+            out[row * stride + col] = (uint8_t)((a * (unsigned)top + 7) / 15);
+        }
+    return true;
+}
+
 int gfx_glyph(struct canvas *c, int x, int y, const struct ui_font *f, uint32_t code, uint32_t color)
 {
     const struct ui_glyph *g = find_glyph(f, code);

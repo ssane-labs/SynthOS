@@ -142,6 +142,8 @@ static void list_add(struct list *l, struct span sp)
     l->out[l->n++] = 0;
 }
 
+static const char whole_section[] = "";
+
 static DWORD ini_get(const char *file, const char *app, const char *key, const char *def, char *out, DWORD size,
                      bool *hit)
 {
@@ -153,7 +155,7 @@ static DWORD ini_get(const char *file, const char *app, const char *key, const c
     const char *p = data ? data : "";
     struct span line, name, k, v;
     bool in = false;
-    if (!app || !key) {
+    if (!app || !key || key == whole_section) {
         if (size < 2) {
             out[0] = 0;
             return 0;
@@ -165,7 +167,7 @@ static DWORD ini_get(const char *file, const char *app, const char *key, const c
                 if (!app)
                     list_add(&l, name);
             } else if (in && ini_key(line, &k, &v)) {
-                list_add(&l, k);
+                list_add(&l, key ? (struct span){k.s, v.e > k.e ? v.e : k.e} : k);
             }
         }
         out[l.n] = 0;
@@ -368,6 +370,100 @@ static BOOL WINAPI WritePrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR 
 }
 
 
+static DWORD WINAPI GetPrivateProfileSectionA(LPCSTR app, LPSTR out, DWORD size, LPCSTR file)
+{
+    return app ? ini_get(file, app, whole_section, NULL, out, size, NULL) : 0;
+}
+
+static DWORD WINAPI GetPrivateProfileSectionNamesA(LPSTR out, DWORD size, LPCSTR file)
+{
+    return ini_get(file, NULL, NULL, NULL, out, size, NULL);
+}
+
+static DWORD wide_list(const char *file, const char *app, const char *key, LPWSTR out, DWORD size)
+{
+    if (!out || size < 2)
+        return 0;
+    DWORD cap = size * 3 + 2;
+    char *buf = w32_alloc(cap);
+    if (!buf) {
+        out[0] = 0;
+        return 0;
+    }
+    DWORD got = ini_get(file, app, key, NULL, buf, cap, NULL);
+    size_t w = w32_cp_to_wide(buf, (int)got, out, size, 1);
+    DWORD n = (DWORD)MIN(w, (size_t)size - 2);
+    out[n] = out[n + 1] = 0;
+    w32_free(buf);
+    return n;
+}
+
+static DWORD WINAPI GetPrivateProfileSectionW(LPCWSTR app, LPWSTR out, DWORD size, LPCWSTR file)
+{
+    char *a = w32_narrow(app), *f = w32_narrow(file);
+    DWORD n = a ? wide_list(f, a, whole_section, out, size) : 0;
+    w32_free(a);
+    w32_free(f);
+    return n;
+}
+
+static DWORD WINAPI GetPrivateProfileSectionNamesW(LPWSTR out, DWORD size, LPCWSTR file)
+{
+    char *f = w32_narrow(file);
+    DWORD n = wide_list(f, NULL, NULL, out, size);
+    w32_free(f);
+    return n;
+}
+
+static BOOL write_section(const char *file, const char *app, const char *list)
+{
+    if (!app || !ini_set(file, app, NULL, NULL))
+        return FALSE;
+    for (const char *p = list; p && *p; p += strlen(p) + 1) {
+        const char *eq = strchr(p, '=');
+        if (!eq || eq == p)
+            continue;
+        char key[256];
+        str_copy(key, p, MIN((size_t)(eq - p) + 1, sizeof(key)));
+        if (!ini_set(file, app, key, eq + 1))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI WritePrivateProfileSectionA(LPCSTR app, LPCSTR list, LPCSTR file)
+{
+    return write_section(file, app, list);
+}
+
+static BOOL WINAPI WritePrivateProfileSectionW(LPCWSTR app, LPCWSTR list, LPCWSTR file)
+{
+    size_t len = 0;
+    while (list && (list[len] || list[len + 1]))
+        len++;
+    char *l = list ? w32_alloc(len * 3 + 4) : NULL;
+    size_t n = 0;
+    if (l) {
+        for (size_t i = 0; i <= len; i++) {
+            char *one = w32_narrow(list + i);
+            size_t k = one ? strlen(one) : 0;
+            if (one)
+                memcpy(l + n, one, k);
+            n += k;
+            l[n++] = 0;
+            i += w32_wcslen(list + i);
+            w32_free(one);
+        }
+        l[n] = 0;
+    }
+    char *a = w32_narrow(app), *f = w32_narrow(file);
+    BOOL ok = write_section(f, a, l);
+    w32_free(a);
+    w32_free(f);
+    w32_free(l);
+    return ok;
+}
+
 /* win.ini: the profile functions without a file name */
 static DWORD WINAPI GetProfileStringA(LPCSTR app, LPCSTR key, LPCSTR def, LPSTR out, DWORD size)
 {
@@ -561,6 +657,8 @@ static BOOL WINAPI InitAtomTable(DWORD size)
 static const struct w32_export profile_exports[] = {
     W32_FN(GetPrivateProfileStringA), W32_FN(GetPrivateProfileStringW), W32_FN(GetPrivateProfileIntA),
     W32_FN(GetPrivateProfileIntW),    W32_FN(WritePrivateProfileStringA), W32_FN(WritePrivateProfileStringW),
+    W32_FN(GetPrivateProfileSectionA), W32_FN(GetPrivateProfileSectionW), W32_FN(GetPrivateProfileSectionNamesA),
+    W32_FN(GetPrivateProfileSectionNamesW), W32_FN(WritePrivateProfileSectionA), W32_FN(WritePrivateProfileSectionW),
     W32_FN(GetProfileStringA), W32_FN(GetProfileStringW), W32_FN(GetProfileIntA), W32_FN(GetProfileIntW),
     W32_FN(WriteProfileStringA), W32_FN(WriteProfileStringW), W32_FN(AddAtomA), W32_FN(AddAtomW), W32_FN(FindAtomA),
     W32_FN(FindAtomW), W32_FN(DeleteAtom), W32_FN(GetAtomNameA), W32_FN(GetAtomNameW), W32_FN(InitAtomTable),

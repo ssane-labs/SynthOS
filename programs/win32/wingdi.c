@@ -1,6 +1,8 @@
 /* GDI drawing into memory bitmaps: brushes, pens, shapes, text and blits. */
 #include <stdio.h>
+#include <string.h>
 #include <windows.h>
+#include <usp10.h>
 
 static int count(HDC dc, int w, int h, COLORREF c)
 {
@@ -68,6 +70,49 @@ int main(void)
     TextOutA(dc, 12, 2, "Hi", 2);
     printf("text extent %s, ink %s\n", size.cx > 20 && size.cy > 8 ? "ok" : "bad",
            count(dc, 64, 20, RGB(0, 0, 0)) > 0 ? "ok" : "none");
+
+    WORD index = 0;
+    GLYPHMETRICS gm;
+    MAT2 mat = {{0, 1}, {0, 0}, {0, 0}, {0, 1}};
+    GetGlyphIndicesW(dc, L"A", 1, &index, GGI_MARK_NONEXISTING_GLYPHS);
+    DWORD need = GetGlyphOutlineW(dc, index, GGO_GLYPH_INDEX | GGO_GRAY8_BITMAP, &gm, 0, NULL, &mat);
+    unsigned char glyph[4096];
+    int ink = 0;
+    if (need != GDI_ERROR && need <= sizeof(glyph) &&
+        GetGlyphOutlineW(dc, index, GGO_GLYPH_INDEX | GGO_GRAY8_BITMAP, &gm, need, glyph, &mat) == need)
+        for (DWORD i = 0; i < need; i++)
+            ink += glyph[i] == 64;
+    struct {
+        OUTLINETEXTMETRICW m;
+        DWORD guard;
+    } otm = {.guard = 0x5a5a5a5a};
+    UINT full = GetOutlineTextMetricsW(dc, 0, NULL);
+    GetOutlineTextMetricsW(dc, sizeof(otm.m), &otm.m);
+    printf("glyph %s, outline metrics %s\n", ink > 4 && gm.gmBlackBoxY > 4 && gm.gmCellIncX > 4 ? "ok" : "bad",
+           full > sizeof(otm.m) && otm.guard == 0x5a5a5a5a && otm.m.otmTextMetrics.tmHeight > 0 ? "ok" : "bad");
+    const WCHAR *line = L"Hello world";
+    SCRIPT_ITEM items[4];
+    int nitems = 0, nglyphs = 0, adv[16];
+    WORD glyphs[16], clusters[16];
+    SCRIPT_VISATTR vis[16];
+    SCRIPT_LOGATTR breaks[16];
+    GOFFSET offs[16];
+    ABC abc;
+    SCRIPT_CACHE cache = NULL;
+    SIZE wide;
+    GetTextExtentPoint32W(dc, line, 11, &wide);
+    HRESULT pending = ScriptShape(NULL, &cache, line, 11, 16, &items[0].a, glyphs, clusters, vis, &nglyphs);
+    BOOL shaped = ScriptItemize(line, 11, 4, NULL, NULL, items, &nitems) == S_OK &&
+                  ScriptShape(dc, &cache, line, 11, 16, &items[0].a, glyphs, clusters, vis, &nglyphs) == S_OK &&
+                  ScriptPlace(NULL, &cache, glyphs, nglyphs, vis, &items[0].a, adv, offs, &abc) == S_OK &&
+                  ScriptBreak(line, 11, &items[0].a, breaks) == S_OK;
+    ScriptFreeCache(&cache);
+    printf("uniscribe items=%d glyphs=%d pending=%d width %s break=%d\n", nitems, nglyphs, pending == E_PENDING,
+           shaped && (int)abc.abcB == wide.cx ? "ok" : "bad", breaks[6].fSoftBreak + breaks[5].fWhiteSpace);
+    DEVMODEW mode;
+    memset(&mode, 0x77, sizeof(mode));
+    BOOL listed = EnumDisplaySettingsW(NULL, 0, &mode);
+    printf("display mode %s\n", listed && mode.dmPelsWidth > 0 && mode.dmBitsPerPel == 32 ? "ok" : "bad");
 
     HDC copy = CreateCompatibleDC(dc);
     HBITMAP second = CreateCompatibleBitmap(dc, 64, 64);

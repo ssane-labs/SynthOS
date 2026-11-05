@@ -70,6 +70,7 @@ void net_wait(int ms);
 void net_await_address(void);
 struct net_iface *net_interface(int index);
 int net_interface_count(void);
+bool net_interface_addr(int index, uint32_t *ip, uint32_t *mask);
 bool net_enabled(void);
 int net_configure(struct net_iface *ifc, uint32_t ip, uint32_t mask, uint32_t gateway, uint32_t dns);
 int net_dhcp(struct net_iface *ifc, int timeout_ms);

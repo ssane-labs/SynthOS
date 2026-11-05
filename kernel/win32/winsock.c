@@ -1288,6 +1288,32 @@ static int WINAPI WSAIoctl(UINT s, DWORD code, const void *in, DWORD in_len, voi
         if (bytes)
             *bytes = 4;
         return 0;
+    case 0x4004747fu: { /* SIO_GET_INTERFACE_LIST: INTERFACE_INFO for loopback and every configured interface */
+        uint32_t ips[9] = {net_ip(127, 0, 0, 1)}, masks[9] = {net_ip(255, 0, 0, 0)};
+        int n = 1;
+        for (int i = 0; i < net_interface_count() && n < 9; i++)
+            if (net_interface_addr(i, &ips[n], &masks[n]))
+                n++;
+        if (!out || out_len < (DWORD)n * 76) {
+            w32_set_error(WSAEFAULT);
+            return SOCKET_ERROR;
+        }
+        memset(out, 0, (size_t)n * 76);
+        for (int i = 0; i < n; i++) {
+            uint8_t *e = (uint8_t *)out + i * 76;
+            uint32_t flags = i ? 1 | 2 | 0x10 : 1 | 4 | 0x10, addr[3] = {ips[i], ips[i] | ~masks[i], masks[i]};
+            memcpy(e, &flags, 4);
+            for (int k = 0; k < 3; k++) {
+                uint8_t *sa = e + 4 + k * 24;
+                uint32_t be = __builtin_bswap32(addr[k]);
+                sa[0] = 2;
+                memcpy(sa + 4, &be, 4);
+            }
+        }
+        if (bytes)
+            *bytes = (DWORD)n * 76;
+        return 0;
+    }
     case 0x8004667eu: /* FIONBIO, FIONREAD */
     case 0x4004667fu: {
         ULONG arg = 0;

@@ -1051,6 +1051,31 @@ static int WINAPI GetRgnBox(HANDLE rgn, RECT *out)
     return region_kind(r);
 }
 
+static HANDLE WINAPI CreateEllipticRgn(int l, int t, int r, int b)
+{
+    return CreateRectRgn(l, t, r, b);
+}
+
+static HANDLE WINAPI CreateEllipticRgnIndirect(const RECT *r)
+{
+    return r ? CreateRectRgn(r->left, r->top, r->right, r->bottom) : NULL;
+}
+
+static HANDLE WINAPI CreatePolygonRgn(const POINT *pts, int n, int mode)
+{
+    UNUSED(mode);
+    if (!pts || n < 1)
+        return NULL;
+    int l = pts[0].x, t = pts[0].y, r = l, b = t;
+    for (int i = 1; i < n; i++) {
+        l = MIN(l, pts[i].x);
+        t = MIN(t, pts[i].y);
+        r = MAX(r, pts[i].x);
+        b = MAX(b, pts[i].y);
+    }
+    return CreateRectRgn(l, t, r, b);
+}
+
 static HANDLE WINAPI CreateRoundRectRgn(int l, int t, int r, int b, int w, int h)
 {
     UNUSED(w);
@@ -1904,6 +1929,94 @@ static void text_metrics(HANDLE h, uint8_t *tm, bool wide)
     p[2] = 0;
     p[3] = f == &font_mono ? 0x30 : 0x26;
     p[4] = 0;
+}
+
+static DWORD WINAPI GetGlyphIndicesW(HANDLE h, LPCWSTR s, int n, uint16_t *out, DWORD flags)
+{
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    if (!s || !out || n < 0)
+        return 0xffffffffu;
+    for (int i = 0; i < n; i++)
+        out[i] = gfx_has_glyph(f, s[i]) ? s[i] : (flags & 1) ? 0xffff : 0;
+    return (DWORD)n;
+}
+
+static DWORD WINAPI GetGlyphOutlineW(HANDLE h, UINT ch, UINT format, uint8_t *gm, DWORD size, void *buf,
+                                     const void *mat)
+{
+    UNUSED(mat);
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    UINT kind = format & ~0x180u;
+    struct ui_glyph g;
+    if (!gm || kind == 2 || kind == 3 || kind > 6 || !gfx_glyph_bitmap(f, ch, &g, NULL, 0, 0))
+        return 0xffffffffu;
+    int w = g.w && g.h ? g.w : 0, rows = w ? g.h : 0;
+    UINT box[2] = {w ? (UINT)w : 1, rows ? (UINT)rows : 1};
+    LONG origin[2] = {g.x, f->ascent - g.y};
+    int16_t inc[2] = {g.advance, 0};
+    memcpy(gm, box, 8);
+    memcpy(gm + 8, origin, 8);
+    memcpy(gm + 16, inc, 4);
+    if (kind == 0)
+        return 0;
+    int pitch = kind == 1 ? ((w + 31) / 32) * 4 : (w + 3) & ~3;
+    DWORD need = (DWORD)(pitch * rows);
+    if (!buf || !size || !need)
+        return need;
+    if (size < need)
+        return 0xffffffffu;
+    static const int top[] = {0, 1, 0, 0, 4, 16, 64};
+    uint8_t *gray = kind == 1 ? w32_alloc((size_t)w * (size_t)rows) : buf;
+    if (!gray)
+        return 0xffffffffu;
+    memset(buf, 0, need);
+    gfx_glyph_bitmap(f, ch, &g, gray, kind == 1 ? w : pitch, kind == 1 ? 255 : top[kind]);
+    if (kind == 1) {
+        uint8_t *bits = buf;
+        for (int y = 0; y < rows; y++)
+            for (int x = 0; x < w; x++)
+                if (gray[y * w + x] >= 128)
+                    bits[y * pitch + x / 8] |= (uint8_t)(0x80 >> (x & 7));
+        w32_free(gray);
+    }
+    return need;
+}
+
+static UINT WINAPI GetOutlineTextMetricsW(HANDLE h, UINT size, uint8_t *dst)
+{
+    struct w32_dc *d = dc_of(h);
+    const struct ui_font *f = d ? dc_font(d) : &font_sans;
+    const char *face = d && d->s.font && d->s.font->face[0] ? d->s.font->face : "Inter";
+    size_t len = MIN(MAX(strlen(face) + 1, 8), 32);
+    UINT need = (UINT)(216 + 4 * len * 2);
+    if (!dst)
+        return need;
+    uint8_t out[216 + 4 * 32 * 2];
+    memset(out, 0, sizeof(out));
+    memcpy(out, &need, 4);
+    text_metrics(h, out + 4, true);
+    int descent = f->height - f->ascent;
+    int32_t v[] = {f->height, f->ascent, -descent, 0, f->ascent * 7 / 10, f->ascent / 2};
+    memcpy(out + 96, v, sizeof(v));
+    int32_t box[4] = {0, f->ascent, gfx_text_width(f, "W"), -descent};
+    memcpy(out + 120, box, 16);
+    int32_t mac[2] = {f->ascent, -descent};
+    memcpy(out + 136, mac, 8);
+    int32_t lines[4] = {1, f->ascent / 3, 1, -1};
+    memcpy(out + 184, lines, 16);
+    for (int i = 0; i < 4; i++) {
+        uint32_t at = (uint32_t)(216 + i * len * 2);
+        memcpy(out + 200 + i * 4, &at, 4);
+        const char *name = i == 2 ? "Regular" : face;
+        for (size_t k = 0; name[k] && k + 1 < len; k++) {
+            WCHAR c = (uint8_t)name[k];
+            memcpy(out + at + k * 2, &c, 2);
+        }
+    }
+    memcpy(dst, out, MIN(size, need));
+    return size ? MIN(size, need) : need;
 }
 
 static BOOL WINAPI GetTextMetricsA(HANDLE h, uint8_t *tm)
@@ -3859,7 +3972,7 @@ static const struct w32_export gdi_exports[] = {
     W32_AS("ArcTo", w32_one9), W32_AS("PathToRegion", w32_zero1), W32_AS("CopyEnhMetaFileW", w32_zero2),
     W32_AS("GetEnhMetaFileDescriptionW", w32_zero3), W32_AS("GetEnhMetaFilePaletteEntries", w32_zero3),
     W32_AS("GetWinMetaFileBits", w32_zero5), W32_AS("SetWinMetaFileBits", w32_zero4),
-    W32_FN(SetStretchBltMode), W32_FN(SetGraphicsMode), W32_FN(SetViewportOrgEx), W32_FN(SetWindowOrgEx), W32_FN(OffsetWindowOrgEx), W32_FN(CreateRoundRectRgn), W32_FN(OffsetRgn),
+    W32_FN(SetStretchBltMode), W32_FN(SetGraphicsMode), W32_FN(SetViewportOrgEx), W32_FN(SetWindowOrgEx), W32_FN(OffsetWindowOrgEx), W32_FN(CreateRoundRectRgn), W32_FN(CreateEllipticRgn), W32_FN(CreateEllipticRgnIndirect), W32_FN(CreatePolygonRgn), W32_FN(OffsetRgn),
     W32_FN(FillRgn), W32_FN(FrameRgn),
     W32_FN(OffsetViewportOrgEx), W32_FN(SaveDC), W32_FN(RestoreDC), W32_FN(CreateRectRgn),
     W32_FN(CreateRectRgnIndirect), W32_FN(SelectClipRgn), W32_FN(SetRectRgn), W32_FN(CombineRgn), W32_FN(GetRgnBox),
@@ -3870,7 +3983,7 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(GetTextExtentExPointW), W32_FN(GetTextExtentExPointA), W32_FN(GetCharacterPlacementW), W32_FN(SetLayout),
     W32_AS("GetLayout", w32_zero1), W32_AS("UpdateColors", w32_one1), W32_FN(GdiAlphaBlend), W32_FN(SetDIBits),
     W32_AS("SetPolyFillMode", w32_one2), W32_AS("SetArcDirection", w32_one2), W32_AS("SetMiterLimit", w32_one3),
-    W32_FN(GetFontData), W32_AS("GetOutlineTextMetricsW", w32_zero3), W32_AS("BeginPath", w32_zero1),
+    W32_FN(GetFontData), W32_FN(GetOutlineTextMetricsW), W32_FN(GetGlyphIndicesW), W32_FN(GetGlyphOutlineW), W32_AS("BeginPath", w32_zero1),
     W32_AS("EndPath", w32_zero1), W32_AS("CloseFigure", w32_zero1), W32_AS("FillPath", w32_zero1),
     W32_AS("StrokePath", w32_zero1), W32_AS("StrokeAndFillPath", w32_zero1), W32_AS("WidenPath", w32_zero1),
     W32_AS("SelectClipPath", w32_zero2), W32_AS("PolyBezierTo", w32_zero3), W32_AS("StartDocW", w32_zero2),
@@ -3914,7 +4027,21 @@ static const struct w32_export msimg_exports[] = {
     W32_AS("AlphaBlend", GdiAlphaBlend),
 };
 
+/* No OpenGL: contexts cannot be made, so programs take their GDI or software path. */
+static const struct w32_export opengl_exports[] = {
+    W32_AS("wglCreateContext", w32_fail1),    W32_AS("wglCreateLayerContext", w32_fail2),
+    W32_AS("wglDeleteContext", w32_fail1),    W32_AS("wglMakeCurrent", w32_fail2),
+    W32_AS("wglGetCurrentContext", w32_zero0), W32_AS("wglGetCurrentDC", w32_zero0),
+    W32_AS("wglGetProcAddress", w32_zero1),   W32_AS("wglShareLists", w32_fail2),
+    W32_AS("wglSwapBuffers", w32_fail1),      W32_AS("wglSwapLayerBuffers", w32_fail2),
+    W32_AS("wglChoosePixelFormat", w32_zero2), W32_AS("wglDescribePixelFormat", w32_zero4),
+    W32_AS("wglGetPixelFormat", w32_zero1),   W32_AS("wglSetPixelFormat", w32_fail3),
+    W32_AS("wglUseFontBitmapsA", w32_fail4),  W32_AS("wglUseFontBitmapsW", w32_fail4),
+    W32_AS("glGetString", w32_zero1),         W32_AS("glGetError", w32_zero0),
+};
+
 W32_EXPORTS(gdi_module, "gdi32.dll", gdi_exports, .attach = w32_gdi_reset);
+W32_EXPORTS(opengl_module, "opengl32.dll", opengl_exports);
 W32_EXPORTS(gdi_user_module, "user32.dll", gdi_user_exports);
 W32_EXPORTS(msimg_module, "msimg32.dll", msimg_exports);
 

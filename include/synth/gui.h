@@ -246,6 +246,7 @@ enum text_align {
 uint32_t utf8_next(const char **s);
 bool gfx_has_glyph(const struct ui_font *f, uint32_t code);
 int gfx_glyph(struct canvas *c, int x, int y, const struct ui_font *f, uint32_t code, uint32_t color);
+bool gfx_glyph_bitmap(const struct ui_font *f, uint32_t code, struct ui_glyph *info, uint8_t *out, int stride, int top);
 int gfx_text(struct canvas *c, int x, int y, const struct ui_font *f, const char *s, uint32_t color);
 int gfx_text_n(struct canvas *c, int x, int y, const struct ui_font *f, const char *s, size_t n, uint32_t color);
 int gfx_text_width(const struct ui_font *f, const char *s);

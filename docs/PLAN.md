@@ -43,6 +43,11 @@
   останавливают звук.
 - [ ] **Сильно пополнить магазин** и проверить каждое приложение; что не открывается — довести (заглушки →
   настоящие функции).
+  Идёт: для OpenTTD сделаны глифы шрифтов GDI (GetGlyphOutlineW, GetGlyphIndicesW, GetOutlineTextMetricsW),
+  Uniscribe (usp10: ScriptItemize/Shape/Place/Break/Layout), SetErrorInfo, заглушки opengl32 (игра переходит на
+  GDI), SIO_GET_INTERFACE_LIST; EnumDisplaySettings больше не портит стек при незаполненном dmSize. Для
+  AutoHotkey — секции INI (Get/WritePrivateProfileSection*), StrCmpLogicalW, эллиптические регионы. В каталоге
+  магазина поле `extra` — второй архив (графика OpenGFX для OpenTTD).
 - [ ] **Собрать образы** (vga, usb, usb32, windows zip, пакеты обновления).
 - [ ] **11.** Потоки Windows‑программ на всех ядрах.
 - [ ] **13.** Ввод на других языках: раскладки (в том числе русская), переключение; IME — по возможности.

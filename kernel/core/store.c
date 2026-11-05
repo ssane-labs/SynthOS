@@ -55,7 +55,7 @@ static void set_field(struct store_app *a, const char *key, const char *v)
 #define F(name) {#name, offsetof(struct store_app, name), sizeof(((struct store_app *)0)->name)}
         F(name),    F(developer), F(category), F(icon), F(version), F(size),  F(summary), F(about),
         F(note),    F(sha256),    F(file),     F(args), F(check),   F(open),  F(bin),     F(post),
-        F(strip),   F(uninstall), F(inner),
+        F(strip),   F(uninstall), F(inner),     F(extra), F(extra_to),
 #undef F
     };
     for (size_t i = 0; i < ARRAY_SIZE(fields); i++)
@@ -448,6 +448,30 @@ static int unpack_entry(const struct zip_entry *e, void *ctx)
     return err;
 }
 
+/* extra = a second zip the program needs (OpenTTD's free graphics), unpacked as it is into extra_to */
+static int install_extra(const struct store_app *a, const struct store_ui *ui, const char *dir, char *msg, size_t cap)
+{
+    struct store_app *x = kmalloc(sizeof(*x));
+    if (!x)
+        return E_NOMEM;
+    *x = *a;
+    str_copy(x->url[0], a->extra, sizeof(x->url[0]));
+    x->url[1][0] = x->sha256[0] = x->strip[0] = 0;
+    struct http_response resp;
+    int err = download(x, ui, NULL, &resp, msg, cap);
+    if (!err) {
+        char sub[PATH_MAX_LEN];
+        path_join(dir, a->extra_to[0] ? a->extra_to : ".", sub, sizeof(sub));
+        vfs_mkdirs(sub);
+        struct unpack u = {x, ui, (const uint8_t *)resp.body, resp.length, sub, 0, 0, 0};
+        zip_each(u.data, u.len, count_entry, &u);
+        err = u.total ? zip_each(u.data, u.len, unpack_entry, &u) : E_INVAL;
+        http_free(&resp);
+    }
+    kfree(x);
+    return err;
+}
+
 static int install_zip(const struct store_app *a, const struct store_ui *ui, char *msg, size_t cap)
 {
     struct http_response resp;
@@ -464,8 +488,12 @@ static int install_zip(const struct store_app *a, const struct store_ui *ui, cha
     zip_each(u.data, u.len, count_entry, &u);
     err = u.total ? zip_each(u.data, u.len, unpack_entry, &u) : E_INVAL;
     http_free(&resp);
+    msg[0] = 0;
+    if (!err && a->extra[0])
+        err = install_extra(a, ui, dir, msg, cap);
     if (err) {
-        ksnprintf(msg, cap, "%s", err == E_INVAL ? "the download is not a zip archive" : err_str(err));
+        if (!msg[0])
+            ksnprintf(msg, cap, "%s", err == E_INVAL ? "the download is not a zip archive" : err_str(err));
         vfs_remove_tree(dir);
         return err;
     }
