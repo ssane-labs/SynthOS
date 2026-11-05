@@ -110,12 +110,38 @@ static uint32_t name_info(struct w32_object *o, uint8_t *p, uint32_t room)
     return n * 2;
 }
 
+/* Pipes and the standard handles: what libuv asks before it treats one as a pipe (node's stdio). */
+static DWORD stream_info(HANDLE h, struct io_status *iosb, uint8_t *out, ULONG size, DWORD cls)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || (o->type != WH_PIPE && o->type != WH_STDIN && o->type != WH_STDOUT && o->type != WH_STDERR &&
+               o->type != WH_NULL))
+        return done(iosb, STATUS_INVALID_HANDLE, 0);
+    uint32_t value;
+    if (cls == 8)
+        value = o->type == WH_STDIN ? 0x120089u : o->type == WH_STDOUT || o->type == WH_STDERR ? 0x120116u : 0x12019fu;
+    else if (cls == 16) /* our pipes take OVERLAPPED requests; the standard handles are synchronous */
+        value = o->type == WH_PIPE ? 0 : 0x20;
+    else if (cls == 5) {
+        if (size < 24)
+            return done(iosb, STATUS_INFO_LENGTH_MISMATCH, 0);
+        memset(out, 0, 24);
+        put32(out + 16, 1);
+        return done(iosb, STATUS_SUCCESS, 24);
+    } else
+        return done(iosb, STATUS_INVALID_PARAMETER, 0);
+    if (size < 4)
+        return done(iosb, STATUS_INFO_LENGTH_MISMATCH, 0);
+    put32(out, value);
+    return done(iosb, STATUS_SUCCESS, 4);
+}
+
 static DWORD WINAPI NtQueryInformationFile(HANDLE h, struct io_status *iosb, uint8_t *out, ULONG size, DWORD cls)
 {
     struct vstat st;
     struct w32_object *o = file_of(h, &st);
     if (!o)
-        return done(iosb, STATUS_INVALID_HANDLE, 0);
+        return stream_info(h, iosb, out, size, cls);
     static const uint8_t need[] = {[4] = 40, [5] = 24, [6] = 8, [7] = 4, [8] = 4, [9] = 4, [14] = 8, [16] = 4,
                                    [17] = 4, [18] = 100, [34] = 56, [35] = 8};
     if (cls >= sizeof(need) || !need[cls])

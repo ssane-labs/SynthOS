@@ -383,6 +383,16 @@ wintest shell | grep assoc
 assoc exe=C:\apps\wintest.exe
 wintest shell | grep shellexec
 shellexec ok=1 process=1 code=7
+wintest extra | grep shlwapi-a
+shlwapi-a name=wintest.exe ext=.exe rel=1 unc=1 root=C:\
+wintest extra | grep compact
+compact=C:\...\file.txt size=1.50 KB hls=0,120,240 back=0000ff
+wintest extra | grep bessel
+bessel j0=0.7652 j1=0.4401 y0=0.0883 jn=0.1149
+wintest extra | grep apc
+apc before=0 after=5 wait=c0
+wintest extra | grep readfileex
+readfileex ok=1 bytes=64 wait=c0 mz=1
 wincxxeh
 cxx 43242 destroyed 5
 wintest props | grep propstore
@@ -899,6 +909,8 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("hello/readme.txt", "hello from the store\n")
     z.writestr("hello/bin/tool.txt", "a store tool in bin\n")' "$work/www/store/hello.zip"
     hello_sum=$(sha256sum "$work/www/store/hello.zip" | cut -c1-64)
+    printf 'one file, no archive\n' > "$work/www/store/single.txt"
+    single_sum=$(sha256sum "$work/www/store/single.txt" | cut -c1-64)
     cat > "$work/www/store/store-catalog.txt" <<EOF
 [hello]
 name = Hello
@@ -911,6 +923,17 @@ url = https://10.0.2.2:$port/store/hello.zip
 sha256 = $hello_sum
 strip = hello
 check = readme.txt
+
+[single]
+name = Single
+category = Testing
+version = 1.0
+summary = One program to keep as it is
+kind = zip
+url = https://10.0.2.2:$port/store/single.txt
+sha256 = $single_sum
+file = single.txt
+check = single.txt
 
 [broken]
 name = Broken
@@ -1009,7 +1032,7 @@ EOF
 store info firefox
 Firefox latest by Mozilla (Browsers, get)
 config storeurl https://10.0.2.2:$port/store/; store refresh
-The catalog has 2 apps
+The catalog has 3 apps
 store info hello
 Hello 1.0 by SynthOS tests (Testing, get)
 store get hello | tail -n 1
@@ -1020,6 +1043,8 @@ cat /home/apps/hello/bin/tool.txt
 a store tool in bin
 store info hello
 Hello 1.0 by SynthOS tests (Testing, installed)
+store get single | tail -n 1; cat /home/apps/single/single.txt
+one file, no archive
 store get broken
 the download of Broken is damaged (its checksum does not match)
 store remove hello | tr a-z A-Z; store info hello | tr a-z A-Z

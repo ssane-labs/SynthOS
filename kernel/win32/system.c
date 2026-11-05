@@ -711,6 +711,60 @@ static void *WINAPI ILClone(const void *pidl)
     return copy;
 }
 
+static void *WINAPI ILFindLastID(const void *pidl)
+{
+    const uint8_t *p = pidl, *last = pidl;
+    if (!p)
+        return NULL;
+    while (p[0] | p[1]) {
+        last = p;
+        p += p[0] | p[1] << 8;
+    }
+    return (void *)last;
+}
+
+typedef BOOL(WINAPI *mkdir_w_fn)(const WCHAR *, void *);
+typedef DWORD(WINAPI *attrs_w_fn)(const WCHAR *);
+
+/* Every missing folder along the path */
+static int WINAPI SHCreateDirectoryExW(HANDLE window, const WCHAR *path, void *sa)
+{
+    UNUSED(window);
+    mkdir_w_fn mk = (mkdir_w_fn)w32_builtin_lookup("kernel32.dll", "CreateDirectoryW");
+    attrs_w_fn attrs = (attrs_w_fn)w32_builtin_lookup("kernel32.dll", "GetFileAttributesW");
+    size_t n = path ? w32_wcslen(path) : 0;
+    if (!n || n >= 260 || !mk || !attrs)
+        return 161;
+    DWORD a = attrs(path);
+    if (a != 0xffffffffu)
+        return (a & 0x10) ? 183 : 80;
+    WCHAR buf[260];
+    memcpy(buf, path, (n + 1) * sizeof(WCHAR));
+    for (size_t i = 3; i <= n; i++) {
+        if (i < n && buf[i] != '\\' && buf[i] != '/')
+            continue;
+        WCHAR keep = buf[i];
+        buf[i] = 0;
+        if (attrs(buf) == 0xffffffffu && !mk(buf, i == n ? sa : NULL))
+            return 3;
+        buf[i] = keep;
+    }
+    return 0;
+}
+
+static int WINAPI SHCreateDirectoryExA(HANDLE window, const char *path, void *sa)
+{
+    WCHAR *w = path ? w32_widen(path) : NULL;
+    int r = w ? SHCreateDirectoryExW(window, w, sa) : 161;
+    w32_free(w);
+    return r;
+}
+
+static int WINAPI SHCreateDirectory(HANDLE window, const WCHAR *path)
+{
+    return SHCreateDirectoryExW(window, path, NULL);
+}
+
 /* IMalloc over the task allocator, for programs that free shell memory through SHGetMalloc */
 static long WINAPI malloc_qi(void *self, const void *iid, void **out)
 {
@@ -1030,7 +1084,8 @@ static const struct w32_export shell32_exports[] = {
     W32_FN(SHOpenFolderAndSelectItems), W32_FN(SHGetFileInfoW), W32_FN(SHGetFileInfoA),
     W32_AS("SHAppBarMessage", w32_zero2), W32_FN(SHGetStockIconInfo),
     W32_AS("SHGetPropertyStoreForWindow", shell_notimpl3), W32_AS("SetCurrentProcessExplicitAppUserModelID", w32_zero1),
-    W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("DragQueryFileW", w32_zero4),
+    W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("Shell_NotifyIconA", w32_one2), W32_FN(ILFindLastID),
+    W32_FN(SHCreateDirectoryExW), W32_FN(SHCreateDirectoryExA), W32_FN(SHCreateDirectory), W32_AS("DragQueryFileW", w32_zero4),
     W32_AS("SHCreateAssociationRegistration", shell_notimpl2), W32_AS("SHChangeNotifyRegister", w32_zero6),
     W32_AS("SHChangeNotifyDeregister", w32_one1), W32_FN(ILCreateFromPathW),
     W32_AS("IsUserAnAdmin", w32_one0), W32_FN(SHFileOperationA), W32_FN(SHFileOperationW),
@@ -1038,7 +1093,7 @@ static const struct w32_export shell32_exports[] = {
 };
 
 static const char *const shell32_ordinals[681] = {
-    [2] = "SHChangeNotifyRegister", [4] = "SHChangeNotifyDeregister", [155] = "ILFree",
+    [2] = "SHChangeNotifyRegister", [16] = "ILFindLastID", [165] = "SHCreateDirectory", [4] = "SHChangeNotifyDeregister", [155] = "ILFree",
     [18] = "ILClone",               [152] = "ILGetSize",                [157] = "ILCreateFromPathW",
     [189] = "ILCreateFromPathA",    [190] = "ILCreateFromPathW",        [680] = "IsUserAnAdmin",
 };

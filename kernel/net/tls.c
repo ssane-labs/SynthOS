@@ -235,7 +235,9 @@ static int send_record12(struct tls *t, uint8_t *out, uint8_t type, const uint8_
 
 static int send_record(struct tls *t, uint8_t type, const uint8_t *data, size_t n)
 {
-    static uint8_t out[RECORD_MAX + 64];
+    static uint8_t *out;
+    if (!out && !(out = kmalloc(RECORD_MAX + 64)))
+        return E_NOMEM;
     if (!t->wr.active) {
         out[0] = type;
         put16(out + 1, 0x0303);

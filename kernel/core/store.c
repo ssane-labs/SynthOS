@@ -484,9 +484,16 @@ static int install_zip(const struct store_app *a, const struct store_ui *ui, cha
         vfs_remove_tree(dir);
     vfs_mkdirs(dir);
     say(ui, "Unpacking into %s", dir);
-    struct unpack u = {a, ui, (const uint8_t *)resp.body, resp.length, dir, 0, 0, 0};
-    zip_each(u.data, u.len, count_entry, &u);
-    err = u.total ? zip_each(u.data, u.len, unpack_entry, &u) : E_INVAL;
+    if (a->file[0] && (resp.length < 2 || memcmp(resp.body, "PK", 2))) {
+        /* a single program, not an archive: kept under its own name */
+        char path[PATH_MAX_LEN];
+        path_join(dir, a->file, path, sizeof(path));
+        err = vfs_write_all(path, resp.body, resp.length);
+    } else {
+        struct unpack u = {a, ui, (const uint8_t *)resp.body, resp.length, dir, 0, 0, 0};
+        zip_each(u.data, u.len, count_entry, &u);
+        err = u.total ? zip_each(u.data, u.len, unpack_entry, &u) : E_INVAL;
+    }
     http_free(&resp);
     msg[0] = 0;
     if (!err && a->extra[0])

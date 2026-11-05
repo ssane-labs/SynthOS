@@ -883,11 +883,77 @@ static void WINAPI Sleep(DWORD ms)
     w32_sleep(ms);
 }
 
+/* User APCs (QueueUserAPC, ReadFileEx/WriteFileEx completions): run by the thread in its next alertable wait */
+struct apc {
+    uint32_t tid;
+    void *fn;
+    uintptr_t arg;
+    uint32_t error, bytes;
+    bool io;
+    struct apc *next;
+};
+
+static W32_STATE struct apc *apcs;
+
+typedef void(WINAPI *apc_fn)(uintptr_t);
+typedef void(WINAPI *io_done_fn)(DWORD, DWORD, void *);
+
+static bool apc_queue(uint32_t tid, void *fn, uintptr_t arg, bool io, uint32_t error, uint32_t bytes)
+{
+    struct apc *a = w32_zalloc(sizeof(*a));
+    if (!a)
+        return false;
+    *a = (struct apc){tid, fn, arg, error, bytes, io, NULL};
+    struct apc **pp = &apcs;
+    while (*pp)
+        pp = &(*pp)->next;
+    *pp = a;
+    return true;
+}
+
+static bool apc_run(void)
+{
+    uint32_t tid = w32_thread_id();
+    bool ran = false;
+    for (struct apc **pp = &apcs; *pp;) {
+        struct apc *a = *pp;
+        if (a->tid != tid) {
+            pp = &a->next;
+            continue;
+        }
+        *pp = a->next;
+        if (a->io)
+            W32_CALL(io_done_fn, a->fn, a->error, a->bytes, (void *)a->arg);
+        else
+            W32_CALL(apc_fn, a->fn, a->arg);
+        w32_free(a);
+        ran = true;
+        pp = &apcs;
+    }
+    return ran;
+}
+
+bool w32_apc_queue_io(void *fn, void *overlapped, uint32_t error, uint32_t bytes)
+{
+    return apc_queue(w32_thread_id(), fn, (uintptr_t)overlapped, true, error, bytes);
+}
+
 static DWORD WINAPI SleepEx(DWORD ms, BOOL alertable)
 {
-    UNUSED(alertable);
-    w32_sleep(ms);
-    return 0;
+    if (!alertable) {
+        w32_sleep(ms);
+        return 0;
+    }
+    for (;;) {
+        if (apc_run())
+            return 0xc0;
+        if (!ms)
+            return 0;
+        DWORD step = MIN(ms, 10u);
+        w32_sleep(step);
+        if (ms != 0xffffffffu)
+            ms -= step;
+    }
 }
 
 static HANDLE new_object(enum w32_object_type type, uint32_t value, uint32_t max, bool manual)
@@ -1150,11 +1216,12 @@ static HANDLE WINAPI OpenSemaphoreW(DWORD access, BOOL inherit, LPCWSTR name)
 
 static DWORD WINAPI QueueUserAPC(void *fn, HANDLE thread, uintptr_t data)
 {
-    UNUSED(fn);
-    UNUSED(thread);
-    UNUSED(data);
-    w32_set_error(ERROR_NOT_SUPPORTED);
-    return 0;
+    struct w32_thread *t = thread_of(thread);
+    if (!fn || !t || t->done) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    return apc_queue(t->id, fn, data, false, 0, 0);
 }
 
 static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG initial, LONG max, LPCSTR name)
@@ -1344,7 +1411,8 @@ static DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms)
 
 static DWORD WINAPI WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable)
 {
-    UNUSED(alertable);
+    if (alertable && apc_run())
+        return 0xc0;
     return wait_objects(1, &h, FALSE, ms);
 }
 
@@ -1355,7 +1423,8 @@ static DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE *handles, B
 
 static DWORD WINAPI WaitForMultipleObjectsEx(DWORD count, const HANDLE *handles, BOOL all, DWORD ms, BOOL alertable)
 {
-    UNUSED(alertable);
+    if (alertable && apc_run())
+        return 0xc0;
     return wait_objects(count, handles, all, ms);
 }
 

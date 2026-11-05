@@ -1,3 +1,4 @@
+#include <synth/fmt.h>
 #include <synth/path.h>
 #include <synth/string.h>
 #include <synth/winpath.h>
@@ -461,6 +462,655 @@ static uint32_t WINAPI UrlCanonicalizeW(const WCHAR *url, WCHAR *out, DWORD *len
     return 0;
 }
 
+static BOOL WINAPI PathIsUNCW(const WCHAR *path)
+{
+    return path && is_sep(path[0]) && is_sep(path[1]) && path[2] != '?';
+}
+
+static BOOL WINAPI PathIsRootW(const WCHAR *path)
+{
+    if (!path || !*path)
+        return FALSE;
+    if (path[1] == ':')
+        return !path[2] || (is_sep(path[2]) && !path[3]);
+    if (is_sep(path[0]) && !path[1])
+        return TRUE;
+    if (PathIsUNCW(path)) {
+        int seps = 0;
+        for (const WCHAR *p = path + 2; *p; p++)
+            if (is_sep(*p) && (++seps > 1 || p[1]))
+                return FALSE;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static int WINAPI PathGetDriveNumberW(const WCHAR *path)
+{
+    if (!path || !path[0] || path[1] != ':')
+        return -1;
+    WCHAR c = lower(path[0]);
+    return c >= 'a' && c <= 'z' ? c - 'a' : -1;
+}
+
+static BOOL WINAPI PathIsDirectoryW(const WCHAR *path)
+{
+    DWORD(WINAPI * attrs)(const WCHAR *) =
+        (DWORD(WINAPI *)(const WCHAR *))w32_builtin_lookup("kernel32.dll", "GetFileAttributesW");
+    DWORD a = path && attrs ? attrs(path) : 0xffffffffu;
+    return a != 0xffffffffu && (a & 0x10) ? 0x10 : FALSE;
+}
+
+static BOOL WINAPI PathIsFileSpecW(const WCHAR *path)
+{
+    for (; path && *path; path++)
+        if (is_sep(*path) || *path == ':')
+            return FALSE;
+    return TRUE;
+}
+
+static BOOL WINAPI PathAddExtensionW(WCHAR *path, const WCHAR *ext)
+{
+    static const WCHAR exe[] = {'.', 'e', 'x', 'e', 0};
+    if (!path || *PathFindExtensionW(path))
+        return FALSE;
+    if (!ext || !*ext)
+        ext = exe;
+    size_t n = w32_wcslen(path), m = w32_wcslen(ext);
+    if (n + m >= 260)
+        return FALSE;
+    memcpy(path + n, ext, (m + 1) * sizeof(WCHAR));
+    return TRUE;
+}
+
+static WCHAR *WINAPI PathRemoveBackslashW(WCHAR *path)
+{
+    if (!path)
+        return NULL;
+    size_t n = w32_wcslen(path);
+    if (n && is_sep(path[n - 1]) && !PathIsRootW(path))
+        path[--n] = 0;
+    return path + (n ? n - 1 : 0);
+}
+
+static void WINAPI PathRemoveBlanksW(WCHAR *path)
+{
+    if (!path)
+        return;
+    WCHAR *start = path;
+    while (*start == ' ')
+        start++;
+    size_t n = w32_wcslen(start);
+    while (n && start[n - 1] == ' ')
+        n--;
+    memmove(path, start, n * sizeof(WCHAR));
+    path[n] = 0;
+}
+
+static WCHAR *WINAPI PathSkipRootW(const WCHAR *path)
+{
+    if (!path || !*path)
+        return NULL;
+    if (path[1] == ':')
+        return (WCHAR *)path + 2 + is_sep(path[2]);
+    if (PathIsUNCW(path)) {
+        int seps = 0;
+        for (const WCHAR *p = path + 2; *p; p++)
+            if (is_sep(*p) && ++seps == 2)
+                return (WCHAR *)p + 1;
+        return (WCHAR *)path + w32_wcslen(path);
+    }
+    return is_sep(path[0]) ? (WCHAR *)path + 1 : NULL;
+}
+
+/* "C:\very\long\folder\file.txt" -> "C:\very\...\file.txt" in max characters with the terminator */
+static BOOL WINAPI PathCompactPathExW(WCHAR *out, const WCHAR *path, UINT max, DWORD flags)
+{
+    UNUSED(flags);
+    if (!out || !path || !max)
+        return FALSE;
+    size_t n = w32_wcslen(path);
+    if (n < max) {
+        memcpy(out, path, (n + 1) * sizeof(WCHAR));
+        return TRUE;
+    }
+    const WCHAR *name = PathFindFileNameW(path);
+    size_t name_len = w32_wcslen(name);
+    if (name != path)
+        name--, name_len++;
+    if (name_len + 4 > max) {
+        size_t keep = max > 4 ? max - 4 : 0;
+        const WCHAR *from = name + (name != path);
+        memcpy(out, from, keep * sizeof(WCHAR));
+        size_t end = keep;
+        for (int i = 0; i < 3 && end < max - 1; i++)
+            out[end++] = '.';
+        out[end] = 0;
+        return TRUE;
+    }
+    size_t head = max - 1 - 3 - name_len;
+    memcpy(out, path, head * sizeof(WCHAR));
+    out[head] = out[head + 1] = out[head + 2] = '.';
+    memcpy(out + head + 3, name, (name_len + 1) * sizeof(WCHAR));
+    return TRUE;
+}
+
+/* ANSI versions: the path goes through the wide function in a 260-character buffer */
+static void to_ansi(const WCHAR *w, char *out, size_t cap)
+{
+    char *s = w32_narrow(w);
+    size_t n = s ? MIN(strlen(s), cap - 1) : 0;
+    if (s)
+        memcpy(out, s, n);
+    out[n] = 0;
+    w32_free(s);
+}
+
+static bool to_wide(const char *s, WCHAR *out)
+{
+    WCHAR *w = s ? w32_widen(s) : NULL;
+    if (!w)
+        return false;
+    size_t n = MIN(w32_wcslen(w), 259u);
+    memcpy(out, w, n * sizeof(WCHAR));
+    out[n] = 0;
+    w32_free(w);
+    return true;
+}
+
+static bool sep_a(char c)
+{
+    return c == '\\' || c == '/';
+}
+
+static char *WINAPI PathFindFileNameA(const char *path)
+{
+    const char *name = path;
+    for (const char *p = path; p && *p; p++)
+        if ((sep_a(*p) || *p == ':') && p[1])
+            name = p + 1;
+    return (char *)name;
+}
+
+static char *WINAPI PathFindExtensionA(const char *path)
+{
+    const char *dot = NULL, *p = path;
+    for (; p && *p; p++) {
+        if (sep_a(*p) || *p == ' ')
+            dot = NULL;
+        else if (*p == '.')
+            dot = p;
+    }
+    return (char *)(dot ? dot : p);
+}
+
+static BOOL WINAPI PathIsRelativeA(const char *path)
+{
+    return !(path && (sep_a(path[0]) || (path[0] && path[1] == ':')));
+}
+
+static BOOL WINAPI PathIsUNCA(const char *path)
+{
+    return path && sep_a(path[0]) && sep_a(path[1]) && path[2] != '?';
+}
+
+static int WINAPI PathGetDriveNumberA(const char *path)
+{
+    if (!path || !path[0] || path[1] != ':')
+        return -1;
+    WCHAR c = lower((WCHAR)(uint8_t)path[0]);
+    return c >= 'a' && c <= 'z' ? c - 'a' : -1;
+}
+
+static BOOL WINAPI PathFileExistsA(const char *path)
+{
+    WCHAR w[260];
+    return to_wide(path, w) && PathFileExistsW(w);
+}
+
+static BOOL WINAPI PathIsDirectoryA(const char *path)
+{
+    WCHAR w[260];
+    return to_wide(path, w) ? PathIsDirectoryW(w) : FALSE;
+}
+
+static BOOL WINAPI PathIsRootA(const char *path)
+{
+    WCHAR w[260];
+    return to_wide(path, w) && PathIsRootW(w);
+}
+
+static BOOL WINAPI PathIsFileSpecA(const char *path)
+{
+    for (; path && *path; path++)
+        if (sep_a(*path) || *path == ':')
+            return FALSE;
+    return TRUE;
+}
+
+#define INPLACE_A(name, call)                                                                                          \
+    static BOOL WINAPI name##A(char *path)                                                                             \
+    {                                                                                                                  \
+        WCHAR w[260];                                                                                                  \
+        if (!to_wide(path, w))                                                                                         \
+            return FALSE;                                                                                              \
+        BOOL ok = call;                                                                                                \
+        to_ansi(w, path, 260);                                                                                         \
+        return ok;                                                                                                     \
+    }
+
+INPLACE_A(PathStripToRoot, PathStripToRootW(w))
+INPLACE_A(PathRemoveFileSpec, PathRemoveFileSpecW(w))
+INPLACE_A(PathStripPath, (PathStripPathW(w), TRUE))
+INPLACE_A(PathRemoveExtension, (PathRemoveExtensionW(w), TRUE))
+INPLACE_A(PathQuoteSpaces, (PathQuoteSpacesW(w), TRUE))
+INPLACE_A(PathUnquoteSpaces, (PathUnquoteSpacesW(w), TRUE))
+INPLACE_A(PathRemoveBlanks, (PathRemoveBlanksW(w), TRUE))
+
+static char *WINAPI PathAddBackslashA(char *path)
+{
+    if (!path)
+        return NULL;
+    size_t n = strlen(path);
+    if (n && !sep_a(path[n - 1]) && n < 259) {
+        path[n++] = '\\';
+        path[n] = 0;
+    }
+    return path + n;
+}
+
+static char *WINAPI PathRemoveBackslashA(char *path)
+{
+    if (!path)
+        return NULL;
+    size_t n = strlen(path);
+    if (n && sep_a(path[n - 1]) && !PathIsRootA(path))
+        path[--n] = 0;
+    return path + (n ? n - 1 : 0);
+}
+
+static BOOL WINAPI PathAppendA(char *path, const char *more)
+{
+    WCHAR w[260], m[260];
+    if (!to_wide(path, w) || !to_wide(more, m) || !PathAppendW(w, m))
+        return FALSE;
+    to_ansi(w, path, 260);
+    return TRUE;
+}
+
+static BOOL WINAPI PathAddExtensionA(char *path, const char *ext)
+{
+    WCHAR w[260], e[260];
+    if (!to_wide(path, w) || (ext && !to_wide(ext, e)) || !PathAddExtensionW(w, ext ? e : NULL))
+        return FALSE;
+    to_ansi(w, path, 260);
+    return TRUE;
+}
+
+static char *WINAPI PathCombineA(char *out, const char *dir, const char *file)
+{
+    WCHAR d[260], f[260], o[260];
+    if (!out || (dir && !to_wide(dir, d)) || (file && !to_wide(file, f)) ||
+        !PathCombineW(o, dir ? d : NULL, file ? f : NULL))
+        return NULL;
+    to_ansi(o, out, 260);
+    return out;
+}
+
+static BOOL WINAPI PathCanonicalizeA(char *out, const char *path)
+{
+    WCHAR p[260], o[260];
+    if (!out || !to_wide(path, p) || !PathCanonicalizeW(o, p))
+        return FALSE;
+    to_ansi(o, out, 260);
+    return TRUE;
+}
+
+static BOOL WINAPI PathCompactPathExA(char *out, const char *path, UINT max, DWORD flags)
+{
+    WCHAR p[260], o[260];
+    if (!out || !max || !to_wide(path, p) || !PathCompactPathExW(o, p, MIN(max, 260u), flags))
+        return FALSE;
+    to_ansi(o, out, max);
+    return TRUE;
+}
+
+/* HLS in 0..240 like the Windows colour dialog */
+static WORD hls_value(int m1, int m2, int hue)
+{
+    hue = (hue + 240) % 240;
+    if (hue < 40)
+        m1 += ((m2 - m1) * hue + 20) / 40;
+    else if (hue < 120)
+        m1 = m2;
+    else if (hue < 160)
+        m1 += ((m2 - m1) * (160 - hue) + 20) / 40;
+    return (WORD)((m1 * 255 + 120) / 240);
+}
+
+static DWORD WINAPI ColorHLSToRGB(WORD hue, WORD lum, WORD sat)
+{
+    if (!sat) {
+        DWORD g = (DWORD)(lum * 255 + 120) / 240;
+        return g | g << 8 | g << 16;
+    }
+    int m2 = lum <= 120 ? (lum * (240 + sat) + 120) / 240 : lum + sat - (lum * sat + 120) / 240;
+    int m1 = 2 * lum - m2;
+    return hls_value(m1, m2, hue + 80) | (DWORD)hls_value(m1, m2, hue) << 8 | (DWORD)hls_value(m1, m2, hue - 80) << 16;
+}
+
+static void WINAPI ColorRGBToHLS(DWORD rgb, WORD *hue, WORD *lum, WORD *sat)
+{
+    int r = rgb & 0xff, g = rgb >> 8 & 0xff, b = rgb >> 16 & 0xff;
+    int hi = MAX(r, MAX(g, b)), lo = MIN(r, MIN(g, b)), l = ((hi + lo) * 240 + 255) / 510, h = 160, s = 0;
+    if (hi != lo) {
+        int d = hi - lo;
+        s = l <= 120 ? (d * 240 + (hi + lo) / 2) / (hi + lo) : (d * 240 + (510 - hi - lo) / 2) / (510 - hi - lo);
+        int rn = ((hi - r) * 40 + d / 2) / d, gn = ((hi - g) * 40 + d / 2) / d, bn = ((hi - b) * 40 + d / 2) / d;
+        h = r == hi ? bn - gn : g == hi ? 80 + rn - bn : 160 + gn - rn;
+        h = (h + 240) % 240;
+    }
+    if (hue)
+        *hue = (WORD)h;
+    if (lum)
+        *lum = (WORD)l;
+    if (sat)
+        *sat = (WORD)s;
+}
+
+static DWORD WINAPI ColorAdjustLuma(DWORD rgb, int change, BOOL scale)
+{
+    WORD h, l, s;
+    ColorRGBToHLS(rgb, &h, &l, &s);
+    int nl = scale ? l + (l * change + 500) / 1000 : l + change;
+    nl = nl < 0 ? 0 : nl > 240 ? 240 : nl;
+    return ColorHLSToRGB(h, (WORD)nl, s);
+}
+
+typedef LONG(WINAPI *get_value_fn)(HANDLE, const void *, const void *, DWORD *, void *, DWORD *);
+
+/* The user's value, then the machine's, then the caller's default */
+static LONG us_value(const char *fn, const void *sub, const void *value, DWORD *type, void *data, DWORD *size,
+                     BOOL ignore_user, const void *def, DWORD def_size)
+{
+    get_value_fn get = (get_value_fn)w32_builtin_lookup("shlwapi.dll", fn);
+    DWORD cap = size ? *size : 0;
+    for (int i = ignore_user ? 1 : 0; get && i < 2; i++) {
+        if (size)
+            *size = cap;
+        if (!get((HANDLE)(uintptr_t)(i ? 0x80000002u : 0x80000001u), sub, value, type, data, size))
+            return 0;
+    }
+    if (!def || !def_size)
+        return 2;
+    if (data && size && cap >= def_size)
+        memcpy(data, def, def_size);
+    if (size)
+        *size = def_size;
+    return data && cap < def_size ? 234 : 0;
+}
+
+static LONG WINAPI SHRegGetUSValueW(const WCHAR *sub, const WCHAR *value, DWORD *type, void *data, DWORD *size,
+                                    BOOL ignore_user, const void *def, DWORD def_size)
+{
+    return us_value("SHGetValueW", sub, value, type, data, size, ignore_user, def, def_size);
+}
+
+static LONG WINAPI SHRegGetUSValueA(const char *sub, const char *value, DWORD *type, void *data, DWORD *size,
+                                    BOOL ignore_user, const void *def, DWORD def_size)
+{
+    return us_value("SHGetValueA", sub, value, type, data, size, ignore_user, def, def_size);
+}
+
+static char lower_a(char c)
+{
+    return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+}
+
+static char *WINAPI StrStrIA(const char *s, const char *find)
+{
+    if (!s || !find)
+        return NULL;
+    size_t n = strlen(find);
+    for (; *s; s++) {
+        size_t i = 0;
+        while (i < n && lower_a(s[i]) == lower_a(find[i]))
+            i++;
+        if (i == n)
+            return (char *)s;
+    }
+    return NULL;
+}
+
+static char *WINAPI StrStrA(const char *s, const char *find)
+{
+    return s && find ? strstr(s, find) : NULL;
+}
+
+static WCHAR *WINAPI StrStrW(const WCHAR *s, const WCHAR *find)
+{
+    if (!s || !find)
+        return NULL;
+    size_t n = w32_wcslen(find);
+    for (; *s; s++)
+        if (!memcmp(s, find, n * sizeof(WCHAR)))
+            return (WCHAR *)s;
+    return NULL;
+}
+
+static WCHAR *WINAPI StrChrW(const WCHAR *s, WCHAR c)
+{
+    for (; s && *s; s++)
+        if (*s == c)
+            return (WCHAR *)s;
+    return NULL;
+}
+
+static WCHAR *WINAPI StrChrIW(const WCHAR *s, WCHAR c)
+{
+    for (; s && *s; s++)
+        if (lower(*s) == lower(c))
+            return (WCHAR *)s;
+    return NULL;
+}
+
+static char *WINAPI StrChrA(const char *s, WORD c)
+{
+    for (; s && *s; s++)
+        if ((uint8_t)*s == c)
+            return (char *)s;
+    return NULL;
+}
+
+static WCHAR *WINAPI StrRChrW(const WCHAR *s, const WCHAR *end, WCHAR c)
+{
+    const WCHAR *found = NULL;
+    for (; s && *s && (!end || s < end); s++)
+        if (*s == c)
+            found = s;
+    return (WCHAR *)found;
+}
+
+static char *WINAPI StrRChrA(const char *s, const char *end, WORD c)
+{
+    const char *found = NULL;
+    for (; s && *s && (!end || s < end); s++)
+        if ((uint8_t)*s == c)
+            found = s;
+    return (char *)found;
+}
+
+static int WINAPI StrCmpW(const WCHAR *a, const WCHAR *b)
+{
+    while (*a && *a == *b)
+        a++, b++;
+    return (int)*a - (int)*b;
+}
+
+static int WINAPI StrCmpNW(const WCHAR *a, const WCHAR *b, int n)
+{
+    for (; n > 0; n--, a++, b++)
+        if (*a != *b || !*a)
+            return (int)*a - (int)*b;
+    return 0;
+}
+
+static int WINAPI StrCmpIA(const char *a, const char *b)
+{
+    while (*a && lower_a(*a) == lower_a(*b))
+        a++, b++;
+    return (int)(uint8_t)lower_a(*a) - (int)(uint8_t)lower_a(*b);
+}
+
+static int WINAPI StrCmpNIA(const char *a, const char *b, int n)
+{
+    for (; n > 0; n--, a++, b++)
+        if (lower_a(*a) != lower_a(*b) || !*a)
+            return (int)(uint8_t)lower_a(*a) - (int)(uint8_t)lower_a(*b);
+    return 0;
+}
+
+static int WINAPI StrToIntW(const WCHAR *s)
+{
+    int sign = 1, v = 0;
+    if (*s == '-')
+        sign = -1, s++;
+    while (*s >= '0' && *s <= '9')
+        v = v * 10 + (*s++ - '0');
+    return sign * v;
+}
+
+static int WINAPI StrToIntA(const char *s)
+{
+    int sign = 1, v = 0;
+    if (*s == '-')
+        sign = -1, s++;
+    while (*s >= '0' && *s <= '9')
+        v = v * 10 + (*s++ - '0');
+    return sign * v;
+}
+
+static WCHAR *WINAPI StrCpyW(WCHAR *d, const WCHAR *s)
+{
+    memcpy(d, s, (w32_wcslen(s) + 1) * sizeof(WCHAR));
+    return d;
+}
+
+static WCHAR *WINAPI StrCpyNW(WCHAR *d, const WCHAR *s, int n)
+{
+    if (n <= 0)
+        return d;
+    size_t m = MIN(w32_wcslen(s), (size_t)n - 1);
+    memcpy(d, s, m * sizeof(WCHAR));
+    d[m] = 0;
+    return d;
+}
+
+static WCHAR *WINAPI StrCatW(WCHAR *d, const WCHAR *s)
+{
+    StrCpyW(d + w32_wcslen(d), s);
+    return d;
+}
+
+static WCHAR *WINAPI StrCatBuffW(WCHAR *d, const WCHAR *s, int cap)
+{
+    size_t n = w32_wcslen(d);
+    if ((int)n < cap)
+        StrCpyNW(d + n, s, cap - (int)n);
+    return d;
+}
+
+typedef void *(WINAPI *local_alloc_fn)(UINT, size_t);
+
+static void *local_alloc(size_t n)
+{
+    local_alloc_fn alloc = (local_alloc_fn)w32_builtin_lookup("kernel32.dll", "LocalAlloc");
+    return alloc ? alloc(0, n) : NULL;
+}
+
+static WCHAR *WINAPI StrDupW(const WCHAR *s)
+{
+    size_t n = s ? w32_wcslen(s) + 1 : 1;
+    WCHAR *d = local_alloc(n * sizeof(WCHAR));
+    if (d) {
+        d[0] = 0;
+        if (s)
+            memcpy(d, s, n * sizeof(WCHAR));
+    }
+    return d;
+}
+
+static char *WINAPI StrDupA(const char *s)
+{
+    size_t n = s ? strlen(s) + 1 : 1;
+    char *d = local_alloc(n);
+    if (d) {
+        d[0] = 0;
+        if (s)
+            memcpy(d, s, n);
+    }
+    return d;
+}
+
+static BOOL WINAPI StrTrimW(WCHAR *s, const WCHAR *chars)
+{
+    size_t len = w32_wcslen(s), n = len, start = 0;
+    while (start < n && StrChrW(chars, s[start]))
+        start++;
+    while (n > start && StrChrW(chars, s[n - 1]))
+        n--;
+    if (!start && n == len)
+        return FALSE;
+    memmove(s, s + start, (n - start) * sizeof(WCHAR));
+    s[n - start] = 0;
+    return TRUE;
+}
+
+/* "1.50 KB"-style sizes with three significant digits */
+static void byte_size(uint64_t bytes, char *out, size_t cap)
+{
+    static const char *const units[] = {"bytes", "KB", "MB", "GB", "TB", "PB"};
+    if (bytes < 1024) {
+        ksnprintf(out, cap, "%u bytes", (unsigned)bytes);
+        return;
+    }
+    int u = 0;
+    uint64_t scaled = bytes * 100;
+    while (scaled >= 1024 * 100 && u < 5)
+        scaled /= 1024, u++;
+    unsigned whole = (unsigned)(scaled / 100), frac = (unsigned)(scaled % 100);
+    if (whole >= 100)
+        ksnprintf(out, cap, "%u %s", whole, units[u]);
+    else if (whole >= 10)
+        ksnprintf(out, cap, "%u.%u %s", whole, frac / 10, units[u]);
+    else
+        ksnprintf(out, cap, "%u.%02u %s", whole, frac, units[u]);
+}
+
+static char *WINAPI StrFormatByteSize64A(uint64_t bytes, char *out, UINT cap)
+{
+    if (out && cap)
+        byte_size(bytes, out, cap);
+    return out;
+}
+
+static char *WINAPI StrFormatByteSizeA(DWORD bytes, char *out, UINT cap)
+{
+    return StrFormatByteSize64A(bytes, out, cap);
+}
+
+static WCHAR *WINAPI StrFormatByteSizeW(uint64_t bytes, WCHAR *out, UINT cap)
+{
+    char tmp[32];
+    byte_size(bytes, tmp, sizeof(tmp));
+    size_t n = MIN(strlen(tmp), cap ? cap - 1 : 0);
+    for (size_t i = 0; i < n; i++)
+        out[i] = (WCHAR)tmp[i];
+    if (cap)
+        out[n] = 0;
+    return out;
+}
+
 static const struct w32_export shlwapi_exports[] = {
     W32_FN(UrlCanonicalizeW),
     W32_FN(PathFindFileNameW),
@@ -488,6 +1138,68 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(IsOS),
     W32_FN(QISearch),
     W32_FN(SHCreateMemStream),
+    W32_FN(PathIsUNCW),
+    W32_FN(PathIsRootW),
+    W32_FN(PathGetDriveNumberW),
+    W32_FN(PathIsDirectoryW),
+    W32_FN(PathIsFileSpecW),
+    W32_FN(PathAddExtensionW),
+    W32_FN(PathRemoveBackslashW),
+    W32_FN(PathRemoveBlanksW),
+    W32_FN(PathSkipRootW),
+    W32_FN(PathCompactPathExW),
+    W32_FN(PathFindFileNameA),
+    W32_FN(PathFindExtensionA),
+    W32_FN(PathIsRelativeA),
+    W32_FN(PathIsUNCA),
+    W32_FN(PathGetDriveNumberA),
+    W32_FN(PathFileExistsA),
+    W32_FN(PathIsDirectoryA),
+    W32_FN(PathIsRootA),
+    W32_FN(PathIsFileSpecA),
+    W32_FN(PathAddBackslashA),
+    W32_FN(PathRemoveBackslashA),
+    W32_FN(PathAppendA),
+    W32_FN(PathAddExtensionA),
+    W32_FN(PathCombineA),
+    W32_FN(PathCanonicalizeA),
+    W32_FN(PathCompactPathExA),
+    W32_FN(ColorHLSToRGB),
+    W32_FN(ColorRGBToHLS),
+    W32_FN(ColorAdjustLuma),
+    W32_FN(SHRegGetUSValueW),
+    W32_FN(SHRegGetUSValueA),
+    W32_FN(StrStrIA),
+    W32_FN(StrStrA),
+    W32_FN(StrStrW),
+    W32_FN(StrChrW),
+    W32_FN(StrChrIW),
+    W32_FN(StrChrA),
+    W32_FN(StrRChrW),
+    W32_FN(StrRChrA),
+    W32_FN(StrCmpW),
+    W32_FN(StrCmpNW),
+    W32_FN(StrCmpIA),
+    W32_FN(StrCmpNIA),
+    W32_FN(StrToIntW),
+    W32_FN(StrToIntA),
+    W32_FN(StrCpyW),
+    W32_FN(StrCpyNW),
+    W32_FN(StrCatW),
+    W32_FN(StrCatBuffW),
+    W32_FN(StrDupW),
+    W32_FN(StrDupA),
+    W32_FN(StrTrimW),
+    W32_FN(StrFormatByteSize64A),
+    W32_FN(StrFormatByteSizeA),
+    W32_FN(StrFormatByteSizeW),
+    W32_FN(PathStripToRootA),
+    W32_FN(PathRemoveFileSpecA),
+    W32_FN(PathStripPathA),
+    W32_FN(PathRemoveExtensionA),
+    W32_FN(PathQuoteSpacesA),
+    W32_FN(PathUnquoteSpacesA),
+    W32_FN(PathRemoveBlanksA),
 };
 
 static const char *const shlwapi_ordinals[438] = {[12] = "SHCreateMemStream", [219] = "QISearch", [437] = "IsOS"};

@@ -669,6 +669,7 @@ void w32_unload_all(void);
 
 NORETURN void w32_exit(uint32_t code);
 void w32_sleep(uint32_t ms);
+bool w32_apc_queue_io(void *fn, void *overlapped, uint32_t error, uint32_t bytes);
 bool w32_threads_start(void);
 void w32_threads_end(void);
 void w32_block(void);

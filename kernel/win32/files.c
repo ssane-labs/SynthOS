@@ -436,6 +436,38 @@ static DWORD WINAPI GetFileType(HANDLE h)
     }
 }
 
+/* Done at once; the completion routine runs in the caller's next alertable wait. */
+static BOOL file_ex(HANDLE h, void *buf, DWORD n, uint32_t *ov, void *done, bool write)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!ov || !done) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    DWORD moved = 0;
+    void *use = o && o->type == WH_FILE ? ov : NULL;
+    BOOL ok = write ? WriteFile(h, buf, n, &moved, use) : ReadFile(h, buf, n, &moved, use);
+    if (!ok)
+        return FALSE;
+    ov[0] = 0;
+    ov[1] = moved;
+    if (!w32_apc_queue_io(done, ov, 0, moved)) {
+        w32_set_error(8);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI ReadFileEx(HANDLE h, void *buf, DWORD n, void *ov, void *done)
+{
+    return file_ex(h, buf, n, ov, done, false);
+}
+
+static BOOL WINAPI WriteFileEx(HANDLE h, const void *buf, DWORD n, void *ov, void *done)
+{
+    return file_ex(h, (void *)buf, n, ov, done, true);
+}
+
 static BOOL WINAPI SetEndOfFile(HANDLE h)
 {
     struct w32_object *o = file_object(h);
@@ -1546,7 +1578,7 @@ static DWORD WINAPI ExpandEnvironmentStringsW(LPCWSTR in, LPWSTR out, DWORD size
 static const struct w32_export kernel32_files[] = {
     W32_FN(CreateFileA), W32_FN(CreateFileW), W32_FN(CreateFile2), W32_FN(ReadFile), W32_FN(WriteFile),
     W32_FN(GetProcessIoCounters), W32_FN(SetFilePointer),
-    W32_FN(SetFilePointerEx), W32_FN(GetFileSize), W32_FN(GetFileSizeEx), W32_FN(GetFileType),
+    W32_FN(SetFilePointerEx), W32_FN(GetFileSize), W32_FN(GetFileSizeEx), W32_FN(GetFileType), W32_FN(ReadFileEx), W32_FN(WriteFileEx),
     W32_FN(SetEndOfFile), W32_FN(FlushFileBuffers), W32_FN(DeleteFileA), W32_FN(DeleteFileW), W32_FN(MoveFileA),
     W32_FN(MoveFileW), W32_FN(MoveFileExA), W32_FN(MoveFileExW), W32_FN(CopyFileA), W32_FN(CopyFileW),
     W32_FN(CopyFileExA), W32_FN(CopyFileExW),

@@ -640,16 +640,73 @@ static BOOL WINAPI WaitNamedPipeW(LPCWSTR name, DWORD ms)
     return ok;
 }
 
+/* A redirected standard handle is a pipe as far as programs are told (GetFileType says so). */
+static bool stdio_pipe(const struct w32_object *o)
+{
+    const struct stream *s = o->type == WH_STDIN    ? w32->ctx->in
+                             : o->type == WH_STDOUT ? w32->ctx->out
+                             : o->type == WH_STDERR ? w32->ctx->err
+                                                    : NULL;
+    return s && !stream_is_console(s);
+}
+
 static BOOL WINAPI SetNamedPipeHandleState(HANDLE h, DWORD *mode, DWORD *max, DWORD *timeout)
 {
     UNUSED(mode);
     UNUSED(max);
     UNUSED(timeout);
     struct w32_object *o = w32_handle_get(h);
-    if (!o || o->type != WH_PIPE) {
+    if (!o || (o->type != WH_PIPE && !stdio_pipe(o))) {
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+    return TRUE;
+}
+
+static BOOL WINAPI GetNamedPipeHandleStateW(HANDLE h, DWORD *state, DWORD *instances, DWORD *max, DWORD *timeout,
+                                            WCHAR *user, DWORD user_size)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || (o->type != WH_PIPE && !stdio_pipe(o))) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (state)
+        *state = 0;
+    if (instances)
+        *instances = 1;
+    if (max)
+        *max = 0;
+    if (timeout)
+        *timeout = 0;
+    if (user && user_size)
+        user[0] = 0;
+    return TRUE;
+}
+
+static BOOL WINAPI GetNamedPipeHandleStateA(HANDLE h, DWORD *state, DWORD *instances, DWORD *max, DWORD *timeout,
+                                            char *user, DWORD user_size)
+{
+    if (user && user_size)
+        user[0] = 0;
+    return GetNamedPipeHandleStateW(h, state, instances, max, timeout, NULL, 0);
+}
+
+static BOOL WINAPI GetNamedPipeInfo(HANDLE h, DWORD *flags, DWORD *out_size, DWORD *in_size, DWORD *instances)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || (o->type != WH_PIPE && !stdio_pipe(o))) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    if (flags)
+        *flags = 0;
+    if (out_size)
+        *out_size = 4096;
+    if (in_size)
+        *in_size = 4096;
+    if (instances)
+        *instances = 1;
     return TRUE;
 }
 
@@ -664,6 +721,9 @@ static const struct w32_export pipe_exports[] = {
     W32_FN(WaitNamedPipeA),
     W32_FN(WaitNamedPipeW),
     W32_FN(SetNamedPipeHandleState),
+    W32_FN(GetNamedPipeHandleStateA),
+    W32_FN(GetNamedPipeHandleStateW),
+    W32_FN(GetNamedPipeInfo),
 };
 
 W32_EXPORTS(pipe_module, "kernel32.dll", pipe_exports);

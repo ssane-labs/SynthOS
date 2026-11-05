@@ -48,6 +48,13 @@
   GDI), SIO_GET_INTERFACE_LIST; EnumDisplaySettings больше не портит стек при незаполненном dmSize. Для
   AutoHotkey — секции INI (Get/WritePrivateProfileSection*), StrCmpLogicalW, эллиптические регионы. В каталоге
   магазина поле `extra` — второй архив (графика OpenGFX для OpenTTD).
+  Добавлены и проверены: SQLite (64 бита), NASM, ripgrep, Node.js, jq — 15 приложений в каталоге. Для них:
+  каналы stdio в духе Windows (NtQueryInformationFile для каналов, Get/SetNamedPipeHandleState,
+  GetNamedPipeInfo), APC пользователя (QueueUserAPC, SleepEx/WaitFor*Ex с alertable, ReadFileEx/WriteFileEx),
+  функции Бесселя msvcrt, ~60 функций shlwapi (Path*A, Str*, ColorHLS, SHRegGetUSValue), Uniscribe из gdi32,
+  TabbedTextOut, GrayString, CreateBitmapIndirect, SHCreateDirectoryEx, класс подсказок tooltips_class32
+  (Notepad++). Магазин ставит программу из одного файла (поле `file`, не zip). Дальше: gdiplus (KeePass,
+  SumatraPDF), Everything, 7-Zip, HxD, foobar2000, Total Commander, Thunderbird.
 - [ ] **Собрать образы** (vga, usb, usb32, windows zip, пакеты обновления).
 - [ ] **11.** Потоки Windows‑программ на всех ядрах.
 - [ ] **13.** Ввод на других языках: раскладки (в том числе русская), переключение; IME — по возможности.

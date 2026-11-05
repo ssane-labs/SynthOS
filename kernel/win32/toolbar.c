@@ -912,4 +912,16 @@ static const struct w32_export toolbar_exports[] = {
 };
 
 W32_EXPORTS(toolbar_comctl_module, "comctl32.dll", toolbar_exports);
+LRESULT WINAPI w32_tooltip_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case 0x404: case 0x432: return TRUE;
+    case 0x418: return -1;
+    case 0x84: return -1;
+    default:
+        if (msg >= 0x400 && msg < 0x500)
+            return 0;
+        return w32_def_window_proc(h, msg, wp, lp);
+    }
+}
 #endif

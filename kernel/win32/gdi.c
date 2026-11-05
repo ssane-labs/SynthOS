@@ -893,6 +893,35 @@ static BOOL WINAPI SetWindowExtEx(HANDLE h, int x, int y, SIZE *old)
     return dc_of(h) != NULL;
 }
 
+static int WINAPI GetROP2(HANDLE h)
+{
+    struct w32_dc *d = dc_of(h);
+    return d ? d->s.rop2 : 0;
+}
+
+static UINT WINAPI GetTextAlign(HANDLE h)
+{
+    struct w32_dc *d = dc_of(h);
+    return d ? d->s.align : 0xffffffffu;
+}
+
+/* MM_TEXT is the only mapping mode: every extent is 1:1 */
+static BOOL WINAPI GetWindowExtEx(HANDLE h, SIZE *out)
+{
+    if (out)
+        *out = (SIZE){1, 1};
+    return dc_of(h) != NULL;
+}
+
+static BOOL WINAPI ScaleWindowExtEx(HANDLE h, int xn, int xd, int yn, int yd, SIZE *old)
+{
+    UNUSED(xn);
+    UNUSED(xd);
+    UNUSED(yn);
+    UNUSED(yd);
+    return GetWindowExtEx(h, old);
+}
+
 static int WINAPI SetGraphicsMode(HANDLE h, int mode)
 {
     UNUSED(h);
@@ -2369,6 +2398,21 @@ static HANDLE WINAPI CreateBitmap(int w, int h, UINT planes, UINT bpp, const voi
         }
     }
     return o;
+}
+
+static HANDLE WINAPI CreateBitmapIndirect(const uint8_t *bm)
+{
+    int32_t w, h;
+    uint16_t planes, bpp;
+    uint32_t bits;
+    if (!bm)
+        return NULL;
+    memcpy(&w, bm + 4, 4);
+    memcpy(&h, bm + 8, 4);
+    memcpy(&planes, bm + 16, 2);
+    memcpy(&bpp, bm + 18, 2);
+    memcpy(&bits, bm + 20, 4);
+    return CreateBitmap(w, h, planes, bpp, (const void *)(uintptr_t)bits);
 }
 
 struct bitmap_info {
@@ -3967,7 +4011,10 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(GetObjectType), W32_FN(GetObjectA), W32_FN(GetObjectW), W32_FN(SetTextColor),
     W32_FN(GetTextColor), W32_FN(SetBkColor), W32_FN(GetBkColor), W32_FN(SetBkMode), W32_FN(GetBkMode),
     W32_FN(SetDCBrushColor), W32_FN(SetDCPenColor), W32_FN(SetROP2), W32_FN(SetTextAlign), W32_FN(SetMapMode), W32_FN(GetMapMode), W32_FN(GetStretchBltMode),
-    W32_FN(SetWindowExtEx), W32_AS("SetViewportExtEx", SetWindowExtEx), W32_FN(PolyPolyline), W32_FN(LPtoDP), W32_FN(DPtoLP), W32_FN(GetNearestColor),
+    W32_FN(SetWindowExtEx), W32_AS("SetViewportExtEx", SetWindowExtEx), W32_FN(GetWindowExtEx),
+    W32_AS("GetViewportExtEx", GetWindowExtEx), W32_FN(ScaleWindowExtEx), W32_AS("ScaleViewportExtEx", ScaleWindowExtEx),
+    W32_FN(GetROP2), W32_FN(GetTextAlign), W32_FN(CreateBitmapIndirect), W32_AS("Escape", w32_zero5),
+    W32_AS("StartDocA", w32_zero2), W32_AS("CopyMetaFileA", w32_zero2), W32_FN(PolyPolyline), W32_FN(LPtoDP), W32_FN(DPtoLP), W32_FN(GetNearestColor),
     W32_FN(OffsetClipRgn), W32_FN(CreatePatternBrush), W32_FN(PolyBezier), W32_AS("AngleArc", w32_one6),
     W32_AS("ArcTo", w32_one9), W32_AS("PathToRegion", w32_zero1), W32_AS("CopyEnhMetaFileW", w32_zero2),
     W32_AS("GetEnhMetaFileDescriptionW", w32_zero3), W32_AS("GetEnhMetaFilePaletteEntries", w32_zero3),

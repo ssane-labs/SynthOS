@@ -258,9 +258,12 @@ static int write_record(struct install_job *job)
     }
     if ((err = block_write(disk, job->system_lba, 1, sector)) != 0)
         return err;
-    static uint8_t zero[BLOCK_SIZE * 16];
-    memset(zero, 0, sizeof(zero));
-    return block_write(disk, data_lba(job), 16, zero);
+    uint8_t *zero = kzalloc(BLOCK_SIZE * 16);
+    if (!zero)
+        return E_NOMEM;
+    err = block_write(disk, data_lba(job), 16, zero);
+    kfree(zero);
+    return err;
 }
 
 static const char *mounted_at(struct blockdev *dev)

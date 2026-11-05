@@ -447,7 +447,8 @@ static void builtin_classes(void)
                 {"ComboBox", CK_COMBOBOX, 6, w32_combobox_proc}, {"ComboLBox", CK_LISTBOX, 6, w32_listbox_proc},
                 {"SysTabControl32", CK_TAB, 16, w32_tab_proc}, {"SysListView32", CK_LISTVIEW, 6, w32_listview_proc},
                 {"ToolbarWindow32", CK_TOOLBAR, 16, w32_toolbar_proc},
-                {"msctls_statusbar32", CK_STATUS, 16, w32_status_proc}};
+                {"msctls_statusbar32", CK_STATUS, 16, w32_status_proc},
+                {"tooltips_class32", CK_NONE, 0, w32_tooltip_proc}};
     if (!find_class("#32770")) {
         struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
         if (c)
@@ -2009,6 +2010,18 @@ static BOOL WINAPI GetUpdateRect(HANDLE h, RECT *out, BOOL erase)
     if (out)
         to_rect(out, w->update);
     return TRUE;
+}
+
+static int WINAPI GetUpdateRgn(HANDLE h, HANDLE rgn, BOOL erase)
+{
+    BOOL(WINAPI * set)(HANDLE, int, int, int, int) =
+        (BOOL(WINAPI *)(HANDLE, int, int, int, int))w32_builtin_lookup("gdi32.dll", "SetRectRgn");
+    RECT r;
+    if (!w32_win(h) || !set)
+        return 0;
+    bool any = GetUpdateRect(h, &r, erase);
+    set(rgn, r.left, r.top, r.right, r.bottom);
+    return any ? 2 : 1;
 }
 
 static BOOL WINAPI RedrawWindow(HANDLE h, const RECT *r, HANDLE rgn, UINT flags)
@@ -4279,7 +4292,7 @@ static const struct w32_export window_exports[] = {
     W32_AS("GetClassLongW", GetClassLongA), W32_AS("GetClassLongPtrA", GetClassLongA),
     W32_AS("GetClassLongPtrW", GetClassLongA), W32_FN(SetClassLongA), W32_AS("SetClassLongW", SetClassLongA),
     W32_AS("SetClassLongPtrA", SetClassLongA), W32_AS("SetClassLongPtrW", SetClassLongA), W32_FN(GetClassNameA),
-    W32_FN(InvalidateRect), W32_FN(InvalidateRgn), W32_FN(ValidateRect), W32_FN(GetUpdateRect), W32_FN(RedrawWindow),
+    W32_FN(InvalidateRect), W32_FN(InvalidateRgn), W32_FN(ValidateRect), W32_FN(GetUpdateRect), W32_FN(GetUpdateRgn), W32_FN(RedrawWindow),
     W32_AS("BeginPaint", w32_begin_paint), W32_AS("EndPaint", w32_end_paint), W32_FN(GetDC), W32_FN(GetDCEx),
     W32_AS("GetWindowDC", GetDC), W32_FN(ReleaseDC), W32_FN(SetTimer), W32_FN(KillTimer), W32_FN(GetMessageA),
     W32_FN(SetCoalescableTimer),

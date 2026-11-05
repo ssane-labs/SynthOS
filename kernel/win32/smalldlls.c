@@ -1,4 +1,5 @@
 #include <synth/config.h>
+#include <synth/net.h>
 #include <synth/string.h>
 
 #include "win32.h"
@@ -95,8 +96,26 @@ static BOOL WINAPI ImageList_Destroy(struct image_list *il)
 
 #endif
 
+typedef HANDLE(WINAPI *load_image_fn)(HANDLE, const WCHAR *, UINT, int, int, UINT);
+
+/* comctl32 #381 / #380: an icon at the wanted size */
+static uint32_t WINAPI LoadIconWithScaleDown(HANDLE inst, const WCHAR *name, int cx, int cy, HANDLE *out)
+{
+    load_image_fn load = (load_image_fn)w32_builtin_lookup("user32.dll", "LoadImageW");
+    if (!out)
+        return 0x80004003u;
+    *out = load ? load(inst, name, 1, cx, cy, 0) : NULL;
+    return *out ? S_OK : 0x80070716u;
+}
+
+static uint32_t WINAPI LoadIconMetric(HANDLE inst, const WCHAR *name, int metric, HANDLE *out)
+{
+    int size = metric ? 32 : 16;
+    return LoadIconWithScaleDown(inst, name, size, size, out);
+}
+
 static const struct w32_export comctl32_exports[] = {
-    W32_FN(InitCommonControlsEx), W32_FN(InitCommonControls),
+    W32_FN(InitCommonControlsEx), W32_FN(InitCommonControls), W32_FN(LoadIconWithScaleDown), W32_FN(LoadIconMetric),
 #if !CONFIG_GUI
     W32_FN(ImageList_Create),        W32_FN(ImageList_Add),           W32_FN(ImageList_AddMasked),
     W32_FN(ImageList_ReplaceIcon),   W32_FN(ImageList_GetImageCount), W32_FN(ImageList_Remove),
@@ -138,7 +157,17 @@ static uint32_t WINAPI DwmGetCompositionTimingInfo(HANDLE hwnd, void *info)
     return DWM_E_COMPOSITIONDISABLED;
 }
 
+static uint32_t WINAPI DwmGetColorizationColor(DWORD *color, BOOL *opaque)
+{
+    if (!color || !opaque)
+        return 0x80070057u;
+    *color = 0xc4404040u;
+    *opaque = FALSE;
+    return 0;
+}
+
 static const struct w32_export dwmapi_exports[] = {
+    W32_FN(DwmGetColorizationColor),
     W32_FN(DwmIsCompositionEnabled),
     W32_FN(DwmGetWindowAttribute),
     W32_AS("DwmSetWindowAttribute", w32_zero4),
@@ -211,8 +240,77 @@ static UINT WINAPI ImmGetIMEFileNameW(HANDLE layout, WCHAR *out, UINT size)
     return 0;
 }
 
+/* sensapi: the network is there when an interface has an address */
+static BOOL WINAPI IsNetworkAlive(DWORD *flags)
+{
+    uint32_t ip = 0, mask = 0;
+    bool up = net_interface_addr(0, &ip, &mask) && ip;
+    if (flags)
+        *flags = up ? 1 : 0;
+    w32_set_error(0);
+    return up;
+}
+
+static BOOL WINAPI IsDestinationReachableW(const WCHAR *dest, void *qoc)
+{
+    UNUSED(dest);
+    UNUSED(qoc);
+    return IsNetworkAlive(NULL);
+}
+
+static const struct w32_export sensapi_exports[] = {
+    W32_FN(IsNetworkAlive),
+    W32_FN(IsDestinationReachableW),
+    W32_AS("IsDestinationReachableA", IsDestinationReachableW),
+};
+
+W32_EXPORTS(sensapi_module, "sensapi.dll", sensapi_exports);
+
+/* dbghelp: the NT headers of a loaded image */
+static void *WINAPI ImageNtHeader(const uint8_t *base)
+{
+    if (!base || base[0] != 'M' || base[1] != 'Z')
+        return NULL;
+    uint32_t nt;
+    memcpy(&nt, base + 0x3c, 4);
+    return memcmp(base + nt, "PE\0\0", 4) ? NULL : (void *)(base + nt);
+}
+
+static const struct w32_export small_dbghelp_exports[] = {W32_FN(ImageNtHeader)};
+
+W32_EXPORTS(small_dbghelp_module, "dbghelp.dll", small_dbghelp_exports);
+
+static DWORD WINAPI ConvertDefaultLocale(DWORD lcid)
+{
+    return !lcid || lcid == 0x400 || lcid == 0x800 ? 0x409 : lcid;
+}
+
+static HANDLE WINAPI CreateMailslotA(const char *name, DWORD max, DWORD timeout, void *sa)
+{
+    UNUSED(name);
+    UNUSED(max);
+    UNUSED(timeout);
+    UNUSED(sa);
+    w32_set_error(ERROR_NOT_SUPPORTED);
+    return (HANDLE)(intptr_t)-1;
+}
+
+static const struct w32_export small_kernel32_exports[] = {
+    W32_AS("GlobalFlags", w32_zero1),
+    W32_FN(ConvertDefaultLocale),
+    W32_FN(CreateMailslotA),
+    W32_AS("CreateMailslotW", CreateMailslotA),
+    W32_AS("GetMailslotInfo", w32_zero5),
+};
+
+W32_EXPORTS(small_kernel32_module, "kernel32.dll", small_kernel32_exports);
+
 static const struct w32_export imm32_exports[] = {
     W32_FN(ImmGetIMEFileNameW),
+    W32_AS("ImmEscapeW", w32_zero4),
+    W32_AS("ImmEscapeA", w32_zero4),
+    W32_AS("ImmSetCompositionStringW", w32_zero6),
+    W32_AS("ImmSetCompositionStringA", w32_zero6),
     W32_AS("ImmGetContext", w32_zero1),
     W32_AS("ImmReleaseContext", w32_one2),
     W32_AS("ImmAssociateContextEx", w32_one3),

@@ -703,6 +703,8 @@ static const struct w32_export propsheet_exports[] = {
 
 static const char *const comctl32_ordinals[] = {
     [344] = "TaskDialog",
+    [380] = "LoadIconMetric",
+    [381] = "LoadIconWithScaleDown",
     [345] = "TaskDialogIndirect",
 };
 

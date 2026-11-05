@@ -287,6 +287,7 @@ LRESULT WINAPI w32_tab_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_listview_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_toolbar_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_status_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_tooltip_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 HANDLE WINAPI w32_set_capture_internal(struct w32_window *w);
 LRESULT WINAPI w32_richedit_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_dialog_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);

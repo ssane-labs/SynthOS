@@ -405,6 +405,21 @@ static WCHAR *wide_winmain_command_line(void)
     return p;
 }
 
+static char *narrow_winmain_command_line(void)
+{
+    char **line = lookup("_acmdln");
+    char *p = line ? *line : NULL;
+    if (!p)
+        return NULL;
+    bool quoted = false;
+    for (; *p && (quoted || (*p != ' ' && *p != '\t')); p++)
+        if (*p == '"')
+            quoted = !quoted;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    return p;
+}
+
 static void invoke_watson(const WCHAR *expr, const WCHAR *fn, const WCHAR *file, unsigned line, uintptr_t reserved)
 {
     UNUSED(expr);
@@ -573,6 +588,7 @@ static const struct w32_export ucrt2_exports[] = {
     W32_AS("_splitpath_s", splitpath_s),
     W32_AS("_makepath_s", makepath_s),
     W32_AS("_get_wide_winmain_command_line", wide_winmain_command_line),
+    W32_AS("_get_narrow_winmain_command_line", narrow_winmain_command_line),
     W32_AS("_invoke_watson", invoke_watson),
     W32_AS("_set_doserrno", set_doserrno),
     W32_AS("_wsopen_s", wsopen_s),

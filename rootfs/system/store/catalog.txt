@@ -153,3 +153,83 @@ extra = https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip
 extra_to = baseset
 check = openttd.exe
 open = openttd.exe
+
+[sqlite]
+name = SQLite
+developer = SQLite Consortium
+category = Developer Tools
+icon = code
+version = 3.54.1
+size = 16 MB
+summary = The SQLite shell: databases in a single file
+about = sqlite3, sqldiff and sqlite3_analyzer from sqlite.org, unpacked into /home/apps/sqlite and put on the PATH. The tools are 64-bit, so they need the 64-bit SynthOS.
+kind = zip
+url = https://www.sqlite.org/2026/sqlite-tools-win-x64-3540100.zip
+sha256 = fb20997ade5583a5fbf1e36db7bc3c82c9416b3f314f16961e1572aa4e49487d
+bin = .
+check = sqlite3.exe
+bits = 64
+
+[nasm]
+name = NASM
+developer = The NASM development team
+category = Developer Tools
+icon = code
+version = 2.16.03
+size = 3 MB
+summary = The Netwide Assembler for x86 and x86-64
+about = nasm and ndisasm, unpacked into /home/apps/nasm and put on the PATH. SynthOS itself is built with NASM.
+kind = zip
+url = https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win32/nasm-2.16.03-win32.zip
+sha256 = 1881d062da8a2f02d832c3d47262697817541bcbb853126638ad209ea6ffe5b0
+strip = nasm-2.16.03/
+bin = .
+check = nasm.exe
+
+[ripgrep]
+name = ripgrep
+developer = Andrew Gallant
+category = Developer Tools
+icon = code
+version = 14.1.1
+size = 5 MB
+summary = Search folders for a pattern, very fast
+about = rg recursively searches the current folder for a regex and respects .gitignore. Unpacked into /home/apps/ripgrep and put on the PATH.
+kind = zip
+url = https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-i686-pc-windows-msvc.zip
+sha256 = 1e5c99e4851c964152db07c79151982c7fa7a549b645b6b47daae07a9c185f8e
+strip = ripgrep-14.1.1-i686-pc-windows-msvc/
+bin = .
+check = rg.exe
+
+[nodejs]
+name = Node.js
+developer = OpenJS Foundation
+category = Developer Tools
+icon = code
+version = 22.23.4 LTS
+size = 90 MB
+summary = JavaScript outside the browser, with npm
+about = The official 32-bit Node.js LTS build, unpacked into /home/apps/nodejs and put on the PATH: node and npm work in the Terminal.
+kind = zip
+url = https://nodejs.org/dist/v22.23.4/node-v22.23.4-win-x86.zip
+sha256 = 7d6c4dce2ecccca46e3c4b3e43c8bebbd1969bd616fdb4fda1e8269171d9ccea
+strip = node-v22.23.4-win-x86/
+bin = .
+check = node.exe
+
+[jq]
+name = jq
+developer = The jq authors
+category = Developer Tools
+icon = code
+version = 1.8.1
+size = 1 MB
+summary = Slice, filter and reshape JSON on the command line
+about = The official 32-bit jq, kept in /home/apps/jq and put on the PATH: curl ... | jq .items works in the Terminal.
+kind = zip
+url = https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-windows-i386.exe
+sha256 = 414ec99417830178bd2f6e77fc78b34de3b12fc6b6c3229f07038c5811307124
+file = jq.exe
+bin = .
+check = jq.exe

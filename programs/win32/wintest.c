@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -777,6 +778,49 @@ static void props_test(void)
            wcsstr(info.szPath, L"shell32.dll") != NULL);
 }
 
+static int apc_count;
+
+static void CALLBACK count_apc(ULONG_PTR v)
+{
+    apc_count += (int)v;
+}
+
+static DWORD io_bytes;
+
+static void CALLBACK read_done(DWORD err, DWORD bytes, OVERLAPPED *ov)
+{
+    (void)ov;
+    io_bytes = err ? 0 : bytes;
+}
+
+static void extra_test(void)
+{
+    char path[MAX_PATH] = "C:\\apps\\tools\\..\\wintest.exe";
+    char root[MAX_PATH] = "C:\\apps\\x";
+    PathStripToRootA(root);
+    printf("shlwapi-a name=%s ext=%s rel=%d unc=%d root=%s\n", PathFindFileNameA(path), PathFindExtensionA(path),
+           PathIsRelativeA("a\\b"), PathIsUNCA("\\\\srv\\share"), root);
+    wchar_t compact[16];
+    PathCompactPathExW(compact, L"C:\\folder\\deep\\file.txt", 16, 0);
+    char size[32];
+    StrFormatByteSizeA(1536, size, sizeof(size));
+    WORD h, l, sat;
+    ColorRGBToHLS(RGB(255, 0, 0), &h, &l, &sat);
+    printf("compact=%ls size=%s hls=%u,%u,%u back=%06lx\n", compact, size, h, l, sat,
+           (unsigned long)ColorHLSToRGB(h, l, sat));
+    printf("bessel j0=%.4f j1=%.4f y0=%.4f jn=%.4f\n", _j0(1.0), _j1(1.0), _y0(1.0), _jn(2, 1.0));
+    QueueUserAPC(count_apc, GetCurrentThread(), 5);
+    DWORD before = apc_count, r = SleepEx(1000, TRUE);
+    printf("apc before=%lu after=%d wait=%lx\n", before, apc_count, r);
+    HANDLE f = CreateFileA("C:\\apps\\wintest.exe", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    char buf[64];
+    OVERLAPPED ov = {0};
+    BOOL ok = ReadFileEx(f, buf, sizeof(buf), &ov, read_done);
+    r = SleepEx(0, TRUE);
+    printf("readfileex ok=%d bytes=%lu wait=%lx mz=%d\n", ok, io_bytes, r, buf[0] == 'M' && buf[1] == 'Z');
+    CloseHandle(f);
+}
+
 static void shell_test(void)
 {
     WIN32_FIND_DATAW fd;
@@ -873,6 +917,8 @@ int main(int argc, char **argv)
         gecko_test();
     } else if (!strcmp(mode, "shell")) {
         shell_test();
+    } else if (!strcmp(mode, "extra")) {
+        extra_test();
     } else if (!strcmp(mode, "props")) {
         props_test();
     } else if (!strcmp(mode, "crypto")) {

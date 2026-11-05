@@ -1123,6 +1123,213 @@ static BOOL WINAPI AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b)
     return a == b;
 }
 
+static WCHAR *prop_name(const char *name)
+{
+    return (uintptr_t)name < 0x10000 ? (WCHAR *)(uintptr_t)name : w32_widen(name);
+}
+
+static void prop_done(const char *name, WCHAR *w)
+{
+    if ((uintptr_t)name >= 0x10000)
+        w32_free(w);
+}
+
+static BOOL WINAPI SetPropA(HANDLE h, const char *name, HANDLE value)
+{
+    WCHAR *w = prop_name(name);
+    BOOL ok = w && SetPropW(h, w, value);
+    prop_done(name, w);
+    return ok;
+}
+
+static HANDLE WINAPI GetPropA(HANDLE h, const char *name)
+{
+    WCHAR *w = prop_name(name);
+    HANDLE v = w ? GetPropW(h, w) : NULL;
+    prop_done(name, w);
+    return v;
+}
+
+static HANDLE WINAPI RemovePropA(HANDLE h, const char *name)
+{
+    WCHAR *w = prop_name(name);
+    HANDLE v = w ? RemovePropW(h, w) : NULL;
+    prop_done(name, w);
+    return v;
+}
+
+static UINT WINAPI MapVirtualKeyA(UINT code, UINT type)
+{
+    return MapVirtualKeyW(code, type);
+}
+
+static LRESULT WINAPI SendMessageTimeoutA(HANDLE h, UINT msg, WPARAM wp, LPARAM lp, UINT flags, UINT timeout,
+                                          uintptr_t *result)
+{
+    UNUSED(flags);
+    UNUSED(timeout);
+    LRESULT(WINAPI * send)(HANDLE, UINT, WPARAM, LPARAM) =
+        (LRESULT(WINAPI *)(HANDLE, UINT, WPARAM, LPARAM))user32_fn("SendMessageA");
+    if (!send || !w32_win(h))
+        return 0;
+    LRESULT r = send(h, msg, wp, lp);
+    if (result)
+        *result = (uintptr_t)r;
+    return 1;
+}
+
+static LONG WINAPI GetMenuCheckMarkDimensions(void)
+{
+    return 13 | 13 << 16;
+}
+
+static BOOL WINAPI OpenIcon(HANDLE h)
+{
+    BOOL(WINAPI * show)(HANDLE, int) = (BOOL(WINAPI *)(HANDLE, int))user32_fn("ShowWindow");
+    if (!w32_win(h) || !show)
+        return FALSE;
+    show(h, 9);
+    return TRUE;
+}
+
+static HANDLE WINAPI GetNextDlgGroupItem(HANDLE dlg, HANDLE ctl, BOOL previous)
+{
+    HANDLE(WINAPI * next)(HANDLE, HANDLE, BOOL) = (HANDLE(WINAPI *)(HANDLE, HANDLE, BOOL))user32_fn("GetNextDlgTabItem");
+    return next ? next(dlg, ctl, previous) : NULL;
+}
+
+typedef BOOL(WINAPI *text_out_w_fn)(HANDLE, int, int, const WCHAR *, int);
+typedef BOOL(WINAPI *extent_w_fn)(HANDLE, const WCHAR *, int, SIZE *);
+typedef BOOL(WINAPI *metrics_w_fn)(HANDLE, uint8_t *);
+
+/* Text with tabs: stops at the given positions (one value = every N pixels, none = 8 average characters) */
+static DWORD tabbed_text(HANDLE dc, int x, int y, const WCHAR *s, int n, int count, const int *stops, int origin,
+                         bool draw)
+{
+    text_out_w_fn out = (text_out_w_fn)w32_builtin_lookup("gdi32.dll", "TextOutW");
+    extent_w_fn extent = (extent_w_fn)w32_builtin_lookup("gdi32.dll", "GetTextExtentPoint32W");
+    metrics_w_fn metrics = (metrics_w_fn)w32_builtin_lookup("gdi32.dll", "GetTextMetricsW");
+    uint8_t tm[64] = {0};
+    if (!s || !extent || !metrics || !out || !metrics(dc, tm))
+        return 0;
+    int32_t height, avg;
+    memcpy(&height, tm, 4);
+    memcpy(&avg, tm + 20, 4);
+    int step = count == 1 && stops ? stops[0] : count <= 0 || !stops ? 8 * MAX(avg, 1) : 0;
+    if (n < 0)
+        n = (int)w32_wcslen(s);
+    int pos = x;
+    for (int i = 0; i < n;) {
+        int j = i;
+        while (j < n && s[j] != '\t')
+            j++;
+        SIZE sz = {0, 0};
+        if (j > i) {
+            extent(dc, s + i, j - i, &sz);
+            if (draw)
+                out(dc, pos, y, s + i, j - i);
+            pos += sz.cx;
+        }
+        if (j >= n)
+            break;
+        int rel = pos - origin, next = 0;
+        if (step > 0)
+            next = (rel / step + 1) * step;
+        else {
+            int k = 0;
+            while (k < count && stops[k] <= rel)
+                k++;
+            next = k < count ? stops[k] : rel + 8 * MAX(avg, 1);
+        }
+        pos = origin + next;
+        i = j + 1;
+    }
+    return (DWORD)(pos - x) | (DWORD)height << 16;
+}
+
+static LONG WINAPI TabbedTextOutW(HANDLE dc, int x, int y, const WCHAR *s, int n, int count, const int *stops,
+                                  int origin)
+{
+    return (LONG)tabbed_text(dc, x, y, s, n, count, stops, origin, true);
+}
+
+static LONG WINAPI TabbedTextOutA(HANDLE dc, int x, int y, const char *s, int n, int count, const int *stops,
+                                  int origin)
+{
+    char *copy = s ? w32_zalloc((size_t)(n < 0 ? (int)strlen(s) : n) + 1) : NULL;
+    if (!copy)
+        return 0;
+    memcpy(copy, s, n < 0 ? strlen(s) : (size_t)n);
+    WCHAR *w = w32_widen(copy);
+    LONG r = w ? (LONG)tabbed_text(dc, x, y, w, -1, count, stops, origin, true) : 0;
+    w32_free(w);
+    w32_free(copy);
+    return r;
+}
+
+static DWORD WINAPI GetTabbedTextExtentW(HANDLE dc, const WCHAR *s, int n, int count, const int *stops)
+{
+    return tabbed_text(dc, 0, 0, s, n, count, stops, 0, false);
+}
+
+static DWORD WINAPI GetTabbedTextExtentA(HANDLE dc, const char *s, int n, int count, const int *stops)
+{
+    char *copy = s ? w32_zalloc((size_t)(n < 0 ? (int)strlen(s) : n) + 1) : NULL;
+    if (!copy)
+        return 0;
+    memcpy(copy, s, n < 0 ? strlen(s) : (size_t)n);
+    WCHAR *w = w32_widen(copy);
+    DWORD r = w ? tabbed_text(dc, 0, 0, w, -1, count, stops, 0, false) : 0;
+    w32_free(w);
+    w32_free(copy);
+    return r;
+}
+
+typedef BOOL(WINAPI *gray_proc_fn)(HANDLE, uintptr_t, int);
+
+/* Disabled-looking text: the program's own drawing, or the string in the grey text colour */
+static BOOL gray_string(HANDLE dc, void *proc, uintptr_t data, int n, int x, int y, bool wide)
+{
+    if (proc)
+        return W32_CALL(gray_proc_fn, proc, dc, data, n);
+    DWORD(WINAPI * color)(int) = (DWORD(WINAPI *)(int))user32_fn("GetSysColor");
+    DWORD(WINAPI * set)(HANDLE, DWORD) = (DWORD(WINAPI *)(HANDLE, DWORD))w32_builtin_lookup("gdi32.dll", "SetTextColor");
+    BOOL(WINAPI * out)(HANDLE, int, int, const void *, int) =
+        (BOOL(WINAPI *)(HANDLE, int, int, const void *, int))w32_builtin_lookup("gdi32.dll", wide ? "TextOutW" : "TextOutA");
+    if (!set || !out || !color || !data)
+        return FALSE;
+    if (!n)
+        n = wide ? (int)w32_wcslen((const WCHAR *)data) : (int)strlen((const char *)data);
+    DWORD old = set(dc, color(17));
+    BOOL ok = out(dc, x, y, (const void *)data, n);
+    set(dc, old);
+    return ok;
+}
+
+static BOOL WINAPI GrayStringA(HANDLE dc, HANDLE brush, void *proc, uintptr_t data, int n, int x, int y, int w, int h)
+{
+    UNUSED(brush);
+    UNUSED(w);
+    UNUSED(h);
+    return gray_string(dc, proc, data, n, x, y, false);
+}
+
+static BOOL WINAPI GrayStringW(HANDLE dc, HANDLE brush, void *proc, uintptr_t data, int n, int x, int y, int w, int h)
+{
+    UNUSED(brush);
+    UNUSED(w);
+    UNUSED(h);
+    return gray_string(dc, proc, data, n, x, y, true);
+}
+
+static int WINAPI DrawTextExA(HANDLE dc, char *s, int n, RECT *r, UINT format, void *params)
+{
+    UNUSED(params);
+    int(WINAPI * draw)(HANDLE, const char *, int, RECT *, UINT) =
+        (int(WINAPI *)(HANDLE, const char *, int, RECT *, UINT))user32_fn("DrawTextA");
+    return draw ? draw(dc, s, n, r, format) : 0;
+}
+
 static const struct w32_export user32x_exports[] = {
     W32_AS("SetProcessDpiAwarenessContext", w32_one1),
     W32_AS("IsValidDpiAwarenessContext", w32_one1),
@@ -1148,6 +1355,26 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(SetPropW),
     W32_FN(GetPropW),
     W32_FN(RemovePropW),
+    W32_FN(SetPropA),
+    W32_FN(GetPropA),
+    W32_FN(RemovePropA),
+    W32_FN(MapVirtualKeyA),
+    W32_FN(SendMessageTimeoutA),
+    W32_FN(GetMenuCheckMarkDimensions),
+    W32_FN(OpenIcon),
+    W32_FN(GetNextDlgGroupItem),
+    W32_FN(TabbedTextOutW),
+    W32_FN(TabbedTextOutA),
+    W32_FN(GetTabbedTextExtentW),
+    W32_FN(GetTabbedTextExtentA),
+    W32_FN(GrayStringA),
+    W32_FN(GrayStringW),
+    W32_FN(DrawTextExA),
+    W32_AS("SetMenuItemBitmaps", w32_one5),
+    W32_AS("DrawAnimatedRects", w32_one4),
+    W32_AS("SetWindowContextHelpId", w32_one2),
+    W32_AS("WinHelpA", w32_zero4),
+    W32_AS("WinHelpW", w32_zero4),
     W32_FN(GetWindowPlacement),
     W32_AS("SetWindowPlacement", w32_one2),
     W32_AS("GetWindowRgn", w32_zero2),
