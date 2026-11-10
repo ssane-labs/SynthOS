@@ -258,7 +258,7 @@ HANDLE w32_inheritable(HANDLE h, const void *sa)
 {
     struct w32_object *o = w32_handle_get(h);
     if (o && sa)
-        o->inherit = ((const uint32_t *)sa)[2] != 0;
+        o->inherit = ((const uint32_t *)sa)[w32->win64 ? 4 : 2] != 0;
     return h;
 }
 

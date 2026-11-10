@@ -109,6 +109,17 @@ static const struct w32_sig *sig_of(const void *fn, size_t *index)
     return NULL;
 }
 
+/* which arguments of a built-in are integers: a 64-bit program gives them in full registers or stack slots whose
+   upper half is undefined, so they are cut to 32 bits instead of being treated as pointers */
+uint32_t w32_int_args(const void *fn)
+{
+    size_t i;
+    if (!sigs)
+        w32_gate_init();
+    const struct w32_sig *s = sig_of(fn, &i);
+    return s ? s->ints : 0;
+}
+
 void *w32_guest_addr(const void *fn)
 {
     size_t i;

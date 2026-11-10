@@ -6,8 +6,9 @@ usage: w32sig.py SOURCE.c OUT.h CLANG [flags...]
 A 32-bit program pushes arguments the way the 32-bit kernel's functions expect them (stdcall or cdecl, i386); the
 64-bit kernel's functions (x32 code) take them in registers (System V). The source is compiled to LLVM IR twice, as
 i386 and as x32, and for every function a 32-bit program can reach (stdcall functions and the targets of export tables)
-the header gets a gate entry: where each 64-bit argument comes from on the 32-bit stack, how the result goes back
-and how many bytes the callee pops. The header is included at the end of the source, so static functions count."""
+the header gets a gate entry: where each 64-bit argument comes from on the 32-bit stack, how the result goes back,
+how many bytes the callee pops and which arguments are integers rather than pointers (a 64-bit program's caller
+leaves the upper half of those undefined). The header is included at the end of the source, so static functions count."""
 
 import re
 import subprocess
@@ -143,6 +144,7 @@ def plan(name, g, h, size32, size64):
     gps = [guest_param(p, size32) for p in g['params']]
     hps = [host_param(p) for p in h['params']]
     args, gi, hi, off = [], 0, 0, 0
+    ints = 0
     ret = None
     if gps and gps[0][0] == 'sret':
         ret = 'sret'
@@ -182,6 +184,8 @@ def plan(name, g, h, size32, size64):
                 raise ValueError('%s: fewer 64-bit parameters' % name)
             ht = hps[hi][0]
             t = 'ptr' if ht.split()[-1].startswith('addrspace') or ht.endswith('ptr') else ht.split()[-1]
+            if t in ('i1', 'i8', 'i16', 'i32') and gi < 32:
+                ints |= 1 << gi
             if t in ('float',):
                 args.append(('F32', off, 0))
             elif t == 'double':
@@ -222,7 +226,29 @@ def plan(name, g, h, size32, size64):
                 ret = 'pair'
         else:
             raise ValueError('%s: return %s / %s' % (name, r, hr))
-    return (off if g['stdcall'] else 0, ret, args)
+    return (off if g['stdcall'] else 0, ret, args, ints)
+
+
+INT_TYPES = {'DWORD', 'UINT', 'ULONG', 'LONG', 'INT', 'int', 'BOOL', 'BOOLEAN', 'WORD', 'USHORT', 'SHORT', 'BYTE',
+             'UCHAR', 'CHAR', 'char', 'WCHAR', 'short', 'long', 'unsigned', 'signed', 'uint32_t', 'int32_t', 'uint16_t',
+             'int16_t', 'uint8_t', 'int8_t', 'bool', 'NTSTATUS', 'ACCESS_MASK', 'LCID', 'LANGID', 'COLORREF', 'ATOM',
+             'HRESULT', 'DWORD32', 'UINT32', 'INT32', 'LCTYPE', 'CALID', 'CALTYPE', 'GEOID', 'MMRESULT', 'FOURCC',
+             'REGSAM', 'LSTATUS', 'SECURITY_INFORMATION', 'const', 'volatile', 'enum'}
+
+
+def int_params(source_text, name):
+    """positions of the parameters declared with a plain 32-bit integer type (not pointers, not *_PTR or size_t)"""
+    m = re.search(r'\b%s\s*\(([^)]*)\)\s*\{' % re.escape(name), source_text)
+    if not m:
+        return 0
+    mask = 0
+    for i, p in enumerate(split_top(m.group(1))):
+        words = re.findall(r'[A-Za-z_]\w*', p)
+        if '*' in p or '[' in p or len(words) < 2 or i >= 32:
+            continue
+        if all(w in INT_TYPES for w in words[:-1]):
+            mask |= 1 << i
+    return mask
 
 
 def export_targets(text):
@@ -234,6 +260,8 @@ def export_targets(text):
 
 def main():
     source, out, flags = sys.argv[1], sys.argv[2], sys.argv[3:]
+    with open(source, errors='replace') as f:
+        text = f.read()
     t32 = ir(source, 'i686-unknown-none-elf', flags)
     t64 = ir(source, 'x86_64-linux-gnux32', flags)
     f32, f64 = functions(t32), functions(t64)
@@ -245,12 +273,13 @@ def main():
         if name not in f32 or name not in f64 or f32[name]['other_cc']:
             continue
         try:
-            pop, ret, args = plan(name, f32[name], f64[name], size32, size64)
+            pop, ret, args, ints = plan(name, f32[name], f64[name], size32, size64)
+            ints &= int_params(text, name)
         except ValueError as e:
             errors.append(str(e))
             continue
         code = ''.join('\\x%02x\\x%02x\\x%02x' % (KINDS[k], o // 4, (x + 3) // 4) for k, o, x in args)
-        lines.append('    {(const void *)%s, %d, %d, %d, "%s"},' % (name, pop, RETS[ret], len(args), code))
+        lines.append('    {(const void *)%s, %d, %d, %d, %#x, "%s"},' % (name, pop, RETS[ret], len(args), ints, code))
     if errors:
         sys.stderr.write('\n'.join('w32sig: %s: %s' % (source, e) for e in errors) + '\n')
         sys.exit(1)

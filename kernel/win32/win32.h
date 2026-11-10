@@ -439,6 +439,7 @@ void w32_inherit_free(struct w32_inherit *in);
 HANDLE w32_handle_put(struct w32_process *p, struct w32_object *o);
 const HANDLE *w32_attribute_handles(const void *attributes, int *count);
 HANDLE w32_inheritable(HANDLE h, const void *sa);
+const char *w32_pipe_name(HANDLE h);
 struct w32_object *w32_handle_get_in(struct w32_process *p, HANDLE h);
 struct w32_process *w32_process_by_pid(uint32_t pid);
 uint32_t w32_current_pid(void);
@@ -563,8 +564,10 @@ struct w32_sig {
     uint16_t pop;
     uint8_t ret;
     uint8_t nargs;
+    uint32_t ints;
     const char *args;
 } __attribute__((aligned(8)));
+uint32_t w32_int_args(const void *fn);
 #ifdef __x86_64__
 void *w32_guest_addr(const void *fn);
 bool w32_native_code(const void *fn);

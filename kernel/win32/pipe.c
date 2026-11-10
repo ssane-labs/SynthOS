@@ -35,6 +35,13 @@ struct w32_npipe {
 
 static struct w32_npipe *npipes;
 
+/* the name after \\.\pipe of a named pipe handle, for GetFileInformationByHandleEx */
+const char *w32_pipe_name(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    return o && o->type == WH_PIPE && o->npipe ? o->npipe->name : NULL;
+}
+
 static void npipe_detach(struct w32_object *o)
 {
     if (o->pipe) {

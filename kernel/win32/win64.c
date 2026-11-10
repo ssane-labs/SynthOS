@@ -25,7 +25,7 @@ struct w64_stub {
     uint8_t code[16];
     w64_handler fn;
     void *target;
-    uint32_t flags;
+    uint32_t flags, ints;
     const char *module;
     const char *name;
     struct w64_stub *next;
@@ -178,7 +178,7 @@ static uint64_t dispatch(struct w64_stub *s, uint64_t *a, const uint64_t *f)
     uint32_t args[MAX_ARGS];
     int count = MAX_ARGS;
     for (int i = 0; i < MAX_ARGS; i++)
-        args[i] = narrow(a[i]);
+        args[i] = s->ints >> i & 1 ? (uint32_t)a[i] : narrow(a[i]);
     if (s->flags & W64F_SPLIT0) {
         args[0] = (uint32_t)a[0];
         args[1] = (uint32_t)(a[0] >> 32);
@@ -221,6 +221,16 @@ static const struct w64_export *find_export(const char *module, const char *name
     return strcmp(module, "*") ? find_export("*", name) : NULL;
 }
 
+static uint32_t int_args(const void *fn)
+{
+#ifdef __x86_64__
+    return w32_int_args(fn);
+#else
+    (void)fn;
+    return 0;
+#endif
+}
+
 static struct w64_stub *new_stub(const char *module, const char *name, const struct w64_export *e, void *target)
 {
     struct w64_stub *s = heap_alloc_aligned(&w32->heap, sizeof(*s), 16);
@@ -238,6 +248,7 @@ static struct w64_stub *new_stub(const char *module, const char *name, const str
     s->fn = e ? e->fn : NULL;
     s->flags = e ? e->flags : 0;
     s->target = target;
+    s->ints = target && !(s->flags & (W64F_SPLIT0 | W64F_MATH)) ? int_args(target) : 0;
     s->module = w32_strdup(module);
     s->name = w32_strdup(name);
     s->next = S->stubs;
@@ -697,9 +708,12 @@ static void startup_to64(const uint8_t *s, uint8_t *o)
         put64(o + 80 + i * 8, w64_sx(rd32(s + 56 + i * 4)));
 }
 
+/* STARTUPINFOEX (cb 112) adds the attribute list after the 104-byte STARTUPINFO: it goes to the 32-bit slot 17 */
 static void startup_to32(const uint8_t *o, uint8_t *s)
 {
-    memset(s, 0, 68);
+    memset(s, 0, 72);
+    if (rd32(o) >= 112)
+        put32(s + 68, U(P(rd64(o + 104))));
     put32(s, 68);
     for (int i = 0; i < 3; i++)
         put32(s + 4 + i * 4, rdp(o + 8 + i * 8));
@@ -720,11 +734,11 @@ static uint64_t h_get_startup_info(uint64_t *a, const uint64_t *f, void *t)
 
 static uint64_t h_create_process(uint64_t *a, const uint64_t *f, void *t)
 {
-    uint8_t si[68], pi[16] = {0};
+    uint8_t si[72], pi[16] = {0};
     if (a[8])
         startup_to32(P(a[8]), si);
-    uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), narrow(a[2]), narrow(a[3]), narrow(a[4]),
-                               narrow(a[5]), narrow(a[6]), narrow(a[7]), a[8] ? U(si) : 0, U(pi));
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), narrow(a[2]), narrow(a[3]), (uint32_t)a[4],
+                               (uint32_t)a[5], narrow(a[6]), narrow(a[7]), a[8] ? U(si) : 0, U(pi));
     if (r && a[9]) {
         uint8_t *o = P(a[9]);
         put64(o, rd32(pi));
@@ -813,14 +827,14 @@ static uint64_t h_wait_multiple(uint64_t *a, const uint64_t *f, void *t)
     const uint64_t *src = P(a[1]);
     for (uint32_t i = 0; i < n; i++)
         handles[i] = (uint32_t)src[i];
-    return w64_sx((uint32_t)T32(t, n, U(handles), narrow(a[2]), narrow(a[3]), narrow(a[4])));
+    return w64_sx((uint32_t)T32(t, n, U(handles), (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]));
 }
 
 static uint64_t h_duplicate_handle(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t h = 0;
     uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), narrow(a[2]), a[3] ? U(&h) : 0,
-                               narrow(a[4]), narrow(a[5]), narrow(a[6]));
+                               (uint32_t)a[4], (uint32_t)a[5], (uint32_t)a[6]);
     out64(a[3], h);
     return r;
 }
@@ -830,7 +844,7 @@ static uint64_t h_format_message(uint64_t *a, const uint64_t *f, void *t)
     uint32_t flags = (uint32_t)a[0] & ~0x2000u, buf = 0;
     bool alloc = flags & 0x100;
     uint32_t r = (uint32_t)T32(t, flags | 0x200, narrow(a[1]), narrow(a[2]), narrow(a[3]),
-                               alloc ? U(&buf) : narrow(a[4]), narrow(a[5]), 0);
+                               alloc ? U(&buf) : narrow(a[4]), (uint32_t)a[5], 0);
     if (alloc)
         out64(a[4], buf);
     return r;
@@ -864,7 +878,7 @@ static uint64_t h_fls_alloc(uint64_t *a, const uint64_t *f, void *t)
 
 static uint64_t h_set_file_pointer_ex(uint64_t *a, const uint64_t *f, void *t)
 {
-    return (uint32_t)T32(t, narrow(a[0]), (uint32_t)a[1], (uint32_t)(a[1] >> 32), narrow(a[2]), narrow(a[3]));
+    return (uint32_t)T32(t, narrow(a[0]), (uint32_t)a[1], (uint32_t)(a[1] >> 32), narrow(a[2]), (uint32_t)a[3]);
 }
 
 static uint64_t h_c_specific_handler(uint64_t *a, const uint64_t *f, void *t)
@@ -875,7 +889,7 @@ static uint64_t h_c_specific_handler(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_getmainargs(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t argc, argv, env;
-    T32(t, U(&argc), U(&argv), U(&env), narrow(a[3]), narrow(a[4]));
+    T32(t, U(&argc), U(&argv), U(&env), (uint32_t)a[3], narrow(a[4]));
     put32(P(a[0]), (uint32_t)w32->argc);
     out64(a[1], S->argv);
     out64(a[2], S->environ);
@@ -885,7 +899,7 @@ static uint64_t h_getmainargs(uint64_t *a, const uint64_t *f, void *t)
 static uint64_t h_wgetmainargs(uint64_t *a, const uint64_t *f, void *t)
 {
     uint32_t argc, argv, env;
-    T32(t, U(&argc), U(&argv), U(&env), narrow(a[3]), narrow(a[4]));
+    T32(t, U(&argc), U(&argv), U(&env), (uint32_t)a[3], narrow(a[4]));
     put32(P(a[0]), (uint32_t)w32->argc);
     out64(a[1], S->wargv);
     out64(a[2], S->wenviron);
@@ -1409,7 +1423,7 @@ static uint64_t iosb_back(uint64_t to, const struct iosb32 *io, uint32_t status)
 static uint64_t h_nt_file_info(uint64_t *a, const uint64_t *f, void *t)
 {
     struct iosb32 io = {0, 0};
-    uint32_t r = (uint32_t)T32(t, narrow(a[0]), U(&io), U(P(a[2])), narrow(a[3]), narrow(a[4]));
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), U(&io), U(P(a[2])), (uint32_t)a[3], (uint32_t)a[4]);
     return iosb_back(a[1], &io, r);
 }
 
@@ -1454,8 +1468,8 @@ static uint64_t h_nt_query_directory(uint64_t *a, const uint64_t *f, void *t)
         mask.max = (uint16_t)(us[2] | us[3] << 8);
         mask.buffer = U(P(rd64(us + 8)));
     }
-    uint32_t r = (uint32_t)T32(t, narrow(a[0]), 0, 0, 0, U(&io), U(P(a[5])), narrow(a[6]), narrow(a[7]),
-                               narrow(a[8]), us ? U(&mask) : 0, narrow(a[10]));
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), 0, 0, 0, U(&io), U(P(a[5])), (uint32_t)a[6], (uint32_t)a[7],
+                               (uint32_t)a[8], us ? U(&mask) : 0, (uint32_t)a[10]);
     return iosb_back(a[4], &io, r);
 }
 
@@ -1481,11 +1495,89 @@ static uint64_t h_nt_key(uint64_t *a, const uint64_t *f, void *t)
         attr32[3] = (uint32_t)rd64(attr + 24);
     }
     uint32_t h = 0;
-    uint32_t r = (uint32_t)T32(t, a[0] ? U(&h) : 0, narrow(a[1]), attr ? U(attr32) : 0, narrow(a[3]), narrow(a[4]),
-                               narrow(a[5]), narrow(a[6]));
+    uint32_t r = (uint32_t)T32(t, a[0] ? U(&h) : 0, (uint32_t)a[1], attr ? U(attr32) : 0, (uint32_t)a[3], narrow(a[4]),
+                               (uint32_t)a[5], narrow(a[6]));
     out64(a[0], h);
     return r;
 }
+
+/* GetTokenInformation: TOKEN_USER, TOKEN_GROUPS, TOKEN_OWNER and TOKEN_MANDATORY_LABEL hold SID pointers, so their 64-bit
+   layout differs; the 32-bit answer is rebuilt with 8-byte pointers into the program's own buffer. */
+static uint64_t h_token_info(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t cls = (uint32_t)a[1], len = (uint32_t)a[3], need = 0;
+    uint32_t head64;
+    switch (cls) {
+    case 1:
+    case 25: head64 = 16; break;
+    case 2: head64 = 24; break;
+    case 4:
+    case 5:
+    case 6: head64 = 8; break;
+    default: head64 = 0; break;
+    }
+    if (!head64)
+        return (uint32_t)T32(t, narrow(a[0]), cls, narrow(a[2]), len, a[4] ? U(P(a[4])) : 0);
+    uint8_t tmp[128];
+    uint32_t ok = (uint32_t)T32(t, narrow(a[0]), cls, U(tmp), (uint32_t)sizeof(tmp), U(&need));
+    uint32_t head32 = cls == 2 ? 12 : cls == 1 || cls == 25 ? 8 : 4;
+    uint32_t sid = need > head32 ? need - head32 : 0, total = head64 + sid;
+    if (a[4])
+        put32(P(a[4]), total);
+    if (!ok)
+        return 0;
+    if (!a[2] || len < total) {
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    uint8_t *o = P(a[2]);
+    memset(o, 0, head64);
+    memcpy(o + head64, tmp + head32, sid);
+    uint64_t sid_at = sid ? a[2] + head64 : 0;
+    if (cls == 2) {
+        put32(o, rd32(tmp));
+        put64(o + 8, sid_at);
+        put32(o + 16, rd32(tmp + 8));
+    } else {
+        put64(o, sid_at);
+        if (head64 == 16)
+            put32(o + 8, rd32(tmp + 4));
+    }
+    return 1;
+}
+
+/* NtQueryObject: the name and type classes start with a UNICODE_STRING whose 64-bit form is 8 bytes longer */
+static uint64_t h_query_object(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t cls = (uint32_t)a[1], len = (uint32_t)a[3], need = 0;
+    if (cls != 1 && cls != 2)
+        return w64_sx((uint32_t)T32(t, narrow(a[0]), cls, narrow(a[2]), len, a[4] ? U(P(a[4])) : 0));
+    uint32_t head32 = cls == 1 ? 8 : 96, head64 = head32 + 8;
+    uint8_t *tmp = w32_zalloc(1024);
+    if (!tmp)
+        return 0xc000009aull;
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), cls, U(tmp), 1024u, U(&need));
+    uint32_t text = need > head32 ? need - head32 : 0, total = head64 + text;
+    if (a[4])
+        put32(P(a[4]), total);
+    if (r == 0 && (!a[2] || len < total))
+        r = 0xc0000004u;
+    if (r == 0) {
+        uint8_t *o = P(a[2]);
+        memset(o, 0, head64);
+        memcpy(o, tmp, 4);
+        memcpy(o + 16, tmp + 8, head32 - 8);
+        memcpy(o + head64, tmp + head32, text);
+        put64(o + 8, text ? a[2] + head64 : 0);
+    }
+    w32_free(tmp);
+    return w64_sx(r);
+}
+
+static const struct w64_export advapi32_exports[] = {
+    W64_FN("GetTokenInformation", h_token_info),
+};
+W64_EXPORTS(advapi32_module, "advapi32.dll", advapi32_exports);
 
 static const struct w64_export shell32_exports[] = {
     W64_FN("CommandLineToArgvW", h_argv_w),
@@ -1503,6 +1595,8 @@ static const struct w64_export ntdll_exports[] = {
     W64_FN("NtSetInformationFile", h_nt_set_file_info),
     W64_FN("ZwSetInformationFile", h_nt_set_file_info),
     W64_FN("NtQueryDirectoryFile", h_nt_query_directory),
+    W64_FN("NtQueryObject", h_query_object),
+    W64_FN("ZwQueryObject", h_query_object),
     W64_FN("ZwQueryDirectoryFile", h_nt_query_directory),
     W64_FN("NtFlushBuffersFile", h_nt_flush),
     W64_FN("NtOpenKey", h_nt_key),

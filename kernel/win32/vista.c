@@ -258,9 +258,11 @@ static BOOL WINAPI GetFileInformationByHandleEx(HANDLE h, int cls, uint8_t *buf,
         return TRUE;
     case 2: {
         char path[PATH_MAX_LEN + 8];
-        if (!final_path(h, path, sizeof(path)))
+        const char *pipe = w32_pipe_name(h), *p = path + 6;
+        if (pipe)
+            ksnprintf(path, sizeof(path), "\\%s", pipe), p = path;
+        else if (!final_path(h, path, sizeof(path)))
             return FALSE;
-        const char *p = path + 6;
         DWORD n = (DWORD)strlen(p);
         if (size < 4 + n * 2) {
             w32_set_error(234);
