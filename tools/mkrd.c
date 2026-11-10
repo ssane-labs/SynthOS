@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -233,8 +234,14 @@ int main(int argc, char **argv)
 {
     if (argc == 5 && strcmp(argv[1], "--kernel") == 0)
         return pack_kernel(argv[2], argv[3], argv[4]);
+    /* --raw leaves the pack uncompressed for tools/lzmapack.py */
+    bool raw = argc == 4 && strcmp(argv[1], "--raw") == 0;
+    if (raw) {
+        argv++;
+        argc--;
+    }
     if (argc != 3) {
-        fprintf(stderr, "usage: mkrd <directory> <output>\n");
+        fprintf(stderr, "usage: mkrd [--raw] <directory> <output>\n");
         return 1;
     }
     walk(argv[1], "");
@@ -275,5 +282,5 @@ int main(int argc, char **argv)
     }
     fclose(out);
     printf("  RAMDISK %s: %zu entries, %ld bytes\n", argv[2], count, total);
-    return compress_file(argv[2]);
+    return raw ? 0 : compress_file(argv[2]);
 }

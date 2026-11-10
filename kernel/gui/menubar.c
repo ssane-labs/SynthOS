@@ -212,6 +212,8 @@ void menubar_paint(struct canvas *c, int screen)
                 struct rect r = islands[i];
                 r.x += i ? dx : 0;
                 gfx_round_frame(c, r, r.h / 2, style.dark ? ALPHA(0xffffffffu, 26) : ALPHA(0xffffffffu, 120));
+                if (gui_glass_effect() == GLASS_FX_HALO)
+                    glass_halo_edge(c, r, r.h / 2, 255);
             }
     } else if (style.glass == GLASS_LIQUID) {
         static uint32_t inks[MAX_SCREENS];

@@ -33,6 +33,7 @@ struct gui_look {
     enum dock_kind dock;
     enum status_kind status;
     unsigned widgets;
+    const char *wallpaper;
 };
 
 const struct gui_look *look_current(void);
@@ -82,6 +83,7 @@ struct glass_look {
     bool edge_line;
     bool liquid;
     bool solid;
+    bool halo;
     gfx_cover_fn shape;
     const void *shape_ctx;
     bool (*shape_span)(int y, const void *ctx, int *x0, int *x1);
@@ -106,6 +108,7 @@ struct glass {
     int out_x, out_y, out_mx, out_my;
     bool out_near;
     bool stale;
+    int retries;
     struct glass *next;
 };
 
@@ -120,6 +123,9 @@ void glass_freeze(bool on);
 void glass_defer(bool on);
 void glass_prepare(struct canvas *c, struct glass *g, const struct glass_look *look);
 void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius);
+void glass_draw_alpha(struct canvas *c, struct glass *g, const struct glass_look *look, int alpha);
+bool glass_ready(struct canvas *c, struct glass *g, const struct glass_look *look);
+void glass_halo_edge(struct canvas *c, struct rect f, int radius, int alpha);
 int glass_margin(void);
 int gfx_corner_coverage(struct rect r, int radius, int x, int y);
 
@@ -139,7 +145,7 @@ struct window *wm_top_popup(void);
 void wm_damage_all(void);
 void wm_set_tint(int brightness, int warmth);
 int gui_glass_strength(void);
-enum glass_effect { GLASS_FX_REGULAR, GLASS_FX_CLEAR, GLASS_FX_TINTED, GLASS_FX_SMOKY, GLASS_FX_PRISM };
+enum glass_effect { GLASS_FX_REGULAR, GLASS_FX_CLEAR, GLASS_FX_TINTED, GLASS_FX_SMOKY, GLASS_FX_PRISM, GLASS_FX_HALO };
 int gui_glass_effect(void);
 int gui_glass_edge(void);
 int gui_glass_frost(void);
@@ -336,6 +342,7 @@ bool dock_hidden(void);
 void menubar_open_app_menu(void);
 
 void spotlight_toggle(void);
+void settings_foreach_pane(void (*fn)(const char *name, const char *key, void *ctx), void *ctx);
 void launchpad_toggle(void);
 void control_center_toggle(int right);
 void control_center_edit(void);
@@ -364,7 +371,7 @@ void dock_bounce(const struct gui_app *app);
 
 void wallpaper_paint(struct canvas *c, const char *kind, bool dark);
 
-struct window *terminal_open(void);
+struct window *terminal_open(bool hidden);
 void terminal_close(void);
 void terminal_flush(void);
 struct window *terminal_window(void);

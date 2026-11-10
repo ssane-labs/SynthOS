@@ -892,7 +892,8 @@ static void draw_ghosts(struct canvas *c, bool above)
                 struct glass_look look;
                 glass_look_for(&look, w->flags & WIN_OVERLAY ? GLASS_OVERLAY : w->flags & WIN_POPUP ? GLASS_MENU : GLASS_WINDOW,
                                corner(w));
-                glass_prepare(c, w->glass, &look);
+                if (!glass_ready(c, w->glass, &look))
+                    continue;
             }
             if (!snapshot(w, &g->snap, g->margin))
                 continue;

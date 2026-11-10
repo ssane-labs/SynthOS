@@ -35,7 +35,7 @@
 #define GAP 24
 #define SECTIONS 32
 #define HISTORY 16
-#define WALLS 12
+#define WALLS 11
 #define LOOK_W 140
 #define LOOK_H 88
 #define THUMB_W 124
@@ -138,10 +138,10 @@ static const struct {
     {"Screenshot", "screenshot", SYM_SCREENSHOT, RGB(142, 142, 148), 4, P_APPS, pane_screenshot},
 };
 
-static const char *const wall_names[WALLS] = {"From the look", "Halo", "Mono", "Dune", "Mist", "Night", "Sunset",
-                                              "Waves", "Hills", "Aurora", "Synthwave", "Solid"};
-static const char *const wall_values[WALLS] = {"auto", "halo", "mono", "dune", "mist", "night", "sunset",
-                                               "waves", "hills", "aurora", "synthwave", "solid"};
+static const char *const wall_names[WALLS] = {"From the look", "Mono", "Halo", "Sunrise", "Earthset", "Aurora",
+                                              "Milky Way", "Dunes", "Glacier", "Saturn", "Solid"};
+static const char *const wall_values[WALLS] = {"auto", "mono", "halo", "sunrise", "earthset", "aurora",
+                                               "milkyway", "dunes", "glacier", "saturn", "solid"};
 
 struct settings {
     struct ui_state st;
@@ -835,7 +835,7 @@ static void make_look_thumbs(struct settings *s)
         if (look_thumbs[i].px || !canvas_alloc(&look_thumbs[i], LOOK_W, LOOK_H))
             continue;
         const struct gui_look *l = look_get(i);
-        wallpaper_paint(&look_thumbs[i], l->name, l->dark);
+        wallpaper_paint(&look_thumbs[i], l->wallpaper, l->dark);
     }
 }
 
@@ -875,7 +875,7 @@ static void pane_appearance(struct page *p)
 {
     struct settings *s = p->s;
     section(p, "Look");
-    struct rect r = custom(p, LOOK_H + 52, "Look Halo Mono Dune Mist");
+    struct rect r = custom(p, LOOK_H + 52, "Look Mono Halo Dune Mist");
     if (!p->measure) {
         make_look_thumbs(s);
         int n = look_count(), gap = CLAMP((r.w - 28 - n * LOOK_W) / MAX(n - 1, 1), 8, 40);
@@ -945,10 +945,10 @@ static void pane_appearance(struct page *p)
             apply_number("glassstrength", k);
     }
     if (strcmp(material, "solid")) {
-        static const char *const effects[] = {"Regular", "Clear", "Tinted", "Smoky", "Prism"};
-        static const char *const effect_values[] = {"regular", "clear", "tinted", "smoky", "prism"};
-        choice(p, "Effect", "The kind of glass", "glasseffect", effects, effect_values, 5,
-               360);
+        static const char *const effects[] = {"Halo", "Regular", "Clear", "Tinted", "Smoky", "Prism"};
+        static const char *const effect_values[] = {"halo", "regular", "clear", "tinted", "smoky", "prism"};
+        choice(p, "Effect", "Of every glass surface: menus, panels, widgets, the Dock", "glasseffect", effects,
+               effect_values, 6, 420);
         int e = (int)number("glassedge", 50);
         if (slider(p, "Edge brightness", "How bright the rim of light along the glass is", &e, 0, 100, "None", "Bright"))
             apply_number("glassedge", e);
@@ -1201,7 +1201,7 @@ static void make_thumbs(struct settings *s)
     for (int i = 0; i < WALLS; i++) {
         if (!thumbs[i].px && !canvas_alloc(&thumbs[i], THUMB_W, THUMB_H))
             continue;
-        wallpaper_paint(&thumbs[i], i ? wall_values[i] : look_current()->name, style.dark);
+        wallpaper_paint(&thumbs[i], i ? wall_values[i] : look_current()->wallpaper, style.dark);
     }
     thumbs_dark = style.dark;
     thumbs_look = look_current();
@@ -1617,6 +1617,12 @@ static void pane_language(struct page *p)
 
 static void pane_keyboard(struct page *p)
 {
+    section(p, "Shortcuts");
+    static const char *const key_sets[] = {"Both", "Windows", "macOS"};
+    static const char *const key_values[] = {"both", "windows", "mac"};
+    choice(p, "System shortcuts", "Windows: Win+E, Win+D, Alt+Tab, Alt+F4. macOS: Cmd+Q, Cmd+Space, Cmd+Tab "
+           "(Cmd is the Windows key)", "shortcuts", key_sets, key_values, 3, 300);
+    end(p, NULL);
     section(p, NULL);
     int rate = (int)number("keyrate", 30);
     if (slider(p, "Key repeat rate", NULL, &rate, 2, 30, "Slow", "Fast")) {
@@ -2179,6 +2185,13 @@ static void load_themes(struct settings *s)
     for (int i = 0; i < s->theme_count; i++)
         if (!strcmp(s->themes[i], theme_current()->name))
             s->theme_list.selected = i;
+}
+
+/* For Spotlight: every pane's name and the key that opens it. */
+void settings_foreach_pane(void (*fn)(const char *name, const char *key, void *ctx), void *ctx)
+{
+    for (int i = 0; i < P_COUNT; i++)
+        fn(panes[i].name, panes[i].key, ctx);
 }
 
 static void select_pane(struct settings *s, const char *arg)

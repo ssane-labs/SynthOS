@@ -5,6 +5,7 @@
 #include <synth/keys.h>
 #include <synth/path.h>
 #include <synth/picture.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/users.h>
 #include <synth/vfs.h>
@@ -43,6 +44,7 @@ enum {
     CMD_TERMINAL,
     CMD_EMPTY_TRASH,
     CMD_SIDEBAR,
+    CMD_WINDOWS,
 };
 
 struct entry {
@@ -68,6 +70,7 @@ struct files {
     bool icons;
     bool hidden;
     bool sidebar;
+    bool windows;
     int scroll;
 };
 
@@ -122,6 +125,21 @@ static const struct menu_item view_items[] = {
     {"", 0, NULL},
     {"Show Sidebar", KEY_COMMAND(CMD_SIDEBAR), NULL},
     {"Show Hidden Files", KEY_COMMAND(CMD_HIDDEN), NULL},
+    {"", 0, NULL},
+    {"Windows Mode", KEY_COMMAND(CMD_WINDOWS), NULL},
+};
+
+/* Windows mode shows the same files the way Windows programs see them: drive C:, Users, Program Files, paths with
+   backslashes. */
+static const struct place win_quick[] = {
+    {"Desktop", "~Desktop", SYM_DESKTOP},     {"Downloads", "~Downloads", SYM_DOWNLOAD},
+    {"Documents", "~Documents", SYM_DOC},     {"Pictures", "~Pictures", SYM_PHOTO},
+    {"Music", "~Music", SYM_MUSIC},           {"Videos", "~Videos", SYM_VIDEO},
+};
+static const struct place win_pc[] = {
+    {"Local Disk (C:)", "/", SYM_DISK},         {"Users", "/home", SYM_USERS},
+    {"Program Files", "/home/apps", SYM_APPS}, {"Windows", "/system", SYM_FOLDER},
+    {"Recycle Bin", TRASH, SYM_TRASH},
 };
 
 static const struct menu_item go_items[] = {
@@ -278,10 +296,14 @@ static void load(struct files *f)
     filter(f);
 }
 
+static bool windows_mode(void);
+
 static const char *display_name(const char *path)
 {
     if (!strcmp(path, "/"))
-        return "SynthOS HD";
+        return windows_mode() ? "Local Disk (C:)" : "SynthOS HD";
+    if (!strcmp(path, TRASH) && windows_mode())
+        return "Recycle Bin";
     if (!strcmp(path, TRASH))
         return "Trash";
     static struct volume volumes[6];
@@ -570,6 +592,13 @@ static void pick_item(struct window *w, int index)
     wm_invalidate(w);
 }
 
+static bool files_windows;
+
+static bool windows_mode(void)
+{
+    return files_windows;
+}
+
 static void remember(const struct files *f)
 {
     app_state_set_on("files", "sidebar", f->sidebar);
@@ -627,6 +656,11 @@ static void command(struct window *w, struct files *f, int cmd)
         ui_confirm(w, "Empty the Trash?", "You can't undo this action.", empty_trash);
         break;
     case CMD_SIDEBAR: f->sidebar = !f->sidebar; break;
+    case CMD_WINDOWS:
+        files_windows = !files_windows;
+        f->windows = files_windows;
+        wm_set_title(w, display_name(f->path));
+        break;
     }
     remember(f);
 }
@@ -656,8 +690,13 @@ static void sidebar_section(struct ui *ui, struct window *w, struct files *f, in
     *y += 22;
     for (int i = 0; i < n; i++) {
         struct rect r = {14, *y, SIDEBAR_W - 26, 28};
-        if (ui_sidebar_item(ui, r, places[i].sym, places[i].label, !strcmp(f->path, places[i].path)))
-            navigate(w, f, places[i].path, true);
+        char path[PATH_MAX_LEN];
+        if (places[i].path[0] == '~')
+            path_join(user_home(), places[i].path + 1, path, sizeof(path));
+        else
+            str_copy(path, places[i].path, sizeof(path));
+        if (ui_sidebar_item(ui, r, places[i].sym, places[i].label, !strcmp(f->path, path)))
+            navigate(w, f, path, true);
         *y += 28;
     }
     *y += 10;
@@ -836,7 +875,11 @@ static void frame(struct ui *ui, void *data)
     }
     int y = 12;
     update_favorites();
-    if (f->sidebar) {
+    f->windows = files_windows;
+    if (f->sidebar && f->windows) {
+        sidebar_section(ui, w, f, &y, "Quick access", win_quick, ARRAY_SIZE(win_quick));
+        sidebar_section(ui, w, f, &y, "This PC", win_pc, ARRAY_SIZE(win_pc));
+    } else if (f->sidebar) {
         sidebar_section(ui, w, f, &y, "Favorites", favorites, ARRAY_SIZE(favorites));
         sidebar_section(ui, w, f, &y, "Locations", locations, 1);
         y -= 10;
@@ -883,7 +926,12 @@ static void frame(struct ui *ui, void *data)
             gfx_round(ui->c, (struct rect){nx + 8, 6, 28, 26}, 6, ALPHA(style.content, 150));
         if (!f->forward_len)
             gfx_round(ui->c, (struct rect){nx + 38, 6, 28, 26}, 6, ALPHA(style.content, 150));
-        gfx_text_box(ui->c, (struct rect){nx + 106, 6, W - nx - 118, 26}, &font_sans, f->path, style.secondary,
+        char shown[PATH_MAX_LEN];
+        if (f->windows)
+            winpath_from_vfs(f->path, shown, sizeof(shown));
+        else
+            str_copy(shown, f->path, sizeof(shown));
+        gfx_text_box(ui->c, (struct rect){nx + 106, 6, W - nx - 118, 26}, &font_sans, shown, style.secondary,
                      ALIGN_LEFT);
     }
     struct rect area = {nx, NAV_H, W - nx, H - NAV_H};
@@ -1031,6 +1079,25 @@ static void launch(const char *arg)
     wm_set_menus(w, menus, ARRAY_SIZE(menus));
     navigate(w, f, arg && *arg ? arg : user_home(), false);
 }
+
+static void get_mode(char *buf, size_t cap)
+{
+    str_copy(buf, files_windows ? "windows" : "synthos", cap);
+}
+
+static int set_mode(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "windows") && strcmp(value, "synthos"))
+        return E_INVAL;
+    files_windows = !strcmp(value, "windows");
+    return 0;
+}
+
+static const struct setting s_files_mode = {"filesmode", "synthos|windows",
+                                            "Files shows SynthOS paths, or drive C: and Windows paths", get_mode,
+                                            set_mode};
+SETTING(s_files_mode);
 
 static const struct gui_app files_app = {"Files", "Browse folders and open files", ICON_FILES, launch, NULL, NULL};
 GUI_APP(files_app);

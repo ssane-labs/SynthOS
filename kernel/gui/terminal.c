@@ -198,7 +198,13 @@ static void event(struct window *w, struct gui_event *e)
         gui_terminal_run("clear");
     } else if (e->type == EV_KEY && e->key == KEY_COMMAND(3)) {
         gui_app_launch(gui_app_find("System Settings"), "terminal");
+    } else if (e->type == EV_WHEEL) {
+        con_scrollback(-e->wheel * 3);
+    } else if (e->type == EV_KEY && (e->key == (KEY_MOD_SHIFT | KEY_PGUP) || e->key == (KEY_MOD_SHIFT | KEY_PGDN))) {
+        con_scrollback(e->key == (KEY_MOD_SHIFT | KEY_PGUP) ? term->display.rows - 2 : -(term->display.rows - 2));
     } else if (e->type == EV_KEY) {
+        if (con_scrollback_position())
+            con_scrollback(-100000);
         int ch = KEY_IS_TEXT(e->key) ? codepage_from_unicode(KEY_TEXT_CP(e->key)) : -1;
         input_inject(ch >= 0x20 ? ch : keymap_plain(e->key));
     } else if (e->type == EV_RESIZE) {
@@ -223,7 +229,7 @@ static bool on_close(struct window *w)
 
 static const struct window_ops ops = {paint, event, on_close, NULL};
 
-struct window *terminal_open(void)
+struct window *terminal_open(bool hidden)
 {
     term = kzalloc(sizeof(*term));
     if (!term)
@@ -237,7 +243,7 @@ struct window *terminal_open(void)
     UNUSED(sh);
     int cols = MIN(76, (work.w - 80) / FONT_WIDTH), rows = MIN(22, (work.h - TITLE_HEIGHT - 60) / FONT_HEIGHT);
     term->win = wm_open("Terminal", ICON_TERMINAL, cols * FONT_WIDTH + 2 * PAD, rows * FONT_HEIGHT + 2 * PAD, &ops,
-                        term, WIN_RESIZABLE | WIN_KEEP);
+                        term, WIN_RESIZABLE | WIN_KEEP | (hidden ? WIN_HIDDEN : 0));
     if (!term->win) {
         kfree(term);
         term = NULL;

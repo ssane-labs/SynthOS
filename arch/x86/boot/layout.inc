@@ -10,6 +10,7 @@ CHUNK_SECTORS   equ 64
 BOOTINFO_ADDR   equ 0x4f00
 MMAP_ADDR       equ 0x5000
 MMAP_MAX        equ 64
+FAT_CACHE       equ 0x6000
 BOOT_MAGIC      equ 0x5359424f
 KERNEL_MAGIC    equ 0x4b4e5953
 ESP_LBA         equ 8192

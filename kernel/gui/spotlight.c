@@ -5,7 +5,9 @@
 #include <synth/picture.h>
 #include <synth/shell.h>
 #include <synth/string.h>
+#include <synth/users.h>
 #include <synth/vfs.h>
+#include <synth/winpath.h>
 
 #include "internal.h"
 
@@ -18,6 +20,9 @@ enum result_kind {
     R_APP,
     R_FILE,
     R_RUN,
+    R_CALC,
+    R_SETTING,
+    R_FOLDER,
 };
 
 struct result {
@@ -114,6 +119,60 @@ static void search_dir(struct spot *s, const char *dir, int depth)
     }
 }
 
+/* "12*(3+4)" and the like: the answer is the first result, Enter copies it. */
+static void match_calc(struct spot *s)
+{
+    const char *q = s->query.buf;
+    bool digit = false, op = false;
+    for (const char *p = q; *p; p++) {
+        if (*p >= '0' && *p <= '9')
+            digit = true;
+        else if (strchr("+-*/%()^&|<> ", *p))
+            op |= *p != ' ' && *p != '(' && *p != ')';
+        else
+            return;
+    }
+    long v;
+    char err[64];
+    if (!digit || !op || calc_eval(NULL, q, &v, err, sizeof(err)) != 0)
+        return;
+    struct result *r = &s->res[s->count++];
+    *r = (struct result){.kind = R_CALC, .icon = ICON_CALC};
+    ksnprintf(r->label, sizeof(r->label), "= %ld", v);
+    ksnprintf(r->path, sizeof(r->path), "%ld", v);
+    str_copy(r->detail, "Calculator · Enter copies", sizeof(r->detail));
+}
+
+static void match_pane(const char *name, const char *key, void *ctx)
+{
+    struct spot *s = ctx;
+    if (s->count >= MAX_RESULTS - 1 || (!contains_ci(name, s->query.buf) && !contains_ci(key, s->query.buf)))
+        return;
+    struct result *r = &s->res[s->count++];
+    *r = (struct result){.kind = R_SETTING, .icon = ICON_SETTINGS};
+    str_copy(r->label, name, sizeof(r->label));
+    str_copy(r->path, key, sizeof(r->path));
+    str_copy(r->detail, "System Settings", sizeof(r->detail));
+}
+
+/* A typed path, SynthOS or Windows style, opens in Files. */
+static void match_path(struct spot *s)
+{
+    const char *q = s->query.buf;
+    char path[PATH_MAX_LEN];
+    bool win = ((q[0] | 32) >= 'a' && (q[0] | 32) <= 'z' && q[1] == ':');
+    if (q[0] != '/' && q[0] != '~' && !win)
+        return;
+    int err = win ? winpath_to_vfs("/", q, path, sizeof(path)) : path_resolve(user_home(), q, path, sizeof(path));
+    if (err || !vfs_exists(path))
+        return;
+    struct result *r = &s->res[s->count++];
+    *r = (struct result){.kind = R_FOLDER, .icon = vfs_is_dir(path) ? ICON_FOLDER : ICON_FILE};
+    str_copy(r->path, path, sizeof(r->path));
+    ksnprintf(r->label, sizeof(r->label), "Open %s", q);
+    str_copy(r->detail, vfs_is_dir(path) ? "Folder" : "File", sizeof(r->detail));
+}
+
 static void update(struct spot *s)
 {
     if (!strcmp(s->last, s->query.buf))
@@ -123,7 +182,11 @@ static void update(struct spot *s)
     s->selected = 0;
     if (!s->query.len)
         return;
+    match_calc(s);
+    match_path(s);
     gui_app_foreach(match_app, s);
+    if (s->query.len >= 2)
+        settings_foreach_pane(match_pane, s);
     search_dir(s, "/home", 0);
     search_dir(s, "/apps", 0);
     search_dir(s, "/docs", 0);
@@ -150,6 +213,12 @@ static void open_result(struct spot *s, int i)
         gui_app_launch(r.app, NULL);
     else if (r.kind == R_FILE)
         gui_open_file(r.path);
+    else if (r.kind == R_CALC)
+        gui_set_clipboard(r.path, strlen(r.path));
+    else if (r.kind == R_SETTING)
+        gui_app_launch(gui_app_find("System Settings"), r.path);
+    else if (r.kind == R_FOLDER)
+        vfs_is_dir(r.path) ? gui_app_launch(gui_app_find("Files"), r.path) : gui_open_file(r.path);
     else
         gui_terminal_run(query);
 }

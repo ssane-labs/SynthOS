@@ -43,10 +43,10 @@ dmesg | grep formatted
 sfs: formatted data0
 echo hello world
 hello world
-imginfo /system/samples/Dune.jpg
-1024x640, 1 frame, average #c8967d
-imginfo /system/samples/Mist.jpg
-1024x640, 1 frame, average #a7b0bd
+imginfo /system/wallpapers/Dunes.jpg
+1280x800, 1 frame, average #8e6262
+imginfo /system/wallpapers/Glacier.jpg
+1280x800, 1 frame, average #78899f
 echo "a  b" 'c $USER' $USER
 a  b c $USER root
 calc (2 + 3) * 7
@@ -140,7 +140,7 @@ parallel work: ok on 1 processor
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets
-halo clock 4x2 rounded clear -1 -1
+mono clock 4x2 rounded clear -1 -1
 config widgets all; widgets list | grep -c desktop
 12
 widgets add clock; widgets list | grep clock
@@ -148,7 +148,7 @@ widgets add clock; widgets list | grep clock
 config widgets analog,worldclock,photo,notes,system,apps; config widgets
 analog,worldclock,photo,notes,system,apps
 grep worldclock ~/.widgets
-halo worldclock 2x2 rounded glass -1 -1 Tokyo|540
+mono worldclock 2x2 rounded glass -1 -1 Tokyo|540
 widgets add moon
 no widget called moon
 config widgets clock,weather,music; config widgets
@@ -249,30 +249,30 @@ config network off; ping -c 1 10.0.2.2 | grep -c "bytes from"; config network
 network = off
 config network on; sleep 1; ping -c 1 10.0.2.2 | grep from
 64 bytes from 10.0.2.2
-topng /system/samples/Mist.jpg /tmp/mist.png; imginfo /tmp/mist.png
-1024x640, 1 frame, average #a7b0bd
-topng /system/samples/Dune.jpg /tmp/dune.png | grep -c bytes; imginfo /tmp/dune.png; rm /tmp/dune.png /tmp/mist.png
-1024x640, 1 frame, average #c8967d
+topng /system/wallpapers/Glacier.jpg /tmp/mist.png; imginfo /tmp/mist.png
+1280x800, 1 frame, average #78899f
+topng /system/wallpapers/Dunes.jpg /tmp/dune.png | grep -c bytes; imginfo /tmp/dune.png; rm /tmp/dune.png /tmp/mist.png
+1280x800, 1 frame, average #8e6262
 screenshot
 screenshot: the desktop is not running
 clip set hello clipboard; clip; clip info
 text 15 bytes
 clip; clip set two; clip
 hello clipboard
-clip image /system/samples/Mist.jpg; clip info; clip save /tmp/clip.png; imginfo /tmp/clip.png; rm /tmp/clip.png
-1024x640, 1 frame, average #a7b0bd
+clip image /system/wallpapers/Glacier.jpg; clip info; clip save /tmp/clip.png; imginfo /tmp/clip.png; rm /tmp/clip.png
+1280x800, 1 frame, average #78899f
 clip info
-image 1024x640
+image 1280x800
 config termstatus off; config termstatus
 termstatus = off
-config dockapps 'Files|/home/notes.txt|Terminal'; grep halo ~/.dock
-halo Files|/home/notes.txt|Terminal
+config dockapps 'Files|/home/notes.txt|Terminal'; grep mono ~/.dock
+mono Files|/home/notes.txt|Terminal
 config dockapps default; config dockapps
 Launchpad|Files|Chromium|Terminal
 config chromeauto off; config chromeauto; config chromeauto on
 off
 config dockstyle side; config statusbar menubar; head -n 1 ~/.looks
-halo dock=side status=menubar
+mono dock=side status=menubar
 config dockstyle corner; config statusbar pill; config dockstyle
 corner
 config dockmode autohide; config dockhide
@@ -282,13 +282,19 @@ off
 config dockmode show; config dockmode; config dockhide
 show
 config docksleep 5; config docksleep; config docksleep 30
-5
+docksleep = 5
 config dockhalo off; config dockhalo; config dockhalo on
-off
+dockhalo = off
 config statusbar islands; config statusbar; config statusbar menubar
-islands
+statusbar = islands
+config shortcuts windows; config shortcuts; config shortcuts both
+shortcuts = windows
+config filesmode windows; config filesmode; config filesmode synthos
+filesmode = windows
+config wallpaper saturn; config wallpaper; config wallpaper auto
+wallpaper = saturn
 config look; config wallpaper
-halo
+mono
 which ls hello
 hello: /bin/hello.sx
 formats | grep -c DOS
@@ -893,7 +899,7 @@ if command -v openssl >/dev/null; then
     port=$((20000 + $$ % 20000))
     mkdir -p "$work/www"
     echo "secret over tls" > "$work/www/hello.txt"
-    cp rootfs/system/samples/Night.jpg "$work/www/starry-night.jpg"
+    cp rootfs/system/wallpapers/Saturn.jpg "$work/www/starry-night.jpg"
     printf 'subjectAltName=IP:10.0.2.2\nbasicConstraints=CA:FALSE\n' > "$work/ext.cnf"
     openssl req -x509 -newkey rsa:2048 -sha256 -days 30 -nodes -keyout "$work/ca.key" -out "$work/ca.pem" \
         -subj "/CN=SynthOS Test CA" 2>/dev/null

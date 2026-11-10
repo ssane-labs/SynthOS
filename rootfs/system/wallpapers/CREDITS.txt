@@ -1,0 +1,16 @@
+SynthOS wallpapers
+
+All seven pictures are NASA photographs from the NASA Image and Video Library (images.nasa.gov). Works made by NASA
+are not protected by copyright in the United States and may be used, also commercially, without permission; NASA asks
+to be credited and not to be shown as endorsing a product. They were cropped to 1280x800 for SynthOS.
+
+Sunrise.jpg   "Sunrise, Earth Limb, SW Pacific Ocean", STS-47, 1992 (STS047-54-018). NASA/JSC.
+Earthset.jpg  "A Breathtaking Earthset from Orion", Artemis II, 2026 (art002e021278). NASA.
+Aurora.jpg    "Aurora Australis, Airglow, Terminator", Expedition 29, 2011 (iss029e007502). NASA/JSC, Mike Fossum.
+MilkyWay.jpg  "A bright airglow blankets Earth's horizon as the Milky Way illuminates", Expedition 73, 2025
+              (iss073e0982823). NASA/JSC.
+Dunes.jpg     Earth observation by the Expedition 18 crew, 2008 (iss018e014770). NASA/JSC.
+Glacier.jpg   "Matusevich Glacier", NASA Earth Observatory (GSFC_20171208_Archive_e001938). NASA/GSFC.
+Saturn.jpg    "The Greatest Saturn Portrait ...Yet", Cassini, 2004 (PIA06193). NASA/JPL/Space Science Institute.
+
+The Halo and Mono backgrounds are drawn by SynthOS itself (kernel/gui/wallpaper.c).

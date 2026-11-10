@@ -118,7 +118,7 @@ int update_parse(const uint8_t *data, size_t size, struct update_pkg *pkg, char 
     const struct update_file *s2 = update_file(pkg, "boot/stage2");
     const struct update_file *s1 = update_file(pkg, "boot/stage1");
     if (!k || !s1 || !s2 || s1->size != 512 || s2->size > STAGE2_SECTORS * 512 ||
-        KERNEL_LBA + (k->size + 511) / 512 > ESP_LBA || k->size < 512 || memcmp(k->data + 8, "SYNK", 4)) {
+        k->size < 512 || memcmp(k->data + 8, "SYNK", 4)) {
         str_copy(why, "the package has no usable boot files", cap);
         return E_NOEXEC;
     }
@@ -133,9 +133,51 @@ const struct update_file *update_file(const struct update_pkg *pkg, const char *
     return NULL;
 }
 
-/* The SHA-256 of the kernel now on the system disk, `size` bytes from LBA 17 (the size of the newer one). */
+static uint32_t abs_start(struct blockdev *dev, struct blockdev **root);
+static const char *mounted_at(struct blockdev *root, uint32_t start);
+
+/* The kernel file on this system's EFI partition, mounted for the moment if it is not already. */
+static int esp_kernel_hash(struct blockdev *sys, uint8_t out[32])
+{
+    struct blockdev *root, *dev = NULL;
+    uint32_t start = abs_start(sys, &root) + ESP_LBA;
+    const char *path = mounted_at(root, start);
+    char where[PATH_MAX_LEN], file[PATH_MAX_LEN];
+    if (!path) {
+        if (!(dev = block_add_partition(root, "update-esp", start, ESP_SECTORS)))
+            return E_NODEV;
+        vfs_mkdirs(ESP_MOUNT);
+        if (!fat_detect(dev) || vfs_mount("fat", dev->name, ESP_MOUNT)) {
+            block_unregister(dev);
+            return E_NODEV;
+        }
+        path = ESP_MOUNT;
+    }
+    str_copy(where, path, sizeof(where));
+    ksnprintf(file, sizeof(file), "%s/SYNTHOS/KERNEL.BIN", where);
+    char *data;
+    size_t n;
+    int err = vfs_read_all(file, &data, &n);
+    if (!err) {
+        struct sha256 h;
+        sha256_init(&h);
+        sha256_update(&h, data, n);
+        sha256_final(&h, out);
+        kfree(data);
+    }
+    if (dev) {
+        vfs_umount(where);
+        block_unregister(dev);
+    }
+    return err < 0 ? err : 0;
+}
+
+/* The SHA-256 of the kernel now on the system disk, `size` bytes from LBA 17 (the size of the newer one); a kernel
+   larger than the space before the EFI partition is read from that partition. */
 int update_installed_kernel(uint32_t size, uint8_t out[32])
 {
+    if (KERNEL_LBA + (size + 511) / 512 > ESP_LBA && hal_system_area())
+        return esp_kernel_hash(hal_system_area(), out);
     struct blockdev *sys = hal_system_area();
     if (!sys)
         return E_NODEV;
@@ -343,12 +385,13 @@ static int write_boot(struct blockdev *sys, const struct update_pkg *pkg)
 {
     const struct update_file *s1 = update_file(pkg, "boot/stage1"), *s2 = update_file(pkg, "boot/stage2"),
                              *k = update_file(pkg, "boot/kernel");
-    uint32_t sectors = (k->size + 511) / 512;
+    /* the copy before the EFI partition holds what fits; the loader reads the whole kernel from that partition */
+    uint32_t sectors = MIN((k->size + 511) / 512, (uint32_t)(ESP_LBA - KERNEL_LBA));
     uint8_t *buf = kzalloc((size_t)(STAGE2_SECTORS + sectors) * 512);
     if (!buf)
         return E_NOMEM;
     memcpy(buf, s2->data, s2->size);
-    memcpy(buf + STAGE2_SECTORS * 512, k->data, k->size);
+    memcpy(buf + STAGE2_SECTORS * 512, k->data, MIN(k->size, sectors * 512));
     int err = block_write(sys, 1, STAGE2_SECTORS + sectors, buf);
     kfree(buf);
     if (err)
@@ -372,6 +415,12 @@ int update_apply(const struct update_pkg *pkg, char *msg, size_t cap)
     if (err) {
         ksnprintf(msg, cap, "writing the EFI partition failed: %s", err_str(err));
         return err;
+    }
+    const struct update_file *k = update_file(pkg, "boot/kernel");
+    if (!esps && KERNEL_LBA + (k->size + 511) / 512 > ESP_LBA) {
+        str_copy(msg, "this kernel is larger than the space before the EFI partition, and no EFI partition of this "
+                      "system could take it", cap);
+        return E_NOSPC;
     }
     if ((err = write_boot(sys, pkg)) != 0) {
         ksnprintf(msg, cap, "writing the boot sectors failed: %s", err_str(err));

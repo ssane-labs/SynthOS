@@ -204,6 +204,8 @@ static void parse_line(char *p, char *end)
     }
 }
 
+static bool no_file;
+
 static void load(void)
 {
     clear_all();
@@ -212,7 +214,8 @@ static void load(void)
     char path[PATH_MAX_LEN], *data;
     size_t size;
     file_path(path, sizeof(path));
-    if (vfs_read_all(path, &data, &size) != 0)
+    no_file = vfs_read_all(path, &data, &size) != 0;
+    if (no_file)
         return;
     size_t ln = strlen(look);
     for (char *p = data, *end = data + size; p < end;) {
@@ -830,6 +833,15 @@ void widgets_start(void)
     if (started)
         widgets_stop();
     load();
+    /* a new desktop holds one thing: the clock, top centre */
+    if (no_file) {
+        struct widget *clock = add_widget(WK_CLOCK);
+        if (clock) {
+            clock->col = MAX(0, (grid_cols() - clock->cw) / 2);
+            clock->row = 0;
+            save();
+        }
+    }
     started = true;
     last_tick = 0;
     pressed = drag = hover = -1;

@@ -11,14 +11,14 @@
 #include "internal.h"
 
 static const struct gui_look defaults[] = {
-    {"halo", "Halo", "SynthOS's own: eclipse light, floating islands on top and a glowing Halo dock", true,
-     RGB(120, 104, 220), RGB(124, 108, 255), DOCK_CENTER, STATUS_ISLANDS, 0},
-    {"mono", "Mono", "Black and white liquid glass, menu bar and a dock below", true, RGB(150, 150, 156),
-     RGB(142, 142, 147), DOCK_CENTER, STATUS_MENUBAR, 0},
-    {"dune", "Dune", "Warm desert glass, launcher in the corner", false, RGB(214, 150, 96),
-     RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, 0},
-    {"mist", "Mist", "Quiet morning fog, menu bar and a floating dock", false, RGB(120, 140, 170), RGB(78, 112, 214),
-     DOCK_CENTER, STATUS_MENUBAR, 0},
+    {"mono", "Mono", "Black glass: a menu bar on top and a quiet dock below", true, RGB(150, 150, 156),
+     RGB(142, 142, 147), DOCK_CENTER, STATUS_MENUBAR, 0, "mono"},
+    {"halo", "Halo", "Eclipse light, floating islands on top and a glowing dock", true, RGB(120, 104, 220),
+     RGB(124, 108, 255), DOCK_CENTER, STATUS_ISLANDS, 0, "halo"},
+    {"dune", "Dune", "Warm desert sand seen from orbit, launcher in the corner", false, RGB(214, 150, 96),
+     RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, 0, "dunes"},
+    {"mist", "Mist", "Cold light of a glacier, menu bar and a floating dock", false, RGB(120, 140, 170),
+     RGB(78, 112, 214), DOCK_CENTER, STATUS_MENUBAR, 0, "glacier"},
 };
 
 #define LOOKS ARRAY_SIZE(defaults)
@@ -153,7 +153,7 @@ static int set_look(struct shell *sh, const char *value)
     return E_INVAL;
 }
 
-static const struct setting s_look = {"look", "halo|mono|dune|mist", "desktop design: colors, wallpaper and layout",
+static const struct setting s_look = {"look", "mono|halo|dune|mist", "desktop design: colors, wallpaper and layout",
                                       get_look, set_look};
 SETTING(s_look);
 

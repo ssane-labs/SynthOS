@@ -1390,6 +1390,75 @@ static uint64_t h_user_key_path(uint64_t *a, const uint64_t *f, void *t)
     return status;
 }
 
+/* The NT file calls: IO_STATUS_BLOCK is 16 bytes here (status, then the count at offset 8), UNICODE_STRING holds
+   its pointer at offset 8, and the rename structure a handle before the name. */
+struct iosb32 {
+    uint32_t status, information;
+};
+
+static uint64_t iosb_back(uint64_t to, const struct iosb32 *io, uint32_t status)
+{
+    if (to) {
+        uint8_t *o = P(to);
+        put64(o, w64_sx(io->status));
+        put64(o + 8, io->information);
+    }
+    return w64_sx(status);
+}
+
+static uint64_t h_nt_file_info(uint64_t *a, const uint64_t *f, void *t)
+{
+    struct iosb32 io = {0, 0};
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), U(&io), U(P(a[2])), narrow(a[3]), narrow(a[4]));
+    return iosb_back(a[1], &io, r);
+}
+
+static uint64_t h_nt_set_file_info(uint64_t *a, const uint64_t *f, void *t)
+{
+    struct iosb32 io = {0, 0};
+    uint32_t cls = (uint32_t)a[4], size = (uint32_t)a[3], r;
+    const uint8_t *in = P(a[2]);
+    if ((cls == 10 || cls == 65) && size >= 20) {
+        uint32_t len = rd32(in + 16);
+        uint8_t *copy = w32_zalloc(12 + len + 2);
+        if (!copy)
+            return 0xc000009au;
+        copy[0] = in[0];
+        put32(copy + 8, len);
+        memcpy(copy + 12, in + 20, MIN(len, size - 20));
+        r = (uint32_t)T32(t, narrow(a[0]), U(&io), U(copy), 12 + len, cls);
+        w32_free(copy);
+    } else {
+        r = (uint32_t)T32(t, narrow(a[0]), U(&io), U(in), size, cls);
+    }
+    return iosb_back(a[1], &io, r);
+}
+
+static uint64_t h_nt_flush(uint64_t *a, const uint64_t *f, void *t)
+{
+    struct iosb32 io = {0, 0};
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), U(&io));
+    return iosb_back(a[1], &io, r);
+}
+
+static uint64_t h_nt_query_directory(uint64_t *a, const uint64_t *f, void *t)
+{
+    struct iosb32 io = {0, 0};
+    struct {
+        uint16_t length, max;
+        uint32_t buffer;
+    } mask = {0, 0, 0};
+    const uint8_t *us = a[9] ? P(a[9]) : NULL;
+    if (us && rd64(us + 8)) {
+        mask.length = (uint16_t)(us[0] | us[1] << 8);
+        mask.max = (uint16_t)(us[2] | us[3] << 8);
+        mask.buffer = U(P(rd64(us + 8)));
+    }
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), 0, 0, 0, U(&io), U(P(a[5])), narrow(a[6]), narrow(a[7]),
+                               narrow(a[8]), us ? U(&mask) : 0, narrow(a[10]));
+    return iosb_back(a[4], &io, r);
+}
+
 /* NtOpenKey/NtCreateKey: OBJECT_ATTRIBUTES and its UNICODE_STRING have 64-bit layouts; the 32-bit functions get
    copies (the name stays where the program has it) */
 static uint64_t h_nt_key(uint64_t *a, const uint64_t *f, void *t)
@@ -1427,6 +1496,15 @@ static const struct w64_export ntdll_exports[] = {
     W64_FN("RtlInitUnicodeString", h_init_unicode),
     W64_FN("RtlFreeUnicodeString", h_free_unicode),
     W64_FN("RtlFormatCurrentUserKeyPath", h_user_key_path),
+    W64_FN("NtQueryInformationFile", h_nt_file_info),
+    W64_FN("ZwQueryInformationFile", h_nt_file_info),
+    W64_FN("NtQueryVolumeInformationFile", h_nt_file_info),
+    W64_FN("ZwQueryVolumeInformationFile", h_nt_file_info),
+    W64_FN("NtSetInformationFile", h_nt_set_file_info),
+    W64_FN("ZwSetInformationFile", h_nt_set_file_info),
+    W64_FN("NtQueryDirectoryFile", h_nt_query_directory),
+    W64_FN("ZwQueryDirectoryFile", h_nt_query_directory),
+    W64_FN("NtFlushBuffersFile", h_nt_flush),
     W64_FN("NtOpenKey", h_nt_key),
     W64_FN("NtOpenKeyEx", h_nt_key),
     W64_FN("NtCreateKey", h_nt_key),

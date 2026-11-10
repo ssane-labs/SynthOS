@@ -37,6 +37,8 @@ void con_put_cell(int x, int y, uint8_t ch, uint8_t attr);
 struct cell con_get_cell(int x, int y);
 void con_put_text(int x, int y, const char *s, uint8_t attr);
 uint32_t con_scroll_count(void);
+void con_scrollback(int lines);
+int con_scrollback_position(void);
 
 void con_flush(void);
 void con_hold(bool hold);

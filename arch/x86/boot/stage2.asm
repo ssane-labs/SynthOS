@@ -1,4 +1,7 @@
 ; SynthOS stage2 loader: A20, memory map, kernel load above 1 MiB, protected mode.
+; The kernel is the file \SYNTHOS\KERNEL.BIN on the EFI partition (FAT16), the one the UEFI loader starts too, so
+; its size is bounded by that partition rather than by the gap before it; the copy in the gap (from sector 17) is
+; used when the partition cannot be read, if it is whole there.
 
 %include "layout.inc"
 
@@ -15,6 +18,9 @@ stage2:
     call detect_memory
     call detect_disk
 
+    call fat_load
+    jnc .loaded
+
     mov dword [lba], KERNEL_LBA
     mov word [count], 1
     call read_chunk
@@ -23,6 +29,8 @@ stage2:
     cmp dword [fs:8], KERNEL_MAGIC
     jne bad_kernel
     mov eax, [fs:12]
+    cmp eax, ESP_LBA - KERNEL_LBA
+    ja bad_kernel
     mov [kernel_sectors], eax
     mov [remaining], eax
     mov dword [dest], KERNEL_ADDR
@@ -37,22 +45,10 @@ stage2:
 .sized:
     mov [count], ax
     call read_chunk
-    call enter_unreal
-    movzx ecx, word [count]
-    shl ecx, 7
-    mov esi, BUFFER_ADDR
-    mov edi, [dest]
-    xor ax, ax
-    mov ds, ax
-    mov es, ax
-    a32 rep movsd
+    call copy_out
     movzx eax, word [count]
     add [lba], eax
     sub [remaining], eax
-    shl eax, 9
-    add [dest], eax
-    mov al, '.'
-    call putc
     jmp .next_chunk
 
 .loaded:
@@ -86,6 +82,254 @@ stage2:
     or al, 1
     mov cr0, eax
     jmp 0x08:protected
+
+; copies the [count] sectors just read from the buffer to [dest] above 1 MiB and moves dest on
+copy_out:
+    call enter_unreal
+    movzx ecx, word [count]
+    shl ecx, 7
+    mov esi, BUFFER_ADDR
+    mov edi, [dest]
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    a32 rep movsd
+    movzx eax, word [count]
+    shl eax, 9
+    add [dest], eax
+    mov al, '.'
+    call putc
+    ret
+
+; reads one sector at eax into the buffer
+read_one:
+    mov [lba], eax
+    mov word [count], 1
+    jmp read_chunk
+
+; Loads \SYNTHOS\KERNEL.BIN from the FAT16 EFI partition (the second entry of the partition table) to KERNEL_ADDR.
+; Carry set when there is no such partition or file, or it is not a kernel.
+fat_load:
+    mov eax, [0x7c00 + 446 + 16 + 8]
+    test eax, eax
+    jnz .part
+    mov eax, ESP_LBA
+.part:
+    mov [esp_lba], eax
+    call read_one
+    mov ax, BUFFER_SEG
+    mov fs, ax
+    cmp word [fs:11], 512
+    jne .fail
+    cmp word [fs:22], 0
+    je .fail
+    movzx eax, byte [fs:13]
+    test eax, eax
+    jz .fail
+    cmp eax, CHUNK_SECTORS
+    ja .fail
+    mov [spc], eax
+    movzx eax, word [fs:14]
+    add eax, [esp_lba]
+    mov [fat_lba], eax
+    movzx ecx, byte [fs:16]
+    movzx edx, word [fs:22]
+    imul ecx, edx
+    add eax, ecx
+    mov [root_lba], eax
+    movzx ecx, word [fs:17]
+    shr ecx, 4
+    mov [root_sectors], ecx
+    add eax, ecx
+    mov [data_lba], eax
+    mov dword [fat_cached], 0xffffffff
+
+    mov eax, [root_lba]
+    mov ecx, [root_sectors]
+    mov si, name_dir
+    call find_in
+    jc .fail
+    mov si, name_kernel
+    call find_in_chain
+    jc .fail
+    mov [file_size], ebx
+    add ebx, 511
+    shr ebx, 9
+    jz .fail
+    mov [kernel_sectors], ebx
+    mov dword [dest], KERNEL_ADDR
+    mov [cluster], eax
+
+.run:
+    mov eax, [cluster]
+    cmp eax, 2
+    jb .check
+    cmp eax, 0xfff0
+    jae .check
+    mov [run_start], eax
+    mov ecx, [spc]
+    mov [run_sectors], ecx
+.extend:
+    mov eax, [cluster]
+    call fat_next
+    jc .fail
+    mov [next_cluster], eax
+    mov ecx, [cluster]
+    inc ecx
+    cmp eax, ecx
+    jne .read
+    mov ecx, [run_sectors]
+    add ecx, [spc]
+    cmp ecx, CHUNK_SECTORS
+    ja .read
+    mov [run_sectors], ecx
+    mov [cluster], eax
+    jmp .extend
+.read:
+    mov eax, [run_start]
+    sub eax, 2
+    imul eax, [spc]
+    add eax, [data_lba]
+    mov [lba], eax
+    mov eax, [run_sectors]
+    mov [count], ax
+    call read_chunk
+    call copy_out
+    mov eax, [next_cluster]
+    mov [cluster], eax
+    jmp .run
+
+.check:
+    call enter_unreal
+    cmp dword [dword KERNEL_ADDR + 8], KERNEL_MAGIC
+    jne .fail
+    mov eax, [dest]
+    sub eax, KERNEL_ADDR
+    cmp eax, [file_size]
+    jb .fail
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; the FAT entry of cluster eax, through a one-sector cache at FAT_CACHE
+fat_next:
+    push si
+    push di
+    push cx
+    push eax
+    shr eax, 8
+    add eax, [fat_lba]
+    cmp eax, [fat_cached]
+    je .cached
+    mov [fat_cached], eax
+    call read_one
+    push ds
+    push es
+    mov ax, BUFFER_SEG
+    mov ds, ax
+    xor ax, ax
+    mov es, ax
+    xor si, si
+    mov di, FAT_CACHE
+    mov cx, 256
+    cld
+    rep movsw
+    pop es
+    pop ds
+.cached:
+    pop eax
+    and eax, 0xff
+    movzx eax, word [FAT_CACHE + eax * 2]
+    pop cx
+    pop di
+    pop si
+    clc
+    ret
+
+; looks for the 8.3 name at si in ecx directory sectors from eax: eax = first cluster, ebx = size; carry if not
+; there, with [dir_end] set when the end of the directory was reached
+find_in:
+    mov byte [dir_end], 0
+.sector:
+    test ecx, ecx
+    jz .missing
+    push ecx
+    push eax
+    push si
+    call read_one
+    pop si
+    push es
+    mov ax, BUFFER_SEG
+    mov es, ax
+    xor di, di
+.entry:
+    cmp byte [es:di], 0
+    je .end
+    test byte [es:di + 11], 0x08
+    jnz .skip
+    push si
+    push di
+    mov cx, 11
+    cld
+    repe cmpsb
+    pop di
+    pop si
+    je .found
+.skip:
+    add di, 32
+    cmp di, 512
+    jb .entry
+    pop es
+    pop eax
+    pop ecx
+    inc eax
+    dec ecx
+    jmp .sector
+.found:
+    movzx eax, word [es:di + 26]
+    mov ebx, [es:di + 28]
+    pop es
+    add sp, 8
+    clc
+    ret
+.end:
+    mov byte [dir_end], 1
+    pop es
+    add sp, 8
+.missing:
+    stc
+    ret
+
+; the same through the clusters of a subdirectory starting at cluster eax
+find_in_chain:
+    mov [cluster], eax
+.cluster:
+    mov eax, [cluster]
+    cmp eax, 2
+    jb .missing
+    cmp eax, 0xfff0
+    jae .missing
+    sub eax, 2
+    imul eax, [spc]
+    add eax, [data_lba]
+    mov ecx, [spc]
+    push si
+    call find_in
+    pop si
+    jnc .done
+    cmp byte [dir_end], 0
+    jne .missing
+    mov eax, [cluster]
+    call fat_next
+    mov [cluster], eax
+    jmp .cluster
+.done:
+    ret
+.missing:
+    stc
+    ret
 
 detect_disk:
 %ifndef FORCE_CHS
@@ -367,6 +611,21 @@ lba:            dd 0
 remaining:      dd 0
 dest:           dd 0
 kernel_sectors: dd 0
+esp_lba:        dd 0
+fat_lba:        dd 0
+root_lba:       dd 0
+root_sectors:   dd 0
+data_lba:       dd 0
+spc:            dd 0
+fat_cached:     dd 0
+cluster:        dd 0
+next_cluster:   dd 0
+run_start:      dd 0
+run_sectors:    dd 0
+file_size:      dd 0
+dir_end:        db 0
+name_dir:       db "SYNTHOS    "
+name_kernel:    db "KERNEL  BIN"
 
 tries:      db 0
 msg_banner: db "SynthOS loader ", 0

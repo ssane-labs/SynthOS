@@ -147,7 +147,7 @@ HAVE_ESP    := $(and $(shell command -v mkfs.fat 2>/dev/null),$(shell command -v
 
 $(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin $(if $(HAVE_ESP),$(OUT)/esp.img) $(BUNDLE_FILE)
 	@echo "  IMAGE   $@"
-	@test $$(( $$(wc -c < $(OUT)/kernel.bin) / 512 + 17 )) -le $(ESP_LBA) || (echo "kernel too large for the disk layout"; exit 1)
+	@$(if $(HAVE_ESP),,test $$(( $$(wc -c < $(OUT)/kernel.bin) / 512 + 17 )) -le $(ESP_LBA) || (echo "kernel too large for the disk layout without an EFI partition"; exit 1))
 	@cat $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin > $@
 	@dd if=/dev/zero of=$@ bs=512 count=0 seek=$(DISK_SECTORS) 2>/dev/null
 	@if [ -s "$(BUNDLE_FILE)" ]; then dd if=$(BUNDLE_FILE) of=$@ bs=1M oflag=seek_bytes seek=$$(($(SYSTEM_SECTORS) * 512)) conv=notrunc,sparse 2>/dev/null; fi
@@ -318,12 +318,13 @@ $(OUT)/obj/biosblob.o: arch/x86/biosblob.asm $(OUT)/biosthunk.bin $(OUT)/smpboot
 	@echo "  NASM    $<"
 	@$(NASM) -f $(NASM_OBJ) -DTHUNK_FILE='"$(OUT)/biosthunk.bin"' -DSMP_FILE='"$(OUT)/smpboot.bin"' -o $@ $<
 
-$(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(W32_BIN) $(wildcard programs/sx/*)
+$(BUILD)/ramdisk.bin: $(BUILD)/tools/mkrd tools/lzmapack.py $(ROOTFS_SRC) $(SX_BIN) $(DOS_BIN) $(W32_BIN) $(wildcard programs/sx/*)
 	@mkdir -p $(BUILD)/rootfs
+	@for d in system etc docs home; do rm -rf "$(BUILD)/rootfs/$$d"; done
 	@cp -r rootfs/. $(BUILD)/rootfs/
 	@mkdir -p $(BUILD)/rootfs/home/src
 	@cp programs/sx/*.sasm programs/sx/*.inc $(BUILD)/rootfs/home/src/
-	@$(BUILD)/tools/mkrd $(BUILD)/rootfs $@
+	@$(BUILD)/tools/mkrd --raw $(BUILD)/rootfs $@.raw && python3 -I tools/lzmapack.py $@.raw $@ || $(BUILD)/tools/mkrd $(BUILD)/rootfs $@
 
 $(BUILD)/rootfs/bin/%.sx: programs/sx/%.sasm programs/sx/synth.inc $(BUILD)/tools/sasm
 	@mkdir -p $(@D)

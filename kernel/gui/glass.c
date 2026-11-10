@@ -257,11 +257,33 @@ static bool capture(struct canvas *c, struct glass *g, int blur, int scale, bool
     return true;
 }
 
+/* The picture behind a glass can only be taken while the area being drawn covers all of it. When it does not, the
+   whole zone is asked for again, so the next frame can: without this a menu that opened during a smaller repaint
+   stayed plain for good. */
+static void ask_again(struct glass *g)
+{
+    if (no_capture || g->retries >= 6)
+        return;
+    g->retries++;
+    int m = glass_margin();
+    wm_damage_z((struct rect){g->frame.x - m, g->frame.y - m, g->frame.w + 2 * m, g->frame.h + 2 * m}, g->z);
+}
+
 void glass_prepare(struct canvas *c, struct glass *g, const struct glass_look *look)
 {
     int scale = look->scale ? look->scale : 4;
     if (!look->solid && (!g->valid || g->scale != scale))
         capture(c, g, look->blur, scale, look->liquid);
+}
+
+/* true once the glass has its picture (or never will: solid looks, or it gave up asking) */
+bool glass_ready(struct canvas *c, struct glass *g, const struct glass_look *look)
+{
+    glass_prepare(c, g, look);
+    if (look->solid || g->valid || g->retries >= 6)
+        return true;
+    ask_again(g);
+    return false;
 }
 
 static uint32_t sample_from(const struct canvas *cv, struct rect src, int scale, int fx, int fy)
@@ -589,8 +611,34 @@ static bool pointer_near(const struct glass_look *look, struct rect f)
     return rect_contains((struct rect){f.x - m, f.y - m, f.w + 2 * m, f.h + 2 * m}, mouse_x, mouse_y);
 }
 
+/* The halo effect: a hairline of the SynthOS colors along the top edge of the glass, faded toward the corners. */
+void glass_halo_edge(struct canvas *c, struct rect f, int radius, int alpha)
+{
+    for (int row = 0; row < 2; row++) {
+        int y = f.y + row;
+        if (y < c->clip.y || y >= c->clip.y + c->clip.h)
+            continue;
+        uint32_t *line = c->px + y * c->stride;
+        int x0 = MAX(f.x + radius * 2 / 3, c->clip.x), x1 = MIN(f.x + f.w - radius * 2 / 3, c->clip.x + c->clip.w);
+        for (int x = x0; x < x1; x++) {
+            int u = (x - f.x) * 1024 / MAX(f.w, 1);
+            int a = MIN(MIN(u, 1024 - u) * 5, 1024) * (row ? 40 : 120) / 1024;
+            a = MIN(a, 255) * gfx_corner_coverage(f, radius, x, y) / 256 * alpha / 255;
+            if (a > 0)
+                line[x] = color_mix(line[x] | 0xff000000u, color_mix(gfx_halo_tone(u), 0xffffffffu, 70), a);
+        }
+    }
+}
+
 void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look)
 {
+    glass_draw_alpha(c, g, look, 255);
+}
+
+void glass_draw_alpha(struct canvas *c, struct glass *g, const struct glass_look *look, int alpha)
+{
+    if (alpha <= 0)
+        return;
     struct rect f = g->frame;
     struct rect area = rect_intersect(f, c->clip);
     if (rect_empty(area))
@@ -600,12 +648,16 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
         g->valid = false;
     if (look->solid || (!g->valid && !capture(c, g, look->blur, scale, look->liquid))) {
         uint32_t fallback = look->solid ? look->solid_color : ALPHA(look->tint, 255);
+        fallback = ALPHA(fallback, (int)(fallback >> 24) * alpha / 255);
         if (look->shape)
             gfx_shape(c, f, look->shape, look->shape_ctx, fallback);
         else
             gfx_round(c, f, look->radius, fallback);
+        if (!look->solid)
+            ask_again(g);
         return;
     }
+    g->retries = 0;
     bool near = pointer_near(look, f);
     bool fresh = g->out.px && g->out.w == f.w && g->out.h == f.h && g->out_stamp == g->stamp &&
                  g->out_x == f.x && g->out_y == f.y && !memcmp(&g->out_look, look, sizeof(*look)) &&
@@ -632,6 +684,13 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
         uint32_t *row = c->px + y * c->stride;
         for (int x = area.x, end = area.x + area.w; x < end;) {
             int run = x;
+            if (alpha < 255) {
+                unsigned pa = (src[x] >> 24) * (unsigned)alpha / 255;
+                if (pa)
+                    row[x] = color_mix(row[x], src[x] | 0xff000000u, (int)pa);
+                x++;
+                continue;
+            }
             while (run < end && src[run] >> 24 == 255)
                 run++;
             if (run > x) {
@@ -648,6 +707,10 @@ void glass_draw(struct canvas *c, struct glass *g, const struct glass_look *look
     }
     int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
     if (look->shape)
+        return;
+    if (look->halo)
+        glass_halo_edge(c, f, radius, alpha);
+    if (alpha < 255)
         return;
     if (!look->liquid && look->rim)
         gfx_round_frame_gradient(c, f, radius, ALPHA(0xffffffffu, look->rim), ALPHA(0xffffffffu, look->rim / 3));
@@ -709,6 +772,12 @@ static void apply_effect(struct glass_look *look, enum glass_kind kind)
             look->band = MIN(40, look->band + 6);
         }
         look->rim = MIN(255, look->rim + 50);
+        break;
+    case GLASS_FX_HALO:
+        look->halo = kind != GLASS_MENUBAR;
+        look->tint = with_alpha(color_mix(look->tint | 0xff000000u, style.accent | 0xff000000u, dark ? 26 : 16), a);
+        if (look->liquid)
+            look->pointer_light = MAX(look->pointer_light, 70);
         break;
     default:
         break;

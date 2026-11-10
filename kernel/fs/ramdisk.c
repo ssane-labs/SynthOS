@@ -2,6 +2,7 @@
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/lz4.h>
+#include <synth/lzma.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -27,6 +28,15 @@ static int unpack(const void *data, size_t size, const char *dest);
 int ramdisk_unpack(const void *data, size_t size, const char *dest)
 {
     const uint8_t *z = data;
+    if (size >= 13 && !memcmp(z, "SRDL", 4)) {
+        uint32_t raw = rd32(z + 4);
+        uint8_t *buf = kmalloc(raw);
+        if (!buf)
+            return E_NOMEM;
+        int files = lzma_decode(z + 8, z + 13, size - 13, buf, raw) == 0 ? unpack(buf, raw, dest) : E_IO;
+        kfree(buf);
+        return files;
+    }
     if (size < 8 || memcmp(z, "SRDZ", 4) != 0)
         return unpack(data, size, dest);
     uint32_t raw = rd32(z + 4);

@@ -303,7 +303,7 @@ void gui_wallpaper_refresh(void)
             canvas_free(&wallpapers[i]);
         if (!wallpapers[i].px && !canvas_alloc(&wallpapers[i], a.w, a.h))
             continue;
-        wallpaper_paint(&wallpapers[i], strcmp(wallpaper_setting, "auto") ? wallpaper_setting : look_current()->name,
+        wallpaper_paint(&wallpapers[i], strcmp(wallpaper_setting, "auto") ? wallpaper_setting : look_current()->wallpaper,
                         style.dark);
     }
     wm_damage_all();
@@ -386,7 +386,7 @@ void gui_make_app_shortcut(const char *name)
 }
 
 /* Like Finder's "Show these items on the desktop": the system disk and the other drives can each be hidden. */
-static bool show_system_disk = true, show_drives = true;
+static bool show_system_disk, show_drives;
 
 static void scan_desktop(void)
 {
@@ -1572,11 +1572,75 @@ static void snap_key(struct window *f, int base)
     }
 }
 
+/* The terminal is there from the start (the shell runs in it) but stays out of sight until it is asked for:
+   its Dock icon, Launchpad, or Ctrl+Alt+T. */
+static bool terminal_at_start;
+
+/* Which system shortcuts the desktop knows: those of Windows (Win+E, Win+D, Alt+Tab, Alt+F4...), those of macOS
+   (Cmd+Q, Cmd+W, Cmd+Space, Cmd+Tab, Cmd+Shift+3...), where the Command key is the Windows key, or both together. */
+enum { KEYS_BOTH, KEYS_WINDOWS, KEYS_MAC };
+static int key_set = KEYS_BOTH;
+
+static bool windows_keys(void)
+{
+    return key_set != KEYS_MAC;
+}
+
+static bool mac_keys(void)
+{
+    return key_set != KEYS_WINDOWS;
+}
+
+/* Win+key in the Windows set */
+static bool win_key(int key)
+{
+    int base = KEY_BASE(key);
+    int lower = base >= 'A' && base <= 'Z' ? base + 32 : base;
+    struct rect s = wm_screen_rect(0);
+    switch (lower) {
+    case 'e': gui_app_launch(gui_app_find("Files"), NULL); return true;
+    case 'd': desktop_show_toggle(); return true;
+    case 'l': gui_lock(); return true;
+    case 'r': spotlight_toggle(); return true;
+    case 'i': gui_app_launch(gui_app_find("System Settings"), NULL); return true;
+    case 'a': control_center_toggle(s.x + s.w - 8); return true;
+    case 'n': notification_center_toggle(); return true;
+    case 'm': desktop_show_toggle(); return true;
+    case 's':
+        if (key & KEY_MOD_SHIFT) {
+            screenshot_start(SHOT_REGION);
+            return true;
+        }
+        return false;
+    case KEY_TAB: mission_toggle(); return true;
+    }
+    return false;
+}
+
 static void cmd_key(int key)
 {
     struct window *f = wm_focused();
     int base = KEY_BASE(key);
     int mods = key & KEY_MOD_MASK & ~KEY_MOD_SUPER;
+    if (key_set == KEYS_WINDOWS) {
+        if (base == KEY_LEFT || base == KEY_RIGHT || base == KEY_UP || base == KEY_DOWN) {
+            if (mods & KEY_MOD_CTRL)
+                wm_space_switch(wm_space_current() + (base == KEY_RIGHT ? 1 : -1));
+            else
+                snap_key(f, base);
+            return;
+        }
+        if (base == KEY_PRINT) {
+            screenshot_start(SHOT_SCREEN);
+            return;
+        }
+        win_key(key);
+        return;
+    }
+    if (key_set == KEYS_MAC && (base == 'e' || base == 'E' || base == 'd' || base == 'D')) {
+        wm_key(KEY_CTRL(base) | (mods & KEY_MOD_SHIFT));
+        return;
+    }
     if (base == 'q' || base == 'Q') {
         if (f && f->app) {
             for (struct window *w = wm_app_window(f->app); w; w = wm_app_window(f->app)) {
@@ -1690,6 +1754,20 @@ static void handle_key(int key)
         spotlight_toggle();
         return;
     }
+    if ((key & KEY_MOD_ALT) && (key & KEY_MOD_CTRL || base < 0x20) && (base == 't' || base == 'T' || base == KEY_CTRL('t'))) {
+        gui_terminal_show();
+        return;
+    }
+    if (windows_keys() && base == KEY_ESC && (key & KEY_MOD_CTRL) && (key & KEY_MOD_SHIFT)) {
+        gui_app_launch(gui_app_find("System Monitor"), NULL);
+        return;
+    }
+    if (mac_keys() && base == KEY_ESC && (key & KEY_MOD_SUPER) && (key & KEY_MOD_ALT)) {
+        gui_app_launch(gui_app_find("System Monitor"), "windows");
+        return;
+    }
+    if (key == (KEY_TAB | KEY_MOD_ALT) && !windows_keys())
+        return;
     if (key == (KEY_TAB | KEY_MOD_ALT)) {
         switcher_next(KEY_MOD_ALT, hal_key_modifiers() & KEY_MOD_SHIFT);
         return;
@@ -1702,7 +1780,7 @@ static void handle_key(int key)
         mission_toggle();
         return;
     }
-    if (key == (KEY_F4 | KEY_MOD_ALT)) {
+    if (key == (KEY_F4 | KEY_MOD_ALT) && windows_keys()) {
         struct window *f = wm_focused();
         if (f)
             wm_close(f);
@@ -1888,7 +1966,7 @@ int gui_run(struct shell *sh)
     widgets_start();
     scan_desktop();
     wm_set_app(gui_app_find("Terminal"));
-    struct window *term = terminal_open();
+    struct window *term = terminal_open(!terminal_at_start);
     wm_set_app(NULL);
     if (!term) {
         chrome_stop();
@@ -1958,7 +2036,7 @@ void gui_wallpaper_use(const char *path)
     set_wallpaper(NULL, path);
 }
 
-static const struct setting s_wallpaper = {"wallpaper", "auto|mono|dune|mist|night|sunset|waves|hills|aurora|synthwave|solid|<picture file>",
+static const struct setting s_wallpaper = {"wallpaper", "auto|mono|halo|sunrise|earthset|aurora|milkyway|dunes|glacier|saturn|solid|<picture file>",
                                            "desktop background", get_wallpaper, set_wallpaper};
 SETTING(s_wallpaper);
 
@@ -2100,8 +2178,8 @@ static const struct setting s_strength = {"glassstrength", "0..100",
                                           get_strength, set_strength};
 SETTING(s_strength);
 
-static const char *const glass_effects[] = {"regular", "clear", "tinted", "smoky", "prism"};
-static int glass_effect, glass_edge = 50, glass_frost = 50;
+static const char *const glass_effects[] = {"regular", "clear", "tinted", "smoky", "prism", "halo"};
+static int glass_effect = GLASS_FX_HALO, glass_edge = 50, glass_frost = 50;
 
 int gui_glass_effect(void)
 {
@@ -2146,8 +2224,8 @@ static int set_effect(struct shell *sh, const char *value)
     return E_INVAL;
 }
 
-static const struct setting s_effect = {"glasseffect", "regular|clear|tinted|smoky|prism",
-                                        "the kind of glass: clear, tinted with the accent, smoky, or prism edges",
+static const struct setting s_effect = {"glasseffect", "regular|clear|tinted|smoky|prism|halo",
+                                        "the kind of glass: clear, tinted with the accent, smoky, prism edges, or the halo of colors",
                                         get_effect, set_effect};
 SETTING(s_effect);
 
@@ -2381,6 +2459,44 @@ static int set_desktopdrives(struct shell *sh, const char *value)
         scan_desktop();
     return err;
 }
+
+static void get_termstart(char *buf, size_t cap)
+{
+    setting_flag_get(terminal_at_start, buf, cap);
+}
+
+static int set_termstart(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return setting_flag(value, &terminal_at_start);
+}
+
+static const char *const key_sets[] = {"both", "windows", "mac"};
+
+static void get_shortcuts(char *buf, size_t cap)
+{
+    str_copy(buf, key_sets[key_set], cap);
+}
+
+static int set_shortcuts(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    for (int i = 0; i < (int)ARRAY_SIZE(key_sets); i++)
+        if (!strcmp(value, key_sets[i])) {
+            key_set = i;
+            return 0;
+        }
+    return E_INVAL;
+}
+
+static const struct setting s_shortcuts = {"shortcuts", "both|windows|mac",
+                                           "system shortcuts of Windows (Win+E, Alt+Tab...), macOS (Cmd+Q, Cmd+Space...) or both",
+                                           get_shortcuts, set_shortcuts};
+SETTING(s_shortcuts);
+
+static const struct setting s_termstart = {"termstart", "on|off", "open the Terminal window when the desktop starts",
+                                           get_termstart, set_termstart};
+SETTING(s_termstart);
 
 static const struct setting s_desktopdisk = {"desktopdisk", "on|off", "show SynthOS HD on the desktop",
                                              get_desktopdisk, set_desktopdisk};

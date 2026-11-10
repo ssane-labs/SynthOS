@@ -135,8 +135,83 @@ uint32_t con_scroll_count(void)
     return scrolls;
 }
 
+/* Lines that scrolled off the top are kept, so the terminal can be scrolled back (the wheel, Shift+PgUp/PgDn). */
+#define HIST_LINES 600
+#define HIST_COLS 160
+
+static struct cell *hist, *view;
+static int hist_count, hist_head, view_off;
+
+static void hist_push(const struct cell *row)
+{
+    if (!hist && !(hist = kmalloc((size_t)HIST_LINES * HIST_COLS * sizeof(struct cell))))
+        return;
+    struct cell *to = hist + (size_t)hist_head * HIST_COLS;
+    int n = MIN(cols, HIST_COLS);
+    memcpy(to, row, (size_t)n * sizeof(struct cell));
+    for (int x = n; x < HIST_COLS; x++)
+        to[x] = (struct cell){' ', row[0].attr};
+    hist_head = (hist_head + 1) % HIST_LINES;
+    hist_count = MIN(hist_count + 1, HIST_LINES);
+}
+
+static void present_view(void)
+{
+    static int view_cells;
+    if (!view || view_cells < cols * rows) {
+        kfree(view);
+        view = kmalloc((size_t)cols * (size_t)rows * sizeof(struct cell));
+        view_cells = view ? cols * rows : 0;
+    }
+    if (!view || !disp->present)
+        return;
+    memcpy(view, cells, (size_t)cols * (size_t)rows * sizeof(struct cell));
+    for (int y = 0; y < text_rows; y++) {
+        int line = y - view_off;
+        struct cell *to = view + y * cols;
+        if (line >= 0) {
+            memcpy(to, cells + line * cols, (size_t)cols * sizeof(struct cell));
+            continue;
+        }
+        const struct cell *from = hist + (size_t)((hist_head + line + HIST_LINES * 2) % HIST_LINES) * HIST_COLS;
+        int n = MIN(cols, HIST_COLS);
+        memcpy(to, from, (size_t)n * sizeof(struct cell));
+        for (int x = n; x < cols; x++)
+            to[x] = (struct cell){' ', from[0].attr};
+    }
+    disp->present(view, cols, 0, rows);
+    if (disp->cursor)
+        disp->cursor(MIN(cx, cols - 1), cy + view_off, cursor_on && cy + view_off < text_rows);
+}
+
+/* Moves the view by lines (positive: back into what scrolled away); any new output returns to the present. */
+void con_scrollback(int lines)
+{
+    if (!con_is_grid())
+        return;
+    int to = CLAMP(view_off + lines, 0, hist_count);
+    if (to == view_off)
+        return;
+    view_off = to;
+    if (view_off) {
+        present_view();
+    } else {
+        mark(0, rows);
+        con_flush();
+    }
+}
+
+int con_scrollback_position(void)
+{
+    return view_off;
+}
+
 static void present_dirty(void)
 {
+    if (view_off && dirty_y0 < dirty_y1) {
+        view_off = 0;
+        mark(0, rows);
+    }
     if (dirty_y0 < dirty_y1 && disp->present)
         disp->present(cells, cols, dirty_y0, dirty_y1);
     dirty_y0 = dirty_y1 = 0;
@@ -151,6 +226,7 @@ static void scroll_up(void)
     } else {
         mark(0, text_rows);
     }
+    hist_push(cells);
     memmove(cells, cells + cols, (size_t)cols * (size_t)(text_rows - 1) * sizeof(struct cell));
     for (int x = 0; x < cols; x++)
         *at(x, text_rows - 1) = (struct cell){' ', a};
@@ -614,7 +690,7 @@ void con_flush(void)
     if (!con_is_grid())
         return;
     present_dirty();
-    if (disp->cursor)
+    if (disp->cursor && !view_off)
         disp->cursor(MIN(cx, cols - 1), cy, cursor_on);
 }
 
