@@ -37,7 +37,6 @@ static const struct w64_export out_exports[] = {
     W64_OUT("GetSecurityDescriptorDacl", A(2)),
     W64_OUT("GetSecurityDescriptorSacl", A(2)),
     W64_OUT("GetThreadDescription", A(1)),
-    W64_OUT("GetQueuedCompletionStatus", A(2) | A(3)),
     W64_OUT("HeapQueryInformation", A(4)),
     W64_OUT("InitOnceBeginInitialize", A(3)),
     W64_INOUT("InitializeProcThreadAttributeList", A(3)),

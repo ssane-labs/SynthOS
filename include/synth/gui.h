@@ -175,10 +175,17 @@ struct packed_image {
     const uint8_t *data;
 };
 
-/* App icons live in /system/icons.pak: each one is an LZ4 block at an offset. */
+/* App icons live in /system/icons.pak: each one is an LZ4 block at an offset. An app tile keeps only what is drawn
+   over its squircle; the squircle itself is painted from these colors, one set for light and one for dark mode. */
+struct icon_tile {
+    uint32_t top, bottom;
+    uint8_t glow;
+};
+
 struct icon_entry {
     uint16_t size;
     uint32_t length, offset;
+    struct icon_tile light, dark;
 };
 
 extern const struct icon_entry icon_pack[ICON_COUNT];
@@ -194,6 +201,7 @@ struct rect rect_inset(struct rect r, int d);
 bool rect_inside(struct rect inner, struct rect outer);
 
 uint32_t color_mix(uint32_t a, uint32_t b, int t);
+uint32_t gfx_halo_tone(int u);
 uint32_t color_shade(uint32_t c, int amount);
 int color_luma(uint32_t c);
 
@@ -407,12 +415,14 @@ struct window {
     struct canvas thumb;
     bool anim_hold;
     int space;
+    struct rect anchor;
 };
 
 #define TITLE_HEIGHT 28
 #define TOOLBAR_HEIGHT 52
 #define BORDER 0
 #define MENUBAR_HEIGHT 24
+#define ISLANDS_HEIGHT 34
 
 struct window *wm_open(const char *title, enum icon_id icon, int w, int h, const struct window_ops *ops, void *data,
                        unsigned flags);

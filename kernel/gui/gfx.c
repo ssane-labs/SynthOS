@@ -79,6 +79,15 @@ static inline uint32_t over(uint32_t dst, uint32_t src, unsigned a)
     return out;
 }
 
+/* The SynthOS halo colors, u = 0..1023: violet, blue, teal, gold, rose and back to violet. */
+uint32_t gfx_halo_tone(int u)
+{
+    static const uint32_t stops[] = {0xff7b5cffu, 0xff3fa9ffu, 0xff3ff2d0u, 0xffffd36bu, 0xffff6fa8u, 0xff7b5cffu};
+    u = ((u % 1024) + 1024) % 1024;
+    int seg = u * 5 / 1024, f = (u * 5 - seg * 1024) * 255 / 1024;
+    return color_mix(stops[seg], stops[seg + 1], f);
+}
+
 uint32_t color_mix(uint32_t a, uint32_t b, int t)
 {
     return blend(a, b, (unsigned)CLAMP(t, 0, 255));
@@ -868,7 +877,9 @@ void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int 
 #define ICON_SIZE 96
 #define ICON_LEVELS 4
 
-static uint32_t *icon_px[ICON_COUNT][ICON_LEVELS];
+static uint32_t *icon_px_both[2][ICON_COUNT][ICON_LEVELS];
+/* every use has the icon's id at hand */
+#define icon_px (icon_px_both[icon_variant_of(id)])
 static uint8_t *symbol_px[SYM_COUNT];
 
 static uint32_t *half_size(const uint32_t *src, int size)
@@ -881,6 +892,59 @@ static uint32_t *half_size(const uint32_t *src, int size)
         for (int x = 0; x < h; x++)
             out[y * h + x] = sample_box(src, size, x * 2, y * 2, x * 2 + 2, y * 2 + 2);
     return out;
+}
+
+static bool has_tile(enum icon_id id)
+{
+    return (unsigned)id < ICON_COUNT && (icon_pack[id].light.top | icon_pack[id].light.bottom);
+}
+
+/* Dark mode paints app tiles on their dark colors; other icons look the same in both. */
+static int icon_variant_of(enum icon_id id)
+{
+    return style.dark && has_tile(id) ? 1 : 0;
+}
+
+/* The squircle (|x|^5 + |y|^5 <= 1) over the tile's box, 4x4 samples per pixel, and the background under the icon's
+   own layer: a top-to-bottom blend with a soft light from the top edge. */
+static void paint_tile(uint32_t *px, int size, const struct icon_tile *t)
+{
+    int64_t a = size * 39 * 4 / 96, c = size * 48 * 4 / 96, one = (int64_t)1 << 40;
+    int gx = size * 48 * 16 / 96, gy = size * 9 * 16 / 96, gr = size * 702 * 16 / 960;
+    for (int y = 0; y < size; y++) {
+        uint32_t base = color_mix(t->top | 0xff000000u, t->bottom | 0xff000000u, (y * 2 + 1) * 255 / (size * 2));
+        for (int x = 0; x < size; x++) {
+            int cover = 0;
+            for (int sy = 0; sy < 4; sy++)
+                for (int sx = 0; sx < 4; sx++) {
+                    int64_t u = (x * 4 + sx) * 2 + 1 - c * 2, v = (y * 4 + sy) * 2 + 1 - c * 2;
+                    u = u < 0 ? -u : u;
+                    v = v < 0 ? -v : v;
+                    int64_t a2 = a * 2;
+                    if (u >= a2 || v >= a2)
+                        continue;
+                    int64_t uu = (u << 8) / a2, vv = (v << 8) / a2;
+                    if (uu * uu * uu * uu * uu + vv * vv * vv * vv * vv < one)
+                        cover++;
+                }
+            uint32_t *dst = &px[y * size + x];
+            uint32_t fg = *dst;
+            if (!cover)
+                continue;
+            uint32_t p = base;
+            if (t->glow) {
+                int d = gfx_dist16(x * 16 + 8 - gx, y * 16 + 8 - gy);
+                if (d < gr)
+                    p = color_mix(p, 0xffffffffu, t->glow * (gr - d) / gr);
+            }
+            unsigned ba = (unsigned)cover * 255 / 16, fa = fg >> 24;
+            if (fa >= 255)
+                continue;
+            unsigned oa = fa + ba * (255 - fa) / 255;
+            uint32_t mixed = color_mix(p | 0xff000000u, fg | 0xff000000u, oa ? (int)(fa * 255 / oa) : 0);
+            *dst = (mixed & 0xffffffu) | (uint32_t)oa << 24;
+        }
+    }
 }
 
 static const uint8_t *icon_pack_data(void)
@@ -903,6 +967,8 @@ static const uint8_t *icon_pack_data(void)
 
 static bool load_icon(enum icon_id id)
 {
+    if ((unsigned)id >= ICON_COUNT)
+        return false;
     if (icon_px[id][0])
         return true;
     const struct icon_entry *p = &icon_pack[id];
@@ -919,6 +985,8 @@ static bool load_icon(enum icon_id id)
     }
     unfilter_planes(planes, px, p->size, p->size);
     kfree(planes);
+    if (has_tile(id))
+        paint_tile(px, p->size, icon_variant_of(id) ? &p->dark : &p->light);
     icon_px[id][0] = px;
     for (int level = 1; level < ICON_LEVELS; level++)
         icon_px[id][level] = icon_px[id][level - 1] ? half_size(icon_px[id][level - 1], ICON_SIZE >> (level - 1)) : NULL;
@@ -931,7 +999,7 @@ const uint32_t *gfx_icon_pixels(enum icon_id id)
 }
 
 struct scaled_icon {
-    int id, size;
+    int id, size, variant;
     uint32_t *px;
 };
 
@@ -946,7 +1014,8 @@ static const uint32_t *icon_at_size(enum icon_id id, int size)
     if (size <= 0 || size > 256)
         return NULL;
     for (size_t i = 0; i < ARRAY_SIZE(scaled_icons); i++)
-        if (scaled_icons[i].px && scaled_icons[i].id == (int)id && scaled_icons[i].size == size)
+        if (scaled_icons[i].px && scaled_icons[i].id == (int)id && scaled_icons[i].size == size &&
+            scaled_icons[i].variant == icon_variant_of(id))
             return scaled_icons[i].px;
     struct scaled_icon *e = &scaled_icons[scaled_next++ % (int)ARRAY_SIZE(scaled_icons)];
     kfree(e->px);
@@ -955,6 +1024,7 @@ static const uint32_t *icon_at_size(enum icon_id id, int size)
         return NULL;
     e->id = (int)id;
     e->size = size;
+    e->variant = icon_variant_of(id);
     int level = 0;
     while (level + 1 < ICON_LEVELS && icon_px[id][level + 1] && (ICON_SIZE >> (level + 1)) >= size)
         level++;

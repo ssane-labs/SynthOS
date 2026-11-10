@@ -75,11 +75,99 @@ static struct w32_image *image_of(uint64_t pc)
     return NULL;
 }
 
+/* Function tables a program registers for code it generates at run time (V8 and other JIT compilers): a growable
+   table covers a range of addresses, a plain one the functions it lists. */
+#define DYN_TABLES 64
+
+struct dyn_table {
+    uint64_t table, base, start, end;
+    uint32_t count, max;
+};
+
+static W32_STATE struct dyn_table dyn[DYN_TABLES];
+
+static const uint8_t *dynamic_entry(uint64_t pc, uint64_t *base)
+{
+    for (int i = 0; i < DYN_TABLES; i++) {
+        const struct dyn_table *d = &dyn[i];
+        if (!d->table || pc < d->start || pc >= d->end)
+            continue;
+        const uint8_t *entries = w64_ptr(d->table);
+        uint64_t rel = pc - d->base;
+        for (uint32_t k = 0; k < d->count; k++) {
+            const uint8_t *e = entries + k * 12;
+            if (rel >= rd32(e) && rel < rd32(e + 4)) {
+                *base = d->base;
+                return e;
+            }
+        }
+    }
+    return NULL;
+}
+
+static struct dyn_table *dyn_add(uint64_t table, uint32_t count, uint32_t max, uint64_t base, uint64_t start,
+                                 uint64_t end)
+{
+    for (int i = 0; i < DYN_TABLES; i++)
+        if (!dyn[i].table) {
+            dyn[i] = (struct dyn_table){table, base, start, end, count, max};
+            return &dyn[i];
+        }
+    return NULL;
+}
+
+static uint64_t h_add_growable(uint64_t *a, const uint64_t *f, void *t)
+{
+    struct dyn_table *d = dyn_add(a[1], (uint32_t)a[2], (uint32_t)a[3], a[4], a[4], a[5]);
+    if (!d)
+        return 0xc000009au;
+    put64(w64_ptr(a[0]), (uint64_t)(d - dyn) + 1);
+    return 0;
+}
+
+static uint64_t h_grow_table(uint64_t *a, const uint64_t *f, void *t)
+{
+    if (a[0] >= 1 && a[0] <= DYN_TABLES && dyn[a[0] - 1].table)
+        dyn[a[0] - 1].count = MIN((uint32_t)a[1], dyn[a[0] - 1].max);
+    return 0;
+}
+
+static uint64_t h_delete_growable(uint64_t *a, const uint64_t *f, void *t)
+{
+    if (a[0] >= 1 && a[0] <= DYN_TABLES)
+        dyn[a[0] - 1].table = 0;
+    return 0;
+}
+
+static uint64_t h_add_table(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t count = (uint32_t)a[1];
+    if (!a[0] || !count)
+        return 0;
+    const uint8_t *e = w64_ptr(a[0]);
+    uint64_t start = UINT64_MAX, end = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        start = MIN(start, a[2] + rd32(e + i * 12));
+        end = MAX(end, a[2] + rd32(e + i * 12 + 4));
+    }
+    return dyn_add(a[0], count, count, a[2], start, end) != NULL;
+}
+
+static uint64_t h_delete_table(uint64_t *a, const uint64_t *f, void *t)
+{
+    for (int i = 0; i < DYN_TABLES; i++)
+        if (dyn[i].table == a[0] && a[0]) {
+            dyn[i].table = 0;
+            return 1;
+        }
+    return 0;
+}
+
 static const uint8_t *function_entry(uint64_t pc, uint64_t *base)
 {
     struct w32_image *img = image_of(pc);
     if (!img)
-        return NULL;
+        return dynamic_entry(pc, base);
     const uint8_t *mem = (const uint8_t *)img->base;
     uint32_t opt = rd32(mem + 0x3c) + 24;
     uint32_t rva = rd32(mem + opt + 112 + 3 * 8), size = rd32(mem + opt + 112 + 3 * 8 + 4);
@@ -120,7 +208,7 @@ static uint64_t virtual_unwind(int type, uint64_t base, uint64_t pc, const uint8
     bool first = true, machine_frame = false;
     *frame = rsp(ctx);
     for (int chain = 0; chain < 32; chain++) {
-        const uint8_t *info = (const uint8_t *)(uintptr_t)(base + rd32(entry + 8));
+        const uint8_t *info = w64_ptr(base + rd32(entry + 8));
         uint32_t prolog_offset = (uint32_t)(pc - base - rd32(entry));
         uint8_t flags = info[0] >> 3, prolog = info[1], count = info[2];
         uint8_t frame_reg = info[3] & 0xf, frame_offset = info[3] >> 4;
@@ -345,7 +433,7 @@ static uint64_t h_lookup_function_entry(uint64_t *a, const uint64_t *f, void *t)
     const uint8_t *e = function_entry(a[0], &base);
     if (a[1])
         put64(w64_ptr(a[1]), e ? base : 0);
-    return (uintptr_t)e;
+    return e ? w64_high_back((uintptr_t)e) : 0;
 }
 
 static uint64_t h_virtual_unwind(uint64_t *a, const uint64_t *f, void *t)
@@ -374,6 +462,11 @@ static const struct w64_export seh_exports[] = {
     W64_NATIVE("RtlUnwindEx", w64_unwind_ex),
     W64_FN("RtlLookupFunctionEntry", h_lookup_function_entry),
     W64_FN("RtlVirtualUnwind", h_virtual_unwind),
+    W64_FN("RtlAddFunctionTable", h_add_table),
+    W64_FN("RtlDeleteFunctionTable", h_delete_table),
+    W64_FN("RtlAddGrowableFunctionTable", h_add_growable),
+    W64_FN("RtlGrowFunctionTable", h_grow_table),
+    W64_FN("RtlDeleteGrowableFunctionTable", h_delete_growable),
 };
 W64_EXPORTS(seh_kernel32, "kernel32.dll", seh_exports);
 W64_EXPORTS(seh_ntdll, "ntdll.dll", seh_exports);

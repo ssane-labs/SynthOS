@@ -21,6 +21,7 @@ enum dock_kind {
 enum status_kind {
     STATUS_MENUBAR,
     STATUS_PILL,
+    STATUS_ISLANDS,
 };
 
 struct gui_look {

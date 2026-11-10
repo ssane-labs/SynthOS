@@ -570,6 +570,8 @@ static const char *object_type_name(HANDLE h, const struct w32_object *o)
     case WH_TOKEN: return "Token";
     case WH_KEY: return "Key";
     case WH_JOB: return "Job";
+    case WH_WINSTA: return "WindowStation";
+    case WH_DESKTOP: return "Desktop";
     default: return "File";
     }
 }

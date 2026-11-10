@@ -589,20 +589,70 @@ def bands(m, k):
     return top.filter(ImageFilter.GaussianBlur(k / 2)), bottom.filter(ImageFilter.GaussianBlur(k / 2))
 
 
+_DIAG = []
+
+
+def diag_light():
+    """Where light catches a glass edge: strong at the top left, weaker at the bottom right."""
+    if not _DIAG:
+        k = 64
+        small = Image.new("L", (k, k), 0)
+        px = small.load()
+        for y in range(k):
+            for x in range(k):
+                v = (x + y + 1) / (2 * k)
+                tl = max(0.0, 1 - 2.2 * v) ** 0.7
+                br = max(0.0, 2.2 * v - 1.2) ** 0.7 * 0.6
+                px[x, y] = int(255 * min(1.0, max(tl, br) + 0.12))
+        _DIAG.append(small.resize((S, S), Image.BICUBIC))
+    return _DIAG[0]
+
+
+def specular(m, width=3):
+    """A thin bright band just inside the edge of a shape, lit from the top left like the rim of thick glass."""
+    edge = ImageChops.subtract(m, m.filter(ImageFilter.MinFilter(width * 2 + 1))).filter(ImageFilter.GaussianBlur(0.7))
+    return ImageChops.multiply(edge, diag_light())
+
+
+def deepen(c, base, k):
+    return tuple(int(c[i] * (1 - k) + base[i] * k) for i in range(3)) + (c[3] if len(c) > 3 else 255,)
+
+
 def rotated(draw, angle, cx=128, cy=128):
     m = mask_of(draw)
     return m.rotate(angle, resample=Image.BICUBIC, center=(cx, cy))
+
+
+class Tile:
+    """An app icon as the desktop stores it: the squircle's background colors (light and dark) and everything drawn
+    over it as one transparent layer, so the kernel paints the background in either mode and lays the layer on top."""
+
+    def __init__(self, fg, top, bottom, glow, box):
+        self.fg, self.top, self.bottom, self.glow, self.box = fg, top, bottom, glow, box
+        self.dtop, self.dbottom = deepen(top, (44, 44, 50), 0.80), deepen(bottom, (14, 14, 17), 0.88)
+        self.dglow = glow // 4
+
+    def background(self, dark=False):
+        top, bottom, glow = (self.dtop, self.dbottom, self.dglow) if dark else (self.top, self.bottom, self.glow)
+        img = gradient((S, S), top, bottom)
+        if glow:
+            x0, y0, x1, y1 = self.box
+            img.alpha_composite(radial((x0 + x1) / 2, y0, (y1 - y0) * 0.9, (255, 255, 255, glow), (255, 255, 255, 0)))
+        return img
+
+    def flatten(self, dark=False):
+        out = blank()
+        out.alpha_composite(Image.composite(self.background(dark), blank(), squircle_mask(self.box)))
+        out.alpha_composite(self.fg)
+        return out
 
 
 class Art:
     def __init__(self, top, bottom, box=BODY, glow=70):
         self.box = box
         self.mask = squircle_mask(box)
-        self.img = gradient((S, S), top, bottom)
-        if glow:
-            x0, y0, x1, y1 = box
-            self.img.alpha_composite(radial((x0 + x1) / 2, y0, (y1 - y0) * 0.9, (255, 255, 255, glow),
-                                            (255, 255, 255, 0)))
+        self.top, self.bottom, self.glow = top, bottom, glow
+        self.img = blank()
 
     def m(self, shape):
         return shape if isinstance(shape, Image.Image) else mask_of(shape)
@@ -622,8 +672,9 @@ class Art:
         self.img.alpha_composite(layer)
         if bevel:
             hi, lo = bands(m, bevel)
-            self.img.alpha_composite(colored(ImageChops.multiply(hi, m), (255, 255, 255, light)))
-            self.img.alpha_composite(colored(ImageChops.multiply(lo, m), (0, 0, 0, shade)))
+            self.img.alpha_composite(colored(ImageChops.multiply(hi, m), (255, 255, 255, light * 2 // 3)))
+            self.img.alpha_composite(colored(ImageChops.multiply(lo, m), (0, 0, 0, shade * 2 // 3)))
+            self.img.alpha_composite(colored(specular(m, 2), (255, 255, 255, min(255, light + 90))))
         if stroke:
             edge = ImageChops.subtract(m, m.filter(ImageFilter.MinFilter(3)))
             self.img.alpha_composite(colored(edge, stroke))
@@ -636,15 +687,24 @@ class Art:
         return self
 
     def done(self, shadow=60):
-        out = blank()
+        """The finished tile: a soft sheen over the top, the bright glass rim, a faint inner glow, the shadow below."""
+        top = blank()
+        top.alpha_composite(self.img)
+        x0, y0, x1, y1 = self.box
+        top.alpha_composite(paint_of(((255, 255, 255, 42), (255, 255, 255, 0)), mask_of(rr4((0, 0, 256, y0 + (y1 - y0) * 0.5), 0))))
+        inner = ImageChops.subtract(self.mask, self.mask.filter(ImageFilter.MinFilter(17))).filter(ImageFilter.GaussianBlur(4))
+        top.alpha_composite(colored(inner, (255, 255, 255, 24)))
+        top.alpha_composite(colored(bands(self.mask, 4)[1], (0, 0, 0, 34)))
+        top.alpha_composite(colored(specular(self.mask, 3), (255, 255, 255, 215)))
+        fg = blank()
         if shadow:
-            sh = colored(self.mask, (0, 0, 0, shadow)).filter(ImageFilter.GaussianBlur(5))
+            sh = colored(self.mask, (0, 0, 0, shadow * 3 // 4)).filter(ImageFilter.GaussianBlur(5))
+            out = blank()
             out.alpha_composite(sh, (0, 4))
-        out.alpha_composite(Image.composite(self.img, blank(), self.mask))
-        hi, lo = bands(self.mask, 4)
-        out.alpha_composite(colored(ImageChops.multiply(hi, self.mask), (255, 255, 255, 90)))
-        out.alpha_composite(colored(ImageChops.multiply(lo, self.mask), (0, 0, 0, 50)))
-        return out
+            out.putalpha(ImageChops.multiply(out.getchannel("A"), ImageChops.invert(self.mask)))
+            fg.alpha_composite(out)
+        fg.alpha_composite(Image.composite(top, blank(), self.mask))
+        return Tile(fg, self.top, self.bottom, self.glow, self.box)
 
 
 def gloss(box):
@@ -1645,8 +1705,13 @@ def main():
     print("#include <synth/gui.h>\n")
     pack = bytearray()
     entries = []
+    tiles = {}
     for name, fn in ICONS:
-        img = fn().resize((SIZE, SIZE), Image.LANCZOS)
+        art = fn()
+        img = art.fg if isinstance(art, Tile) else art
+        if isinstance(art, Tile):
+            tiles[name] = art
+        img = img.resize((SIZE, SIZE), Image.LANCZOS)
         packed = lz4pack.compress(lz4pack.planes(argb(img), SIZE))
         entries.append((name, len(pack), len(packed)))
         pack += packed
@@ -1654,9 +1719,14 @@ def main():
     with open(pak, "wb") as f:
         f.write(pack)
     print(f"const uint32_t icon_pack_size = {len(pack)};\n")
+    def rgb(c):
+        return f"0x{c[0]:02x}{c[1]:02x}{c[2]:02x}"
     print("const struct icon_entry icon_pack[ICON_COUNT] = {")
     for name, offset, n in entries:
-        print(f"    [{name}] = {{{SIZE}, {n}, {offset}}},")
+        t = tiles.get(name)
+        tile = (f", {{{rgb(t.top)}, {rgb(t.bottom)}, {t.glow}}}, {{{rgb(t.dtop)}, {rgb(t.dbottom)}, {t.dglow}}}"
+                if t else "")
+        print(f"    [{name}] = {{{SIZE}, {n}, {offset}{tile}}},")
     print("};\n")
     entries = []
     for name, fn in SYMBOLS:

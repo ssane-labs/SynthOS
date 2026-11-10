@@ -35,7 +35,7 @@
 #define GAP 24
 #define SECTIONS 32
 #define HISTORY 16
-#define WALLS 11
+#define WALLS 12
 #define LOOK_W 140
 #define LOOK_H 88
 #define THUMB_W 124
@@ -138,9 +138,9 @@ static const struct {
     {"Screenshot", "screenshot", SYM_SCREENSHOT, RGB(142, 142, 148), 4, P_APPS, pane_screenshot},
 };
 
-static const char *const wall_names[WALLS] = {"From the look", "Mono", "Dune", "Mist", "Night", "Sunset",
+static const char *const wall_names[WALLS] = {"From the look", "Halo", "Mono", "Dune", "Mist", "Night", "Sunset",
                                               "Waves", "Hills", "Aurora", "Synthwave", "Solid"};
-static const char *const wall_values[WALLS] = {"auto", "mono", "dune", "mist", "night", "sunset",
+static const char *const wall_values[WALLS] = {"auto", "halo", "mono", "dune", "mist", "night", "sunset",
                                                "waves", "hills", "aurora", "synthwave", "solid"};
 
 struct settings {
@@ -862,6 +862,11 @@ static void draw_layout(struct canvas *c, struct rect r, const struct gui_look *
     }
     if (l->status == STATUS_PILL)
         gfx_round(&k, (struct rect){r.x + r.w - 15 * u, r.y + 2 * u, 13 * u, 3 * u}, (3 * u) / 2, glass);
+    if (l->status == STATUS_ISLANDS) {
+        gfx_round(&k, (struct rect){r.x + 2 * u, r.y + 2 * u, 14 * u, 3 * u}, (3 * u) / 2, glass);
+        gfx_round(&k, (struct rect){r.x + r.w / 2 - 5 * u, r.y + 2 * u, 10 * u, 3 * u}, (3 * u) / 2, glass);
+        gfx_round(&k, (struct rect){r.x + r.w - 11 * u, r.y + 2 * u, 9 * u, 3 * u}, (3 * u) / 2, glass);
+    }
     gfx_round(&k, win, 2 * u, l->dark ? RGB(32, 30, 40) : RGB(250, 250, 252));
     gfx_round(&k, (struct rect){win.x, win.y, win.w, 3 * u}, 2 * u, l->dark ? RGB(46, 44, 56) : RGB(236, 236, 240));
 }
@@ -870,7 +875,7 @@ static void pane_appearance(struct page *p)
 {
     struct settings *s = p->s;
     section(p, "Look");
-    struct rect r = custom(p, LOOK_H + 52, "Look Dune Mist Night");
+    struct rect r = custom(p, LOOK_H + 52, "Look Halo Mono Dune Mist");
     if (!p->measure) {
         make_look_thumbs(s);
         int n = look_count(), gap = CLAMP((r.w - 28 - n * LOOK_W) / MAX(n - 1, 1), 8, 40);
@@ -1023,10 +1028,10 @@ static void control_sections(struct page *p)
             apply("menuextras", out[0] ? out : "none");
         }
     }
-    static const char *const bars[] = {"Menu Bar", "Floating Pill"};
-    static const char *const bar_values[] = {"menubar", "pill"};
-    choice(p, "Status at the top", "The floating pill belongs to the current look", "statusbar", bars, bar_values,
-           2, 240);
+    static const char *const bars[] = {"Menu Bar", "Floating Pill", "Islands"};
+    static const char *const bar_values[] = {"menubar", "pill", "islands"};
+    choice(p, "Status at the top", "The status bar belongs to the current look", "statusbar", bars, bar_values,
+           3, 300);
     if (link(p, panes[P_DATETIME].sym, panes[P_DATETIME].color, "Clock", "Date & Time"))
         go(s, P_DATETIME);
     end(p, NULL);

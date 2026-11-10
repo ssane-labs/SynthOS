@@ -52,7 +52,7 @@ struct wsock {
     int type;
     DWORD recv_timeout, send_timeout;
     HANDLE port;
-    uintptr_t key;
+    uint64_t key;
     HANDLE event;
     long mask, reported;
     bool v6;
@@ -1133,7 +1133,7 @@ bool w32_winsock_cancel(UINT s, uint32_t *ov)
     return found;
 }
 
-bool w32_socket_associate(uintptr_t s, HANDLE port, uintptr_t key)
+bool w32_socket_associate(uintptr_t s, HANDLE port, uint64_t key)
 {
     if (s < SOCKET_BASE || s >= SOCKET_BASE + NET_MAX_SOCKETS || !socks[s - SOCKET_BASE].used)
         return false;

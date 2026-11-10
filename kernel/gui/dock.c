@@ -96,6 +96,13 @@ static struct glass glass;
 static struct rect dock_rect, zone;
 static bool started;
 static enum dock_kind kind;
+/* Sleep: after docksleep seconds untouched the Dock fades to gray (and dims in dark mode) until the pointer comes
+   back. Halo: every icon casts its own color into the glass under it and a spectral line runs along the top edge,
+   brightest near the pointer. */
+static int sleep_after = 30;
+static bool halo = true;
+static uint64_t last_use;
+static struct spring doze;
 
 struct corner_shape {
     int x, y, w, h, radius, fillet, bottom;
@@ -929,6 +936,13 @@ bool dock_animate(void)
         busy |= spring_step(&appear[i], 260, 30, dt);
     }
     busy |= spring_step(&dock_w, 300, 32, dt);
+    if (!last_use || over || dnd.active || pressed_item >= 0 || bounce_app || grow.target)
+        last_use = now;
+    doze.target = sleep_after && now - last_use > (uint64_t)sleep_after * 1000 ? 1024 : 0;
+    if (spring_step(&doze, doze.target ? 30 : 600, doze.target ? 11 : 50, dt)) {
+        wm_damage_z(zone, Z_DOCK);
+        busy = true;
+    }
     if (spring_step(&dnd.pop, 500, 22, dt) | spring_step(&dnd.poof, 200, 30, dt))
         damage_drag();
     if (bounce_app) {
@@ -1045,13 +1059,166 @@ static void paint_items(struct canvas *c)
     }
 }
 
+static uint32_t tone_of(const uint32_t *px, int w, int h, int stride)
+{
+    uint32_t r = 0, g = 0, b = 0, n = 0;
+    for (int y = h / 8; y < h - h / 8; y += 3)
+        for (int x = w / 8; x < w - w / 8; x += 3) {
+            uint32_t p = px[y * stride + x], a = p >> 24;
+            int pr = (int)(p >> 16 & 255), pg = (int)(p >> 8 & 255), pb = (int)(p & 255);
+            int mx = MAX(pr, MAX(pg, pb)), mn = MIN(pr, MIN(pg, pb));
+            uint32_t wgt = a * (uint32_t)(16 + mx - mn) >> 8;
+            r += (uint32_t)pr * wgt;
+            g += (uint32_t)pg * wgt;
+            b += (uint32_t)pb * wgt;
+            n += wgt;
+        }
+    if (!n)
+        return RGB(200, 200, 210);
+    int cr = (int)(r / n), cg = (int)(g / n), cb = (int)(b / n);
+    int luma = (cr * 77 + cg * 151 + cb * 28) >> 8;
+    cr = CLAMP(luma + (cr - luma) * 3 / 2, 0, 255);
+    cg = CLAMP(luma + (cg - luma) * 3 / 2, 0, 255);
+    cb = CLAMP(luma + (cb - luma) * 3 / 2, 0, 255);
+    return RGB(cr, cg, cb);
+}
+
+static uint32_t item_tone(const struct item *it)
+{
+    static uint32_t tones[2][ICON_COUNT];
+    if (it->kind == DI_APP && it->app->picture && it->app->picture->px) {
+        const struct canvas *pc = it->app->picture;
+        return tone_of(pc->px, pc->w, pc->h, pc->stride);
+    }
+    if (it->kind == DI_WINDOW || it->kind == DI_FILE || it->kind == DI_GAP)
+        return 0;
+    enum icon_id id = item_icon(it);
+    if ((unsigned)id >= ICON_COUNT)
+        return 0;
+    uint32_t *tone = &tones[style.dark][id];
+    if (!*tone) {
+        const uint32_t *px = gfx_icon_pixels(id);
+        *tone = px ? tone_of(px, 96, 96, 96) : RGB(200, 200, 210);
+    }
+    return *tone;
+}
+
+static int dock_cover(struct rect r, int radius, int x, int y)
+{
+    return gfx_corner_coverage(r, radius, x, y);
+}
+
+/* Light poured into the glass under an icon: an oval pool rising from the bottom edge, added to what is there. */
+static void halo_pool(struct canvas *c, struct rect d, int radius, int cx, int rx, int ry, uint32_t tone, int strength)
+{
+    int cy = d.y + d.h + ry / 3;
+    struct rect box = rect_intersect(rect_intersect((struct rect){cx - rx, cy - ry, 2 * rx, ry}, d), c->clip);
+    int tr = (int)(tone >> 16 & 255), tg = (int)(tone >> 8 & 255), tb = (int)(tone & 255);
+    for (int y = box.y; y < box.y + box.h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        int dy = (cy - y) * 1024 / ry;
+        for (int x = box.x; x < box.x + box.w; x++) {
+            int dx = (x - cx) * 1024 / rx;
+            int q = 1024 - (dx * dx + dy * dy) / 1024;
+            if (q <= 0)
+                continue;
+            int a = (int)((int64_t)q * q / 1024 * q / 1024 * strength / 1024);
+            int cov = dock_cover(d, radius, x, y);
+            if (cov < 256)
+                a = a * cov / 256;
+            if (a <= 0)
+                continue;
+            uint32_t p = row[x];
+            int r = (int)(p >> 16 & 255), g = (int)(p >> 8 & 255), b = (int)(p & 255);
+            r += (255 - r) * tr / 255 * a / 255;
+            g += (255 - g) * tg / 255 * a / 255;
+            b += (255 - b) * tb / 255 * a / 255;
+            row[x] = (p & 0xff000000u) | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+        }
+    }
+}
+
+/* The halo: a hairline along the top edge whose colors run through the spectrum, faded at the ends and gathered
+   where the pointer is. */
+static void halo_line(struct canvas *c, struct rect d, int radius)
+{
+    int px = over && hover_x >= 0 ? hover_x : -100000;
+    for (int row = 0; row < 2; row++) {
+        int y = d.y + row;
+        if (y < c->clip.y || y >= c->clip.y + c->clip.h)
+            continue;
+        uint32_t *line = c->px + y * c->stride;
+        int x0 = MAX(d.x + radius / 2, c->clip.x), x1 = MIN(d.x + d.w - radius / 2, c->clip.x + c->clip.w);
+        for (int x = x0; x < x1; x++) {
+            int u = (x - d.x) * 1024 / MAX(d.w, 1);
+            int ends = MIN(u, 1024 - u) * 4;
+            int a = MIN(ends, 1024) * (row ? 40 : 110) / 1024;
+            int dist = ABS(x - px);
+            if (dist < 140)
+                a += (140 - dist) * (row ? 60 : 130) / 140;
+            int cov = dock_cover(d, radius, x, y);
+            a = MIN(a, 255) * cov / 256;
+            if (a > 0)
+                line[x] = color_mix(line[x] | 0xff000000u, color_mix(gfx_halo_tone(u), 0xffffffffu, 70), a);
+        }
+    }
+}
+
+static void paint_halo(struct canvas *c, int radius)
+{
+    struct rect d = dock_rect;
+    for (int i = 0; i < count; i++) {
+        const struct item *it = &items[i];
+        if (it->kind == DI_SEPARATOR || rect_empty(it->r))
+            continue;
+        uint32_t tone = item_tone(it);
+        if (!tone)
+            continue;
+        int strength = (style.dark ? 200 : 150) + (i == hover_item ? 220 : 0);
+        halo_pool(c, d, radius, it->r.x + it->r.w / 2, it->r.w + 4, d.h * 6 / 5, tone, strength);
+    }
+    halo_line(c, d, radius);
+}
+
+/* Asleep: colors drain to gray, and in dark mode the Dock also dims. */
+static void paint_doze(struct canvas *c, int radius)
+{
+    int k = CLAMP(doze.pos, 0, 1024);
+    if (k <= 0)
+        return;
+    struct rect d = rect_inset(dock_rect, -1);
+    struct rect box = rect_intersect(rect_union(d, zone), c->clip);
+    box = rect_intersect(box, (struct rect){zone.x, d.y - 8, zone.w, d.h + 16});
+    int dim = style.dark ? 1024 - k * 38 / 100 : 1024 - k * 6 / 100;
+    for (int y = box.y; y < box.y + box.h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        for (int x = box.x; x < box.x + box.w; x++) {
+            int cov = rect_contains(d, x, y) ? dock_cover(d, radius + 1, x, y) : 0;
+            if (cov <= 0)
+                continue;
+            int kk = k * cov / 256;
+            uint32_t p = row[x];
+            int r = (int)(p >> 16 & 255), g = (int)(p >> 8 & 255), b = (int)(p & 255);
+            int luma = (r * 77 + g * 151 + b * 28) >> 8;
+            int dd = 1024 - (1024 - dim) * cov / 256;
+            r = (r + (luma - r) * kk / 1024) * dd / 1024;
+            g = (g + (luma - g) * kk / 1024) * dd / 1024;
+            b = (b + (luma - b) * kk / 1024) * dd / 1024;
+            row[x] = (p & 0xff000000u) | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+        }
+    }
+}
+
 static void paint_center(struct canvas *c)
 {
     struct glass_look look;
     int radius = dock_rect.h * 2 / 5;
     glass_look_for(&look, GLASS_DOCK, radius);
     glass_draw(c, &glass, &look);
+    if (halo)
+        paint_halo(c, radius);
     paint_items(c);
+    paint_doze(c, radius);
     if (hover_item >= 0 && hover_item < count && pressed_item < 0) {
         const char *label = item_label(&items[hover_item]);
         if (label)
@@ -1429,6 +1596,8 @@ void dock_start(void)
     bounce_app = NULL;
     revealed = false;
     started = true;
+    last_use = 0;
+    spring_set(&doze, 0);
     build();
     layout();
     glass.frame = dock_rect;
@@ -1596,6 +1765,42 @@ static const struct setting s_bounce = {"dockbounce", "on|off", "an app hops in 
                                         set_bounce};
 SETTING(s_dots);
 SETTING(s_bounce);
+
+static void get_sleep(char *buf, size_t cap)
+{
+    ksnprintf(buf, cap, "%d", sleep_after);
+}
+
+static int set_sleep(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    long v;
+    if (!str_parse_long(value, &v) || v < 0 || v > 3600)
+        return E_INVAL;
+    sleep_after = (int)v;
+    last_use = hal_ticks_ms();
+    return 0;
+}
+
+static void get_halo(char *buf, size_t cap)
+{
+    setting_flag_get(halo, buf, cap);
+}
+
+static int set_halo(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int e = setting_flag(value, &halo);
+    dock_redraw();
+    return e;
+}
+
+static const struct setting s_sleep = {"docksleep", "0..3600", "seconds without use before the Dock fades to gray (0: never)",
+                                       get_sleep, set_sleep};
+static const struct setting s_halo = {"dockhalo", "on|off", "icons light the Dock glass in their colors", get_halo,
+                                      set_halo};
+SETTING(s_sleep);
+SETTING(s_halo);
 
 static const struct setting s_dockapps = {"dockapps", "default|<app or /path>|...",
                                           "what the Dock of the current look holds, in order", get_apps, set_apps};

@@ -624,10 +624,11 @@ static BOOL WINAPI CancelWaitableTimer(HANDLE h)
 
 #define PORT_SLOTS 256
 
+/* keys and OVERLAPPED addresses are kept whole, as 64-bit programs pass them */
 struct w32_completion {
     DWORD bytes;
-    uintptr_t key;
-    void *overlapped;
+    uint64_t key;
+    uint64_t overlapped;
 };
 
 struct w32_port {
@@ -641,9 +642,8 @@ static struct w32_port *port_of(HANDLE h)
     return o && o->type == WH_PORT ? o->port : NULL;
 }
 
-static HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, uintptr_t key, DWORD threads)
+HANDLE w32_iocp_create(HANDLE file, HANDLE port, uint64_t key)
 {
-    UNUSED(threads);
     if (port && port_of(port)) {
         struct w32_object *o = file != INVALID_HANDLE_VALUE ? w32_handle_get(file) : NULL;
         if (o) {
@@ -668,11 +668,17 @@ static HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, uintptr_t 
         return NULL;
     }
     if (file != INVALID_HANDLE_VALUE)
-        return CreateIoCompletionPort(file, h, key, threads);
+        return w32_iocp_create(file, h, key);
     return h;
 }
 
-static BOOL WINAPI PostQueuedCompletionStatus(HANDLE h, DWORD bytes, uintptr_t key, void *ov)
+static HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, uintptr_t key, DWORD threads)
+{
+    UNUSED(threads);
+    return w32_iocp_create(file, port, key);
+}
+
+BOOL w32_iocp_post(HANDLE h, DWORD bytes, uint64_t key, uint64_t ov)
 {
     w32_signal();
     struct w32_port *p = port_of(h);
@@ -684,9 +690,14 @@ static BOOL WINAPI PostQueuedCompletionStatus(HANDLE h, DWORD bytes, uintptr_t k
     return TRUE;
 }
 
-void w32_port_post(HANDLE port, DWORD bytes, uintptr_t key, void *ov)
+static BOOL WINAPI PostQueuedCompletionStatus(HANDLE h, DWORD bytes, uintptr_t key, void *ov)
 {
-    PostQueuedCompletionStatus(port, bytes, key, ov);
+    return w32_iocp_post(h, bytes, key, (uintptr_t)ov);
+}
+
+void w32_port_post(HANDLE port, DWORD bytes, uint64_t key, void *ov)
+{
+    w32_iocp_post(port, bytes, key, (uintptr_t)ov);
 }
 
 static bool port_ready(const void *arg)
@@ -747,26 +758,42 @@ static BOOL WINAPI CancelIo(HANDLE h)
     return CancelIoEx(h, NULL);
 }
 
-static BOOL WINAPI GetQueuedCompletionStatus(HANDLE h, DWORD *bytes, uintptr_t *key, void **ov, DWORD ms)
+/* Up to max packets as (key, OVERLAPPED, bytes) triples; -1 with the error set when none came. */
+int w32_iocp_take(HANDLE h, DWORD ms, uint64_t *out, ULONG max)
 {
     struct w32_port *p = port_of(h);
-    if (ov)
-        *ov = NULL;
     if (!p) {
         w32_set_error(ERROR_INVALID_HANDLE);
-        return FALSE;
+        return -1;
     }
     if (!port_wait(p, ms)) {
         w32_set_error(258);
-        return FALSE;
+        return -1;
     }
-    struct w32_completion c = p->queue[p->head++ % PORT_SLOTS];
-    if (bytes)
-        *bytes = c.bytes;
-    if (key)
-        *key = c.key;
+    int n = 0;
+    while ((ULONG)n < max && p->head != p->tail) {
+        struct w32_completion c = p->queue[p->head++ % PORT_SLOTS];
+        out[n * 3] = c.key;
+        out[n * 3 + 1] = c.overlapped;
+        out[n * 3 + 2] = c.bytes;
+        n++;
+    }
+    return n;
+}
+
+static BOOL WINAPI GetQueuedCompletionStatus(HANDLE h, DWORD *bytes, uintptr_t *key, void **ov, DWORD ms)
+{
+    uint64_t c[3];
     if (ov)
-        *ov = c.overlapped;
+        *ov = NULL;
+    if (w32_iocp_take(h, ms, c, 1) < 1)
+        return FALSE;
+    if (bytes)
+        *bytes = (DWORD)c[2];
+    if (key)
+        *key = (uintptr_t)c[0];
+    if (ov)
+        *ov = (void *)(uintptr_t)c[1];
     return TRUE;
 }
 
@@ -774,28 +801,20 @@ static BOOL WINAPI GetQueuedCompletionStatusEx(HANDLE h, uint32_t *entries, ULON
                                                BOOL alertable)
 {
     UNUSED(alertable);
-    struct w32_port *p = port_of(h);
     if (removed)
         *removed = 0;
-    if (!p) {
-        w32_set_error(ERROR_INVALID_HANDLE);
+    uint64_t c[3 * 16];
+    int n = w32_iocp_take(h, ms, c, MIN(count, 16u));
+    if (n < 0)
         return FALSE;
-    }
-    if (!port_wait(p, ms)) {
-        w32_set_error(258);
-        return FALSE;
-    }
-    ULONG n = 0;
-    while (n < count && p->head != p->tail) {
-        struct w32_completion c = p->queue[p->head++ % PORT_SLOTS];
-        entries[n * 4] = (uint32_t)c.key;
-        entries[n * 4 + 1] = (uint32_t)c.overlapped;
-        entries[n * 4 + 2] = 0;
-        entries[n * 4 + 3] = c.bytes;
-        n++;
+    for (int i = 0; i < n; i++) {
+        entries[i * 4] = (uint32_t)c[i * 3];
+        entries[i * 4 + 1] = (uint32_t)c[i * 3 + 1];
+        entries[i * 4 + 2] = 0;
+        entries[i * 4 + 3] = (uint32_t)c[i * 3 + 2];
     }
     if (removed)
-        *removed = n;
+        *removed = (ULONG)n;
     return TRUE;
 }
 

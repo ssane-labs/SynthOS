@@ -1,3 +1,4 @@
+#include <synth/fmt.h>
 #include <synth/gui.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
@@ -920,39 +921,230 @@ static HANDLE WINAPI dummy_handle7(uint32_t a, uint32_t b, uint32_t c, uint32_t 
     return dummy_handle4(a, b, c, d);
 }
 
-static HANDLE WINAPI dummy_handle0(void)
+/* Window stations and desktops are named objects as in Windows: a program can make its own (Chromium's sandbox puts
+   its renderers on a separate station and desktop) and ask their names; all of them show on the one screen. */
+#define UOI_FLAGS 1
+#define UOI_NAME 2
+#define UOI_TYPE 3
+#define UOI_USER_SID 4
+#define UOI_HEAPSIZE 5
+#define UOI_IO 6
+#define WSF_VISIBLE 1
+#define ERROR_INSUFFICIENT_BUFFER 122
+
+static W32_STATE HANDLE station, desktop;
+static W32_STATE uint32_t station_serial;
+
+static HANDLE user_object(enum w32_object_type type, const char *name)
 {
-    return DUMMY_HANDLE;
+    HANDLE h = w32_handle_new(type);
+    struct w32_object *o = w32_handle_get(h);
+    if (!o)
+        return NULL;
+    o->path = kstrdup(name);
+    return h;
+}
+
+static struct w32_object *user_object_get(HANDLE h, enum w32_object_type type)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || o->type != type) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return NULL;
+    }
+    return o;
+}
+
+static HANDLE WINAPI GetProcessWindowStation(void)
+{
+    if (!user_object_get(station, WH_WINSTA))
+        station = user_object(WH_WINSTA, "WinSta0");
+    return station;
+}
+
+static HANDLE WINAPI GetThreadDesktop(DWORD tid)
+{
+    UNUSED(tid);
+    if (!user_object_get(desktop, WH_DESKTOP))
+        desktop = user_object(WH_DESKTOP, "Default");
+    return desktop;
+}
+
+static HANDLE WINAPI OpenInputDesktop(DWORD flags, BOOL inherit, DWORD access)
+{
+    UNUSED(flags);
+    UNUSED(access);
+    HANDLE h = user_object(WH_DESKTOP, "Default");
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->inherit = inherit;
+    return h;
+}
+
+static HANDLE WINAPI CreateWindowStationW(const WCHAR *name, DWORD flags, DWORD access, void *sa)
+{
+    UNUSED(flags);
+    UNUSED(access);
+    UNUSED(sa);
+    char generated[40];
+    char *n = name ? w32_narrow(name) : NULL;
+    if (!n)
+        ksnprintf(generated, sizeof(generated), "Service-0x0-%x$", 0x3e7 + ++station_serial);
+    HANDLE h = user_object(WH_WINSTA, n ? n : generated);
+    w32_free(n);
+    return h;
+}
+
+static HANDLE WINAPI OpenWindowStationW(const WCHAR *name, BOOL inherit, DWORD access)
+{
+    UNUSED(access);
+    char *n = name ? w32_narrow(name) : NULL;
+    if (!n) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    HANDLE h = user_object(WH_WINSTA, n);
+    w32_free(n);
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->inherit = inherit;
+    return h;
+}
+
+static BOOL WINAPI SetProcessWindowStation(HANDLE h)
+{
+    if (!user_object_get(h, WH_WINSTA))
+        return FALSE;
+    station = h;
+    return TRUE;
+}
+
+static BOOL WINAPI CloseWindowStation(HANDLE h)
+{
+    if (!user_object_get(h, WH_WINSTA))
+        return FALSE;
+    if (h == station)
+        station = NULL;
+    return w32_handle_close(h);
+}
+
+static HANDLE WINAPI CreateDesktopW(const WCHAR *name, const WCHAR *device, void *mode, DWORD flags, DWORD access,
+                                    void *sa)
+{
+    UNUSED(device);
+    UNUSED(mode);
+    UNUSED(flags);
+    UNUSED(access);
+    UNUSED(sa);
+    char *n = name ? w32_narrow(name) : NULL;
+    if (!n) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    HANDLE h = user_object(WH_DESKTOP, n);
+    w32_free(n);
+    return h;
+}
+
+static HANDLE WINAPI OpenDesktopW(const WCHAR *name, DWORD flags, BOOL inherit, DWORD access)
+{
+    HANDLE h = CreateDesktopW(name, NULL, NULL, flags, access, NULL);
+    struct w32_object *o = w32_handle_get(h);
+    if (o)
+        o->inherit = inherit;
+    return h;
+}
+
+static BOOL WINAPI SetThreadDesktop(HANDLE h)
+{
+    if (!user_object_get(h, WH_DESKTOP))
+        return FALSE;
+    desktop = h;
+    return TRUE;
+}
+
+static BOOL WINAPI CloseDesktop(HANDLE h)
+{
+    if (!user_object_get(h, WH_DESKTOP))
+        return FALSE;
+    if (h == desktop)
+        desktop = NULL;
+    return w32_handle_close(h);
+}
+
+static BOOL WINAPI SwitchDesktop(HANDLE h)
+{
+    return user_object_get(h, WH_DESKTOP) != NULL;
+}
+
+static BOOL put_info(void *info, DWORD len, DWORD *needed, const void *data, DWORD n)
+{
+    if (needed)
+        *needed = n;
+    if (len < n || !info) {
+        w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    memcpy(info, data, n);
+    return TRUE;
+}
+
+static BOOL user_object_info(HANDLE obj, int index, void *info, DWORD len, DWORD *needed, bool wide)
+{
+    struct w32_object *o = w32_handle_get(obj);
+    bool is_station = o ? o->type == WH_WINSTA : obj != DUMMY_HANDLE;
+    const char *name = o && (o->type == WH_WINSTA || o->type == WH_DESKTOP) && o->path ? o->path
+                       : is_station                                                    ? "WinSta0"
+                                                                                       : "Default";
+    if (o && o->type != WH_WINSTA && o->type != WH_DESKTOP) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    switch (index) {
+    case UOI_FLAGS: {
+        uint32_t v[3] = {o && o->inherit, 0, is_station ? WSF_VISIBLE : 0};
+        return put_info(info, len, needed, v, sizeof(v));
+    }
+    case UOI_NAME:
+    case UOI_TYPE: {
+        const char *text = index == UOI_NAME ? name : is_station ? "WindowStation" : "Desktop";
+        size_t n = strlen(text) + 1;
+        if (!wide)
+            return put_info(info, len, needed, text, (DWORD)n);
+        if (needed)
+            *needed = (DWORD)(n * 2);
+        if (len < n * 2 || !info) {
+            w32_set_error(ERROR_INSUFFICIENT_BUFFER);
+            return FALSE;
+        }
+        put_wide(info, text, n);
+        return TRUE;
+    }
+    case UOI_USER_SID:
+        if (needed)
+            *needed = 0;
+        return TRUE;
+    case UOI_HEAPSIZE: {
+        uint32_t kb = 20480;
+        return put_info(info, len, needed, &kb, sizeof(kb));
+    }
+    case UOI_IO: {
+        uint32_t input = !is_station && !strcmp(name, "Default");
+        return put_info(info, len, needed, &input, sizeof(input));
+    }
+    }
+    w32_set_error(ERROR_INVALID_PARAMETER);
+    return FALSE;
 }
 
 static BOOL WINAPI GetUserObjectInformationW(HANDLE obj, int index, void *info, DWORD len, DWORD *needed)
 {
-    UNUSED(obj);
-    if (index == 1) {
-        if (needed)
-            *needed = 12;
-        if (len < 12) {
-            w32_set_error(122);
-            return FALSE;
-        }
-        uint32_t v[3] = {0, 0, 1};
-        memcpy(info, v, sizeof(v));
-        return TRUE;
-    }
-    if (index == 2) {
-        const char *name = obj == DUMMY_HANDLE ? "Default" : "WinSta0";
-        DWORD n = (DWORD)(strlen(name) + 1) * 2;
-        if (needed)
-            *needed = n;
-        if (len < n) {
-            w32_set_error(122);
-            return FALSE;
-        }
-        put_wide(info, name, n / 2);
-        return TRUE;
-    }
-    w32_set_error(ERROR_INVALID_PARAMETER);
-    return FALSE;
+    return user_object_info(obj, index, info, len, needed, true);
+}
+
+static BOOL WINAPI GetUserObjectInformationA(HANDLE obj, int index, void *info, DWORD len, DWORD *needed)
+{
+    return user_object_info(obj, index, info, len, needed, false);
 }
 
 static UINT WINAPI DdeInitializeW(DWORD *inst, void *callback, DWORD cmd, DWORD reserved)
@@ -1497,16 +1689,20 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("SetWinEventHook", dummy_handle7),
     W32_AS("UnhookWinEvent", w32_one1),
     W32_AS("NotifyWinEvent", no_op4),
-    W32_AS("GetProcessWindowStation", dummy_handle0),
-    W32_AS("GetThreadDesktop", dummy_handle1),
-    W32_AS("OpenInputDesktop", dummy_handle3),
+    W32_FN(GetProcessWindowStation),
+    W32_FN(GetThreadDesktop),
+    W32_FN(OpenInputDesktop),
     W32_FN(GetUserObjectInformationW),
-    W32_AS("CreateDesktopW", w32_fail6),
-    W32_AS("CloseDesktop", w32_one1),
-    W32_AS("SetThreadDesktop", w32_one1),
-    W32_AS("CreateWindowStationW", w32_fail4),
-    W32_AS("CloseWindowStation", w32_one1),
-    W32_AS("SetProcessWindowStation", w32_one1),
+    W32_FN(GetUserObjectInformationA),
+    W32_FN(CreateDesktopW),
+    W32_FN(OpenDesktopW),
+    W32_FN(CloseDesktop),
+    W32_FN(SetThreadDesktop),
+    W32_FN(SwitchDesktop),
+    W32_FN(CreateWindowStationW),
+    W32_FN(OpenWindowStationW),
+    W32_FN(CloseWindowStation),
+    W32_FN(SetProcessWindowStation),
     W32_AS("GetShellWindow", w32_zero0),
     W32_AS("AllowSetForegroundWindow", w32_one1),
     W32_FN(DdeInitializeW),

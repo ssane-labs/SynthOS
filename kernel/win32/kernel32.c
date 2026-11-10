@@ -908,6 +908,13 @@ static BOOL WINAPI GlobalMemoryStatusEx(uint32_t *status)
     status[8] = (uint32_t)hs.free;
     status[10] = 0x7ffe0000u;
     status[12] = (uint32_t)hs.free;
+    if (w32->win64) {
+        /* a 64-bit process has the 128 TB user space of Windows x64 */
+        status[10] = 0xfffe0000u;
+        status[11] = 0x7fffu;
+        status[12] = 0xf0000000u;
+        status[13] = 0x7ffeu;
+    }
     return TRUE;
 }
 

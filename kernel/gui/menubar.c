@@ -62,10 +62,50 @@ static void clock_text(char *buf, size_t cap)
     gui_clock_text(buf, cap, true);
 }
 
+static struct rect islands[3];
+static int island_key;
+
+static bool islanded(void)
+{
+    return look_current()->status == STATUS_ISLANDS;
+}
+
 static struct rect bar_rect(int screen)
 {
     struct rect s = wm_screen_rect(screen);
-    return (struct rect){s.x, s.y, s.w, MENUBAR_HEIGHT};
+    return (struct rect){s.x, s.y, s.w, islanded() ? ISLANDS_HEIGHT : MENUBAR_HEIGHT};
+}
+
+/* Islands: instead of a bar across the screen, three floating capsules of glass — the menus on the left, the clock
+   in the middle and the status on the right. */
+static void layout_islands(void)
+{
+    int x0 = titles[0].r.x - 6, x1 = titles[title_count - 1].r.x + titles[title_count - 1].r.w + 6;
+    int ty = titles[0].r.y;
+    islands[0] = (struct rect){x0, ty, x1 - x0, MENUBAR_HEIGHT};
+    islands[1] = rect_inset(status[S_CLOCK], 0);
+    int left = INT32_MAX, right = 0;
+    for (int i = 0; i < S_COUNT; i++)
+        if (i != S_CLOCK && status[i].w) {
+            left = MIN(left, status[i].x);
+            right = MAX(right, status[i].x + status[i].w);
+        }
+    islands[2] = left < right ? (struct rect){left - 6, ty, right - left + 12, MENUBAR_HEIGHT} : (struct rect){0, 0, 0, 0};
+    island_key = 0;
+    for (int i = 0; i < 3; i++)
+        island_key = island_key * 31 + islands[i].x * 7 + islands[i].w;
+}
+
+static int island_cover(int x, int y, const void *ctx)
+{
+    int dx = *(const int *)ctx;
+    for (int i = 0; i < 3; i++) {
+        struct rect r = islands[i];
+        r.x += i == 0 ? 0 : dx;
+        if (rect_contains(r, x, y))
+            return gfx_corner_coverage(r, r.h / 2, x, y);
+    }
+    return 0;
 }
 
 static void layout(void)
@@ -77,48 +117,55 @@ static void layout(void)
     const char *name = f && f->app ? f->app->name : "Files";
     str_copy(app_name, name, sizeof(app_name));
     struct rect bar = bar_rect(0);
-    int x = bar.x + 8;
+    bool isl = islanded();
+    int x = bar.x + (isl ? 16 : 8), ty = bar.y + (isl ? 6 : 0);
     title_count = 0;
-    titles[title_count++] = (struct title){{x, bar.y, 34, MENUBAR_HEIGHT}, NULL, T_LOGO};
+    titles[title_count++] = (struct title){{x, ty, 34, MENUBAR_HEIGHT}, NULL, T_LOGO};
     x += 34;
     int w = gfx_text_width(&font_bold, app_name) + 2 * PAD;
-    titles[title_count++] = (struct title){{x, bar.y, w, MENUBAR_HEIGHT}, app_name, T_APP};
+    titles[title_count++] = (struct title){{x, ty, w, MENUBAR_HEIGHT}, app_name, T_APP};
     x += w;
     if (f && f->menus) {
         for (int i = 0; i < f->menu_count && title_count < MAX_TITLES - 2; i++) {
             w = gfx_text_width(&font_sans, f->menus[i].title) + 2 * PAD;
-            titles[title_count++] = (struct title){{x, bar.y, w, MENUBAR_HEIGHT}, f->menus[i].title, T_CUSTOM + i * 16};
+            titles[title_count++] = (struct title){{x, ty, w, MENUBAR_HEIGHT}, f->menus[i].title, T_CUSTOM + i * 16};
             x += w;
         }
     }
     static const char *const fixed[2] = {"Window", "Help"};
     for (int i = 0; i < 2; i++) {
         w = gfx_text_width(&font_sans, fixed[i]) + 2 * PAD;
-        titles[title_count++] = (struct title){{x, bar.y, w, MENUBAR_HEIGHT}, fixed[i], i ? T_HELP : T_WINDOW};
+        titles[title_count++] = (struct title){{x, ty, w, MENUBAR_HEIGHT}, fixed[i], i ? T_HELP : T_WINDOW};
         x += w;
     }
     char clock[48];
     clock_text(clock, sizeof(clock));
-    int right = bar.x + bar.w - 10;
-    w = gfx_text_width(&font_sans, clock) + 2 * PAD;
-    status[S_CLOCK] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
-    right -= w;
-    status[S_CONTROL] = (struct rect){right - 32, bar.y, 32, MENUBAR_HEIGHT};
+    int right = bar.x + bar.w - (isl ? 16 : 10);
+    w = gfx_text_width(isl ? &font_bold : &font_sans, clock) + 2 * PAD + (isl ? 8 : 0);
+    if (isl) {
+        status[S_CLOCK] = (struct rect){bar.x + (bar.w - w) / 2, ty, w, MENUBAR_HEIGHT};
+    } else {
+        status[S_CLOCK] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
+        right -= w;
+    }
+    status[S_CONTROL] = (struct rect){right - 32, ty, 32, MENUBAR_HEIGHT};
     right -= 32;
     w = extra(4) ? 32 : 0;
-    status[S_SEARCH] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
+    status[S_SEARCH] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
     right -= w;
     w = keymap_multi() ? gfx_text_width(&font_sans, keymap_label()) + 14 : 0;
-    status[S_LANG] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
+    status[S_LANG] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
     right -= w;
     static const int order[] = {S_FOCUS, S_SOUND, S_NETWORK, S_DISPLAY};
     static const int bit[] = {3, 0, 1, 2};
     for (int i = 0; i < 4; i++) {
         bool on = extra(bit[i]) || (order[i] == S_FOCUS && gui_setting_on("dnd"));
         w = on ? 30 : 0;
-        status[order[i]] = (struct rect){right - w, bar.y, w, MENUBAR_HEIGHT};
+        status[order[i]] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
         right -= w;
     }
+    if (isl)
+        layout_islands();
 }
 
 static void damage_bars(void)
@@ -139,9 +186,33 @@ void menubar_paint(struct canvas *c, int screen)
         return;
     uint32_t ink = style.text;
     uint32_t solid = wm_top_color(screen);
+    int ty = bar.y + (islanded() ? 6 : 0);
+    int dx = bar.x + bar.w - (bar_rect(0).x + bar_rect(0).w);
     if (solid) {
         gfx_fill(c, bar, solid);
         ink = color_luma(solid) < 140 ? RGB(250, 250, 252) : RGB(24, 24, 28);
+    } else if (islanded()) {
+        struct glass_look look;
+        glass_look_for(&look, GLASS_MENUBAR, MENUBAR_HEIGHT / 2);
+        look.shape = island_cover;
+        look.shape_ctx = &dx;
+        look.shape_key = island_key + dx;
+        if (look.solid || style.glass == GLASS_SOLID) {
+            for (int i = 0; i < 3; i++)
+                if (islands[i].w) {
+                    struct rect r = islands[i];
+                    r.x += i ? dx : 0;
+                    gfx_round(c, r, r.h / 2, style.menu | 0xff000000u);
+                }
+        } else {
+            glass_draw(c, &bars[screen], &look);
+        }
+        for (int i = 0; i < 3; i++)
+            if (islands[i].w) {
+                struct rect r = islands[i];
+                r.x += i ? dx : 0;
+                gfx_round_frame(c, r, r.h / 2, style.dark ? ALPHA(0xffffffffu, 26) : ALPHA(0xffffffffu, 120));
+            }
     } else if (style.glass == GLASS_LIQUID) {
         static uint32_t inks[MAX_SCREENS];
         struct rect probe = rect_intersect(bar, c->clip);
@@ -179,28 +250,27 @@ void menubar_paint(struct canvas *c, int screen)
     (void)area;
     char clock[48];
     clock_text(clock, sizeof(clock));
-    int dx = bar.x + bar.w - (bar_rect(0).x + bar_rect(0).w);
     struct rect clock_r = {status[S_CLOCK].x + dx, status[S_CLOCK].y, status[S_CLOCK].w, status[S_CLOCK].h};
-    gfx_text_box(c, clock_r, &font_sans, clock, ink, ALIGN_CENTER);
+    gfx_text_box(c, clock_r, islanded() ? &font_bold : &font_sans, clock, ink, ALIGN_CENTER);
     if (status[S_SEARCH].w)
-        gfx_symbol(c, status[S_SEARCH].x + dx + 8, bar.y + 4, SYM_SEARCH, 16, ink);
-    gfx_symbol(c, status[S_CONTROL].x + dx + 8, bar.y + 4, SYM_CONTROL, 16, ink);
+        gfx_symbol(c, status[S_SEARCH].x + dx + 8, ty + 4, SYM_SEARCH, 16, ink);
+    gfx_symbol(c, status[S_CONTROL].x + dx + 8, ty + 4, SYM_CONTROL, 16, ink);
     uint32_t soft = (ink & 0xffffff) | 0x80000000u;
     if (status[S_SOUND].w) {
         bool silent = gui_setting_on("mute") || !gui_setting_number("volume", 100);
-        gfx_symbol(c, status[S_SOUND].x + dx + 7, bar.y + 4, silent ? SYM_MUTE : SYM_VOLUME, 16, ink);
+        gfx_symbol(c, status[S_SOUND].x + dx + 7, ty + 4, silent ? SYM_MUTE : SYM_VOLUME, 16, ink);
     }
     if (status[S_NETWORK].w) {
         bool online = net_enabled() && net_interface_count() && net_interface(0)->configured;
-        gfx_symbol(c, status[S_NETWORK].x + dx + 7, bar.y + 4, net_enabled() ? SYM_WIFI : SYM_WIFI_OFF, 16,
+        gfx_symbol(c, status[S_NETWORK].x + dx + 7, ty + 4, net_enabled() ? SYM_WIFI : SYM_WIFI_OFF, 16,
                    online || !net_enabled() ? ink : soft);
     }
     if (status[S_DISPLAY].w)
-        gfx_symbol(c, status[S_DISPLAY].x + dx + 7, bar.y + 4, SYM_SUN, 16, ink);
+        gfx_symbol(c, status[S_DISPLAY].x + dx + 7, ty + 4, SYM_SUN, 16, ink);
     if (status[S_FOCUS].w)
-        gfx_symbol(c, status[S_FOCUS].x + dx + 7, bar.y + 4, SYM_MOON, 16, gui_setting_on("dnd") ? ink : soft);
+        gfx_symbol(c, status[S_FOCUS].x + dx + 7, ty + 4, SYM_MOON, 16, gui_setting_on("dnd") ? ink : soft);
     if (status[S_LANG].w)
-        gfx_text_box(c, (struct rect){status[S_LANG].x + dx, bar.y, status[S_LANG].w, MENUBAR_HEIGHT}, &font_sans,
+        gfx_text_box(c, (struct rect){status[S_LANG].x + dx, ty, status[S_LANG].w, MENUBAR_HEIGHT}, &font_sans,
                      keymap_label(), ink, ALIGN_CENTER);
 }
 
@@ -357,7 +427,7 @@ static void open_title_menu(int i)
     open_menu = NULL;
     open_title = i;
     struct rect r = titles[i].r;
-    int x = r.x, y = r.y + MENUBAR_HEIGHT + 2;
+    int x = r.x, y = r.y + MENUBAR_HEIGHT + (islanded() ? 6 : 2);
     switch (titles[i].kind) {
     case T_LOGO:
         open_menu = ui_menu_items(NULL, x, y, logo_items, ARRAY_SIZE(logo_items), pick_logo);

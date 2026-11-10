@@ -127,6 +127,8 @@ enum w32_object_type {
     WH_TOKEN,
     WH_KEY,
     WH_JOB,
+    WH_WINSTA,
+    WH_DESKTOP,
 };
 
 enum w32_engine {
@@ -170,7 +172,7 @@ struct w32_object {
     bool skip_port;
     uint32_t access;
     HANDLE io_port;
-    uintptr_t io_key;
+    uint64_t io_key;
     struct w32_pipe *pipe;
     struct w32_pipe *pipe_out;
     struct w32_npipe *npipe;
@@ -451,14 +453,17 @@ long w32_pipe_write(struct w32_pipe *p, const void *data, size_t n);
 long w32_pipe_read(struct w32_pipe *p, void *out, size_t n, bool wait);
 size_t w32_pipe_available(struct w32_pipe *p);
 struct stream *w32_handle_stream(HANDLE h);
-void w32_port_post(HANDLE port, DWORD bytes, uintptr_t key, void *ov);
+void w32_port_post(HANDLE port, DWORD bytes, uint64_t key, void *ov);
+HANDLE w32_iocp_create(HANDLE file, HANDLE port, uint64_t key);
+BOOL w32_iocp_post(HANDLE h, DWORD bytes, uint64_t key, uint64_t ov);
+int w32_iocp_take(HANDLE h, DWORD ms, uint64_t *out, ULONG max);
 void w32_winsock_poll(void);
 void w32_io_poll(void);
 void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32_t bytes, bool sync);
 int w32_pipe_overlapped(HANDLE h, struct w32_object *o, void *buf, DWORD n, DWORD *done, uint32_t *ov, bool write);
 bool w32_io_cancel(HANDLE h, const uint32_t *ov);
 bool w32_winsock_cancel(UINT s, uint32_t *ov);
-bool w32_socket_associate(uintptr_t s, HANDLE port, uintptr_t key);
+bool w32_socket_associate(uintptr_t s, HANDLE port, uint64_t key);
 void w32_tls_register(struct w32_image *img);
 void w32_tls_callbacks(uint32_t base, DWORD reason);
 void w32_set_error(DWORD error);

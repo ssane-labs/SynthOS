@@ -11,14 +11,14 @@
 #include "internal.h"
 
 static const struct gui_look defaults[] = {
+    {"halo", "Halo", "SynthOS's own: eclipse light, floating islands on top and a glowing Halo dock", true,
+     RGB(120, 104, 220), RGB(124, 108, 255), DOCK_CENTER, STATUS_ISLANDS, 0},
     {"mono", "Mono", "Black and white liquid glass, menu bar and a dock below", true, RGB(150, 150, 156),
      RGB(142, 142, 147), DOCK_CENTER, STATUS_MENUBAR, 0},
     {"dune", "Dune", "Warm desert glass, launcher in the corner", false, RGB(214, 150, 96),
      RGB(212, 116, 46), DOCK_CORNER, STATUS_PILL, 0},
     {"mist", "Mist", "Quiet morning fog, menu bar and a floating dock", false, RGB(120, 140, 170), RGB(78, 112, 214),
      DOCK_CENTER, STATUS_MENUBAR, 0},
-    {"night", "Night", "Deep dark sky and an app rail", true, RGB(110, 92, 200), RGB(150, 128, 255), DOCK_RAIL,
-     STATUS_PILL, 0},
 };
 
 #define LOOKS ARRAY_SIZE(defaults)
@@ -30,7 +30,7 @@ static bool loaded;
 static int current = 0;
 
 static const char *const dock_names[] = {"bottom", "corner", "side"};
-static const char *const status_names[] = {"menubar", "pill"};
+static const char *const status_names[] = {"menubar", "pill", "islands"};
 
 static void looks_path(char *out, size_t cap)
 {
@@ -50,7 +50,7 @@ static void apply_pair(struct gui_look *l, const char *key, size_t klen, const c
     int i;
     if (klen == 4 && !strncmp(key, "dock", 4) && (i = name_index(dock_names, 3, value, vlen)) >= 0)
         l->dock = (enum dock_kind)i;
-    else if (klen == 6 && !strncmp(key, "status", 6) && (i = name_index(status_names, 2, value, vlen)) >= 0)
+    else if (klen == 6 && !strncmp(key, "status", 6) && (i = name_index(status_names, 3, value, vlen)) >= 0)
         l->status = (enum status_kind)i;
 }
 
@@ -88,7 +88,7 @@ static void looks_load(void)
 
 static void looks_save(void)
 {
-    char path[PATH_MAX_LEN], buf[LOOKS * 80];
+    char path[PATH_MAX_LEN], buf[LOOKS * 96];
     size_t n = 0;
     for (size_t i = 0; i < LOOKS; i++)
         n += (size_t)ksnprintf(buf + n, sizeof(buf) - n, "%s dock=%s status=%s\n", looks[i].name,
@@ -130,7 +130,8 @@ const struct gui_look *look_get(int index)
 
 int menubar_height(void)
 {
-    return look_current()->status == STATUS_MENUBAR ? MENUBAR_HEIGHT : 0;
+    enum status_kind k = look_current()->status;
+    return k == STATUS_MENUBAR ? MENUBAR_HEIGHT : k == STATUS_ISLANDS ? ISLANDS_HEIGHT : 0;
 }
 
 static void get_look(char *buf, size_t cap)
@@ -152,7 +153,7 @@ static int set_look(struct shell *sh, const char *value)
     return E_INVAL;
 }
 
-static const struct setting s_look = {"look", "mono|dune|mist|night", "desktop design: colors, wallpaper and layout",
+static const struct setting s_look = {"look", "halo|mono|dune|mist", "desktop design: colors, wallpaper and layout",
                                       get_look, set_look};
 SETTING(s_look);
 
@@ -166,7 +167,7 @@ static int set_part(const char *value, int which)
 {
     look_current();
     struct gui_look *l = &looks[current];
-    int i = which == 0 ? name_index(dock_names, 3, value, strlen(value)) : name_index(status_names, 2, value, strlen(value));
+    int i = which == 0 ? name_index(dock_names, 3, value, strlen(value)) : name_index(status_names, 3, value, strlen(value));
     if (i < 0)
         return E_INVAL;
     if (which == 0)
@@ -202,7 +203,7 @@ static int set_status(struct shell *sh, const char *value)
 
 static const struct setting s_dock = {"dockstyle", "bottom|corner|side", "the dock of the current look", get_dock,
                                       set_dock};
-static const struct setting s_status = {"statusbar", "menubar|pill", "menu bar or floating status pill (current look)",
+static const struct setting s_status = {"statusbar", "menubar|pill|islands", "menu bar, floating status pill or islands (current look)",
                                         get_status, set_status};
 SETTING(s_dock);
 SETTING(s_status);

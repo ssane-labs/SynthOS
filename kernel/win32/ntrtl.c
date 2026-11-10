@@ -255,7 +255,7 @@ static const char *type_name(HANDLE h)
         [WH_FIND] = "File",    [WH_EVENT] = "Event",       [WH_MUTEX] = "Mutant",  [WH_SEMAPHORE] = "Semaphore",
         [WH_NULL] = "File",    [WH_THREAD] = "Thread",     [WH_PROCESS] = "Process", [WH_TIMER] = "Timer",
         [WH_PIPE] = "File",    [WH_PORT] = "IoCompletion", [WH_SECTION] = "Section", [WH_TOKEN] = "Token",
-        [WH_KEY] = "Key",      [WH_JOB] = "Job",
+        [WH_KEY] = "Key",      [WH_JOB] = "Job",           [WH_WINSTA] = "WindowStation", [WH_DESKTOP] = "Desktop",
     };
     return (unsigned)o->type < ARRAY_SIZE(names) ? names[o->type] : NULL;
 }

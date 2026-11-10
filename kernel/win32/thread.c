@@ -453,8 +453,8 @@ static uint32_t user_caller(struct w32_thread *t)
 {
     const uint32_t *frame = __builtin_frame_address(0);
     /* a 64-bit program's frames are no 32-bit chain: stop at anything that leaves the thread's stack */
-    uint32_t lo = (uint32_t)t->stack, hi = lo + t->stack_size;
-    for (int i = 0; i < 16 && (uint32_t)frame >= lo && (uint32_t)frame + 8 <= hi; i++) {
+    uint64_t lo = (uint32_t)t->stack, hi = lo + t->stack_size;
+    for (int i = 0; i < 16 && (uint32_t)frame >= lo && (uint64_t)(uint32_t)frame + 8 <= hi; i++) {
         uint32_t ret = frame[1];
         if (ret >= VMM_USER_START && ret < 0xc0000000u) {
             t->wait_sp = (uint32_t)(frame + 2);

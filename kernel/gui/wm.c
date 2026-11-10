@@ -634,7 +634,7 @@ enum anim_kind {
 struct ghost {
     enum anim_kind kind;
     struct canvas snap;
-    struct rect frame, target, drawn;
+    struct rect frame, target, drawn, anchor;
     int margin, ms;
     unsigned flags;
     uint64_t start;
@@ -644,6 +644,7 @@ struct ghost {
 
 static struct ghost *ghosts;
 static bool animations = true;
+static bool halo_windows = true;
 
 static void draw_window(struct canvas *c, struct window *w);
 
@@ -681,8 +682,8 @@ static int ghost_ms(enum anim_kind kind, unsigned flags)
     bool small = flags & WIN_POPUP && !(flags & WIN_OVERLAY);
     int ms = 200;
     switch (kind) {
-    case ANIM_OPEN: ms = small ? 120 : 170; break;
-    case ANIM_CLOSE: ms = small ? 100 : 140; break;
+    case ANIM_OPEN: ms = small ? 190 : 170; break;
+    case ANIM_CLOSE: ms = small ? 140 : 140; break;
     case ANIM_MINIMIZE: ms = 300; break;
     case ANIM_RESTORE: ms = 270; break;
     case ANIM_MORPH: ms = 220; break;
@@ -702,6 +703,7 @@ static struct ghost *ghost_new(enum anim_kind kind, struct window *w)
     g->flags = w->flags;
     g->margin = kind == ANIM_MINIMIZE || kind == ANIM_RESTORE ? 0 : ghost_margin(w);
     g->ms = ghost_ms(kind, w->flags);
+    g->anchor = w->anchor;
     g->start = hal_ticks_ms();
     g->next = ghosts;
     ghosts = g;
@@ -800,9 +802,45 @@ static void genie_edges(const struct ghost *g, int t, int *top, int *bottom)
     *bottom = lerp_i(f.y + f.h, d.y + d.h, eb);
 }
 
+/* A menu or panel pours out of the button it was opened from, like a genie: the rows next to the button are narrow
+   and the far ones spread first, and closing draws it back in. */
+static bool genie_popup(const struct ghost *g)
+{
+    return (g->kind == ANIM_OPEN || g->kind == ANIM_CLOSE) && !rect_empty(g->anchor) &&
+           (g->flags & WIN_POPUP) && !(g->flags & (WIN_OVERLAY | WIN_PASSIVE));
+}
+
+static void draw_popup_genie(struct canvas *c, struct ghost *g, int t)
+{
+    struct rect f = g->frame, a = g->anchor;
+    int m = g->margin;
+    f = (struct rect){f.x - m, f.y - m, f.w + 2 * m, f.h + 2 * m};
+    int e = g->kind == ANIM_OPEN ? ease_out(t) : 1024 - ease_in_out(t);
+    bool down = a.y + a.h / 2 <= f.y + f.h / 2;
+    int near = a.y + a.h / 2, reach = ease_out(MIN(1024, e * 3 / 2));
+    int y0 = down ? lerp_i(near, f.y, e) : lerp_i(near, f.y, reach);
+    int y1 = down ? lerp_i(near, f.y + f.h, reach) : lerp_i(near, f.y + f.h, e);
+    int h = MAX(y1 - y0, 1);
+    int alpha = g->kind == ANIM_OPEN ? MIN(255, 80 + t * 255 / 300) : MIN(255, 60 + e * 255 / 600);
+    int ax = a.x + a.w / 2, aw = MAX(a.w / 2, 6);
+    int top = MAX(y0, c->clip.y), bottom = MIN(y1, c->clip.y + c->clip.h);
+    for (int y = top; y < bottom; y++) {
+        int v = (down ? y - y0 : y1 - 1 - y) * 1024 / h;
+        int k = ease_in_out(CLAMP(e * 2 - (1024 - v), 0, 1024));
+        int left = lerp_i(ax - aw, f.x, k), right = lerp_i(ax + aw, f.x + f.w, k);
+        int sy = (y - y0) * g->snap.h / h;
+        gfx_row_scaled(c, y, left, right, &g->snap, MIN(sy, g->snap.h - 1), alpha);
+    }
+}
+
 static struct rect ghost_bounds(const struct ghost *g)
 {
     int t = anim_progress(g->start, g->ms);
+    if (genie_popup(g)) {
+        int m = g->margin;
+        return rect_union((struct rect){g->frame.x - m, g->frame.y - m, g->frame.w + 2 * m, g->frame.h + 2 * m},
+                          g->anchor);
+    }
     if (g->kind == ANIM_MINIMIZE || g->kind == ANIM_RESTORE) {
         int top, bottom;
         genie_edges(g, t, &top, &bottom);
@@ -863,6 +901,8 @@ static void draw_ghosts(struct canvas *c, bool above)
         int t = anim_progress(g->start, g->ms);
         if (g->kind == ANIM_MINIMIZE || g->kind == ANIM_RESTORE) {
             draw_genie(c, g, t);
+        } else if (genie_popup(g)) {
+            draw_popup_genie(c, g, t);
         } else {
             int alpha;
             struct rect r = ghost_rect(g, t, &alpha);
@@ -1128,6 +1168,12 @@ struct window *wm_popup(int x, int y, int pw, int ph, const struct window_ops *o
     struct rect s = wm_screen_rect(wm_screen_at(x, y));
     w->frame = (struct rect){CLAMP(x, s.x + 4, MAX(s.x + 4, s.x + s.w - pw - 4)),
                              CLAMP(y, s.y + 2, MAX(s.y + 2, s.y + s.h - ph - 4)), pw, ph};
+    struct rect near = rect_inset(w->frame, -90);
+    if (pw < s.w * 3 / 4 && rect_contains(near, mouse_x, mouse_y)) {
+        int ax = CLAMP(mouse_x, w->frame.x + 10, w->frame.x + pw - 10);
+        int ay = CLAMP(mouse_y, w->frame.y - 60, w->frame.y + ph + 60);
+        w->anchor = (struct rect){ax - 12, ay - 8, 24, 16};
+    }
     if (!alloc_surface(w)) {
         kfree(w);
         return NULL;
@@ -1753,9 +1799,24 @@ static bool light_shown(int i)
     return i != 1 || show_minimize;
 }
 
+#define CAPSULE_X 12
+#define CAPSULE_CELL 24
+#define CAPSULE_H 20
+
+static int light_slot(int i)
+{
+    return i == 2 && !show_minimize ? 1 : i;
+}
+
 static int traffic_cx(const struct window *w, int i)
 {
-    return w->frame.x + 20 + (i == 2 && !show_minimize ? 1 : i) * 20;
+    return w->frame.x + CAPSULE_X + CAPSULE_CELL / 2 + light_slot(i) * CAPSULE_CELL;
+}
+
+static struct rect capsule_rect(const struct window *w)
+{
+    int n = show_minimize ? 3 : 2;
+    return (struct rect){w->frame.x + CAPSULE_X, traffic_cy(w) - CAPSULE_H / 2, n * CAPSULE_CELL, CAPSULE_H};
 }
 
 static bool light_enabled(const struct window *w, int i)
@@ -1786,42 +1847,79 @@ static void draw_more(struct canvas *c, struct window *w)
     gfx_symbol(c, r.x + 6, r.y + 3, SYM_MORE, 16, hot || w == focus ? style.text : style.tertiary);
 }
 
+/* The window controls: one small capsule of glass holding the close and zoom marks; the part under the pointer
+   lights up, coral for close and the accent for the others. */
+static int light_at_point(struct window *w);
+
 static void draw_lights(struct canvas *c, struct window *w)
 {
-    static const uint32_t colors[3] = {RGB(255, 95, 87), RGB(254, 188, 46), RGB(40, 200, 64)};
-    static const uint32_t glyphs[3] = {RGBA(77, 0, 0, 220), RGBA(152, 87, 18, 230), RGBA(0, 100, 0, 220)};
     bool active = w == focus;
     bool hover = traffic_win == w;
     int cy = traffic_cy(w);
-    int grow = hover ? CLAMP(lights_grow.pos, 0, 1200) : 0;
-    uint32_t idle = color_mix(active ? style.titlebar : style.titlebar_inactive, style.text, active ? 70 : 40);
+    int grow = hover ? CLAMP(lights_grow.pos, 0, 1024) : 0;
+    struct rect cap = capsule_rect(w);
+    gfx_round(c, cap, CAPSULE_H / 2, ALPHA(style.text, hover ? 26 : active ? 16 : 9));
+    int hot = hover ? light_at_point(w) : -1;
     for (int i = 0; i < 3; i++) {
         if (!light_shown(i))
             continue;
         int cx = traffic_cx(w, i);
         bool on = light_enabled(w, i);
-        int rad = 5;
-        uint32_t color = hover && on ? color_mix(idle, colors[i], MIN(grow, 1024) * 255 / 1024) : idle;
-        if (!on)
-            color = ALPHA(idle, 90);
-        if (hover && pressed_light == i)
-            color = color_shade(color, -50);
-        gfx_circle(c, cx, cy, rad, color);
-        if (!hover || !on || grow < 500)
-            continue;
-        uint32_t g = glyphs[i];
+        uint32_t g = ALPHA(style.text, !on ? 40 : active || hover ? 170 : 80);
+        if (i == hot && on && grow > 0) {
+            uint32_t fill = i == 0 ? RGB(255, 94, 98) : style.accent;
+            if (pressed_light == i)
+                fill = color_shade(fill, -40);
+            struct rect cell = {cx - CAPSULE_CELL / 2 + 1, cap.y + 1, CAPSULE_CELL - 2, CAPSULE_H - 2};
+            gfx_round(c, cell, cell.h / 2, ALPHA(fill, grow * 255 / 1024));
+            g = color_mix(g | 0xff000000u, RGB(255, 255, 255), grow * 255 / 1024);
+        }
         if (i == 0) {
             gfx_thick_line(c, cx - 3, cy - 3, cx + 3, cy + 3, 2, g);
             gfx_thick_line(c, cx - 3, cy + 3, cx + 3, cy - 3, 2, g);
         } else if (i == 1) {
-            gfx_fill(c, (struct rect){cx - 4, cy - 1, 8, 2}, g);
+            gfx_fill(c, (struct rect){cx - 4, cy, 8, 2}, g);
         } else {
-            for (int k = 0; k < 5; k++) {
-                gfx_fill(c, (struct rect){cx - 4, cy - 4 + k, 5 - k, 1}, g);
-                gfx_fill(c, (struct rect){cx + k, cy + 4 - k, 4 - k + 1, 1}, g);
+            for (int k = 0; k < 4; k++) {
+                gfx_fill(c, (struct rect){cx - 4, cy - 4 + k, 4 - k, 1}, g);
+                gfx_fill(c, (struct rect){cx + k + 1, cy + 3 - k, 4 - k, 1}, g);
             }
+            gfx_thick_line(c, cx - 2, cy + 2, cx + 2, cy - 2, 1, g);
         }
     }
+}
+
+/* The halo line along the top of the focused window: the SynthOS colors, faded at the corners. */
+static void draw_halo(struct canvas *c, struct window *w)
+{
+    struct rect f = w->frame;
+    int r = corner(w);
+    int y = f.y;
+    if (y < c->clip.y || y >= c->clip.y + c->clip.h)
+        return;
+    uint32_t *row = c->px + y * c->stride;
+    int x0 = MAX(f.x + r, c->clip.x), x1 = MIN(f.x + f.w - r, c->clip.x + c->clip.w);
+    int span = MAX(f.w - 2 * r, 1);
+    for (int x = x0; x < x1; x++) {
+        int u = (x - f.x - r) * 1024 / span;
+        int a = MIN(MIN(u, 1024 - u) * 6, 1024) * (style.dark ? 200 : 170) / 1024;
+        row[x] = color_mix(row[x] | 0xff000000u, gfx_halo_tone(u), a);
+    }
+    if (y + 1 < c->clip.y + c->clip.h)
+        for (int x = x0; x < x1; x++) {
+            int u = (x - f.x - r) * 1024 / span;
+            int a = MIN(MIN(u, 1024 - u) * 6, 1024) * 60 / 1024;
+            uint32_t *p = &c->px[(y + 1) * c->stride + x];
+            *p = color_mix(*p | 0xff000000u, gfx_halo_tone(u), a);
+        }
+}
+
+/* Titles sit on the left, right after the controls. */
+static struct rect title_rect(const struct window *w, int y, int h)
+{
+    struct rect cap = capsule_rect(w);
+    int x = cap.x + cap.w + 12;
+    return (struct rect){x, y, MAX(w->frame.x + w->frame.w - 48 - x, 0), h};
 }
 
 static void draw_full_title(struct canvas *c, struct window *w)
@@ -1832,8 +1930,8 @@ static void draw_full_title(struct canvas *c, struct window *w)
              (active ? style.titlebar : style.titlebar_inactive) | 0xff000000u);
     gfx_fill(c, (struct rect){w->frame.x, y + TITLE_HEIGHT - 1, w->frame.w, 1}, style.separator);
     if (!(w->flags & WIN_NOTITLE))
-        gfx_text_box(c, (struct rect){w->frame.x + 76, y, w->frame.w - 152, TITLE_HEIGHT}, &font_bold, w->title,
-                     active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_CENTER);
+        gfx_text_box(c, title_rect(w, y, TITLE_HEIGHT), &font_bold, w->title,
+                     active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_LEFT);
     draw_lights(c, w);
     if (has_more(w))
         draw_more(c, w);
@@ -1868,10 +1966,10 @@ static void draw_window(struct canvas *c, struct window *w)
     gfx_blit_round(&body, f, &src, corner(w), w->glass != NULL || (w->flags & WIN_TRANSLUCENT));
     if (framed(w)) {
         if (!(w->flags & WIN_NOTITLE)) {
-            struct rect tr = {f.x + 76, f.y, f.w - 152, title_band(w)};
+            struct rect tr = title_rect(w, f.y, title_band(w));
             if (w->flags & WIN_FULLSIZE)
                 tr.w = 0;
-            gfx_text_box(c, tr, &font_bold, w->title, active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_CENTER);
+            gfx_text_box(c, tr, &font_bold, w->title, active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_LEFT);
         }
         draw_lights(c, w);
         if (has_more(w))
@@ -1882,6 +1980,8 @@ static void draw_window(struct canvas *c, struct window *w)
         if (style.dark)
             gfx_round_frame_gradient(c, rect_inset(f, 1), MAX(corner(w) - 1, 0), ALPHA(0xffffffffu, 24), ALPHA(0xffffffffu, 7));
     }
+    if (w == focus && framed(w) && !(w->flags & (WIN_FULLSCREEN | WIN_MAXIMIZED)) && halo_windows)
+        draw_halo(c, w);
 }
 
 void wm_crossfade(void)
@@ -2054,23 +2154,28 @@ static int light_at(struct window *w, int x, int y)
 {
     if (!framed(w))
         return -1;
-    int cy = traffic_cy(w);
+    struct rect cap = capsule_rect(w);
+    if (!rect_contains(rect_inset(cap, -2), x, y))
+        return -1;
     for (int i = 0; i < 3; i++) {
         if (!light_shown(i))
             continue;
-        int dx = x - traffic_cx(w, i), dy = y - cy;
-        if (dx * dx + dy * dy <= 8 * 8)
+        if (ABS(x - traffic_cx(w, i)) <= CAPSULE_CELL / 2)
             return light_enabled(w, i) ? i : -1;
     }
     return -1;
+}
+
+static int light_at_point(struct window *w)
+{
+    return light_at(w, mouse_x, mouse_y);
 }
 
 static bool in_traffic_zone(struct window *w, int x, int y)
 {
     if (!framed(w))
         return false;
-    int cy = traffic_cy(w);
-    return x >= w->frame.x + 8 && x < w->frame.x + 72 && y >= cy - 9 && y <= cy + 9;
+    return rect_contains(rect_inset(capsule_rect(w), -4), x, y);
 }
 
 static bool client_event(struct window *w, enum gui_event_type type, unsigned button, int wheel, int clicks)
@@ -2098,8 +2203,18 @@ static void set_cursor(int kind)
     hw_cursor_refresh();
 }
 
+static int traffic_cell = -1;
+
 static void set_traffic(struct window *w)
 {
+    int cell = w ? light_at(w, mouse_x, mouse_y) : -1;
+    if (traffic_win == w && cell != traffic_cell && w) {
+        traffic_cell = cell;
+        spring_set(&lights_grow, 0);
+        lights_grow.target = 1024;
+        damage_title(w);
+    }
+    traffic_cell = cell;
     if (traffic_win == w)
         return;
     lights_grow.target = w ? 1024 : 0;
@@ -3133,15 +3248,32 @@ static int set_speed_anim(struct shell *sh, const char *value)
 {
     UNUSED(sh);
     long v;
-    if (!str_parse_long(value, &v) || v < 50 || v > 200)
+    if (!str_parse_long(value, &v) || v < 10 || v > 200)
         return E_INVAL;
     anim_speed = (int)v;
     return 0;
 }
 
-static const struct setting s_anim_speed = {"animspeed", "50..200", "speed of window animations in percent",
+static const struct setting s_anim_speed = {"animspeed", "10..200", "speed of window animations in percent",
                                             get_speed_anim, set_speed_anim};
 SETTING(s_anim_speed);
+
+static void get_halo_line(char *buf, size_t cap)
+{
+    setting_flag_get(halo_windows, buf, cap);
+}
+
+static int set_halo_line(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int e = setting_flag(value, &halo_windows);
+    wm_damage_all();
+    return e;
+}
+
+static const struct setting s_halo_line = {"windowhalo", "on|off", "a line of the SynthOS colors along the focused window",
+                                           get_halo_line, set_halo_line};
+SETTING(s_halo_line);
 
 bool wm_animations(void)
 {

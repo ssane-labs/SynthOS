@@ -501,6 +501,12 @@ static bool build_peb64(void)
     put64(peb + 0x18, U(ldr));
     put64(peb + 0x20, U(params));
     put64(peb + 0x30, U(&w32->heap));
+    /* the loader lock, free: programs compare its owner with their thread to see whether they run inside DllMain */
+    uint8_t *lock = w32_zalloc(40);
+    if (!lock)
+        return false;
+    put32(lock + 8, 0xffffffffu);
+    put64(peb + 0x110, U(lock));
     put32(peb + 0xb8, 1);
     put32(peb + 0x118, 10);
     put16(peb + 0x120, 19045);
@@ -588,6 +594,57 @@ static uint64_t h_one(uint64_t *a, const uint64_t *f, void *t)
     return 1;
 }
 
+/* I/O completion ports with whole 64-bit keys and OVERLAPPED addresses; OVERLAPPED_ENTRY is 32 bytes here. */
+#define H64(v) ((HANDLE)(uintptr_t)(uint32_t)(v))
+
+static uint64_t h_iocp_create(uint64_t *a, const uint64_t *f, void *t)
+{
+    return w64_ret((uint32_t)(uintptr_t)w32_iocp_create(H64(a[0]), H64(a[1]), a[2]));
+}
+
+static uint64_t h_iocp_post(uint64_t *a, const uint64_t *f, void *t)
+{
+    return w32_iocp_post(H64(a[0]), (DWORD)a[1], a[2], a[3]);
+}
+
+static uint64_t h_iocp_get(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint64_t c[3];
+    uint64_t *ov = a[3] ? w64_ptr(a[3]) : NULL;
+    if (ov)
+        *ov = 0;
+    if (w32_iocp_take(H64(a[0]), (DWORD)a[4], c, 1) < 1)
+        return 0;
+    if (a[1])
+        *(uint32_t *)w64_ptr(a[1]) = (uint32_t)c[2];
+    if (a[2])
+        *(uint64_t *)w64_ptr(a[2]) = c[0];
+    if (ov)
+        *ov = w64_high_back(c[1]);
+    return 1;
+}
+
+static uint64_t h_iocp_get_ex(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint64_t c[3 * 16];
+    uint32_t *removed = a[3] ? w64_ptr(a[3]) : NULL;
+    if (removed)
+        *removed = 0;
+    int n = w32_iocp_take(H64(a[0]), (DWORD)a[4], c, (ULONG)MIN(a[2], 16u));
+    if (n < 0)
+        return 0;
+    uint64_t *e = w64_ptr(a[1]);
+    for (int i = 0; i < n; i++) {
+        e[i * 4] = c[i * 3];
+        e[i * 4 + 1] = w64_high_back(c[i * 3 + 1]);
+        e[i * 4 + 2] = 0;
+        e[i * 4 + 3] = c[i * 3 + 2];
+    }
+    if (removed)
+        *removed = (uint32_t)n;
+    return 1;
+}
+
 static uint64_t h_logical_processors(uint64_t *a, const uint64_t *f, void *t)
 {
     uint8_t *out = P(a[0]);
@@ -618,7 +675,7 @@ static uint64_t h_get_system_info(uint64_t *a, const uint64_t *f, void *t)
     put16(o, 9);
     put32(o + 4, 4096);
     put64(o + 8, 0x10000);
-    put64(o + 16, VMM_USER_END - 0x10001u);
+    put64(o + 16, 0x7ffffffeffffull);
     put64(o + 24, 1);
     put32(o + 32, 1);
     put32(o + 36, 8664);
@@ -1236,6 +1293,10 @@ static uint64_t h_bsearch(uint64_t *a, const uint64_t *f, void *t)
 
 static const struct w64_export kernel32_exports[] = {
     W64_FN("GetSystemInfo", h_get_system_info),
+    W64_FN("CreateIoCompletionPort", h_iocp_create),
+    W64_FN("PostQueuedCompletionStatus", h_iocp_post),
+    W64_FN("GetQueuedCompletionStatus", h_iocp_get),
+    W64_FN("GetQueuedCompletionStatusEx", h_iocp_get_ex),
     W64_FN("GetLogicalProcessorInformation", h_logical_processors),
     W64_FN("GetNativeSystemInfo", h_get_system_info),
     W64_FN("GetStartupInfoA", h_get_startup_info),
@@ -1251,8 +1312,6 @@ static const struct w64_export kernel32_exports[] = {
     W64_FN("RemoveVectoredExceptionHandler", h_one),
     W64_FN("AddVectoredContinueHandler", h_one),
     W64_FN("RemoveVectoredContinueHandler", h_one),
-    W64_FN("RtlAddFunctionTable", h_one),
-    W64_FN("RtlDeleteFunctionTable", h_one),
     W64_FN("RtlInstallFunctionTableCallback", h_one),
     W64_FN("SetConsoleCtrlHandler", h_one),
     W64_FN("WaitForMultipleObjects", h_wait_multiple),
@@ -1371,8 +1430,6 @@ static const struct w64_export ntdll_exports[] = {
     W64_FN("NtOpenKey", h_nt_key),
     W64_FN("NtOpenKeyEx", h_nt_key),
     W64_FN("NtCreateKey", h_nt_key),
-    W64_FN("RtlAddFunctionTable", h_one),
-    W64_FN("RtlDeleteFunctionTable", h_one),
     W64_NATIVE("memcpy", w64_memcpy),
     W64_NATIVE("memmove", w64_memmove),
     W64_NATIVE("memset", w64_memset),

@@ -140,7 +140,7 @@ parallel work: ok on 1 processor
 widgets add clock; widgets add tasks; config widgets
 clock,tasks
 head -n 1 ~/.widgets
-mono clock 4x2 rounded clear -1 -1
+halo clock 4x2 rounded clear -1 -1
 config widgets all; widgets list | grep -c desktop
 12
 widgets add clock; widgets list | grep clock
@@ -148,7 +148,7 @@ widgets add clock; widgets list | grep clock
 config widgets analog,worldclock,photo,notes,system,apps; config widgets
 analog,worldclock,photo,notes,system,apps
 grep worldclock ~/.widgets
-mono worldclock 2x2 rounded glass -1 -1 Tokyo|540
+halo worldclock 2x2 rounded glass -1 -1 Tokyo|540
 widgets add moon
 no widget called moon
 config widgets clock,weather,music; config widgets
@@ -233,8 +233,8 @@ config snap off; config snap; config snap on
 snap = off
 config animspeed 140; config animspeed; config animspeed 100
 animspeed = 140
-config animspeed 20
-animspeed: invalid value '20'
+config animspeed 5
+animspeed: invalid value '5'
 config dockpreviews off; config dockpreviews; config dockpreviews on
 dockpreviews = off
 config cornertr mission; config cornerbl lock; config cornertr; config cornertr off; config cornerbl off
@@ -265,14 +265,14 @@ clip info
 image 1024x640
 config termstatus off; config termstatus
 termstatus = off
-config dockapps 'Files|/home/notes.txt|Terminal'; grep mono ~/.dock
-mono Files|/home/notes.txt|Terminal
+config dockapps 'Files|/home/notes.txt|Terminal'; grep halo ~/.dock
+halo Files|/home/notes.txt|Terminal
 config dockapps default; config dockapps
 Launchpad|Files|Chromium|Terminal
 config chromeauto off; config chromeauto; config chromeauto on
 off
 config dockstyle side; config statusbar menubar; head -n 1 ~/.looks
-mono dock=side status=menubar
+halo dock=side status=menubar
 config dockstyle corner; config statusbar pill; config dockstyle
 corner
 config dockmode autohide; config dockhide
@@ -281,8 +281,14 @@ config dockmode off; config dockmode
 off
 config dockmode show; config dockmode; config dockhide
 show
+config docksleep 5; config docksleep; config docksleep 30
+5
+config dockhalo off; config dockhalo; config dockhalo on
+off
+config statusbar islands; config statusbar; config statusbar menubar
+islands
 config look; config wallpaper
-mono
+halo
 which ls hello
 hello: /bin/hello.sx
 formats | grep -c DOS

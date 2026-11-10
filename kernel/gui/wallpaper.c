@@ -679,10 +679,65 @@ static bool paint_image(struct canvas *c, const char *path)
     return true;
 }
 
+/* Halo, the SynthOS picture: an eclipse ring of colored light rising from below the screen, a thin orbit across it
+   and, at night, a few stars. */
+static int ring_light(int d, int width)
+{
+    int64_t q = (int64_t)d * d * 1024 / ((int64_t)width * width);
+    return (int)(1024 * 1024 / (1024 + q));
+}
+
+static void paint_halo(struct canvas *c, bool dark)
+{
+    int w = c->w, h = c->h;
+    int cx = w * 60 / 100, cy = h * 112 / 100, R = MAX(h * 80 / 100, w * 40 / 100);
+    int core = MAX(h / 70, 4), wide = core * 9;
+    int ox = w * 30 / 100, oy = h * 128 / 100, oR = MAX(h * 105 / 100, w * 62 / 100);
+    uint32_t top = dark ? RGB(7, 8, 20) : RGB(236, 239, 251), bottom = dark ? RGB(20, 11, 38) : RGB(251, 236, 244);
+    uint32_t disk = dark ? RGB(4, 4, 10) : RGB(246, 246, 252);
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = c->px + y * c->stride, base = lerp(top, bottom, y, h);
+        for (int x = 0; x < w; x++) {
+            int dx = x - cx, dy = y - cy;
+            int dist = grid_sqrt((uint64_t)((int64_t)dx * dx + (int64_t)dy * dy));
+            int d = dist - R;
+            uint32_t p = base;
+            if (d < 0)
+                p = color_mix(base, disk, CLAMP(-d * 255 / (core * 6), 0, 235));
+            int u = (x - (cx - R)) * 1024 / (2 * R) + (cy - y) * 120 / MAX(R, 1);
+            uint32_t tone = gfx_halo_tone(CLAMP(u, 0, 1023));
+            int glow = ring_light(d, wide) * (dark ? 120 : 150) / 1024;
+            int line = ring_light(d, core) * (dark ? 230 : 235) / 1024;
+            if (d < 0)
+                glow = glow * 2 / 3;
+            if (dark) {
+                p = add_light(p, tone, glow);
+                p = add_light(p, color_mix(tone, RGB(255, 255, 255), 120), line);
+            } else {
+                p = color_mix(p, tone, glow * 2 / 3);
+                p = color_mix(p, color_mix(tone, RGB(255, 255, 255), 60), line * 3 / 4);
+            }
+            int odx = x - ox, ody = y - oy;
+            int od = grid_sqrt((uint64_t)((int64_t)odx * odx + (int64_t)ody * ody)) - oR;
+            int orbit = ring_light(od, 2) * (dark ? 46 : 40) / 1024;
+            if (orbit > 2)
+                p = dark ? add_light(p, RGB(200, 210, 255), orbit) : color_mix(p, RGB(120, 110, 200), orbit);
+            if (dark && d > 0) {
+                uint32_t k = hash((uint32_t)(x * 7919) ^ (uint32_t)(y * 104729));
+                if ((k & 1023) == 7)
+                    p = add_light(p, RGB(255, 255, 255), 40 + (int)(k >> 24) / 2);
+            }
+            row[x] = dither(p, x, y);
+        }
+    }
+}
+
 void wallpaper_paint(struct canvas *c, const char *kind, bool dark)
 {
     c->clip = (struct rect){0, 0, c->w, c->h};
-    if (!strcmp(kind, "mono"))
+    if (!strcmp(kind, "halo"))
+        paint_halo(c, dark);
+    else if (!strcmp(kind, "mono"))
         paint_mono(c, dark);
     else if (!strcmp(kind, "dune"))
         paint_paper(c, &papers[0][dark]);
