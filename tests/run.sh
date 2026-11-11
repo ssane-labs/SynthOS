@@ -689,6 +689,8 @@ config w32headless on; winctl | grep treeview; config w32headless off
 treeview first=Email sel=1 down=3 notify=3 expanding=1 deleted=3 count=1
 config w32headless on; winctl | grep mdi; config w32headless off
 mdi hook=3 active=1 next=1 left=1 id=101 fill=1 activations=4 top=1
+config w32headless on; winctl | grep rebar; config w32headless off
+rebar width=1 height=1 mixed=1
 config w32headless on; winctl | grep toolbar; config w32headless off
 toolbar count=3 cmd=102 checked=1 status=3 files parts=2
 config w32headless on; winctl | grep findtext; config w32headless off

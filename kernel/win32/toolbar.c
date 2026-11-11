@@ -66,6 +66,9 @@ enum {
     TBSTYLE_GROUP = 4,
     TBSTYLE_DROPDOWN = 8,
     TBSTYLE_LIST = 0x1000,
+    TBSTYLE_TRANSPARENT = 0x8000,
+    BTNS_SHOWTEXT = 0x40,
+    TBSTYLE_EX_MIXEDBUTTONS = 8,
     TBIF_IMAGE = 1,
     TBIF_TEXT = 2,
     TBIF_STATE = 4,
@@ -208,6 +211,12 @@ static int button_h(struct w32_window *w, struct tb *s)
 
 /* a separate arrow shows with TBSTYLE_EX_DRAWDDARROWS or BTNS_WHOLEDROPDOWN; without the extended style the whole
    button drops down */
+/* with TBSTYLE_EX_MIXEDBUTTONS only BTNS_SHOWTEXT buttons show their text; the rest use it as a tooltip */
+static bool shows_text(struct tb *s, struct tb_button *b)
+{
+    return b->text && b->text[0] && (!(s->ex & TBSTYLE_EX_MIXEDBUTTONS) || (b->style & BTNS_SHOWTEXT));
+}
+
 static bool has_arrow(struct tb *s, const struct tb_button *b)
 {
     return (b->style & TBSTYLE_DROPDOWN) && ((s->ex & 1) || (b->style & 0x80));
@@ -222,7 +231,7 @@ static int button_w(struct w32_window *w, struct tb *s, int i)
         return b->image > 0 ? b->image : 8;
     if (b->width)
         return b->width;
-    int width = s->iw + s->pad_x, text = b->text && b->text[0] ? gfx_text_width(w32_ctl_font(w), b->text) + 8 : 0;
+    int width = s->iw + s->pad_x, text = shows_text(s, b) ? gfx_text_width(w32_ctl_font(w), b->text) + 8 : 0;
     width = (w->style & TBSTYLE_LIST) ? width + text : MAX(width, text);
     if (has_arrow(s, b))
         width += 12;
@@ -365,17 +374,87 @@ static LRESULT add_strings(struct tb *s, uintptr_t inst, uintptr_t p, bool wide)
     return first;
 }
 
+enum { NM_CUSTOMDRAW = -12, CDDS_PREPAINT = 1, CDDS_ITEMPREPAINT = 0x10001, CDRF_SKIPDEFAULT = 4,
+       CDRF_NOTIFYITEMDRAW = 0x20, CDIS_DISABLED = 4, CDIS_CHECKED = 8, TBCDRF_USECDCOLORS = 0x800000 };
+
+/* NM_CUSTOMDRAW with an NMTBCUSTOMDRAW; *text gets the colour the program chose for the item's text */
+static LRESULT custom_draw(struct w32_window *w, struct tb *s, HANDLE dc, int stage, int i, struct rect r,
+                           uint32_t *text, uint32_t *face)
+{
+    struct w32_window *to = s->target ? s->target : w->parent;
+    bool x64 = w32->win64;
+    int hs = x64 ? 24 : 12, code = NM_CUSTOMDRAW;
+    uint8_t *nm = to ? w32_zalloc(160) : NULL;
+    if (!nm)
+        return 0;
+    uint64_t hwnd = (uintptr_t)w, id = (uint64_t)w->id, hdc = (uintptr_t)dc;
+    memcpy(nm, &hwnd, (size_t)ptr_size());
+    memcpy(nm + ptr_size(), &id, (size_t)ptr_size());
+    memcpy(nm + 2 * ptr_size(), &code, 4);
+    memcpy(nm + hs, &stage, 4);
+    memcpy(nm + (x64 ? 32 : 16), &hdc, (size_t)ptr_size());
+    RECT rc = {r.x, r.y, r.x + r.w, r.y + r.h};
+    memcpy(nm + (x64 ? 40 : 20), &rc, sizeof(rc));
+    int clr = x64 ? 104 : 60;
+    if (i >= 0) {
+        uint64_t spec = (uint64_t)(uint32_t)s->b[i].id, data = s->b[i].data;
+        uint32_t state = (s->b[i].state & TBSTATE_ENABLED ? 0 : CDIS_DISABLED) |
+                         (s->b[i].state & TBSTATE_CHECKED ? CDIS_CHECKED : 0);
+        memcpy(nm + (x64 ? 56 : 36), &spec, (size_t)ptr_size());
+        memcpy(nm + (x64 ? 64 : 40), &state, 4);
+        memcpy(nm + (x64 ? 72 : 44), &data, (size_t)ptr_size());
+    }
+    COLORREF colors[6] = {w32_colorref(style.text), w32_colorref(style.accent), w32_colorref(style.text),
+                          w32_colorref(style.window), w32_colorref(style.control_pressed), w32_colorref(style.accent)};
+    memcpy(nm + clr, colors, sizeof(colors));
+    memcpy(nm + clr + 24, &rc, sizeof(rc));
+    LRESULT res = w32_send(to, WM_NOTIFY, (WPARAM)w->id, (LPARAM)(uintptr_t)nm);
+    COLORREF c;
+    if (text) {
+        memcpy(&c, nm + clr, 4);
+        *text = c == colors[0] ? *text : w32_rgb(c);
+    }
+    if (face) {
+        memcpy(&c, nm + clr + 12, 4);
+        *face = w32_rgb(c);
+    }
+    w32_free(nm);
+    return res;
+}
+
+/* transparent toolbars show their parent's background */
+static bool parent_background(struct w32_window *w)
+{
+    if (!w->parent || !(w->style & TBSTYLE_TRANSPARENT))
+        return false;
+    struct rect a = w32_area(w);
+    struct rect clip = rect_intersect(w32_visible_area(w), (struct rect){a.x + w->painted.x, a.y + w->painted.y,
+                                                                         w->painted.w, w->painted.h});
+    HANDLE dc = clip.w > 0 && clip.h > 0 ? w32_window_dc(w->parent, clip) : NULL;
+    if (!dc)
+        return false;
+    bool done = w32_send(w->parent, WM_ERASEBKGND, (WPARAM)dc, 0) != 0;
+    w32_free_dc(dc);
+    return done;
+}
+
 static void paint_toolbar(struct w32_window *w, struct tb *s)
 {
     struct w32_paint p;
     if (!w32_ctl_begin(w, &p, 0))
         return;
     const struct ui_font *f = w32_ctl_font(w);
-    gfx_fill(p.c, p.r, style.window);
+    if (p.printing || !parent_background(w))
+        gfx_fill(p.c, p.r, style.window);
+    LRESULT cd = custom_draw(w, s, p.dc, CDDS_PREPAINT, -1, (struct rect){0, 0, w->rect.w, w->rect.h}, NULL, NULL);
+    if (cd & CDRF_SKIPDEFAULT) {
+        w32_ctl_end(w, &p);
+        return;
+    }
     if (!(w->style & CCS_NODIVIDER))
         gfx_fill(p.c, (struct rect){p.r.x, p.r.y + p.r.h - 1, p.r.w, 1}, style.separator);
-    typedef BOOL WINAPI (*draw_fn)(HANDLE, int, HANDLE, int, int, UINT);
-    draw_fn draw = (draw_fn)w32_builtin_lookup("comctl32.dll", "ImageList_Draw");
+    typedef BOOL WINAPI (*draw_fn)(HANDLE, int, HANDLE, int, int, int, int, COLORREF, COLORREF, UINT);
+    draw_fn draw = (draw_fn)w32_builtin_lookup("comctl32.dll", "ImageList_DrawEx");
     bool list = w->style & TBSTYLE_LIST;
     for (int i = 0; i < s->count; i++) {
         struct tb_button *b = &s->b[i];
@@ -389,15 +468,25 @@ static void paint_toolbar(struct w32_window *w, struct tb *s)
             continue;
         }
         bool enabled = b->state & TBSTATE_ENABLED, down = (b->state & (TBSTATE_PRESSED | TBSTATE_CHECKED)) != 0;
+        uint32_t color = enabled ? style.text : style.tertiary, face = style.window;
+        LRESULT item = cd & CDRF_NOTIFYITEMDRAW
+                           ? custom_draw(w, s, p.dc, CDDS_ITEMPREPAINT, i,
+                                         (struct rect){r.x - p.r.x, r.y - p.r.y, r.w, r.h}, &color, &face)
+                           : 0;
+        if (item & CDRF_SKIPDEFAULT)
+            continue;
+        if (item & TBCDRF_USECDCOLORS)
+            gfx_fill(p.c, r, face);
         if (down)
             gfx_round(p.c, r, 5, style.control_pressed);
         int ix = list ? r.x + 4 : r.x + (r.w - (has_arrow(s, b) ? 12 : 0) - s->iw) / 2;
         int iy = list ? r.y + (r.h - s->ih) / 2 : r.y + 3;
         HANDLE il = !enabled && s->disabled_il ? s->disabled_il : s->il;
+        bool faded = !enabled && !s->disabled_il;
         if (il && b->image >= 0 && draw)
-            draw(il, b->image, p.dc, ix - p.r.x, iy - p.r.y, 1);
-        uint32_t color = enabled ? style.text : style.tertiary;
-        if (b->text && b->text[0]) {
+            draw(il, b->image, p.dc, ix - p.r.x, iy - p.r.y, 0, 0, 0xff000000u,
+                 faded ? w32_colorref(style.window) : 0xff000000u, faded ? 1 | 4 : 1);
+        if (shows_text(s, b)) {
             struct rect tr = list ? (struct rect){ix + s->iw + 4, r.y, r.x + r.w - ix - s->iw - 6, r.h}
                                   : (struct rect){r.x + 2, iy + s->ih + 1, r.w - 4, f->height + 2};
             char shown[96];
@@ -410,9 +499,6 @@ static void paint_toolbar(struct w32_window *w, struct tb *s)
         }
         if (has_arrow(s, b))
             gfx_text_box(p.c, (struct rect){r.x + r.w - 13, r.y, 12, r.h}, f, "v", color, ALIGN_CENTER);
-        if (!enabled && !s->disabled_il && s->il && b->image >= 0)
-            for (int y = 0; y < s->ih; y += 2)
-                gfx_fill(p.c, (struct rect){ix, iy + y, s->iw, 1}, style.window);
     }
     w32_ctl_end(w, &p);
 }
@@ -1019,6 +1105,9 @@ static void rb_layout(struct w32_window *w, struct rb *r)
 {
     rb_move_fn move = (rb_move_fn)w32_builtin_lookup("user32.dll", "MoveWindow");
     int width = w->rect.w, y = 0, rows = 0;
+    bool own_width = w->parent && (w->style & (CCS_NORESIZE | CCS_NOPARENTALIGN)) == CCS_NOPARENTALIGN;
+    if (own_width)
+        width = w32_area(w->parent).w;
     for (int i = 0; i < r->count;) {
         int end = i, x = 0, row_h = 0;
         for (; end < r->count; end++) {
@@ -1065,8 +1154,11 @@ static void rb_layout(struct w32_window *w, struct rb *r)
         i = end;
     }
     r->rows = rows;
-    if (y != r->height) {
-        r->height = y;
+    bool changed = y != r->height;
+    r->height = y;
+    if (own_width && move && (w->rect.w != width || w->rect.h != y))
+        move(w, w->rect.x, w->rect.y, width, y, TRUE);
+    if (changed) {
         if (!(w->style & CCS_NORESIZE)) {
             if (!(w->style & CCS_NOPARENTALIGN))
                 align_to_parent(w, y, (w->style & 3) == CCS_BOTTOM);
@@ -1247,11 +1339,18 @@ LRESULT WINAPI w32_rebar_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
     case WM_NOTIFY:
         return w->parent ? w32_send(w->parent, msg, wp, lp) : 0;
-    case WM_ERASEBKGND: return 1;
+    case WM_ERASEBKGND: {
+        int ox, oy;
+        struct canvas *c = w32_dc_canvas((HANDLE)wp, &ox, &oy);
+        if (c)
+            gfx_fill(c, (struct rect){ox, oy, w->rect.w, w->rect.h}, r->bk == 0xffffffffu ? style.window : w32_rgb(r->bk));
+        return 1;
+    }
     case WM_PAINT: {
         struct w32_paint p;
         if (w32_ctl_begin(w, &p, 0)) {
-            gfx_fill(p.c, p.r, r->bk == 0xffffffffu ? style.window : w32_rgb(r->bk));
+            if (p.printing)
+                gfx_fill(p.c, p.r, r->bk == 0xffffffffu ? style.window : w32_rgb(r->bk));
             w32_ctl_end(w, &p);
         }
         return 0;

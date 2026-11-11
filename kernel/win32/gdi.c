@@ -98,7 +98,7 @@ uint32_t w32_rgb(COLORREF c)
     return RGB(c & 0xff, (c >> 8) & 0xff, (c >> 16) & 0xff);
 }
 
-static COLORREF to_colorref(uint32_t px)
+COLORREF w32_colorref(uint32_t px)
 {
     return ((px >> 16) & 0xff) | (px & 0xff00) | (px & 0xff) << 16;
 }
@@ -109,18 +109,26 @@ COLORREF w32_syscolor(int index)
         return 0;
     uint32_t c;
     switch (index) {
-    case 5: c = style.content; break;
+    case 5:
+    case 12:
+    case 20: c = style.content; break;
+    case 7:
     case 8:
-    case 18: c = style.text; break;
+    case 9:
+    case 18:
+    case 23: c = style.text; break;
     case 15:
-    case 4: c = style.window; break;
+    case 4:
+    case 22:
+    case 24:
+    case 30: c = style.window; break;
     case 13:
     case 29: c = style.accent; break;
     case 14: c = style.accent_text; break;
     case 17: c = style.secondary; break;
     default: return sys_colors[index] & 0xffffff;
     }
-    return to_colorref(c);
+    return w32_colorref(c);
 }
 
 static struct gdi_obj *obj(HANDLE h)
@@ -1632,7 +1640,7 @@ static COLORREF WINAPI GetPixel(HANDLE h, int x, int y)
     y += t.oy;
     if (x < 0 || y < 0 || x >= t.c->w || y >= t.c->h)
         return 0xffffffffu;
-    return to_colorref(t.c->px[y * t.c->stride + x]);
+    return w32_colorref(t.c->px[y * t.c->stride + x]);
 }
 
 static char *ansi_to_utf8(const char *s, int n)
@@ -3724,7 +3732,7 @@ static int WINAPI ImageList_AddMasked(void *h, HANDLE bitmap, COLORREF key)
 {
     struct gdi_obj *b = obj(bitmap);
     if (key == CLR_NONE && b && b->canvas.px)
-        key = to_colorref(b->canvas.px[0]);
+        key = w32_colorref(b->canvas.px[0]);
     return il_add(h, bitmap, NULL, key != CLR_NONE, key);
 }
 

@@ -253,6 +253,7 @@ HANDLE w32_window_dc(struct w32_window *w, struct rect clip);
 HANDLE w32_window_dc_live(struct w32_window *w);
 void w32_free_dc(HANDLE dc);
 uint32_t w32_rgb(COLORREF c);
+COLORREF w32_colorref(uint32_t px);
 COLORREF w32_syscolor(int index);
 HANDLE w32_syscolor_brush(int index);
 const struct ui_font *w32_font_of(HANDLE font);

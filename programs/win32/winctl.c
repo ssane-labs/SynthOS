@@ -248,6 +248,35 @@ static void list_test(HWND parent)
            (int)SendMessageW(sb, SB_GETPARTS, 0, 0));
 }
 
+/* a rebar that does not align to its parent still takes the parent's width; mixed buttons show only chosen text */
+static void rebar_test(HWND parent)
+{
+    HWND rb = CreateWindowExW(0, REBARCLASSNAMEW, NULL, WS_CHILD | CCS_NOPARENTALIGN | CCS_NODIVIDER, 0, 0, 0, 0,
+                              parent, (HMENU)20, NULL, NULL);
+    HWND tb = CreateWindowExW(0, TOOLBARCLASSNAMEW, NULL, WS_CHILD | TBSTYLE_FLAT | TBSTYLE_LIST | CCS_NORESIZE |
+                              CCS_NOPARENTALIGN, 0, 0, 0, 0, rb, (HMENU)21, NULL, NULL);
+    SendMessageW(tb, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+    SendMessageW(tb, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_MIXEDBUTTONS);
+    TBBUTTON b[2] = {{0, 201, TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT, {0}, 0, (INT_PTR)L"Open document"},
+                     {1, 202, TBSTATE_ENABLED, BTNS_BUTTON, {0}, 0, (INT_PTR)L"Open document"}};
+    SendMessageW(tb, TB_ADDBUTTONSW, 2, (LPARAM)b);
+    REBARBANDINFOW band = {0};
+    band.cbSize = sizeof(band);
+    band.fMask = RBBIM_STYLE | RBBIM_CHILD | RBBIM_CHILDSIZE;
+    band.hwndChild = tb;
+    band.cyMinChild = 24;
+    SendMessageW(rb, RB_INSERTBANDW, -1, (LPARAM)&band);
+    SetWindowPos(rb, NULL, 0, 0, 0, 0, SWP_NOZORDER);
+    RECT pr, rr, shown, plain;
+    GetClientRect(parent, &pr);
+    GetWindowRect(rb, &rr);
+    SendMessageW(tb, TB_GETITEMRECT, 0, (LPARAM)&shown);
+    SendMessageW(tb, TB_GETITEMRECT, 1, (LPARAM)&plain);
+    printf("rebar width=%d height=%d mixed=%d\n", rr.right - rr.left == pr.right, rr.bottom - rr.top >= 24,
+           shown.right - shown.left > 2 * (plain.right - plain.left));
+    DestroyWindow(rb);
+}
+
 static HTREEITEM tree_add(HWND tv, HTREEITEM parent, HTREEITEM after, const WCHAR *text, int param)
 {
     TVINSERTSTRUCTW in = {0};
@@ -549,6 +578,7 @@ int main(void)
         tab_test(parent);
         list_test(parent);
         tree_test(parent);
+        rebar_test(parent);
         mdi_test(parent);
         find_test(parent);
         dialogs_test(parent);
