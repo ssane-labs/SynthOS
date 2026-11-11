@@ -10,6 +10,7 @@
 #define ERROR_NO_SUCH_DEVINST 0xe000020bu
 #define HIDP_STATUS_INVALID_PREPARSED_DATA 0xc0110001u
 #define CR_NO_SUCH_DEVNODE 13u
+#define CR_MACHINE_UNAVAILABLE 0x31u
 #define TRUST_E_NOSIGNATURE 0x800b0100u
 #define PDH_CSTATUS_NO_OBJECT 0xc0000bb8u
 #define PDH_NO_DATA 0x800007d5u
@@ -47,6 +48,20 @@ ARGS(11);
     }
 
 /* setupapi: an empty device tree */
+STUB(CM_Locate_DevNode_ExW, 4, CR_NO_SUCH_DEVNODE, 0)
+STUB(CM_Request_Device_EjectW, 5, CR_NO_SUCH_DEVNODE, 0)
+STUB(CM_Request_Device_Eject_ExW, 6, CR_NO_SUCH_DEVNODE, 0)
+STUB(CM_Disconnect_Machine, 1, 0, 0)
+
+/* only the local machine can be "connected" */
+static uint32_t WINAPI CM_Connect_MachineW(const uint16_t *name, uint32_t *machine)
+{
+    if (name && name[0])
+        return CR_MACHINE_UNAVAILABLE;
+    *machine = 0;
+    return 0;
+}
+
 STUB(SetupDiGetClassDevsW, 4, 0x5e7d0001u, 0)
 STUB(SetupDiGetClassDevsExW, 7, 0x5e7d0001u, 0)
 STUB(SetupDiCreateDeviceInfoList, 2, 0x5e7d0001u, 0)
@@ -58,11 +73,19 @@ STUB(SetupDiGetDeviceRegistryPropertyW, 7, 0, ERROR_NOT_FOUND)
 STUB(SetupDiOpenDevRegKey, 6, 0xffffffffu, ERROR_NOT_FOUND)
 STUB(SetupDiOpenDeviceInfoW, 5, 0, ERROR_NO_SUCH_DEVINST)
 STUB(SetupDiOpenDeviceInterfaceW, 4, 0, ERROR_NO_SUCH_DEVINST)
+STUB(SetupDiCallClassInstaller, 3, 0, ERROR_NO_SUCH_DEVINST)
+STUB(SetupDiRemoveDevice, 2, 0, ERROR_NO_SUCH_DEVINST)
+STUB(SetupDiSetClassInstallParamsW, 4, 0, ERROR_NO_SUCH_DEVINST)
 
 static const struct w32_export setupapi_exports[] = {
     W32_FN(SetupDiGetClassDevsW),
     W32_AS("SetupDiGetClassDevsA", SetupDiGetClassDevsW),
     W32_FN(SetupDiGetClassDevsExW),
+    W32_AS("SetupDiGetClassDevsExA", SetupDiGetClassDevsExW),
+    W32_FN(SetupDiCallClassInstaller),
+    W32_FN(SetupDiRemoveDevice),
+    W32_FN(SetupDiSetClassInstallParamsW),
+    W32_AS("SetupDiSetClassInstallParamsA", SetupDiSetClassInstallParamsW),
     W32_FN(SetupDiCreateDeviceInfoList),
     W32_AS("SetupDiDestroyDeviceInfoList", w32_one1),
     W32_FN(SetupDiEnumDeviceInfo),
@@ -113,12 +136,21 @@ STUB(CM_Get_DevNode_PropertyW, 6, CR_NO_SUCH_DEVNODE, 0)
 STUB(CM_Get_Device_IDW, 4, CR_NO_SUCH_DEVNODE, 0)
 STUB(CM_Get_Parent, 3, CR_NO_SUCH_DEVNODE, 0)
 STUB(CM_Locate_DevNodeW, 3, CR_NO_SUCH_DEVNODE, 0)
-
 static const struct w32_export cfgmgr32_exports[] = {
     W32_FN(CM_Get_DevNode_PropertyW),
     W32_FN(CM_Get_Device_IDW),
     W32_FN(CM_Get_Parent),
     W32_FN(CM_Locate_DevNodeW),
+    W32_FN(CM_Locate_DevNode_ExW),
+    W32_AS("CM_Locate_DevNode_ExA", CM_Locate_DevNode_ExW),
+    W32_FN(CM_Request_Device_EjectW),
+    W32_AS("CM_Request_Device_EjectA", CM_Request_Device_EjectW),
+    W32_FN(CM_Request_Device_Eject_ExW),
+    W32_AS("CM_Request_Device_Eject_ExA", CM_Request_Device_Eject_ExW),
+    W32_FN(CM_Connect_MachineW),
+    W32_AS("CM_Connect_MachineA", CM_Connect_MachineW),
+    W32_FN(CM_Disconnect_Machine),
+    W32_AS("CM_Disconnect_MachineA", CM_Disconnect_Machine),
 };
 
 /* wintrust: nothing is Authenticode-signed here */
@@ -128,8 +160,25 @@ STUB(CryptCATAdminCalcHashFromFileHandle, 4, 0, ERROR_NOT_SUPPORTED)
 STUB(CryptCATAdminEnumCatalogFromHash, 5, 0, ERROR_NOT_FOUND)
 STUB(CryptCATCatalogInfoFromContext, 3, 0, ERROR_NOT_SUPPORTED)
 
+/* catalog files are not kept: opening one fails, so there is nothing to enumerate */
+static HANDLE WINAPI CryptCATOpen(const WCHAR *file, DWORD flags, uintptr_t prov, DWORD version, DWORD encoding)
+{
+    UNUSED(file);
+    UNUSED(flags);
+    UNUSED(prov);
+    UNUSED(version);
+    UNUSED(encoding);
+    w32_set_error(2);
+    return (HANDLE)(intptr_t)-1;
+}
+
 static const struct w32_export wintrust_exports[] = {
     W32_FN(WinVerifyTrust),
+    W32_FN(CryptCATOpen),
+    W32_AS("CryptCATClose", w32_one1),
+    W32_AS("CryptCATEnumerateAttr", w32_zero3),
+    W32_AS("CryptCATEnumerateCatAttr", w32_zero2),
+    W32_AS("CryptCATEnumerateMember", w32_zero2),
     W32_FN(CryptCATAdminAcquireContext),
     W32_AS("CryptCATAdminAcquireContext2", w32_fail5),
     W32_FN(CryptCATAdminCalcHashFromFileHandle),
@@ -519,6 +568,15 @@ static const struct w32_export probe_setupapi[] = {
     W32_AS("CM_Locate_DevNodeA", CM_Locate_DevNodeW),
     W32_AS("CM_Locate_DevNodeW", CM_Locate_DevNodeW),
     W32_FN(CM_Get_DevNode_Status),
+    W32_FN(CM_Locate_DevNode_ExW),
+    W32_AS("CM_Locate_DevNode_ExA", CM_Locate_DevNode_ExW),
+    W32_FN(CM_Request_Device_EjectW),
+    W32_AS("CM_Request_Device_EjectA", CM_Request_Device_EjectW),
+    W32_FN(CM_Request_Device_Eject_ExW),
+    W32_AS("CM_Request_Device_Eject_ExA", CM_Request_Device_Eject_ExW),
+    W32_FN(CM_Connect_MachineW),
+    W32_AS("CM_Connect_MachineA", CM_Connect_MachineW),
+    W32_AS("CM_Disconnect_MachineA", CM_Disconnect_Machine),
 };
 
 static const struct w32_export probe_kernel32[] = {

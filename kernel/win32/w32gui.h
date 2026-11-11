@@ -323,6 +323,7 @@ LRESULT WINAPI w32_button_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_static_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_edit_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_progress_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_datetime_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_tab_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_listview_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_treeview_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);

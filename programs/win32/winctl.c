@@ -4,9 +4,10 @@
 #include <windows.h>
 #include <richedit.h>
 #include <commctrl.h>
+#include <shlwapi.h>
 
 static int measured, drawn, last_notify, button_drawn;
-static int tab_notify;
+static int tab_notify, date_year;
 static int list_changed, last_command;
 static int tree_selected, tree_expanding, tree_deleted;
 static UINT find_msg;
@@ -49,6 +50,8 @@ static LRESULT CALLBACK parent_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         tree_expanding++;
     if (m == WM_NOTIFY && (((NMHDR *)l)->code == TVN_DELETEITEMW || ((NMHDR *)l)->code == TVN_DELETEITEMA))
         tree_deleted++;
+    if (m == WM_NOTIFY && ((NMHDR *)l)->code == DTN_DATETIMECHANGE)
+        date_year = ((NMDATETIMECHANGE *)l)->st.wYear;
     if (m == WM_NOTIFY && ((NMHDR *)l)->code == TCN_SELCHANGE)
         tab_notify = TCN_SELCHANGE;
     return DefWindowProcA(h, m, w, l);
@@ -560,6 +563,17 @@ static void user_test(void)
     GetProfileStringA("SynthTest", "Key", "none", v, sizeof(v));
     WriteProfileStringA("SynthTest", "N", "17");
     printf("profile value=%s int=%u\n", v, GetProfileIntA("SynthTest", "N", 0));
+    DWORD data[2] = {0x12345678, 7}, back[2] = {0};
+    WritePrivateProfileStructA("S", "K", data, sizeof(data), "win.ini");
+    BOOL got = GetPrivateProfileStructA("S", "K", back, sizeof(back), "win.ini");
+    BOOL short_read = GetPrivateProfileStructA("S", "K", back, 4, "win.ini");
+    GetPrivateProfileStringA("S", "K", "", v, sizeof(v), "win.ini");
+    ULONG u = 0;
+    LONG i = 0;
+    HRESULT ok = VarUI4FromStr(L" 4000000000 ", 0, 0, &u), neg = VarUI4FromStr(L"-1", 0, 0, &u);
+    VarI4FromStr(L"-&H10", 0, 0, (ULONG *)&i);
+    printf("profstruct ok=%d same=%d short=%d text=%s var=%lx/%lx/%lu/%ld\n", got, back[0] == data[0] && back[1] == 7,
+           short_read, v, (unsigned long)ok, (unsigned long)neg, u, i);
 }
 
 static void ole_test(void)
@@ -724,6 +738,25 @@ static void shlwapi_test(void)
            urlis(L"https://x.org/", 0), urlis(L"C:\\x", 3), hr ? "" : a, (long)hr, ctype(L"x.TXT", L"text/plain"));
 }
 
+/* relative paths, URL escaping, common prefixes and trimming; GetSystemTimes */
+static void shlwapi2_test(void)
+{
+    WCHAR rel[MAX_PATH] = L"", esc[64] = L"", un[64] = L"";
+    BOOL r = PathRelativePathToW(rel, L"C:\\a\\b", FILE_ATTRIBUTE_DIRECTORY, L"C:\\a\\c\\d.txt", 0);
+    DWORD n = 64;
+    UrlEscapeW(L"http://x/a b%", esc, &n, 0);
+    lstrcpyW(un, esc);
+    n = 64;
+    UrlUnescapeW(un, NULL, &n, URL_UNESCAPE_INPLACE);
+    WCHAR common[MAX_PATH] = L"";
+    int c = PathCommonPrefixW(L"C:\\a\\b\\x", L"C:\\a\\b\\y", common);
+    char t[16] = "  trim me ";
+    StrTrimA(t, " ");
+    FILETIME idle, kernel, user;
+    BOOL times = GetSystemTimes(&idle, &kernel, &user);
+    printf("shlwapi2 rel=%ls %d esc=%ls un=%ls common=%ls/%d trim=[%s] times=%d\n", rel, r, esc, un, common, c, t, times);
+}
+
 /* icons with pixels: made from a colour bitmap with alpha, drawn over a background, through an image list; a colour
    bitmap blitted into a monochrome one keys on the source's background colour (CButtonST's masks); owner-drawn and
    image buttons */
@@ -775,6 +808,51 @@ static void icon_test(HWND parent)
     DeleteDC(dc);
 }
 
+/* the date picker: a set date, the year field stepped by the up arrow (29 Feb becomes 28 Feb), "none" */
+static void date_test(HWND parent)
+{
+    HWND d = CreateWindowExA(0, DATETIMEPICK_CLASSA, "", WS_CHILD | DTS_SHOWNONE, 0, 0, 120, 24, parent, (HMENU)7,
+                             NULL, NULL);
+    SYSTEMTIME st = {2024, 2, 0, 29, 10, 30, 0, 0}, out = {0};
+    BOOL set = SendMessageA(d, DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&st);
+    SendMessageA(d, WM_KEYDOWN, VK_UP, 0);
+    LRESULT valid = SendMessageA(d, DTM_GETSYSTEMTIME, 0, (LPARAM)&out);
+    SendMessageA(d, DTM_SETSYSTEMTIME, GDT_NONE, 0);
+    LRESULT none = SendMessageA(d, DTM_GETSYSTEMTIME, 0, (LPARAM)&st);
+    printf("datetime set=%d got=%d %04u-%02u-%02u dow=%u notify=%d none=%d\n", set, (int)valid, out.wYear, out.wMonth,
+           out.wDay, out.wDayOfWeek, date_year, (int)none);
+    DestroyWindow(d);
+}
+
+/* VC6 std::string from msvcp60.dll (Notepad2-era programs): thiscall members and cdecl operators */
+static void msvcp60_test(void)
+{
+    HMODULE m = LoadLibraryA("msvcp60.dll");
+#define STR "?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@"
+    void(__thiscall * from)(void *, const char *, const void *) = (void *)GetProcAddress(m, "??0" STR "QAE@PBDABV?$allocator@D@1@@Z");
+    void *(__thiscall * add)(void *, const char *) = (void *)GetProcAddress(m, "??Y" STR "QAEAAV01@PBD@Z");
+    void *(__thiscall * insert)(void *, unsigned, const char *, unsigned) = (void *)GetProcAddress(m, "?insert@" STR "QAEAAV12@IPBDI@Z");
+    unsigned(__thiscall * find)(const void *, const char *, unsigned) = (void *)GetProcAddress(m, "?find@" STR "QBEIPBDI@Z");
+    void(__thiscall * destroy)(void *) = (void *)GetProcAddress(m, "??1" STR "QAE@XZ");
+    char(__cdecl * eq)(const void *, const char *) = (void *)GetProcAddress(m, "??8std@@YA_NABV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@0@PBD@Z");
+#undef STR
+    if (!from || !add || !insert || !find || !destroy || !eq) {
+        printf("msvcp60 missing\n");
+        return;
+    }
+    struct {
+        char alloc;
+        char *ptr;
+        unsigned len, res;
+    } str;
+    char alloc = 0;
+    from(&str, "hello", &alloc);
+    add(&str, " world");
+    insert(&str, 0, ">", 1);
+    printf("msvcp60 text=%s len=%u find=%u eq=%d\n", str.ptr, str.len, find(&str, "world", 0), eq(&str, "> hello world") ? 2 : eq(&str, ">hello world"));
+    destroy(&str);
+}
+
 /* BCMenu relabels its menu bar by position with MF_STRING: the item keeps its submenu */
 static void menu_test(void)
 {
@@ -808,6 +886,7 @@ int main(void)
         dialog_class_test(parent);
         richfind_test(parent);
         icon_test(parent);
+        date_test(parent);
         mdi_test(parent);
         find_test(parent);
         dialogs_test(parent);
@@ -817,6 +896,8 @@ int main(void)
     user_test();
     ole_test();
     shlwapi_test();
+    shlwapi2_test();
     menu_test();
+    msvcp60_test();
     return 0;
 }

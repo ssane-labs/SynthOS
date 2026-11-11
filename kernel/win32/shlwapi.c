@@ -440,6 +440,25 @@ static DWORD WINAPI QISearch(void *self, const struct qitab *tab, const uint8_t 
     return E_NOINTERFACE;
 }
 
+/* #176: the object's IServiceProvider answers for the service */
+static uint32_t WINAPI IUnknown_QueryService(void *obj, const uint8_t *sid, const uint8_t *iid, void **out)
+{
+    static const uint8_t provider[16] = {0xc1, 0x40, 0x51, 0x6d, 0x36, 0x74, 0xce, 0x11,
+                                         0x80, 0x34, 0x00, 0xaa, 0x00, 0x60, 0x09, 0xfa};
+    typedef uint32_t WINAPI (*qi_fn)(void *, const uint8_t *, void **);
+    typedef uint32_t WINAPI (*release_fn)(void *);
+    typedef uint32_t WINAPI (*service_fn)(void *, const uint8_t *, const uint8_t *, void **);
+    if (!out)
+        return 0x80004003u;
+    *out = NULL;
+    void *sp = NULL;
+    if (!obj || W32_CALL(qi_fn, (*(void ***)obj)[0], obj, provider, &sp) || !sp)
+        return E_NOINTERFACE;
+    uint32_t hr = W32_CALL(service_fn, (*(void ***)sp)[3], sp, sid, iid, out);
+    W32_CALL(release_fn, (*(void ***)sp)[2], sp);
+    return hr;
+}
+
 static void *WINAPI SHCreateMemStream(const void *data, UINT size)
 {
     UNUSED(data);
@@ -1066,6 +1085,228 @@ static BOOL WINAPI StrTrimW(WCHAR *s, const WCHAR *chars)
     return TRUE;
 }
 
+static BOOL WINAPI StrTrimA(char *s, const char *chars)
+{
+    size_t len = strlen(s), n = len, start = 0;
+    while (start < n && strchr(chars, s[start]))
+        start++;
+    while (n > start && strchr(chars, s[n - 1]))
+        n--;
+    if (!start && n == len)
+        return FALSE;
+    memmove(s, s + start, n - start);
+    s[n - start] = 0;
+    return TRUE;
+}
+
+static char *WINAPI StrChrIA(const char *s, WORD c)
+{
+    for (; s && *s; s++)
+        if (lower_a(*s) == lower_a((char)c))
+            return (char *)s;
+    return NULL;
+}
+
+static int WINAPI StrCmpNA(const char *a, const char *b, int n)
+{
+    for (; n > 0; n--, a++, b++)
+        if (*a != *b || !*a)
+            return (int)(uint8_t)*a - (int)(uint8_t)*b;
+    return 0;
+}
+
+static char *WINAPI StrCatBuffA(char *d, const char *s, int cap)
+{
+    size_t n = strlen(d);
+    if ((int)n < cap - 1) {
+        size_t m = MIN(strlen(s), (size_t)cap - 1 - n);
+        memcpy(d + n, s, m);
+        d[n + m] = 0;
+    }
+    return d;
+}
+
+/* appends at most n - 1 characters */
+static WCHAR *WINAPI StrNCatW(WCHAR *d, const WCHAR *s, int n)
+{
+    StrCpyNW(d + w32_wcslen(d), s, n);
+    return d;
+}
+
+/* STRRET: a wide string to free, an offset into the item ID, or ANSI text */
+static uint32_t WINAPI StrRetToBufW(uint8_t *sr, const uint8_t *pidl, WCHAR *buf, UINT cap)
+{
+    if (!sr || !buf || !cap)
+        return 0x80070057u;
+    uint32_t type;
+    memcpy(&type, sr, 4);
+    buf[0] = 0;
+    if (type == 0) {
+        WCHAR *s = NULL;
+        memcpy(&s, sr + (w32->win64 ? 8 : 4), sizeof(s));
+        if (s) {
+            StrCpyNW(buf, s, (int)cap);
+            void(WINAPI * release)(void *) = (void(WINAPI *)(void *))w32_builtin_lookup("ole32.dll", "CoTaskMemFree");
+            if (release)
+                release(s);
+        }
+    } else {
+        uint32_t offset;
+        memcpy(&offset, sr + 4, 4);
+        const char *a = type == 1 ? (pidl ? (const char *)pidl + offset : "") : (const char *)sr + 4;
+        size_t i = 0;
+        for (; a[i] && i + 1 < cap; i++)
+            buf[i] = (uint8_t)a[i];
+        buf[i] = 0;
+    }
+    return S_OK;
+}
+
+static int hex_digit(WCHAR c);
+
+static bool url_unsafe(WCHAR c, DWORD flags)
+{
+    if (flags & 0x04000000u)
+        return c == ' ';
+    return c <= ' ' || c >= 0x7f || (strchr("<>\"#%{}|\\^~[]`", (int)c) && (c != '%' || (flags & 0x1000)));
+}
+
+static uint32_t WINAPI UrlEscapeW(const WCHAR *url, WCHAR *out, DWORD *len, DWORD flags)
+{
+    if (!url || !out || !len)
+        return 0x80070057u;
+    static const char hex[] = "0123456789ABCDEF";
+    size_t need = 0;
+    bool extra = false;
+    for (const WCHAR *p = url; *p; p++) {
+        if ((flags & 0x02000000u) && (*p == '?' || *p == '#'))
+            extra = true;
+        need += !extra && url_unsafe(*p, flags) && *p < 0x100 ? 3 : 1;
+    }
+    if (need + 1 > *len) {
+        *len = (DWORD)need + 1;
+        return 0x80004003u;
+    }
+    size_t n = 0;
+    extra = false;
+    for (const WCHAR *p = url; *p; p++) {
+        if ((flags & 0x02000000u) && (*p == '?' || *p == '#'))
+            extra = true;
+        if (!extra && url_unsafe(*p, flags) && *p < 0x100) {
+            out[n++] = '%';
+            out[n++] = (WCHAR)hex[*p >> 4];
+            out[n++] = (WCHAR)hex[*p & 15];
+        } else {
+            out[n++] = *p;
+        }
+    }
+    out[n] = 0;
+    *len = (DWORD)n;
+    return S_OK;
+}
+
+static uint32_t WINAPI UrlUnescapeW(WCHAR *url, WCHAR *out, DWORD *len, DWORD flags)
+{
+    if (!url)
+        return 0x80070057u;
+    bool inplace = flags & 0x00100000u;
+    if (!inplace && (!out || !len))
+        return 0x80070057u;
+    WCHAR *dst = inplace ? url : out;
+    size_t n = 0, cap = inplace ? (size_t)-1 : *len;
+    for (const WCHAR *p = url; *p; n++) {
+        int hi = p[0] == '%' ? hex_digit(p[1]) : -1, lo = hi >= 0 ? hex_digit(p[2]) : -1;
+        WCHAR c = lo >= 0 ? (WCHAR)(hi << 4 | lo) : *p;
+        p += lo >= 0 ? 3 : 1;
+        if (n + 1 < cap)
+            dst[n] = c;
+    }
+    if (!inplace && n + 1 > cap) {
+        *len = (DWORD)n + 1;
+        return 0x80004003u;
+    }
+    dst[n] = 0;
+    if (len && !inplace)
+        *len = (DWORD)n;
+    return S_OK;
+}
+
+/* the length of the common leading path components ("C:\a\b" and "C:\a\c" share "C:\a") */
+static int WINAPI PathCommonPrefixW(const WCHAR *a, const WCHAR *b, WCHAR *out)
+{
+    if (out)
+        out[0] = 0;
+    if (!a || !b)
+        return 0;
+    int common = 0, i = 0;
+    for (;; i++) {
+        WCHAR x = lower(a[i]), y = lower(b[i]);
+        if ((!x || x == '\\') && (!y || y == '\\'))
+            common = i;
+        if (!x || !y || x != y)
+            break;
+    }
+    if (common == 2 && a[1] == ':')
+        common = 3;
+    if (out) {
+        memcpy(out, a, (size_t)common * sizeof(WCHAR));
+        out[common] = 0;
+    }
+    return common;
+}
+
+static BOOL WINAPI PathIsPrefixW(const WCHAR *prefix, const WCHAR *path)
+{
+    return prefix && path && PathCommonPrefixW(prefix, path, NULL) == (int)w32_wcslen(prefix);
+}
+
+/* "..\..\x\y" from one path to another; a file (not FILE_ATTRIBUTE_DIRECTORY) is relative to its folder */
+static BOOL WINAPI PathRelativePathToW(WCHAR *out, const WCHAR *from, DWORD from_attr, const WCHAR *to, DWORD to_attr)
+{
+    UNUSED(to_attr);
+    if (!out || !from || !to)
+        return FALSE;
+    out[0] = 0;
+    WCHAR dir[260];
+    StrCpyNW(dir, from, 260);
+    if (!(from_attr & 0x10)) {
+        WCHAR *slash = StrRChrW(dir, NULL, '\\');
+        if (slash)
+            *slash = 0;
+    }
+    int common = PathCommonPrefixW(dir, to, NULL);
+    if (!common)
+        return FALSE;
+    const WCHAR *rest = dir + common;
+    size_t n = 0;
+    while (*rest == '\\')
+        rest++;
+    if (!*rest) {
+        out[n++] = '.';
+    } else {
+        for (bool first = true; *rest; first = false) {
+            if (!first)
+                out[n++] = '\\';
+            out[n++] = '.';
+            out[n++] = '.';
+            while (*rest && *rest != '\\')
+                rest++;
+            while (*rest == '\\')
+                rest++;
+        }
+    }
+    const WCHAR *tail = to + common;
+    while (*tail == '\\')
+        tail++;
+    if (*tail) {
+        out[n++] = '\\';
+        StrCpyNW(out + n, tail, (int)(260 - n));
+    } else {
+        out[n] = 0;
+    }
+    return TRUE;
+}
+
 /* "1.50 KB"-style sizes with three significant digits */
 static void byte_size(uint64_t bytes, char *out, size_t cap)
 {
@@ -1328,6 +1569,7 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(SHStrDupW),
     W32_FN(IsOS),
     W32_FN(QISearch),
+    W32_FN(IUnknown_QueryService),
     W32_FN(SHCreateMemStream),
     W32_FN(PathIsUNCW),
     W32_FN(PathIsRootW),
@@ -1382,6 +1624,17 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(StrDupW),
     W32_FN(StrDupA),
     W32_FN(StrTrimW),
+    W32_FN(StrTrimA),
+    W32_FN(StrChrIA),
+    W32_FN(StrCmpNA),
+    W32_FN(StrCatBuffA),
+    W32_FN(StrNCatW),
+    W32_FN(StrRetToBufW),
+    W32_FN(UrlEscapeW),
+    W32_FN(UrlUnescapeW),
+    W32_FN(PathCommonPrefixW),
+    W32_FN(PathIsPrefixW),
+    W32_FN(PathRelativePathToW),
     W32_FN(StrFormatByteSize64A),
     W32_FN(StrFormatByteSizeA),
     W32_FN(StrFormatByteSizeW),
@@ -1394,7 +1647,7 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(PathRemoveBlanksA),
 };
 
-static const char *const shlwapi_ordinals[438] = {[12] = "SHCreateMemStream", [219] = "QISearch", [437] = "IsOS"};
+static const char *const shlwapi_ordinals[438] = {[12] = "SHCreateMemStream", [176] = "IUnknown_QueryService", [219] = "QISearch", [437] = "IsOS"};
 
 W32_EXPORTS(shlwapi_module, "shlwapi.dll", shlwapi_exports, .ordinals = shlwapi_ordinals,
             .ordinal_count = ARRAY_SIZE(shlwapi_ordinals));

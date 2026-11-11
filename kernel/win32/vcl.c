@@ -643,7 +643,7 @@ W32_EXPORTS(vcl_wininet_module, "wininet.dll", vcl_wininet);
 /* font and print dialogs: the user cancelled (CommDlgExtendedError stays 0) */
 static const struct w32_export vcl_comdlg32[] = {
     W32_AS("ChooseFontW", w32_zero1), W32_AS("ChooseFontA", w32_zero1), W32_AS("PrintDlgW", w32_zero1),
-    W32_AS("PrintDlgA", w32_zero1),
+    W32_AS("PrintDlgA", w32_zero1), W32_AS("PageSetupDlgW", w32_zero1), W32_AS("PageSetupDlgA", w32_zero1),
 };
 
 W32_EXPORTS(vcl_comdlg32_module, "comdlg32.dll", vcl_comdlg32);

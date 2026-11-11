@@ -465,7 +465,8 @@ static void builtin_classes(void)
                 {"ToolbarWindow32", CK_TOOLBAR, 16, w32_toolbar_proc},
                 {"msctls_statusbar32", CK_STATUS, 16, w32_status_proc},
                 {"tooltips_class32", CK_NONE, 0, w32_tooltip_proc},
-                {"ReBarWindow32", CK_NONE, 16, w32_rebar_proc}, {"SysHeader32", CK_NONE, 16, w32_header_proc}, {"ComboBoxEx32", CK_NONE, 6, w32_comboex_proc}};
+                {"ReBarWindow32", CK_NONE, 16, w32_rebar_proc}, {"SysHeader32", CK_NONE, 16, w32_header_proc}, {"ComboBoxEx32", CK_NONE, 6, w32_comboex_proc},
+                {"SysDateTimePick32", CK_NONE, 6, w32_datetime_proc}};
     if (!find_class("#32770")) {
         struct w32_class *c = add_class("#32770", w32_dialog_proc, 8, (HANDLE)16, 0, 0, false, NULL);
         if (c)

@@ -654,7 +654,79 @@ static BOOL WINAPI InitAtomTable(DWORD size)
     return TRUE;
 }
 
+/* a struct is stored as hex bytes followed by a byte checksum */
+static BOOL WINAPI WritePrivateProfileStructA(LPCSTR app, LPCSTR key, const void *data, UINT size, LPCSTR file)
+{
+    if (!data)
+        return ini_set(file, app, key, NULL);
+    char *hex = w32_alloc((size_t)size * 2 + 3);
+    if (!hex)
+        return FALSE;
+    const uint8_t *b = data;
+    uint8_t sum = 0;
+    for (UINT i = 0; i <= size; i++) {
+        uint8_t v = i < size ? b[i] : sum;
+        sum = (uint8_t)(sum + v);
+        hex[i * 2] = "0123456789ABCDEF"[v >> 4];
+        hex[i * 2 + 1] = "0123456789ABCDEF"[v & 15];
+    }
+    hex[size * 2 + 2] = 0;
+    BOOL ok = ini_set(file, app, key, hex);
+    w32_free(hex);
+    return ok;
+}
+
+static int hex_nibble(char c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+
+static BOOL WINAPI GetPrivateProfileStructA(LPCSTR app, LPCSTR key, void *data, UINT size, LPCSTR file)
+{
+    char *hex = w32_alloc((size_t)size * 2 + 8);
+    if (!hex || !data) {
+        w32_free(hex);
+        return FALSE;
+    }
+    DWORD n = ini_get(file, app, key, "", hex, size * 2 + 8, NULL);
+    BOOL ok = n == size * 2 + 2;
+    uint8_t sum = 0, *b = data;
+    for (UINT i = 0; ok && i <= size; i++) {
+        int hi = hex_nibble(hex[i * 2]), lo = hex_nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0)
+            ok = FALSE;
+        else if (i < size)
+            sum = (uint8_t)(sum + (b[i] = (uint8_t)(hi << 4 | lo)));
+        else
+            ok = sum == (uint8_t)(hi << 4 | lo);
+    }
+    w32_free(hex);
+    return ok;
+}
+
+static BOOL WINAPI WritePrivateProfileStructW(LPCWSTR app, LPCWSTR key, const void *data, UINT size, LPCWSTR file)
+{
+    char *a = w32_narrow(app), *k = w32_narrow(key), *f = w32_narrow(file);
+    BOOL ok = WritePrivateProfileStructA(a, k, data, size, f);
+    w32_free(a);
+    w32_free(k);
+    w32_free(f);
+    return ok;
+}
+
+static BOOL WINAPI GetPrivateProfileStructW(LPCWSTR app, LPCWSTR key, void *data, UINT size, LPCWSTR file)
+{
+    char *a = w32_narrow(app), *k = w32_narrow(key), *f = w32_narrow(file);
+    BOOL ok = GetPrivateProfileStructA(a, k, data, size, f);
+    w32_free(a);
+    w32_free(k);
+    w32_free(f);
+    return ok;
+}
+
 static const struct w32_export profile_exports[] = {
+    W32_FN(WritePrivateProfileStructA), W32_FN(GetPrivateProfileStructA), W32_FN(WritePrivateProfileStructW),
+    W32_FN(GetPrivateProfileStructW),
     W32_FN(GetPrivateProfileStringA), W32_FN(GetPrivateProfileStringW), W32_FN(GetPrivateProfileIntA),
     W32_FN(GetPrivateProfileIntW),    W32_FN(WritePrivateProfileStringA), W32_FN(WritePrivateProfileStringW),
     W32_FN(GetPrivateProfileSectionA), W32_FN(GetPrivateProfileSectionW), W32_FN(GetPrivateProfileSectionNamesA),

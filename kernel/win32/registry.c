@@ -1478,12 +1478,21 @@ static LONG WINAPI RegOverridePredefKey(HKEY key, HKEY with)
     return 0;
 }
 
+static LONG WINAPI RegGetKeySecurity(HANDLE key, DWORD info, void *desc, DWORD *size)
+{
+    UNUSED(key);
+    UNUSED(info);
+    UNUSED(desc);
+    UNUSED(size);
+    return 5;
+}
+
 static const struct w32_export registry_exports[] = {
     W32_FN(RegOpenKeyExW),      W32_FN(RegOpenKeyExA),       W32_FN(RegOpenKeyW),         W32_FN(RegOpenKeyA),
     W32_FN(RegOpenKeyTransactedW), W32_FN(RegCreateKeyExW),  W32_FN(RegCreateKeyExA),     W32_FN(RegCreateKeyW),
     W32_FN(RegCreateKeyA),      W32_FN(RegCreateKeyTransactedW), W32_FN(RegCloseKey),     W32_FN(RegFlushKey),
     W32_FN(RegOpenCurrentUser), W32_FN(RegQueryValueExW),    W32_FN(RegQueryValueExA),    W32_FN(RegQueryValueW),
-    W32_AS("RegSetKeySecurity", w32_zero3), W32_FN(RegQueryValueA),     W32_FN(RegGetValueW),        W32_FN(RegGetValueA),        W32_FN(RegSetValueExW),
+    W32_AS("RegSetKeySecurity", w32_zero3), W32_FN(RegGetKeySecurity), W32_FN(RegQueryValueA),     W32_FN(RegGetValueW),        W32_FN(RegGetValueA),        W32_FN(RegSetValueExW),
     W32_FN(RegSetValueExA),     W32_FN(RegSetValueW),        W32_FN(RegSetValueA),        W32_FN(RegSetKeyValueW),
     W32_FN(RegSetKeyValueA),    W32_FN(RegDeleteValueW),     W32_FN(RegDeleteValueA),     W32_FN(RegDeleteKeyValueW),
     W32_FN(RegDeleteKeyValueA), W32_FN(RegDeleteKeyW),       W32_FN(RegDeleteKeyA),       W32_FN(RegDeleteKeyExW),

@@ -343,11 +343,11 @@ $(BUILD)/rootfs/dos/%.exe: programs/dos/exe/%.asm
 
 $(BUILD)/rootfs/apps/windll.exe: $(BUILD)/rootfs/apps/greet.dll
 
-$(BUILD)/rootfs/apps/%.dll: programs/win32/dll/%.c
+$(BUILD)/rootfs/apps/%.dll: programs/win32/dll/%.c $(wildcard programs/win32/dll/*.def)
 	@mkdir -p $(@D)
 ifneq ($(W32CC),)
 	@echo "  W32CC   $<"
-	@$(W32CC) -Os -s -shared -o $@ $<
+	@$(W32CC) -Os -s -shared -o $@ $< $(wildcard programs/win32/dll/$*.def)
 	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"
@@ -359,7 +359,7 @@ $(BUILD)/rootfs/apps/%.exe: programs/win32/%.c
 ifneq ($(W32CC),)
 	@echo "  W32CC   $<"
 	@$(if $(wildcard programs/win32/$*.rc),$(W32CC:%gcc=%windres) -O coff -o $(BUILD)/$*.res.o programs/win32/$*.rc)
-	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lusp10 -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -lshell32 -lshlwapi -lcomdlg32 -lcomctl32 -lbcrypt -lsecur32 -lwinmm
+	@$(W32CC) -Os -s -o $@ $< $(filter %.dll,$^) $(if $(wildcard programs/win32/$*.rc),$(BUILD)/$*.res.o) -lusp10 -lgdi32 -lws2_32 -lwininet -lwinhttp -lurlmon -lcrypt32 -lole32 -loleaut32 -lshell32 -lshlwapi -lcomdlg32 -lcomctl32 -lbcrypt -lsecur32 -lwinmm
 	@mkdir -p programs/win32/prebuilt && cp $@ programs/win32/prebuilt/
 else
 	@echo "  COPY    programs/win32/prebuilt/$(@F)"

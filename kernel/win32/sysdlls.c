@@ -1500,7 +1500,60 @@ static uint32_t WINAPI GetErrorInfo(uint32_t reserved, void **out)
     return *out ? 0 : 1;
 }
 
+/* decimal (or &H hex) text to a 32-bit number */
+static uint32_t var_from_str(const WCHAR *text, bool sign, uint32_t *out)
+{
+    if (!text || !out)
+        return 0x80070057u;
+    while (*text == ' ')
+        text++;
+    bool neg = *text == '-';
+    if (*text == '-' || *text == '+')
+        text++;
+    int base = 10;
+    if (text[0] == '&' && (text[1] == 'H' || text[1] == 'h')) {
+        base = 16;
+        text += 2;
+    }
+    uint64_t v = 0;
+    int digits = 0;
+    for (;; text++, digits++) {
+        WCHAR c = *text;
+        int d = c >= '0' && c <= '9' ? c - '0' : base == 16 && c >= 'a' && c <= 'f' ? c - 'a' + 10
+              : base == 16 && c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0)
+            break;
+        v = v * (uint64_t)base + (uint64_t)d;
+        if (v > 0xffffffffull)
+            return 0x8002000au; /* DISP_E_OVERFLOW */
+    }
+    while (*text == ' ')
+        text++;
+    if (!digits || *text)
+        return 0x80020005u; /* DISP_E_TYPEMISMATCH */
+    if (sign ? v > (neg ? 0x80000000ull : 0x7fffffffull) : neg && v)
+        return 0x8002000au;
+    *out = neg ? (uint32_t)-(int64_t)v : (uint32_t)v;
+    return 0;
+}
+
+static uint32_t WINAPI VarUI4FromStr(const WCHAR *text, DWORD lcid, DWORD flags, uint32_t *out)
+{
+    UNUSED(lcid);
+    UNUSED(flags);
+    return var_from_str(text, false, out);
+}
+
+static uint32_t WINAPI VarI4FromStr(const WCHAR *text, DWORD lcid, DWORD flags, uint32_t *out)
+{
+    UNUSED(lcid);
+    UNUSED(flags);
+    return var_from_str(text, true, out);
+}
+
 static const struct w32_export oleaut32_exports[] = {
+    W32_FN(VarUI4FromStr),
+    W32_FN(VarI4FromStr),
     W32_FN(SysAllocString), W32_FN(SysAllocStringLen), W32_FN(SysFreeString),
     W32_FN(SysStringLen),   W32_FN(VariantClear),      W32_AS("VariantInit", VariantClear),
     W32_FN(SafeArrayRedim), W32_FN(CreateErrorInfo), W32_FN(OleLoadPicture),
@@ -1528,7 +1581,7 @@ static const char *const oleaut32_ordinals[] = {
     [149] = "SysStringByteLen", [150] = "SysAllocStringByteLen", [161] = "LoadTypeLib", [162] = "LoadRegTypeLib",
     [184] = "SystemTimeToVariantTime", [185] = "VariantTimeToSystemTime",
     [12] = "VariantChangeType", [40] = "SafeArrayRedim", [114] = "VarBstrFromDate", [202] = "CreateErrorInfo",
-    [418] = "OleLoadPicture",
+    [418] = "OleLoadPicture", [64] = "VarI4FromStr", [277] = "VarUI4FromStr",
     [200] = "GetErrorInfo",  [201] = "SetErrorInfo",  [314] = "VarBstrCmp",      [411] = "SafeArrayCreateVector",
 };
 
@@ -1559,6 +1612,27 @@ static LONG WINAPI reg_not_found5(uint32_t a, uint32_t b, uint32_t c, uint32_t d
     return ERROR_FILE_NOT_FOUND;
 }
 
+/* this computer's registry is the one there is; another computer's is unreachable (ERROR_BAD_NETPATH) */
+static LONG WINAPI RegConnectRegistryW(const WCHAR *machine, HANDLE key, HANDLE *out)
+{
+    if (!out)
+        return 87;
+    if (machine && *machine)
+        return 53;
+    *out = key;
+    return 0;
+}
+
+static LONG WINAPI RegConnectRegistryA(const char *machine, HANDLE key, HANDLE *out)
+{
+    if (!out)
+        return 87;
+    if (machine && *machine)
+        return 53;
+    *out = key;
+    return 0;
+}
+
 static LONG WINAPI reg_not_found3(uint32_t a, uint32_t b, uint32_t c)
 {
     return reg_not_found5(a, b, c, 0, 0);
@@ -1582,8 +1656,11 @@ static BOOL WINAPI report_event(uint32_t a, uint32_t b, uint32_t c, uint32_t d, 
 static const struct w32_export advapi_extra_exports[] = {
     W32_FN(ConvertStringSecurityDescriptorToSecurityDescriptorW),
     W32_AS("ConvertStringSecurityDescriptorToSecurityDescriptorA", ConvertStringSecurityDescriptorToSecurityDescriptorW),
-    W32_AS("RegConnectRegistryW", reg_not_found3),
+    W32_FN(RegConnectRegistryW),
+    W32_FN(RegConnectRegistryA),
     W32_AS("RegLoadKeyW", reg_not_found3),
+    W32_AS("RegLoadKeyA", reg_not_found3),
+    W32_AS("RegSaveKeyA", reg_not_found3),
     W32_AS("RegSaveKeyW", reg_not_found3),
     W32_AS("ReportEventW", report_event),
     W32_AS("ReportEventA", report_event),
@@ -1599,3 +1676,71 @@ W32_EXPORTS(rpcrt4_module, "rpcrt4.dll", rpcrt4_exports);
 W32_EXPORTS(ole32_module, "ole32.dll", ole32_exports);
 W32_EXPORTS(oleaut32_module, "oleaut32.dll", oleaut32_exports, .ordinals = oleaut32_ordinals,
             .ordinal_count = ARRAY_SIZE(oleaut32_ordinals));
+
+/* cabinet.dll FDI (cdecl): unpacking .cab files is not offered, so FDICreate reports it cannot start */
+static HANDLE FDICreate(void *alloc, void *release, void *open, void *read, void *write, void *close, void *seek,
+                        int cpu, uint32_t *erf)
+{
+    UNUSED(alloc);
+    UNUSED(release);
+    UNUSED(open);
+    UNUSED(read);
+    UNUSED(write);
+    UNUSED(close);
+    UNUSED(seek);
+    UNUSED(cpu);
+    if (erf) {
+        erf[0] = 3;
+        erf[1] = 0;
+        erf[2] = 1;
+    }
+    return NULL;
+}
+
+static BOOL FDICopy(HANDLE fdi, char *cab, char *path, int flags, void *notify, void *decrypt, void *user)
+{
+    UNUSED(fdi);
+    UNUSED(cab);
+    UNUSED(path);
+    UNUSED(flags);
+    UNUSED(notify);
+    UNUSED(decrypt);
+    UNUSED(user);
+    return FALSE;
+}
+
+static BOOL FDIIsCabinet(HANDLE fdi, intptr_t file, void *info)
+{
+    UNUSED(fdi);
+    UNUSED(file);
+    UNUSED(info);
+    return FALSE;
+}
+
+static BOOL FDIDestroy(HANDLE fdi)
+{
+    UNUSED(fdi);
+    return TRUE;
+}
+
+static const struct w32_export cabinet_exports[] = {
+    W32_FN(FDICreate),
+    W32_FN(FDICopy),
+    W32_FN(FDIIsCabinet),
+    W32_FN(FDIDestroy),
+};
+
+static const char *const cabinet_ordinals[24] = {[20] = "FDICreate", [21] = "FDIIsCabinet", [22] = "FDICopy",
+                                                 [23] = "FDIDestroy"};
+
+W32_EXPORTS(cabinet_module, "cabinet.dll", cabinet_exports, .ordinals = cabinet_ordinals,
+            .ordinal_count = ARRAY_SIZE(cabinet_ordinals));
+
+/* aclui.dll: no permission editor, so there is no security page to show */
+static const struct w32_export aclui_exports[] = {
+    W32_AS("CreateSecurityPage", w32_zero1),
+    W32_AS("EditSecurity", w32_zero2),
+    W32_AS("EditSecurityAdvanced", w32_notimpl3),
+};
+static const char *const aclui_ordinals[] = {[1] = "CreateSecurityPage", [2] = "EditSecurity", [3] = "EditSecurityAdvanced"};
+W32_EXPORTS(aclui_module, "aclui.dll", aclui_exports, .ordinals = aclui_ordinals, .ordinal_count = ARRAY_SIZE(aclui_ordinals));

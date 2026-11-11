@@ -1195,6 +1195,32 @@ static int WINAPI WSAUnsupported3(UINT s, uint32_t a, uint32_t b)
     return SOCKET_ERROR;
 }
 
+/* no window-message name lookups: the request handle 0 means it failed */
+static HANDLE WINAPI WSAAsyncGetHostByName(HANDLE wnd, UINT msg, const char *name, char *buf, int size)
+{
+    UNUSED(wnd);
+    UNUSED(msg);
+    UNUSED(name);
+    UNUSED(buf);
+    UNUSED(size);
+    w32_set_error(WSAEOPNOTSUPP);
+    return 0;
+}
+
+static HANDLE WINAPI WSAAsyncGetHostByAddr(HANDLE wnd, UINT msg, const char *addr, int len, int type, char *buf, int size)
+{
+    UNUSED(type);
+    UNUSED(len);
+    return WSAAsyncGetHostByName(wnd, msg, addr, buf, size);
+}
+
+static int WINAPI WSACancelAsyncRequest(HANDLE request)
+{
+    UNUSED(request);
+    w32_set_error(WSAEINVAL);
+    return SOCKET_ERROR;
+}
+
 static int WINAPI WSAUnsupported4(UINT s, uint32_t a, uint32_t b, uint32_t c)
 {
     UNUSED(c);
@@ -1788,7 +1814,8 @@ static const struct w32_export winsock_exports[] = {
     W32_FN(WSACloseEvent),
     W32_FN(WSAEnumNetworkEvents),
     W32_FN(WSAWaitForMultipleEvents),
-    W32_AS("WSAAsyncSelect", WSAUnsupported4),        W32_FN(WSAEventSelect),
+    W32_AS("WSAAsyncSelect", WSAUnsupported4), W32_FN(WSAAsyncGetHostByName), W32_FN(WSAAsyncGetHostByAddr),
+    W32_FN(WSACancelAsyncRequest),        W32_FN(WSAEventSelect),
     W32_FN(WSAIoctl),       W32_FN(WSASendTo),        W32_FN(WSARecvFrom),     W32_FN(WSAConnect),
     W32_FN(WSAStringToAddressW), W32_FN(WSAAddressToStringA), W32_FN(WSAAddressToStringW), W32_FN(getnameinfo), W32_FN(GetNameInfoW),    W32_FN(getprotobyname),
     W32_FN(getprotobynumber), W32_FN(getservbyport),  W32_FN(WSADuplicateSocketW),
@@ -1803,7 +1830,7 @@ static const char *const winsock_ordinals[] = {
     [17] = "recvfrom",       [18] = "select",        [19] = "send",          [20] = "sendto",
     [21] = "setsockopt",     [22] = "shutdown",      [23] = "socket",        [51] = "gethostbyaddr",
     [52] = "gethostbyname",  [53] = "getprotobyname", [54] = "getprotobynumber", [55] = "getservbyname",
-    [56] = "getservbyport", [57] = "gethostname",   [101] = "WSAAsyncSelect", [111] = "WSAGetLastError",
+    [56] = "getservbyport", [57] = "gethostname",   [101] = "WSAAsyncSelect", [102] = "WSAAsyncGetHostByAddr", [103] = "WSAAsyncGetHostByName", [108] = "WSACancelAsyncRequest", [111] = "WSAGetLastError",
     [112] = "WSASetLastError", [115] = "WSAStartup", [116] = "WSACleanup",   [151] = "__WSAFDIsSet",
     [1141] = "AcceptEx", [1142] = "GetAcceptExSockaddrs",
 };
@@ -1819,7 +1846,7 @@ static const char *const wsock32_ordinals[] = {
     [17] = "recvfrom",       [18] = "select",        [19] = "send",          [20] = "sendto",
     [21] = "setsockopt",     [22] = "shutdown",      [23] = "socket",        [51] = "gethostbyaddr",
     [52] = "gethostbyname",  [53] = "getprotobyname", [54] = "getprotobynumber", [55] = "getservbyname",
-    [56] = "getservbyport", [57] = "gethostname",   [101] = "WSAAsyncSelect", [111] = "WSAGetLastError",
+    [56] = "getservbyport", [57] = "gethostname",   [101] = "WSAAsyncSelect", [102] = "WSAAsyncGetHostByAddr", [103] = "WSAAsyncGetHostByName", [108] = "WSACancelAsyncRequest", [111] = "WSAGetLastError",
     [112] = "WSASetLastError", [115] = "WSAStartup", [116] = "WSACleanup",   [151] = "__WSAFDIsSet",
     [1141] = "AcceptEx", [1142] = "GetAcceptExSockaddrs",
 };

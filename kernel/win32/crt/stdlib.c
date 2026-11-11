@@ -1389,13 +1389,23 @@ static void stdlib_attach(void)
     pending_scan = -1;
 }
 
+static void crt_swab(const char *src, char *dst, int n)
+{
+    for (int i = 0; i + 1 < n; i += 2) {
+        char a = src[i], b = src[i + 1];
+        dst[i] = b;
+        dst[i + 1] = a;
+    }
+}
+
 static const struct w32_export stdlib_exports[] = {
+    W32_AS("_swab", crt_swab),
     W32_AS("isalpha", crt_isalpha), W32_AS("isupper", crt_isupper), W32_AS("islower", crt_islower),
     W32_AS("isdigit", crt_isdigit), W32_AS("isxdigit", crt_isxdigit), W32_AS("isspace", crt_isspace),
     W32_AS("ispunct", crt_ispunct), W32_AS("isalnum", crt_isalnum), W32_AS("isprint", crt_isprint),
     W32_AS("isgraph", crt_isgraph), W32_AS("iscntrl", crt_iscntrl), W32_AS("isblank", crt_isblank),
     W32_AS("__isascii", crt_isascii), W32_AS("isascii", crt_isascii), W32_AS("__iscsym", crt_iscsym),
-    W32_AS("__iscsymf", crt_iscsymf), W32_AS("_isctype", crt_isctype), W32_AS("toupper", crt_toupper),
+    W32_AS("__iscsymf", crt_iscsymf), W32_AS("_isctype", crt_isctype), W32_AS("toupper", crt_toupper), W32_AS("_mbctoupper", crt_toupper), W32_AS("_mbctolower", crt_tolower),
     W32_AS("tolower", crt_tolower), W32_AS("_toupper", crt_toupper_raw), W32_AS("_tolower", crt_tolower_raw),
     W32_AS("__toascii", crt_toascii), W32_AS("toascii", crt_toascii), W32_AS("_pctype", &pctype),
     W32_AS("_pwctype", &pwctype), W32_AS("_ctype", ctype_table), W32_AS("_mbctype", mbctype),

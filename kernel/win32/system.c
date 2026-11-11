@@ -521,6 +521,23 @@ static BOOL WINAPI SHGetPathFromIDListW(const void *pidl, WCHAR *out)
     return TRUE;
 }
 
+/* SHGDFIL_FINDDATA: the item's WIN32_FIND_DATAW, as FindFirstFile reports it */
+static long WINAPI SHGetDataFromIDListW(void *folder, const void *pidl, int format, void *out, int size)
+{
+    UNUSED(folder);
+    const WCHAR *path = pidl_path(pidl);
+    if (format != 1 || !path || !out || size < 592)
+        return (long)0x80070057;
+    HANDLE(WINAPI * first)(const WCHAR *, void *) =
+        (HANDLE(WINAPI *)(const WCHAR *, void *))w32_builtin_lookup("kernel32.dll", "FindFirstFileW");
+    BOOL(WINAPI * close)(HANDLE) = (BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("kernel32.dll", "FindClose");
+    HANDLE h = first ? first(path, out) : (HANDLE)(intptr_t)-1;
+    if (h == (HANDLE)(intptr_t)-1)
+        return (long)0x80004005;
+    close(h);
+    return 0;
+}
+
 /* SHSTOCKICONINFO: cbSize, hIcon, iSysImageIndex, iIcon, szPath[260] (536 bytes, 544 with a 64-bit hIcon); the shield
    (77) is the system's, the rest the application icon, all said to live in shell32.dll */
 static long WINAPI SHGetStockIconInfo(int id, UINT flags, uint32_t *info)
@@ -1079,7 +1096,7 @@ static const struct w32_export shell32_exports[] = {
     W32_FN(SHQueryUserNotificationState), W32_FN(ILFree),      W32_FN(SHChangeNotify), W32_FN(SHGetPropertyStoreFromParsingName),
     W32_FN(SHGetMalloc), W32_AS("SHGetDesktopFolder", shell_notimpl1), W32_FN(SHBindToParent),
     W32_FN(SHGetSpecialFolderLocation), W32_FN(SHGetFolderLocation), W32_FN(SHGetKnownFolderIDList),
-    W32_FN(SHGetPathFromIDListW), W32_FN(SHGetPathFromIDListA), W32_FN(SHGetPathFromIDListEx),
+    W32_FN(SHGetPathFromIDListW), W32_FN(SHGetDataFromIDListW), W32_AS("SHGetNewLinkInfoW", w32_zero5), W32_FN(SHGetPathFromIDListA), W32_FN(SHGetPathFromIDListEx),
     W32_FN(SHParseDisplayName), W32_FN(ILCreateFromPathA), W32_FN(ILClone), W32_FN(ILGetSize),
     W32_FN(SHOpenFolderAndSelectItems), W32_FN(SHGetFileInfoW), W32_FN(SHGetFileInfoA),
     W32_AS("SHAppBarMessage", w32_zero2), W32_FN(SHGetStockIconInfo),
@@ -1095,7 +1112,7 @@ static const struct w32_export shell32_exports[] = {
 static const char *const shell32_ordinals[681] = {
     [2] = "SHChangeNotifyRegister", [16] = "ILFindLastID", [165] = "SHCreateDirectory", [4] = "SHChangeNotifyDeregister", [155] = "ILFree",
     [18] = "ILClone",               [152] = "ILGetSize",                [157] = "ILCreateFromPathW",
-    [189] = "ILCreateFromPathA",    [190] = "ILCreateFromPathW",        [680] = "IsUserAnAdmin",
+    [189] = "ILCreateFromPathA",    [190] = "ILCreateFromPathW", [180] = "SHGetNewLinkInfoW", [88] = "SHDoDragDrop",        [680] = "IsUserAnAdmin",
 };
 
 static const struct w32_export shell_ole32_exports[] = {W32_FN(CoGetMalloc)};

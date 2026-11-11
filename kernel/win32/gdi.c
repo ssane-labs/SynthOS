@@ -4247,6 +4247,33 @@ static void *WINAPI ImageList_LoadImageW(HANDLE inst, const void *name, int cx, 
     return il;
 }
 
+/* comctl32 #8: a bitmap resource with colours swapped (by default the classic button greys for the system ones) */
+static HANDLE WINAPI CreateMappedBitmap(HANDLE inst, intptr_t id, UINT flags, const COLORREF *map, int n)
+{
+    UNUSED(flags);
+    uint32_t size = 0;
+    const void *dib = w32_find_resource(inst, (const void *)2, (const void *)id, &size);
+    struct gdi_obj *b = dib ? w32_bitmap_from_dib(dib, size) : NULL;
+    if (!b || !b->canvas.px)
+        return b;
+    COLORREF defaults[8] = {0x000000, w32_syscolor(18), 0x808080, w32_syscolor(16),
+                            0xc0c0c0, w32_syscolor(15), 0xffffff, w32_syscolor(20)};
+    if (!map || n <= 0) {
+        map = defaults;
+        n = 4;
+    }
+    for (int y = 0; y < b->canvas.h; y++)
+        for (int x = 0; x < b->canvas.w; x++) {
+            uint32_t *p = &b->canvas.px[y * b->canvas.stride + x];
+            for (int i = 0; i < n; i++)
+                if ((*p & 0xffffff) == (w32_rgb(map[i * 2]) & 0xffffff)) {
+                    *p = (w32_rgb(map[i * 2 + 1]) & 0xffffff) | 0xff000000u;
+                    break;
+                }
+        }
+    return b;
+}
+
 static const struct w32_export gdi_exports[] = {
     W32_FN(AddFontMemResourceEx), W32_AS("RemoveFontMemResourceEx", w32_one1),
     W32_FN(GetStockObject), W32_FN(CreateSolidBrush), W32_FN(CreateHatchBrush), W32_FN(CreateBrushIndirect),
@@ -4360,6 +4387,7 @@ static const struct w32_export imagelist_exports[] = {
     W32_AS("ImageList_DragMove", w32_one2), W32_AS("ImageList_DragShowNolock", w32_one1),
     W32_AS("ImageList_SetDragCursorImage", w32_one4), W32_FN(ImageList_Read), W32_FN(ImageList_Write),
     W32_FN(ImageList_LoadImageW),
+    W32_FN(CreateMappedBitmap),
 };
 
 W32_EXPORTS(imagelist_module, "comctl32.dll", imagelist_exports);

@@ -12,7 +12,7 @@ import sys, struct, re, os, subprocess, urllib.request, capstone
 elf = sys.argv[1] if len(sys.argv) > 1 else 'build/serial32/kernel.elf'
 CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(elf))), 'wine-specs')
 # never return, or tail-call a cdecl helper
-KNOWN = {'DebugBreak', 'ExitProcess', 'ExitThread', 'FatalExit', 'GetACP'}
+KNOWN = {'DebugBreak', 'ExitProcess', 'ExitThread', 'FatalExit', 'GetACP', 'RaiseFailFastException'}
 data = open(elf, 'rb').read()
 secs = []
 for line in subprocess.run(['readelf', '-SW', elf], capture_output=True, text=True).stdout.splitlines():

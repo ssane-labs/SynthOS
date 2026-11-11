@@ -595,7 +595,9 @@ static void *relay(void *fn, const char *module, const char *symbol)
     UNUSED(symbol);
     return fn;
 #endif
-    if (!w32_trace || !fn)
+    extern const uint8_t __text_end[];
+    /* data exports (_acmdln, _environ) are variables, not code to wrap */
+    if (!w32_trace || !fn || (const uint8_t *)fn >= __text_end)
         return fn;
     for (size_t i = 0; i < ARRAY_SIZE(noisy); i++)
         if (strstr(symbol, noisy[i]))

@@ -703,6 +703,7 @@ static const struct w32_export propsheet_exports[] = {
 
 static const char *const comctl32_ordinals[] = {
     [6] = "CreateStatusWindowA",
+    [8] = "CreateMappedBitmap",
     [13] = "MakeDragList",
     [14] = "LBItemFromPt",
     [15] = "DrawInsert",

@@ -703,10 +703,16 @@ config w32headless on; winctl | grep "icon clear"; config w32headless off
 icon clear=0000ff solid=ff0000 info=1 size=4x4 list=ff0000/0000ff mask=ffffff/000000
 config w32headless on; winctl | grep buttons; config w32headless off
 buttons owner=1 image=1
-winctl | grep shlwapi
+config w32headless on; winctl | grep datetime; config w32headless off
+datetime set=1 got=0 2025-02-28 dow=5 notify=2025 none=1
+winctl | grep "shlwapi wild"
 shlwapi wild=4 sep=8 url=1 file=0 path=C:\a b\c.txt hr=0 text=1
 winctl | grep "menu text"
 menu text=&File  sub=1 count=1
+winctl | grep msvcp60
+msvcp60 text=>hello world len=12 find=7 eq=1
+winctl | grep shlwapi2
+shlwapi2 rel=..\c\d.txt 1 esc=http://x/a%20b% un=http://x/a b% common=C:\a\b/6 trim=[trim me] times=1
 config w32headless on; winctl | grep toolbar; config w32headless off
 toolbar count=3 cmd=102 checked=1 status=3 files parts=2 strip=1
 config w32headless on; winctl | grep findtext; config w32headless off
@@ -741,6 +747,8 @@ winctl | grep atom
 atom high=1 same=1 name=SynthAtom num=42
 winctl | grep profile
 profile value=Value9 int=17
+winctl | grep profstruct
+profstruct ok=1 same=1 short=0 text=78563412070000001B var=0/8002000a/4000000000/-16
 winctl | grep safearray
 safearray dims=2 ub1=2 ub2=4 value=99
 winctl | grep imagelist

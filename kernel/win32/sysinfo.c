@@ -182,6 +182,12 @@ static BOOL WINAPI K32EnumProcessModules(HANDLE process, HANDLE *modules, DWORD 
     return TRUE;
 }
 
+static BOOL WINAPI K32EnumProcessModulesEx(HANDLE process, HANDLE *modules, DWORD size, DWORD *needed, DWORD filter)
+{
+    UNUSED(filter);
+    return K32EnumProcessModules(process, modules, size, needed);
+}
+
 static DWORD WINAPI K32GetModuleFileNameExW(HANDLE process, HANDLE module, LPWSTR out, DWORD size)
 {
     UNUSED(process);
@@ -506,6 +512,8 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_FN(HeapQueryInformation),
     W32_FN(K32EnumProcessModules),
     W32_AS("EnumProcessModules", K32EnumProcessModules),
+    W32_FN(K32EnumProcessModulesEx),
+    W32_AS("EnumProcessModulesEx", K32EnumProcessModulesEx),
     W32_FN(K32GetModuleFileNameExW),
     W32_AS("GetModuleFileNameExW", K32GetModuleFileNameExW),
     W32_FN(K32GetModuleFileNameExA),
@@ -522,6 +530,8 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_FN(QueryFullProcessImageNameA),
     W32_AS("Module32FirstW", w32_fail2),
     W32_AS("Module32NextW", w32_fail2),
+    W32_AS("Module32First", w32_fail2),
+    W32_AS("Module32Next", w32_fail2),
     W32_AS("CreateRemoteThreadEx", w32_fail8),
     W32_FN(PowerCreateRequest),
     W32_AS("PowerSetRequest", w32_one2),

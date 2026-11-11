@@ -327,6 +327,26 @@ static BOOL WINAPI GetProcessTimes(HANDLE h, uint8_t *created, uint8_t *exited, 
     return TRUE;
 }
 
+/* no error reporting service: the process ends at once with the exception code */
+static void WINAPI RaiseFailFastException(const uint32_t *record, void *context, DWORD flags)
+{
+    UNUSED(context);
+    UNUSED(flags);
+    w32_exit(record ? record[0] : 0xc0000409u);
+}
+
+/* no idle accounting: all the time since start-up counts as kernel time */
+static BOOL WINAPI GetSystemTimes(uint8_t *idle, uint8_t *kernel, uint8_t *user)
+{
+    if (idle)
+        put64(idle, 0);
+    if (kernel)
+        put64(kernel, hal_ticks_ms() * 10000ull);
+    if (user)
+        put64(user, 0);
+    return TRUE;
+}
+
 static BOOL WINAPI GetThreadTimes(HANDLE h, uint8_t *created, uint8_t *exited, uint8_t *kernel, uint8_t *user)
 {
     return GetProcessTimes(h, created, exited, kernel, user);
@@ -1015,6 +1035,8 @@ static const struct w32_export vista_exports[] = {
     W32_FN(GetFileInformationByHandleEx),
     W32_FN(GetActiveProcessorCount),
     W32_FN(GetProcessTimes),
+    W32_FN(GetSystemTimes),
+    W32_FN(RaiseFailFastException),
     W32_FN(GetThreadTimes),
     W32_FN(AddVectoredExceptionHandler),
     W32_AS("AddVectoredContinueHandler", AddVectoredExceptionHandler),
