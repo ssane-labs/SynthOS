@@ -246,6 +246,18 @@ void *w32_builtin_lookup(const char *module, const char *symbol)
     return builtin_lookup(module, symbol);
 }
 
+/* every name a built-in DLL exports, its own and those it shares with another DLL */
+void w32_builtin_names(const char *module, void (*fn)(const char *name, void *arg), void *arg)
+{
+    SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def)
+        if (!strcmp(def->name, module))
+            for (size_t i = 0; i < def->count; i++)
+                fn(def->exports[i].name, arg);
+    for (size_t i = 0; i < ARRAY_SIZE(forwards); i++)
+        if (!strcmp(forwards[i][0], module))
+            fn(forwards[i][1], arg);
+}
+
 const char *w32_builtin_ordinal_name(const char *module, uint32_t ordinal)
 {
     SYNTH_TABLE_FOREACH(synth_win32, struct w32_module_def, def)
@@ -319,6 +331,14 @@ static struct w32_image *load_builtin(const char *name)
     struct w32_image *img = image_new(name);
     if (!img)
         return NULL;
+#ifdef __x86_64__
+    if (w32->win64 && (img->base = w64_builtin_image(name, &img->size))) {
+        img->dll = true;
+        img->initialized = true;
+        ksnprintf(img->path, sizeof(img->path), "/system/win32/%s", name);
+        return img;
+    }
+#endif
     uint8_t *header = heap_alloc_aligned(&w32->heap, 4096, 4096);
     if (!header)
         return img;

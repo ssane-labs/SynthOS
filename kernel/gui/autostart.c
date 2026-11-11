@@ -33,7 +33,7 @@ struct item {
 #endif
 };
 
-static struct item items[AUTOSTART_MAX];
+static struct item *items;
 static int item_count;
 
 static void startup_win(bool common, char *out, size_t cap)
@@ -154,6 +154,8 @@ static void scan(void)
 {
     migrate();
     item_count = 0;
+    if (!items && !(items = kmalloc(sizeof(*items) * AUTOSTART_MAX)))
+        return;
     scan_folder(false);
     scan_folder(true);
 #if CONFIG_WIN32

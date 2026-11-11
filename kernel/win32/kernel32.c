@@ -1027,7 +1027,7 @@ static BOOL WINAPI CloseHandle(HANDLE h)
     return TRUE;
 }
 
-static struct w32_process *process_of(HANDLE h)
+struct w32_process *w32_process_of(HANDLE h)
 {
     if (h == W32_PSEUDO_PROCESS)
         return w32;
@@ -1038,7 +1038,7 @@ static struct w32_process *process_of(HANDLE h)
 static BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out, DWORD access, BOOL inherit,
                                    DWORD options)
 {
-    struct w32_process *from = process_of(sp), *to = tp ? process_of(tp) : NULL;
+    struct w32_process *from = w32_process_of(sp), *to = tp ? w32_process_of(tp) : NULL;
     if (!from || (tp && !to)) {
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
@@ -1462,7 +1462,9 @@ static BOOL create_process(const char *app, const char *cmdline, const void *sta
                                                           : NULL;
         handles = w32_inherit_collect(list, count);
     }
+    w32_spawn_suspended = (flags & 4) != 0;
     int err = spawn(app, cmdline, startup, &code, &child, env, wide_env, dir, handles);
+    w32_spawn_suspended = false;
     if (err) {
         w32_set_error((DWORD)err);
         return FALSE;
@@ -1481,7 +1483,16 @@ static BOOL create_process(const char *app, const char *cmdline, const void *sta
     }
     if (info) {
         info[0] = (uint32_t)process;
-        info[1] = (uint32_t)new_object(WH_PROCESS, 0);
+        HANDLE thread = new_object(WH_THREAD, 0);
+        struct w32_object *t = w32_handle_get(thread);
+        if (t && child && child->proc && child->proc->boot) {
+            t->thread = child->proc->boot;
+            t->child = child;
+            child->refs++;
+        } else if (t) {
+            t->type = WH_PROCESS;
+        }
+        info[1] = (uint32_t)thread;
         info[2] = next_pid;
         info[3] = next_pid + 4;
     } else {
@@ -1515,6 +1526,27 @@ static BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmdline, void *psa, void *
     w32_free(d);
     return ok;
 }
+
+/* the token's restrictions are not enforced: the program starts as an ordinary child */
+static BOOL WINAPI CreateProcessAsUserW(HANDLE token, LPCWSTR app, LPWSTR cmdline, void *psa, void *tsa, BOOL inherit,
+                                        DWORD flags, void *env, LPCWSTR dir, void *startup, uint32_t *info)
+{
+    UNUSED(token);
+    return CreateProcessW(app, cmdline, psa, tsa, inherit, flags, env, dir, startup, info);
+}
+
+static BOOL WINAPI CreateProcessAsUserA(HANDLE token, LPCSTR app, LPSTR cmdline, void *psa, void *tsa, BOOL inherit,
+                                        DWORD flags, void *env, LPCSTR dir, void *startup, uint32_t *info)
+{
+    UNUSED(token);
+    return CreateProcessA(app, cmdline, psa, tsa, inherit, flags, env, dir, startup, info);
+}
+
+static const struct w32_export process_advapi32[] = {
+    W32_FN(CreateProcessAsUserW),
+    W32_FN(CreateProcessAsUserA),
+};
+W32_EXPORTS(process_advapi32_module, "advapi32.dll", process_advapi32);
 
 static BOOL WINAPI GetExitCodeProcess(HANDLE h, DWORD *code)
 {

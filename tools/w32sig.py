@@ -275,6 +275,8 @@ def main():
         try:
             pop, ret, args, ints = plan(name, f32[name], f64[name], size32, size64)
             ints &= int_params(text, name)
+            if ret == 'i32' and f32[name]['ret'] != 'ptr':
+                ints |= 1 << 31
         except ValueError as e:
             errors.append(str(e))
             continue

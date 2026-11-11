@@ -647,6 +647,8 @@ sys64 | grep uilang
 uilang thread=409 class=1 proc=1 name=1
 sys64 | grep codehook
 codehook protect=1 old=20 rwx=40 result=40
+sys64 | grep sandbox
+sandbox token=1 dup=1 restricted=1 set=1 thread=1 pe=8664 status=0 size=48 peb=1 pid=1
 config w32headless on; sys64 | grep tabs | cut -d " " -f 2-; config w32headless off
 del=1 count=2 text=Three param=33 page=1 click=0 notify=1
 config w32headless on; proc64; config w32headless off

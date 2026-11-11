@@ -206,7 +206,10 @@ static uint64_t dispatch(struct w64_stub *s, uint64_t *a, const uint64_t *f)
             put64(P(a[i]), w64_high_back(slot[i]));
     if (s->flags & W64F_FILE)
         return wrap_file((uint32_t)r);
-    return s->flags & W64F_RET64 ? r : w64_high_back(w64_ret((uint32_t)r));
+    /* bit 31 of ints: the built-in returns a number, not a pointer that may stand for high memory */
+    if (s->flags & W64F_RET64)
+        return r;
+    return s->ints >> 31 ? w64_ret((uint32_t)r) : w64_high_back(w64_ret((uint32_t)r));
 }
 
 static const struct w64_export *find_export(const char *module, const char *name)
@@ -281,6 +284,15 @@ void *w64_lookup(const char *module, const char *symbol, uint32_t ordinal, bool 
     if (!target && !(e && e->fn) && !create_missing)
         return NULL;
     return new_stub(module, symbol, e, target);
+}
+
+/* the address of a built-in export that is data, not a function; 0 for functions */
+uint32_t w64_export_data(const char *module, const char *symbol)
+{
+    const struct w64_export *e = find_export(module, symbol);
+    if (!e || !(e->flags & (W64F_DATA | W64F_INTDATA)))
+        return 0;
+    return U(w64_lookup(module, symbol, 0, false));
 }
 
 void *w64_target_stub(w64_handler fn, void *target)
@@ -732,21 +744,37 @@ static uint64_t h_get_startup_info(uint64_t *a, const uint64_t *f, void *t)
     return 0;
 }
 
-static uint64_t h_create_process(uint64_t *a, const uint64_t *f, void *t)
+static uint64_t create_process(const uint64_t *a, void *t, int token)
 {
     uint8_t si[72], pi[16] = {0};
-    if (a[8])
-        startup_to32(P(a[8]), si);
-    uint32_t r = (uint32_t)T32(t, narrow(a[0]), narrow(a[1]), narrow(a[2]), narrow(a[3]), (uint32_t)a[4],
-                               (uint32_t)a[5], narrow(a[6]), narrow(a[7]), a[8] ? U(si) : 0, U(pi));
-    if (r && a[9]) {
-        uint8_t *o = P(a[9]);
+    const uint64_t *b = a + token;
+    if (b[8])
+        startup_to32(P(b[8]), si);
+    uint32_t r;
+    if (token)
+        r = (uint32_t)T32(t, narrow(a[0]), narrow(b[0]), narrow(b[1]), narrow(b[2]), narrow(b[3]), (uint32_t)b[4],
+                          (uint32_t)b[5], narrow(b[6]), narrow(b[7]), b[8] ? U(si) : 0, U(pi));
+    else
+        r = (uint32_t)T32(t, narrow(b[0]), narrow(b[1]), narrow(b[2]), narrow(b[3]), (uint32_t)b[4], (uint32_t)b[5],
+                          narrow(b[6]), narrow(b[7]), b[8] ? U(si) : 0, U(pi));
+    if (r && b[9]) {
+        uint8_t *o = P(b[9]);
         put64(o, rd32(pi));
         put64(o + 8, rd32(pi + 4));
         put32(o + 16, rd32(pi + 8));
         put32(o + 20, rd32(pi + 12));
     }
     return r;
+}
+
+static uint64_t h_create_process(uint64_t *a, const uint64_t *f, void *t)
+{
+    return create_process(a, t, 0);
+}
+
+static uint64_t h_create_process_user(uint64_t *a, const uint64_t *f, void *t)
+{
+    return create_process(a, t, 1);
 }
 
 static uint64_t h_get_proc_address(uint64_t *a, const uint64_t *f, void *t)
@@ -1513,7 +1541,8 @@ static uint64_t h_token_info(uint64_t *a, const uint64_t *f, void *t)
     case 2: head64 = 24; break;
     case 4:
     case 5:
-    case 6: head64 = 8; break;
+    case 6:
+    case 31: head64 = 8; break;
     default: head64 = 0; break;
     }
     if (!head64)
@@ -1574,8 +1603,55 @@ static uint64_t h_query_object(uint64_t *a, const uint64_t *f, void *t)
     return w64_sx(r);
 }
 
+/* SetTokenInformation: TOKEN_MANDATORY_LABEL starts with an 8-byte SID pointer */
+static uint64_t h_set_token_info(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t cls = (uint32_t)a[1], label[2];
+    if (cls != 25 || !a[2] || (uint32_t)a[3] < 16)
+        return (uint32_t)T32(t, narrow(a[0]), cls, narrow(a[2]), (uint32_t)a[3]);
+    const uint8_t *b = P(a[2]);
+    label[0] = U(P(rd64(b)));
+    label[1] = rd32(b + 8);
+    return (uint32_t)T32(t, narrow(a[0]), cls, U(label), 8u);
+}
+
+/* NtQueryInformationProcess(ProcessBasicInformation): 8-byte fields, and the PEB a 64-bit program reads is the
+   64-bit one */
+static uint64_t h_query_process(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t cls = (uint32_t)a[1], len = (uint32_t)a[3], tmp[6] = {0};
+    if (cls != 0)
+        return w64_sx((uint32_t)T32(t, narrow(a[0]), cls, narrow(a[2]), len, a[4] ? U(P(a[4])) : 0));
+    if (len < 48)
+        return 0xc0000004ull;
+    uint32_t r = (uint32_t)T32(t, narrow(a[0]), 0u, U(tmp), 24u, 0u);
+    if (r)
+        return w64_sx(r);
+    struct w32_process *p = w32_process_of((HANDLE)(uintptr_t)narrow(a[0]));
+    uint8_t *o = P(a[2]);
+    memset(o, 0, 48);
+    put32(o, tmp[0]);
+    put64(o + 8, p && p->peb64 ? U(p->peb64) : tmp[1]);
+    put64(o + 16, tmp[2]);
+    put32(o + 24, tmp[3]);
+    put64(o + 32, tmp[4]);
+    put64(o + 40, tmp[5]);
+    if (a[4])
+        put32(P(a[4]), 48);
+    return 0;
+}
+
+static const struct w64_export ntdll_query_exports[] = {
+    W64_FN("NtQueryInformationProcess", h_query_process),
+    W64_FN("ZwQueryInformationProcess", h_query_process),
+};
+W64_EXPORTS(ntdll_query_module, "ntdll.dll", ntdll_query_exports);
+
 static const struct w64_export advapi32_exports[] = {
     W64_FN("GetTokenInformation", h_token_info),
+    W64_FN("SetTokenInformation", h_set_token_info),
+    W64_FN("CreateProcessAsUserW", h_create_process_user),
+    W64_FN("CreateProcessAsUserA", h_create_process_user),
 };
 W64_EXPORTS(advapi32_module, "advapi32.dll", advapi32_exports);
 

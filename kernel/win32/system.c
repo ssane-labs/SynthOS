@@ -74,7 +74,7 @@ static const struct w32_export advapi32_exports[] = {
     W32_FN(CryptAcquireContextA), W32_AS("CryptAcquireContextW", CryptAcquireContextA), W32_FN(CryptGenRandom),
     W32_AS("CryptReleaseContext", w32_one2),
     W32_AS("LookupPrivilegeValueA", w32_zero3), W32_AS("LookupPrivilegeValueW", w32_zero3),
-    W32_AS("AdjustTokenPrivileges", w32_zero6), W32_AS("RegisterEventSourceA", w32_zero2),
+    W32_AS("RegisterEventSourceA", w32_zero2),
     W32_AS("RegisterEventSourceW", w32_zero2), W32_AS("DeregisterEventSource", w32_one1),
 };
 

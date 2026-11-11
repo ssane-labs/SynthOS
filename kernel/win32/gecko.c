@@ -54,7 +54,6 @@ STUB(CredFree, 1, 0, 0)
 STUB(CredReadA, 4, 0, 1168)
 STUB(CredWriteA, 2, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(DestroyPrivateObjectSecurity, 1, 1, 0)
-STUB(DuplicateToken, 3, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(SetKernelObjectSecurity, 3, 1, 0)
 
 /* avrt, ktmw32, cfgmgr32 */
@@ -382,7 +381,7 @@ static BOOL WINAPI InternetGetConnectedStateExW(DWORD *flags, WCHAR *name, DWORD
 
 static const struct w32_export gecko_advapi32[] = {
     W32_FN(CreatePrivateObjectSecurityEx), W32_FN(CredDeleteA), W32_FN(CredFree), W32_FN(CredReadA),
-    W32_FN(CredWriteA), W32_FN(DestroyPrivateObjectSecurity), W32_FN(DuplicateToken),
+    W32_FN(CredWriteA), W32_FN(DestroyPrivateObjectSecurity),
     W32_FN(SetKernelObjectSecurity),
 };
 static const struct w32_export gecko_avrt[] = {W32_FN(AvSetMmThreadCharacteristicsA),

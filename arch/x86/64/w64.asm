@@ -7,6 +7,10 @@ TEB64  equ 0x38
 default rel
 
 global w64_gate
+global w64_syscall
+extern w64_service_table
+extern w64_service_count
+extern w64_service_resolve_fn
 global arch_w64_call
 global w64_setjmp
 global w64_longjmp
@@ -67,6 +71,59 @@ arch_w64_call:
     pop r12
     pop rbx
     pop rbp
+    ret
+
+; ntdll's system-call stubs (win64ntdll.c): eax is the service, r10 the first argument, rcx where the stub goes on;
+; the built-in returns straight to the stub's caller
+w64_syscall:
+    mov r11d, 0x10
+    mov ss, r11w
+    mov r11d, eax
+    cmp r11d, [rel w64_service_count]
+    jae .bad
+    shl r11, 4
+    mov eax, [rel w64_service_table]
+    mov rax, [rax + r11]
+    test rax, rax
+    jz .resolve
+.go:
+    mov rcx, r10
+    jmp rax
+.resolve:
+    shr r11, 4
+    push r10
+    push rdx
+    push r8
+    push r9
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    sub rsp, 64
+    movdqa [rsp], xmm0
+    movdqa [rsp + 16], xmm1
+    movdqa [rsp + 32], xmm2
+    movdqa [rsp + 48], xmm3
+    mov edi, r11d
+    cld
+    mov eax, [rel w64_service_resolve_fn]
+    call rax
+    mov cx, TEB64
+    mov gs, cx
+    movdqa xmm0, [rsp]
+    movdqa xmm1, [rsp + 16]
+    movdqa xmm2, [rsp + 32]
+    movdqa xmm3, [rsp + 48]
+    mov rsp, rbp
+    pop rbp
+    pop r9
+    pop r8
+    pop rdx
+    pop r10
+    mov eax, eax
+    test rax, rax
+    jnz .go
+.bad:
+    mov eax, 0xc000001c
     ret
 
 ; Import stubs put their descriptor in r11 and jump here with the Microsoft x64 arguments intact.

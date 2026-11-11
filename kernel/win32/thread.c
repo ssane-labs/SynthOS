@@ -214,7 +214,7 @@ static bool object_ready(struct w32_object *o, const struct w32_thread *t)
     case WH_EVENT:
     case WH_SEMAPHORE: return *w32_sync_value(o) > 0;
     case WH_MUTEX: return !*w32_sync_value(o) || *w32_sync_owner(o) == owner_id(t->proc, t->id);
-    case WH_THREAD: return o->thread->done;
+    case WH_THREAD: return o->child ? o->child->done : o->thread->done;
     case WH_PROCESS: return !o->child || o->child->done;
     case WH_TIMER: return o->due && hal_ticks_ms() >= o->due;
     default: return true;
@@ -686,7 +686,7 @@ static struct w32_thread *thread_of(HANDLE h)
     if (h == W32_PSEUDO_THREAD)
         return w32->current;
     struct w32_object *o = w32_handle_get(h);
-    return o && o->type == WH_THREAD ? o->thread : NULL;
+    return o && o->type == WH_THREAD && (!o->child || !o->child->done) ? o->thread : NULL;
 }
 
 static uint32_t image_stack_reserve(void)
@@ -1330,7 +1330,7 @@ static bool signaled(HANDLE h, struct w32_object *o)
     case WH_EVENT:
     case WH_SEMAPHORE: return *w32_sync_value(o) > 0;
     case WH_MUTEX: return !*w32_sync_value(o) || *w32_sync_owner(o) == my_owner_id();
-    case WH_THREAD: return o->thread->done;
+    case WH_THREAD: return o->child ? o->child->done : o->thread->done;
     case WH_PROCESS: return !o->child || o->child->done;
     case WH_TIMER: return o->due && hal_ticks_ms() >= o->due;
     default: return true;

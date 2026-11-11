@@ -516,28 +516,110 @@ static SIZE_T WINAPI VirtualQuery(const void *addr, struct mbi *info, SIZE_T len
     return sizeof(*info);
 }
 
+/* the *Ex functions run in the address space of the process the handle names */
+static struct w32_process *enter_target(HANDLE process)
+{
+    struct w32_process *p = w32_process_of(process), *self = w32;
+    if (!p) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return NULL;
+    }
+    w32_process_enter(p);
+    return self;
+}
+
+uint32_t w32_vm_alloc_at(uint32_t base, uint32_t size)
+{
+    return (uint32_t)(uintptr_t)VirtualAlloc((void *)(uintptr_t)base, size, MEM_RESERVE | MEM_COMMIT,
+                                             PAGE_EXECUTE_READWRITE);
+}
+
 static void *WINAPI VirtualAllocEx(HANDLE process, void *addr, SIZE_T size, DWORD type, DWORD protect)
 {
-    UNUSED(process);
-    return VirtualAlloc(addr, size, type, protect);
+    struct w32_process *self = enter_target(process);
+    if (!self)
+        return NULL;
+    void *r = VirtualAlloc(addr, size, type, protect);
+    DWORD err = w32_error();
+    w32_process_enter(self);
+    w32_set_error(err);
+    return r;
 }
 
 static BOOL WINAPI VirtualFreeEx(HANDLE process, void *addr, SIZE_T size, DWORD type)
 {
-    UNUSED(process);
-    return VirtualFree(addr, size, type);
+    struct w32_process *self = enter_target(process);
+    if (!self)
+        return FALSE;
+    BOOL r = VirtualFree(addr, size, type);
+    w32_process_enter(self);
+    return r;
 }
 
 static BOOL WINAPI VirtualProtectEx(HANDLE process, void *addr, SIZE_T size, DWORD protect, DWORD *old)
 {
-    UNUSED(process);
-    return VirtualProtect(addr, size, protect, old);
+    struct w32_process *self = enter_target(process);
+    if (!self)
+        return FALSE;
+    DWORD previous = 0;
+    BOOL r = VirtualProtect(addr, size, protect, &previous);
+    w32_process_enter(self);
+    if (old)
+        *old = previous;
+    return r;
 }
 
 static SIZE_T WINAPI VirtualQueryEx(HANDLE process, const void *addr, struct mbi *info, SIZE_T len)
 {
-    UNUSED(process);
-    return VirtualQuery(addr, info, len);
+    struct mbi m;
+    struct w32_process *self = enter_target(process);
+    if (!self)
+        return 0;
+    SIZE_T r = VirtualQuery(addr, &m, sizeof(m));
+    w32_process_enter(self);
+    if (r)
+        memcpy(info, &m, MIN(len, sizeof(m)));
+    return r ? MIN(len, sizeof(m)) : 0;
+}
+
+/* ReadProcessMemory and WriteProcessMemory for another process: a page at a time through a kernel buffer; like
+   Windows, a write to a read-only page lifts the protection for the copy */
+bool w32_cross_copy(struct w32_process *p, void *to, const void *from, size_t n, bool write)
+{
+    uint8_t *bounce = kmalloc(4096);
+    if (!bounce)
+        return false;
+    struct w32_process *self = w32;
+    bool ok = true;
+    while (n && ok) {
+        uintptr_t remote = write ? (uintptr_t)to : (uintptr_t)from;
+        size_t chunk = MIN(n, 4096 - (remote & 4095));
+        if (write)
+            memcpy(bounce, from, chunk);
+        w32_process_enter(p);
+        struct mbi m;
+        if (!VirtualQuery((const void *)remote, &m, sizeof(m)) || m.state != MEM_COMMIT || (m.protect & 0x101)) {
+            ok = false;
+        } else if (write) {
+            DWORD old = 0;
+            bool lift = !(m.protect & 0xcc);
+            if (lift)
+                VirtualProtect((void *)remote, chunk, PAGE_EXECUTE_READWRITE, &old);
+            memcpy((void *)remote, bounce, chunk);
+            if (lift)
+                VirtualProtect((void *)remote, chunk, old, &old);
+        } else {
+            memcpy(bounce, (const void *)remote, chunk);
+        }
+        w32_process_enter(self);
+        if (ok && !write)
+            memcpy(to, bounce, chunk);
+        to = (uint8_t *)to + chunk;
+        from = (const uint8_t *)from + chunk;
+        n -= chunk;
+    }
+    kfree(bounce);
+    return ok;
 }
 
 /* every page committed and not PAGE_NOACCESS or a guard page; write also needs a writable protection */

@@ -6,6 +6,7 @@
 
 #define ERROR_INSUFFICIENT_BUFFER 122
 #define ERROR_NO_TOKEN 1008
+#define ERROR_NOT_FOUND 1168u
 
 struct sid {
     uint8_t revision, count;
@@ -233,34 +234,166 @@ static BOOL WINAPI QueryServiceStatusEx(HANDLE h, int level, void *buf, DWORD si
     return FALSE;
 }
 
+/* A token object: value holds the type (1 primary, 2 impersonation) and the impersonation level, max the integrity
+   RID, owner whether it was restricted. Nothing is enforced; a program sees what it set up. */
+static HANDLE token_new(uint32_t type, uint32_t level, uint32_t rid, uint32_t flags)
+{
+    HANDLE h = w32_handle_new(WH_TOKEN);
+    struct w32_object *o = w32_handle_get(h);
+    if (!o) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
+    o->value = type | level << 8;
+    o->max = rid;
+    o->owner = flags;
+    return h;
+}
+
+static struct w32_object *token_get(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (!o || o->type != WH_TOKEN) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return NULL;
+    }
+    return o;
+}
+
 static BOOL WINAPI OpenProcessToken(HANDLE process, DWORD access, HANDLE *out)
 {
     UNUSED(process);
     UNUSED(access);
-    *out = w32_handle_new(WH_TOKEN);
+    *out = token_new(1, 0, 0x2000, 0);
     return *out != NULL;
+}
+
+static struct w32_thread *token_thread(HANDLE thread)
+{
+    if (thread == W32_PSEUDO_THREAD)
+        return w32->current;
+    struct w32_object *o = w32_handle_get(thread);
+    return o && o->type == WH_THREAD && (!o->child || !o->child->done) ? o->thread : NULL;
 }
 
 static BOOL WINAPI OpenThreadToken(HANDLE thread, DWORD access, BOOL self, HANDLE *out)
 {
-    UNUSED(thread);
     UNUSED(access);
     UNUSED(self);
+    struct w32_thread *t = token_thread(thread);
     *out = NULL;
-    w32_set_error(ERROR_NO_TOKEN);
-    return FALSE;
+    if (!t || !t->token[0]) {
+        w32_set_error(t ? ERROR_NO_TOKEN : ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    *out = token_new(t->token[0] & 0xff, t->token[0] >> 8, t->token[1], t->token[2]);
+    return *out != NULL;
 }
 
-/* What a program may ask about its own token: the user, its groups, owner and primary group, and fixed answers for
-   the rest (a primary, elevated, medium-integrity token without privileges in session 1). */
-static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWORD len, DWORD *ret)
+/* a thread keeps a copy of the token it impersonates, not the handle */
+static void thread_token_set(struct w32_thread *t, const struct w32_object *o)
 {
-    static const struct sid medium_label = {1, 1, {0, 0, 0, 0, 0, 16}, {0x2000}};
-    struct w32_object *o = w32_handle_get(token);
-    if (!o || o->type != WH_TOKEN) {
+    t->token[0] = o ? o->value : 0;
+    t->token[1] = o ? o->max : 0;
+    t->token[2] = o ? o->owner : 0;
+}
+
+static BOOL WINAPI SetThreadToken(HANDLE *thread, HANDLE token)
+{
+    struct w32_thread *t = token_thread(thread ? *thread : W32_PSEUDO_THREAD);
+    struct w32_object *o = token ? token_get(token) : NULL;
+    if (!t || (token && !o)) {
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+    thread_token_set(t, o);
+    return TRUE;
+}
+
+static BOOL WINAPI ImpersonateLoggedOnUser(HANDLE token)
+{
+    return SetThreadToken(NULL, token);
+}
+
+static BOOL WINAPI RevertToSelf(void)
+{
+    thread_token_set(w32->current, NULL);
+    return TRUE;
+}
+
+static BOOL WINAPI DuplicateTokenEx(HANDLE token, DWORD access, void *sa, int level, int type, HANDLE *out)
+{
+    UNUSED(access);
+    UNUSED(sa);
+    struct w32_object *o = token_get(token);
+    if (!o)
+        return FALSE;
+    *out = token_new((uint32_t)type, type == 2 ? (uint32_t)level : 0, o->max, o->owner);
+    return *out != NULL;
+}
+
+static BOOL WINAPI DuplicateToken(HANDLE token, int level, HANDLE *out)
+{
+    return DuplicateTokenEx(token, 0, NULL, level, 2, out);
+}
+
+static BOOL WINAPI CreateRestrictedToken(HANDLE token, DWORD flags, DWORD ndisable, void *disable, DWORD ndelete,
+                                         void *privileges, DWORD nrestrict, void *restrict_sids, HANDLE *out)
+{
+    UNUSED(flags);
+    UNUSED(ndisable);
+    UNUSED(disable);
+    UNUSED(ndelete);
+    UNUSED(privileges);
+    UNUSED(restrict_sids);
+    struct w32_object *o = token_get(token);
+    if (!o)
+        return FALSE;
+    *out = token_new(o->value & 0xff, o->value >> 8, o->max, o->owner | (nrestrict ? 1 : 0));
+    return *out != NULL;
+}
+
+/* TOKEN_MANDATORY_LABEL {SID_AND_ATTRIBUTES Label}: the integrity is the SID's last sub-authority */
+static BOOL WINAPI SetTokenInformation(HANDLE token, int cls, const void *buf, DWORD len)
+{
+    struct w32_object *o = token_get(token);
+    if (!o)
+        return FALSE;
+    if (cls == 25) {
+        const struct sid *label = buf && len >= 8 ? *(const struct sid *const *)buf : NULL;
+        if (!label || !IsValidSid(label) || !label->count) {
+            w32_set_error(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        o->max = label->sub[label->count - 1];
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI AdjustTokenPrivileges(HANDLE token, BOOL disable_all, void *state, DWORD len, void *previous,
+                                         DWORD *ret)
+{
+    UNUSED(disable_all);
+    UNUSED(state);
+    UNUSED(len);
+    UNUSED(previous);
+    if (!token_get(token))
+        return FALSE;
+    if (ret)
+        *ret = 0;
+    w32_set_error(0);
+    return TRUE;
+}
+
+/* What a program may ask about a token: the user, its groups, owner and primary group, what was set on the token
+   (type, impersonation level, integrity) and fixed answers for the rest (elevated, no privileges, session 1). */
+static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWORD len, DWORD *ret)
+{
+    struct sid label = {1, 1, {0, 0, 0, 0, 0, 16}, {0x2000}};
+    struct w32_object *o = token_get(token);
+    if (!o)
+        return FALSE;
+    label.sub[0] = o->max;
     const struct sid *sid = NULL;
     DWORD head, need;
     switch (cls) {
@@ -268,15 +401,28 @@ static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWOR
     case 2: sid = &admins_sid, head = 12; break;
     case 4:
     case 5: sid = &user_sid, head = 4; break;
-    case 25: sid = &medium_label, head = 8; break;
+    case 25: sid = &label, head = 8; break;
     case 10: head = 56; break;
+    case 7:
+    case 17: head = 16; break;
     case 3:
     case 6:
     case 8:
+    case 9:
+    case 11:
     case 12:
+    case 15:
     case 18:
     case 20:
-    case 29: head = 4; break;
+    case 23:
+    case 24:
+    case 26:
+    case 27:
+    case 29:
+    case 30:
+    case 31: head = 4; break;
+    case 28:
+    case 19: w32_set_error(ERROR_NOT_FOUND); return FALSE;
     default: w32_set_error(ERROR_INVALID_PARAMETER); return FALSE;
     }
     need = head + (sid ? sid_size(sid) : 0);
@@ -288,6 +434,7 @@ static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWOR
     }
     memset(buf, 0, need);
     uint32_t *w = (uint32_t *)buf;
+    uint32_t type = o->value & 0xff, level = o->value >> 8;
     if (sid) {
         memcpy(buf + head, sid, sid_size(sid));
         /* TOKEN_GROUPS starts with the count, the others with the SID pointer */
@@ -296,7 +443,18 @@ static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWOR
             w[0] = 1, w[2] = 7;
         else if (cls == 25)
             w[1] = 0x20;
-    } else if (cls == 8 || cls == 12 || cls == 18 || cls == 20) {
+    } else if (cls == 8) {
+        w[0] = type;
+    } else if (cls == 9) {
+        w[0] = level;
+    } else if (cls == 10) {
+        w[0] = (uint32_t)(uintptr_t)o;
+        w[2] = 0x3e7 + 0x1000;
+        w[6] = type;
+        w[7] = level;
+    } else if (cls == 7) {
+        memcpy(buf, "User32  ", 8);
+    } else if (cls == 12 || cls == 18 || cls == 20 || cls == 27) {
         w[0] = 1;
     }
     return TRUE;
@@ -857,7 +1015,7 @@ static const struct w32_export security_exports[] = {
     W32_AS("SetServiceObjectSecurity", w32_fail3),
     W32_FN(IsTextUnicode),
     W32_AS("ChangeServiceConfig2W", w32_fail3),
-    W32_AS("ImpersonateLoggedOnUser", w32_fail1),
+    W32_FN(ImpersonateLoggedOnUser),
     W32_AS("MakeAbsoluteSD", w32_fail11),
     W32_AS("SetSecurityDescriptorOwner", w32_one3),
     W32_AS("SetSecurityDescriptorGroup", w32_one3),
@@ -925,15 +1083,16 @@ static const struct w32_export security_exports[] = {
     W32_AS("GetTraceEnableLevel", w32_zero2),
     W32_FN(GetTraceLoggerHandle),
     W32_AS("LogonUserW", w32_fail6),
-    W32_AS("CreateProcessAsUserW", w32_fail11),
     W32_AS("CreateProcessWithTokenW", w32_fail9),
-    W32_AS("CreateRestrictedToken", w32_fail9),
-    W32_AS("DuplicateTokenEx", w32_fail6),
-    W32_AS("SetTokenInformation", w32_fail4),
-    W32_AS("SetThreadToken", w32_fail2),
+    W32_FN(CreateRestrictedToken),
+    W32_FN(DuplicateTokenEx),
+    W32_FN(DuplicateToken),
+    W32_FN(SetTokenInformation),
+    W32_FN(SetThreadToken),
+    W32_FN(AdjustTokenPrivileges),
     W32_AS("ImpersonateAnonymousToken", w32_fail1),
     W32_AS("ImpersonateNamedPipeClient", w32_fail1),
-    W32_AS("RevertToSelf", w32_fail0),
+    W32_FN(RevertToSelf),
     W32_FN(AllocateAndInitializeSid),
     W32_FN(FreeSid),
     W32_FN(GetLengthSid),

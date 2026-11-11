@@ -31,6 +31,30 @@ static void hook_test(void)
     printf("codehook protect=%d old=%lx rwx=%lx result=%d\n", made, old, back, fn(4));
 }
 
+typedef LONG(NTAPI *query_fn)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+/* what a browser sandbox does before it starts a child: restricted tokens and the native API seen through ntdll */
+static void sandbox_test(void)
+{
+    HANDLE token = NULL, dup = NULL, restricted = NULL;
+    BOOL opened = OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &token);
+    BOOL duped = DuplicateTokenEx(token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenImpersonation, &dup);
+    BOOL made = CreateRestrictedToken(token, DISABLE_MAX_PRIVILEGE, 0, NULL, 0, NULL, 0, NULL, &restricted);
+    BOOL set = SetThreadToken(NULL, dup);
+    HANDLE back = NULL;
+    BOOL again = OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &back);
+    RevertToSelf();
+    HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)nt;
+    IMAGE_NT_HEADERS64 *pe = dos ? (IMAGE_NT_HEADERS64 *)((char *)nt + dos->e_lfanew) : NULL;
+    query_fn query = (query_fn)GetProcAddress(nt, "NtQueryInformationProcess");
+    ULONG_PTR basic[6] = {0};
+    ULONG got = 0;
+    LONG status = query ? query(GetCurrentProcess(), 0, basic, sizeof(basic), &got) : -1;
+    printf("sandbox token=%d dup=%d restricted=%d set=%d thread=%d pe=%x status=%lx size=%lu peb=%d pid=%d\n", opened,
+           duped, made, set, again, pe ? pe->FileHeader.Machine : 0, (unsigned long)status, got, basic[1] != 0,
+           basic[4] == GetCurrentProcessId());
+}
 
 static int tab_notify;
 
@@ -107,6 +131,7 @@ int main(void)
     printf("uilang thread=%x class=%d proc=%d name=%d\n", GetThreadUILanguage(), cls, wc.lpfnWndProc != NULL,
            wc.lpszClassName != NULL);
     hook_test();
+    sandbox_test();
     window_test();
     return 0;
 }

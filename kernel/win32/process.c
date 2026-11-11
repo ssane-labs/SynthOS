@@ -897,6 +897,11 @@ static int run(struct exec_ctx *ctx)
 
     arch_set_fault_handler(on_fault);
     arch_set_tick_hook(on_tick);
+    /* CREATE_SUSPENDED: the image is mapped, nothing of it has run until the parent resumes the thread */
+    if (w32->start_suspended && w32->current) {
+        w32->current->suspended++;
+        w32_block();
+    }
     if (w32_init_modules() == 0 && !w32->exiting) {
         if (w32->win64)
             w64_setup_tls(main);
@@ -1390,6 +1395,8 @@ static void child_entry(void)
     w32_leave_forever();
 }
 
+bool w32_spawn_suspended;
+
 struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own)
 {
     struct w32_process *p = kzalloc(sizeof(*p));
@@ -1420,6 +1427,8 @@ struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own)
     p->parent = w32;
     p->spawn_ctx = ctx;
     p->own_streams = own;
+    p->start_suspended = w32_spawn_suspended;
+    w32_spawn_suspended = false;
     p->detached = w32 && (w32_is_host(w32) || w32->detached);
     p->parent_pid = w32 && w32->child ? w32->child->pid : SHELL_PID;
     boot->proc = p;

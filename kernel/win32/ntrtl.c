@@ -163,35 +163,6 @@ static DWORD WINAPI NtReadVirtualMemory(HANDLE process, const void *base, void *
     return read && read(process, base, buf, size, done) ? 0 : 0xc0000022u;
 }
 
-/* "\??\C:\path" and "\DosDevices\C:\path" are the native spellings of a Win32 path. */
-static const WCHAR *win32_path(const struct unicode_string *name, WCHAR *buf, size_t cap)
-{
-    size_t n = MIN((size_t)name->length / 2, cap - 1);
-    memcpy(buf, name->buffer, n * 2);
-    buf[n] = 0;
-    if (n >= 4 && buf[0] == '\\' && (buf[1] == '?' || buf[1] == '\\') && buf[2] == '?' && buf[3] == '\\')
-        return buf + 4;
-    return buf;
-}
-
-static DWORD WINAPI NtOpenFile(HANDLE *out, DWORD access, const struct object_attributes *attr, struct io_status *io,
-                               ULONG share, ULONG options)
-{
-    if (!attr || !attr->name)
-        return STATUS_INVALID_PARAMETER;
-    WCHAR buf[PATH_MAX_LEN];
-    const WCHAR *path = win32_path(attr->name, buf, ARRAY_SIZE(buf));
-    HANDLE(WINAPI * create)(LPCWSTR, DWORD, DWORD, void *, DWORD, DWORD, HANDLE) = k32("CreateFileW");
-    DWORD flags = options & 1 ? 0x02000000u : 0;
-    HANDLE h = create ? create(path, access & 0xf01fffu, share, NULL, 3, flags, NULL) : INVALID_HANDLE_VALUE;
-    if (h == INVALID_HANDLE_VALUE)
-        return STATUS_OBJECT_NAME_NOT_FOUND;
-    *out = h;
-    if (io)
-        *io = (struct io_status){0, 1};
-    return 0;
-}
-
 static DWORD WINAPI NtReadFile(HANDLE h, HANDLE event, void *apc, void *apc_ctx, struct io_status *io, void *buf,
                                ULONG len, const int64_t *offset, ULONG *key)
 {
@@ -329,7 +300,6 @@ static const struct w32_export ntrtl_exports[] = {
     W32_FN(NtQueryVirtualMemory),
     W32_AS("ZwQueryVirtualMemory", NtQueryVirtualMemory),
     W32_FN(NtReadVirtualMemory),
-    W32_FN(NtOpenFile),
     W32_FN(NtReadFile),
     W32_FN(NtMapViewOfSection),
     W32_FN(NtUnmapViewOfSection),

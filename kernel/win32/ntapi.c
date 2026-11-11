@@ -155,13 +155,21 @@ static BOOL WINAPI QueryThreadCycleTime(HANDLE thread, uint64_t *cycles)
     return TRUE;
 }
 
-static BOOL WINAPI copy_memory(HANDLE process, void *a, const void *b, SIZE_T n, SIZE_T *done)
+static BOOL WINAPI copy_memory(HANDLE process, void *a, const void *b, SIZE_T n, SIZE_T *done, bool write)
 {
-    if (process != W32_PSEUDO_PROCESS) {
-        w32_set_error(ERROR_ACCESS_DENIED);
+    struct w32_process *p = w32_process_of(process);
+    if (!p) {
+        w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
-    memcpy(a, b, n);
+    if (p == w32)
+        memcpy(a, b, n);
+    else if (!w32_cross_copy(p, a, b, n, write)) {
+        if (done)
+            *done = 0;
+        w32_set_error(299);
+        return FALSE;
+    }
     if (done)
         *done = n;
     return TRUE;
@@ -169,12 +177,24 @@ static BOOL WINAPI copy_memory(HANDLE process, void *a, const void *b, SIZE_T n,
 
 static BOOL WINAPI ReadProcessMemory(HANDLE process, const void *from, void *to, SIZE_T n, SIZE_T *done)
 {
-    return copy_memory(process, to, from, n, done);
+    return copy_memory(process, to, from, n, done, false);
 }
 
 static BOOL WINAPI WriteProcessMemory(HANDLE process, void *to, const void *from, SIZE_T n, SIZE_T *done)
 {
-    return copy_memory(process, to, from, n, done);
+    return copy_memory(process, to, from, n, done, true);
+}
+
+/* jobs set no limits: a query answers with no limits set and no accounting yet */
+static BOOL WINAPI QueryInformationJobObject(HANDLE job, int cls, void *info, DWORD len, DWORD *ret)
+{
+    UNUSED(job);
+    UNUSED(cls);
+    if (info)
+        memset(info, 0, len);
+    if (ret)
+        *ret = len;
+    return TRUE;
 }
 
 static HANDLE WINAPI CreateJobObjectW(void *sa, const WCHAR *name)
@@ -288,7 +308,7 @@ static const struct w32_export ntapi_kernel32[] = {
     W32_AS("SetInformationJobObject", w32_one4),
     W32_AS("AssignProcessToJobObject", w32_one2),
     W32_AS("TerminateJobObject", w32_one2),
-    W32_AS("QueryInformationJobObject", w32_fail5),
+    W32_FN(QueryInformationJobObject),
     W32_AS("SetProcessMitigationPolicy", w32_one3),
     W32_FN(GetProcessMitigationPolicy),
     W32_AS("SetThreadInformation", w32_one4),

@@ -255,6 +255,7 @@ struct w32_thread {
     uint8_t com_apartment;
     int com_inits;
     void *cxx_object, *cxx_type;
+    uint32_t token[3];
     struct w32_thread *next;
 };
 
@@ -355,11 +356,15 @@ struct w32_process {
     bool dead;
     bool frozen;
     bool detached;
+    bool start_suspended;
 };
 
 extern struct w32_process *w32;
 
 void w32_process_enter(struct w32_process *p);
+struct w32_process *w32_process_of(HANDLE h);
+extern bool w32_spawn_suspended;
+bool w32_cross_copy(struct w32_process *p, void *to, const void *from, size_t n, bool write);
 struct w32_process *w32_ring_next(struct w32_process *p);
 void w32_reap(void);
 HANDLE w32_bitmap_from_dib(const void *dib, uint32_t size);
@@ -568,6 +573,9 @@ struct w32_sig {
     const char *args;
 } __attribute__((aligned(8)));
 uint32_t w32_int_args(const void *fn);
+void w32_builtin_names(const char *module, void (*fn)(const char *name, void *arg), void *arg);
+uint32_t w64_builtin_image(const char *name, uint32_t *size);
+uint32_t w32_vm_alloc_at(uint32_t base, uint32_t size);
 #ifdef __x86_64__
 void *w32_guest_addr(const void *fn);
 bool w32_native_code(const void *fn);

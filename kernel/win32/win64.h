@@ -60,6 +60,7 @@ struct w64_module {
     static const struct w64_module id = {dll, table, ARRAY_SIZE(table)};                                          \
     SYNTH_REGISTER(synth_win64, struct w64_module, id)
 
+uint32_t w64_export_data(const char *module, const char *symbol);
 void *w64_high_ptr(uint64_t v);
 uint64_t w64_high_back(uint64_t v);
 bool w64_high_fault(uint64_t address);
