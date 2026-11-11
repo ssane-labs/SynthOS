@@ -20,6 +20,8 @@ enum store_state {
     STORE_UNAVAILABLE,
 };
 
+#define STORE_MAX_APPS 160
+
 struct store_app {
     char id[24], name[48], developer[48], category[24], icon[16], version[24], size[16];
     char summary[120], about[600], note[120];

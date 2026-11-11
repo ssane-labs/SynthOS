@@ -619,3 +619,283 @@ strip = nvim-win64/
 bin = bin
 check = bin/nvim.exe
 bits = 64
+
+[shexview]
+name = ShellExView
+developer = NirSoft
+category = Utilities
+icon = terminal
+version = latest
+size = 1 MB
+summary = Lists shell extensions with their DLLs and versions
+about = NirSoft ShellExView unpacked into /home/apps/shexview: the context-menu, property-sheet and icon handlers registered for Explorer, and whether each is enabled.
+kind = zip
+url = https://www.nirsoft.net/utils/shexview.zip
+check = shexview.exe
+open = shexview.exe
+
+[bluescreenview]
+name = BlueScreenView
+developer = NirSoft
+category = Utilities
+icon = viewer
+version = latest
+size = 1 MB
+summary = Reads crash minidumps and shows the faulting driver
+about = NirSoft BlueScreenView unpacked into /home/apps/bluescreenview: the crash dumps a Windows install left behind, with the bug-check code and the drivers on the stack.
+kind = zip
+url = https://www.nirsoft.net/utils/bluescreenview.zip
+check = BlueScreenView.exe
+open = BlueScreenView.exe
+
+[usbdeview]
+name = USBDeview
+developer = NirSoft
+category = Utilities
+icon = terminal
+version = latest
+size = 1 MB
+summary = Every USB device that was ever plugged in
+about = NirSoft USBDeview unpacked into /home/apps/usbdeview: USB devices with their vendor, serial number and the last time they were connected.
+kind = zip
+url = https://www.nirsoft.net/utils/usbdeview.zip
+check = USBDeview.exe
+open = USBDeview.exe
+
+[regscanner]
+name = RegScanner
+developer = NirSoft
+category = Utilities
+icon = files
+version = latest
+size = 1 MB
+summary = Searches the registry by text, type, date and size
+about = NirSoft RegScanner unpacked into /home/apps/regscanner: finds registry keys and values that match a string, a data type or a change date, and lists them all at once.
+kind = zip
+url = https://www.nirsoft.net/utils/regscanner.zip
+check = RegScanner.exe
+open = RegScanner.exe
+
+[installedappview]
+name = InstalledAppView
+developer = NirSoft
+category = Utilities
+icon = files
+version = latest
+size = 1 MB
+summary = The installed Windows apps with their folders and sizes
+about = NirSoft InstalledAppView unpacked into /home/apps/installedappview: Windows apps registered on the system with their package names, install folders and dates.
+kind = zip
+url = https://www.nirsoft.net/utils/installedappview.zip
+check = InstalledAppView.exe
+open = InstalledAppView.exe
+
+[myuninst]
+name = MyUninstaller
+developer = NirSoft
+category = Utilities
+icon = files
+version = latest
+size = 1 MB
+summary = An uninstaller that lists every registered program
+about = NirSoft MyUninstaller unpacked into /home/apps/myuninst: programs from the Uninstall registry keys with version, company and install date, and their uninstall commands.
+kind = zip
+url = https://www.nirsoft.net/utils/myuninst.zip
+check = myuninst.exe
+open = myuninst.exe
+
+[searchmyfiles]
+name = SearchMyFiles
+developer = NirSoft
+category = Utilities
+icon = files
+version = latest
+size = 1 MB
+summary = File search by name, size, dates and contents
+about = NirSoft SearchMyFiles unpacked into /home/apps/searchmyfiles: wildcards, size and date ranges, text inside files and a duplicate finder in one dialog.
+kind = zip
+url = https://www.nirsoft.net/utils/searchmyfiles.zip
+check = SearchMyFiles.exe
+open = SearchMyFiles.exe
+
+[winobj]
+name = WinObj
+developer = Microsoft Sysinternals
+category = Developer Tools
+icon = code
+version = latest
+size = 2 MB
+summary = Browses the object manager namespace
+about = Sysinternals WinObj downloaded from Microsoft into /home/apps/winobj: directories, symbolic links, devices and events of the object namespace.
+kind = zip
+url = https://download.sysinternals.com/files/WinObj.zip
+check = Winobj.exe
+open = Winobj.exe
+
+[du]
+name = Disk Usage
+developer = Microsoft Sysinternals
+category = Utilities
+icon = terminal
+version = latest
+size = 1 MB
+summary = Shows how much space each folder takes
+about = Sysinternals du downloaded from Microsoft into /home/apps/du and put on the PATH: sizes of a folder and its subfolders, as text or CSV.
+kind = zip
+url = https://download.sysinternals.com/files/DU.zip
+bin = .
+check = du.exe
+
+[strings]
+name = Strings
+developer = Microsoft Sysinternals
+category = Developer Tools
+icon = code
+version = latest
+size = 1 MB
+summary = Prints the text found inside binary files
+about = Sysinternals strings downloaded from Microsoft into /home/apps/strings and put on the PATH: ASCII and Unicode text in executables and data files, with offsets.
+kind = zip
+url = https://download.sysinternals.com/files/Strings.zip
+bin = .
+check = strings.exe
+
+[sigcheck]
+name = Sigcheck
+developer = Microsoft Sysinternals
+category = Developer Tools
+icon = code
+version = latest
+size = 1 MB
+summary = File versions, hashes and signature details
+about = Sysinternals sigcheck downloaded from Microsoft into /home/apps/sigcheck and put on the PATH: version resources, hashes and Authenticode details of programs.
+kind = zip
+url = https://download.sysinternals.com/files/Sigcheck.zip
+bin = .
+check = sigcheck.exe
+
+[notepad2]
+name = Notepad2
+developer = Florian Balmer
+category = Developer Tools
+icon = code
+version = 4.2.25
+size = 1 MB
+summary = A fast text editor with syntax highlighting
+about = Notepad2 unpacked into /home/apps/notepad2: a small Notepad replacement with highlighting for many languages, line numbers and encodings.
+kind = zip
+url = https://www.flos-freeware.ch/zip/notepad2_4.2.25_x86.zip
+sha256 = c87a20d6953fd3c33475dd7391e7e0dd7dde1faca6b86c7478bd009ae65eace5
+check = Notepad2.exe
+open = Notepad2.exe
+
+[gh]
+name = GitHub CLI
+developer = GitHub
+category = Developer Tools
+icon = code
+version = 2.63.2
+size = 38 MB
+summary = GitHub from the command line
+about = gh unpacked into /home/apps/gh and put on the PATH: pull requests, issues, releases and repositories from the terminal.
+kind = zip
+url = https://github.com/cli/cli/releases/download/v2.63.2/gh_2.63.2_windows_386.zip
+sha256 = 38bbc931f70fc72b1680eb83e2bd2bbb54dd8a0314e125ec7d3da8e1b54f60d3
+strip = bin/
+bin = .
+check = gh.exe
+
+[rclone]
+name = rclone
+developer = Nick Craig-Wood
+category = Internet
+icon = terminal
+version = 1.68.2
+size = 60 MB
+summary = Syncs files with cloud storage
+about = rclone unpacked into /home/apps/rclone and put on the PATH: copy and sync files with S3, WebDAV, SFTP and dozens of cloud services.
+kind = zip
+url = https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-windows-386.zip
+sha256 = d076d341122287cf92033aeecf1dd6900ff407c22981fa5ddf49689d5301a7e2
+strip = rclone-v1.68.2-windows-386/
+bin = .
+check = rclone.exe
+
+[hyperfine]
+name = hyperfine
+developer = David Peter
+category = Developer Tools
+icon = code
+version = 1.19.0
+size = 2 MB
+summary = Benchmarks commands with statistics
+about = hyperfine unpacked into /home/apps/hyperfine and put on the PATH: runs commands many times and reports mean, spread and comparisons.
+kind = zip
+url = https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine-v1.19.0-i686-pc-windows-msvc.zip
+sha256 = b649e7f0ed2b02d2f8977cb27fbb080ccd9bfc53ffb9dfebbe9fdee5e0f4d419
+strip = hyperfine-v1.19.0-i686-pc-windows-msvc/
+bin = .
+check = hyperfine.exe
+
+[hexyl]
+name = hexyl
+developer = David Peter
+category = Developer Tools
+icon = code
+version = 0.16.0
+size = 1 MB
+summary = A coloured hex viewer for the terminal
+about = hexyl unpacked into /home/apps/hexyl and put on the PATH: hex dumps with colours for bytes, ASCII and whitespace.
+kind = zip
+url = https://github.com/sharkdp/hexyl/releases/download/v0.16.0/hexyl-v0.16.0-i686-pc-windows-msvc.zip
+sha256 = 78c4af46d119866ac123ca8f3a4245c109256b4d441defd53accea21173e968a
+strip = hexyl-v0.16.0-i686-pc-windows-msvc/
+bin = .
+check = hexyl.exe
+
+[coreutils]
+name = uutils coreutils
+developer = uutils
+category = Developer Tools
+icon = terminal
+version = 0.0.28
+size = 10 MB
+summary = ls, cat, sort, wc and a hundred other tools
+about = uutils coreutils unpacked into /home/apps/coreutils and put on the PATH: the GNU core utilities rewritten in Rust, in one coreutils.exe (coreutils ls, coreutils sort ...).
+kind = zip
+url = https://github.com/uutils/coreutils/releases/download/0.0.28/coreutils-0.0.28-i686-pc-windows-msvc.zip
+sha256 = a3ace2b9111f7c6add567a251f772d181eadc95830aad3bab566bed48c3723c1
+strip = coreutils-0.0.28-i686-pc-windows-msvc/
+bin = .
+check = coreutils.exe
+
+[zstd]
+name = Zstandard
+developer = Meta
+category = Utilities
+icon = terminal
+version = 1.5.6
+size = 4 MB
+summary = Fast compression and decompression
+about = zstd unpacked into /home/apps/zstd and put on the PATH: compresses and unpacks .zst files much faster than gzip at a similar ratio.
+kind = zip
+url = https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-v1.5.6-win32.zip
+sha256 = d274d937b9b5c422c72c2689a92dae1642ddfd520aad4e0038e5b5a0fa657f8f
+strip = zstd-v1.5.6-win32/
+bin = .
+check = zstd.exe
+
+[lazygit]
+name = lazygit
+developer = Jesse Duffield
+category = Developer Tools
+icon = code
+version = 0.44.1
+size = 16 MB
+summary = A terminal interface for git
+about = lazygit unpacked into /home/apps/lazygit and put on the PATH: stage, commit, branch and rebase with the keyboard. Needs Git from the store.
+kind = zip
+url = https://github.com/jesseduffield/lazygit/releases/download/v0.44.1/lazygit_0.44.1_Windows_32-bit.zip
+sha256 = 1e090b85e90199d8e9d72dde8189b8cfc630d09a4016f65c0e3cdae73c8ffde1
+bin = .
+check = lazygit.exe

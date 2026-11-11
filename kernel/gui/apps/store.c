@@ -28,7 +28,7 @@ struct store_win {
     int scroll, height;
     int cats;
     const char *cat[MAX_CATS];
-    enum store_state state[64];
+    enum store_state state[STORE_MAX_APPS];
     bool states_ok;
 };
 
@@ -213,8 +213,8 @@ static int grid(struct ui *ui, struct store_win *s, int x, int y, int w, bool (*
                 void *ctx, int limit)
 {
     int cols = w >= 900 ? 3 : w >= 560 ? 2 : 1, gap = 24, cw = (w - gap * (cols - 1)) / cols;
-    int shown[64], n = 0;
-    for (int i = 0; i < store_count() && n < limit && n < 64; i++)
+    int shown[STORE_MAX_APPS], n = 0;
+    for (int i = 0; i < store_count() && n < limit && n < STORE_MAX_APPS; i++)
         if (want(s, i, ctx))
             shown[n++] = i;
     int rows = (n + cols - 1) / cols;
@@ -422,7 +422,7 @@ static void body(struct ui *ui, struct store_win *s, int x, int y, int w)
     if (s->detail >= 0 && s->detail < store_count()) {
         y += detail(ui, s, x, y, w);
     } else if (s->search.len) {
-        int h = grid(ui, s, x, y, w, matches, s->search.buf, 64);
+        int h = grid(ui, s, x, y, w, matches, s->search.buf, STORE_MAX_APPS);
         if (!h)
             ui_label(ui, (struct rect){x, y + 40, w, 24}, "No Results", &font_title, style.secondary, ALIGN_CENTER);
         y += MAX(h, 100);
@@ -436,15 +436,15 @@ static void body(struct ui *ui, struct store_win *s, int x, int y, int w)
             y += grid(ui, s, x, y, w, in_category, (void *)s->cat[c], w >= 900 ? 6 : 4) + 24;
         }
     } else if (s->page <= s->cats) {
-        y += grid(ui, s, x, y, w, in_category, (void *)s->cat[s->page - 1], 64);
+        y += grid(ui, s, x, y, w, in_category, (void *)s->cat[s->page - 1], STORE_MAX_APPS);
     } else {
-        int h = grid(ui, s, x, y, w, updates, NULL, 64);
+        int h = grid(ui, s, x, y, w, updates, NULL, STORE_MAX_APPS);
         if (h) {
             y += heading(ui, x, y, w, "Updates", NULL, NULL);
-            y += grid(ui, s, x, y, w, updates, NULL, 64) + 24;
+            y += grid(ui, s, x, y, w, updates, NULL, STORE_MAX_APPS) + 24;
             y += heading(ui, x, y, w, "Installed", NULL, NULL);
         }
-        int n = grid(ui, s, x, y, w, installed, NULL, 64);
+        int n = grid(ui, s, x, y, w, installed, NULL, STORE_MAX_APPS);
         if (!n)
             ui_label(ui, (struct rect){x, y + 40, w, 24}, "Nothing installed from the App Store yet", &font_sans,
                      style.secondary, ALIGN_CENTER);

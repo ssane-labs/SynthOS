@@ -29,7 +29,7 @@
 #define CACHED_CATALOG STORE_DIR "/catalog.txt"
 #define INSTALLED STORE_DIR "/installed"
 #define APPS_DIR "/home/apps"
-#define MAX_APPS 48
+#define MAX_APPS STORE_MAX_APPS
 #define DEFAULT_URL "https://github.com/ssane-labs/synthos/releases/latest/download/"
 
 static struct store_app *apps;
