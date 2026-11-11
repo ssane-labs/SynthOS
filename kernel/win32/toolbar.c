@@ -31,6 +31,8 @@ enum {
     TB_SETBUTTONSIZE = 0x41f,
     TB_SETBITMAPSIZE = 0x420,
     TB_AUTOSIZE = 0x421,
+    TB_GETTOOLTIPS = 0x423,
+    TB_SETTOOLTIPS = 0x424,
     TB_SETPARENT = 0x425,
     TB_GETROWS = 0x428,
     TB_SETCMDID = 0x42a,
@@ -171,7 +173,8 @@ struct tb {
     int nstrings;
     int bw, bh, iw, ih, pad_x, pad_y;
     int struct_size, pressed, images_used;
-    HANDLE il, own_il, disabled_il, hot_il;
+    HANDLE il, own_il, disabled_il, hot_il, tips;
+    bool own_tips;
     struct w32_window *target;
     uint32_t ex;
 };
@@ -676,6 +679,15 @@ LRESULT WINAPI w32_toolbar_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         return (LRESULT)(uintptr_t)old;
     }
     case TB_GETIMAGELIST: return (LRESULT)(uintptr_t)s->il;
+    case TB_GETTOOLTIPS:
+        if (!s->tips && (s->tips = w32_create_window(0, "tooltips_class32", "", WS_POPUP, 0, 0, 0, 0, w, NULL, NULL,
+                                                     NULL)))
+            s->own_tips = true;
+        return (LRESULT)(uintptr_t)s->tips;
+    case TB_SETTOOLTIPS:
+        s->tips = (HANDLE)ptr;
+        s->own_tips = false;
+        return 0;
     case 0x434: /* TB_SETHOTIMAGELIST */
     case 0x436: { /* TB_SETDISABLEDIMAGELIST */
         HANDLE *slot = msg == 0x434 ? &s->hot_il : &s->disabled_il, old = *slot;
@@ -814,6 +826,8 @@ LRESULT WINAPI w32_toolbar_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_NCDESTROY_:
+        if (s->own_tips && w32_win(s->tips))
+            ((BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("user32.dll", "DestroyWindow"))(s->tips);
         for (int k = 0; k < s->count; k++)
             free_button(&s->b[k]);
         for (int k = 0; k < s->nstrings; k++)

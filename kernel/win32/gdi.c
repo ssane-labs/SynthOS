@@ -2201,12 +2201,50 @@ enum {
     DT_BOTTOM = 0x8,
     DT_WORDBREAK = 0x10,
     DT_SINGLELINE = 0x20,
+    DT_EXPANDTABS = 0x40,
+    DT_TABSTOP = 0x80,
     DT_CALCRECT = 0x400,
     DT_NOPREFIX = 0x800,
 };
 
+/* the width of n bytes of a line; with tabs > 0 a tab moves to the next multiple of that many pixels */
+static int span_width(const struct ui_font *f, const char *s, size_t n, int tabs)
+{
+    if (tabs <= 0)
+        return gfx_text_width_n(f, s, n);
+    int x = 0;
+    size_t at = 0;
+    for (size_t i = 0; i <= n; i++)
+        if (i == n || s[i] == '\t') {
+            x += gfx_text_width_n(f, s + at, i - at);
+            if (i < n)
+                x = (x / tabs + 1) * tabs;
+            at = i + 1;
+        }
+    return x;
+}
+
+static void span_draw(struct canvas *c, int x, int y, const struct ui_font *f, const char *s, size_t n, int tabs,
+                      uint32_t color)
+{
+    if (tabs <= 0) {
+        gfx_text_n(c, x, y, f, s, n, color);
+        return;
+    }
+    int dx = 0;
+    size_t at = 0;
+    for (size_t i = 0; i <= n; i++)
+        if (i == n || s[i] == '\t') {
+            gfx_text_n(c, x + dx, y, f, s + at, i - at, color);
+            dx += gfx_text_width_n(f, s + at, i - at);
+            if (i < n)
+                dx = (dx / tabs + 1) * tabs;
+            at = i + 1;
+        }
+}
+
 static int layout_lines(const struct ui_font *f, const char *s, int width, UINT format, int *starts, int *lens,
-                        int max)
+                        int max, int tabs)
 {
     int count = 0;
     const char *p = s;
@@ -2218,7 +2256,7 @@ static int layout_lines(const struct ui_font *f, const char *s, int width, UINT 
             line_end = p + strlen(p);
         const char *end = line_end;
         if ((format & DT_WORDBREAK) && width > 0) {
-            while (end > p && gfx_text_width_n(f, p, (size_t)(end - p)) > width) {
+            while (end > p && span_width(f, p, (size_t)(end - p), tabs) > width) {
                 const char *cut = end - 1;
                 while (cut > p && *cut != ' ')
                     cut--;
@@ -2265,7 +2303,8 @@ static void strip_prefix(char *s)
     *out = 0;
 }
 
-static int draw_text_box(HANDLE h, char *u, RECT *r, UINT format)
+/* tab_chars: the tab length in average character widths, 0 for the usual 8 */
+static int draw_text_box(HANDLE h, char *u, RECT *r, UINT format, int tab_chars)
 {
     struct w32_dc *d = dc_of(h);
     if (!d)
@@ -2274,13 +2313,14 @@ static int draw_text_box(HANDLE h, char *u, RECT *r, UINT format)
         strip_prefix(u);
     const struct ui_font *f = dc_font(d);
     int width = r->right - r->left;
+    int tabs = format & DT_EXPANDTABS ? (tab_chars > 0 ? tab_chars : 8) * MAX(gfx_text_width(f, "x"), 1) : 0;
     static int starts[128], lens[128];
-    int lines = layout_lines(f, u, width, format, starts, lens, 128);
+    int lines = layout_lines(f, u, width, format, starts, lens, 128, tabs);
     int total = lines * f->height;
     if (format & DT_CALCRECT) {
         int widest = 0;
         for (int i = 0; i < lines; i++)
-            widest = MAX(widest, gfx_text_width_n(f, u + starts[i], (size_t)lens[i]));
+            widest = MAX(widest, span_width(f, u + starts[i], (size_t)lens[i], tabs));
         r->right = r->left + widest;
         r->bottom = r->top + total;
         return total;
@@ -2298,12 +2338,12 @@ static int draw_text_box(HANDLE h, char *u, RECT *r, UINT format)
     struct rect box = {t.ox + r->left, t.oy + r->top, width, r->bottom - r->top};
     t.c->clip = rect_intersect(t.clip, box);
     for (int i = 0; i < lines; i++, y += f->height) {
-        int w = gfx_text_width_n(f, u + starts[i], (size_t)lens[i]);
+        int w = span_width(f, u + starts[i], (size_t)lens[i], tabs);
         int x = format & DT_CENTER ? r->left + (width - w) / 2 : format & DT_RIGHT ? r->right - w : r->left;
         if (d->s.bk_mode == OPAQUE)
             gfx_clear(t.c, rect_intersect((struct rect){t.ox + x, t.oy + y, w, f->height}, t.c->clip),
                       w32_rgb(d->s.bk));
-        gfx_text_n(t.c, t.ox + x, t.oy + y, f, u + starts[i], (size_t)lens[i], w32_rgb(d->s.text));
+        span_draw(t.c, t.ox + x, t.oy + y, f, u + starts[i], (size_t)lens[i], tabs, w32_rgb(d->s.text));
     }
     t.c->clip = t.clip;
     damage(d, &t, box);
@@ -2312,24 +2352,36 @@ static int draw_text_box(HANDLE h, char *u, RECT *r, UINT format)
 
 static int WINAPI DrawTextA(HANDLE h, LPCSTR s, int n, RECT *r, UINT format)
 {
+    int tab = format & DT_TABSTOP ? (int)(format >> 8 & 0xff) : 0;
+    if (format & DT_TABSTOP)
+        format = (format & ~0xff00u) | DT_EXPANDTABS;
     char *u = ansi_to_utf8(s, n);
-    int result = u ? draw_text_box(h, u, r, format) : 0;
+    int result = u ? draw_text_box(h, u, r, format, tab) : 0;
+    w32_free(u);
+    return result;
+}
+
+static int draw_text_w(HANDLE h, LPCWSTR s, int n, RECT *r, UINT format, int tab)
+{
+    if (format & DT_TABSTOP) {
+        tab = (int)(format >> 8 & 0xff);
+        format = (format & ~0xff00u) | DT_EXPANDTABS;
+    }
+    char *u = wide_to_utf8(s, n);
+    int result = u ? draw_text_box(h, u, r, format, tab) : 0;
     w32_free(u);
     return result;
 }
 
 static int WINAPI DrawTextW(HANDLE h, LPCWSTR s, int n, RECT *r, UINT format)
 {
-    char *u = wide_to_utf8(s, n);
-    int result = u ? draw_text_box(h, u, r, format) : 0;
-    w32_free(u);
-    return result;
+    return draw_text_w(h, s, n, r, format, 0);
 }
 
 static int WINAPI DrawTextExW(HANDLE h, LPWSTR s, int n, RECT *r, UINT format, void *params)
 {
-    UNUSED(params);
-    return DrawTextW(h, s, n, r, format);
+    /* DRAWTEXTPARAMS: cbSize, iTabLength, ... */
+    return draw_text_w(h, s, n, r, format, params ? ((const int *)params)[1] : 0);
 }
 
 /* DrawFrameControl: check boxes, radio buttons, push buttons, scroll arrows and caption buttons in the desktop's look */

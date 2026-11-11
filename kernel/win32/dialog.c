@@ -56,6 +56,9 @@ static const char *control_class(uint16_t ordinal, const char *name)
     case 0x80: return "Button";
     case 0x81: return "Edit";
     case 0x82: return "Static";
+    case 0x83: return "ListBox";
+    case 0x84: return "ScrollBar";
+    case 0x85: return "ComboBox";
     default: return name ? name : "Static";
     }
 }
@@ -131,6 +134,7 @@ static HANDLE create_dialog(HANDLE inst, const void *templ, HANDLE owner, DLGPRO
     if (!w)
         return NULL;
     w->dlgproc = (void *)proc;
+    w->is_dialog = true;
     w->font = font;
     HANDLE first_tab = NULL;
     for (int i = 0; i < count; i++) {
@@ -163,8 +167,11 @@ static HANDLE create_dialog(HANDLE inst, const void *templ, HANDLE owner, DLGPRO
         w32_free(cls);
         w32_free(text);
     }
-    if (proc && W32_CALL(DLGPROC, proc, dlg, WM_INITDIALOG, (WPARAM)first_tab, param) && first_tab)
+    /* through the window procedure: a dialog of the program's own class reaches its procedure via DefDlgProc */
+    if (w32_send(w, WM_INITDIALOG, (WPARAM)first_tab, param) && first_tab && w32_win(first_tab))
         w32_set_focus(w32_win(first_tab));
+    if (!w32_win(dlg))
+        return NULL;
     if ((style & WS_VISIBLE) || modal) {
         typedef BOOL WINAPI (*show_fn)(HANDLE, int);
         struct w32_image *u = w32_find_module("user32.dll");
@@ -369,7 +376,7 @@ static BOOL WINAPI EndDialog(HANDLE h, intptr_t result)
 
 static LRESULT WINAPI DefDlgProcA(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
-    return w32_def_window_proc(h, msg, wp, lp);
+    return w32_dialog_proc(h, msg, wp, lp);
 }
 
 static BOOL WINAPI MapDialogRect(HANDLE h, RECT *r)

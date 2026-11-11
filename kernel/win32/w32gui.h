@@ -216,12 +216,14 @@ struct w32_window {
     bool pressed, hot, checked;
     char *edit_buf;
     size_t edit_cap, edit_len, caret;
+    size_t sel_anchor, sel_at; /* a selection from sel_anchor to the caret, while the caret is still at sel_at */
+    bool has_sel;
     int scroll;
     int range_min, range_max, pos, step;
     void *bar;
     void *dlgproc;
     intptr_t dlg_result;
-    bool dlg_ended;
+    bool dlg_ended, is_dialog;
     intptr_t dlg_msgresult, dlg_user;
     bool message_only;
     struct rect caption;
@@ -230,6 +232,12 @@ struct w32_window {
     struct subclasses *subs;
     struct w32_scroll bars[3];
     bool rich;
+    struct rich_style {
+        uint32_t color; /* COLORREF, ~0 (or 0 with has_color false) for the window text color */
+        bool has_color;
+        int twips, weight, tab;
+        char face[32];
+    } rich_style;
     void *list;
 };
 
@@ -237,6 +245,9 @@ struct w32_window *w32_win(HANDLE h);
 struct w32_window *w32_windows(void);
 struct w32_class *w32_find_class(const char *name);
 LRESULT w32_send(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp);
+extern bool w32_caller_wide;
+bool w32_edit_selection(struct w32_window *w, size_t *from, size_t *to);
+void w32_edit_select(struct w32_window *w, size_t anchor, size_t caret);
 LRESULT w32_send_as(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, bool unicode);
 void w32_post(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp);
 struct rect w32_area(struct w32_window *w);

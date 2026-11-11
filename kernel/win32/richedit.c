@@ -11,9 +11,12 @@ enum {
     EM_EXGETSEL = 0x434,
     EM_EXLIMITTEXT = 0x435,
     EM_EXSETSEL = 0x437,
+    EM_FINDTEXT = 0x438,
+    EM_FORMATRANGE = 0x439,
     EM_GETEVENTMASK = 0x43b,
     EM_GETOLEINTERFACE = 0x43c,
     EM_HIDESELECTION = 0x43f,
+    EM_REQUESTRESIZE = 0x441,
     EM_SETBKGNDCOLOR = 0x443,
     EM_SETCHARFORMAT = 0x444,
     EM_SETEVENTMASK = 0x445,
@@ -21,14 +24,21 @@ enum {
     EM_SETTARGETDEVICE = 0x448,
     EM_STREAMIN = 0x449,
     EM_STREAMOUT = 0x44a,
+    EM_GETTEXTRANGE = 0x44b,
     EM_SETOPTIONS = 0x44d,
     EM_GETOPTIONS = 0x44e,
+    EM_FINDTEXTEX = 0x44f,
     EM_AUTOURLDETECT = 0x45b,
     EM_GETTEXTEX = 0x45e,
     EM_GETTEXTLENGTHEX = 0x45f,
     EM_SETTEXTEX = 0x461,
     EM_SETLANGOPTIONS = 0x478,
     EM_GETLANGOPTIONS = 0x479,
+    EM_FINDTEXTW = 0x47b,
+    EM_FINDTEXTEXW = 0x47c,
+    FR_DOWN = 1,
+    FR_WHOLEWORD = 2,
+    FR_MATCHCASE = 4,
     EM_SETTYPOGRAPHYOPTIONS = 0x4ca,
     EM_SETEDITSTYLE = 0x4cc,
     EM_GETEDITSTYLE = 0x4cd,
@@ -117,7 +127,99 @@ static bool skipped_destination(const char *word)
     return false;
 }
 
-static void rtf_to_text(const char *s, size_t n, struct sbuf *out)
+/* what the RTF says about the look of its text: the color, size, weight and font in force at the first character */
+struct rtf_look {
+    uint32_t colors[16];
+    int ncolors, cf, fs, bold, font, tab;
+    char fonts[4][32];
+    bool seen;
+    struct rich_style style;
+};
+
+static void rtf_colortbl(const char *s, size_t n, size_t *i, struct rtf_look *look)
+{
+    uint32_t c = 0;
+    bool any = false;
+    while (*i < n && s[*i] != '}') {
+        if (s[*i] == ';') {
+            if (look->ncolors < 16)
+                look->colors[look->ncolors++] = any ? c : 0xffffffffu;
+            c = 0;
+            any = false;
+            (*i)++;
+        } else if (s[*i] == '\\') {
+            size_t at = ++*i;
+            while (*i < n && s[*i] >= 'a' && s[*i] <= 'z')
+                (*i)++;
+            unsigned v = 0;
+            while (*i < n && s[*i] >= '0' && s[*i] <= '9')
+                v = v * 10 + (unsigned)(s[(*i)++] - '0');
+            v &= 0xff;
+            if (!strncmp(s + at, "red", 3))
+                c |= v, any = true;
+            else if (!strncmp(s + at, "green", 5))
+                c |= v << 8, any = true;
+            else if (!strncmp(s + at, "blue", 4))
+                c |= v << 16, any = true;
+        } else {
+            (*i)++;
+        }
+    }
+}
+
+/* {\fonttbl{\f0\fswiss Tahoma;}...}: the first four face names */
+static void rtf_fonttbl(const char *s, size_t n, size_t *i, struct rtf_look *look)
+{
+    int depth = 1, id = -1;
+    while (*i < n && depth) {
+        char c = s[*i];
+        if (c == '{') {
+            depth++, (*i)++;
+        } else if (c == '}') {
+            depth--;
+            if (depth)
+                (*i)++;
+        } else if (c == '\\') {
+            (*i)++;
+            if (*i < n && s[*i] == 'f' && *i + 1 < n && s[*i + 1] >= '0' && s[*i + 1] <= '9') {
+                id = 0;
+                for ((*i)++; *i < n && s[*i] >= '0' && s[*i] <= '9'; (*i)++)
+                    id = id * 10 + (s[*i] - '0');
+            } else {
+                while (*i < n && s[*i] != '\\' && s[*i] != ' ' && s[*i] != '{' && s[*i] != '}' && s[*i] != ';')
+                    (*i)++;
+            }
+            if (*i < n && s[*i] == ' ')
+                (*i)++;
+        } else if (id >= 0 && id < 4 && depth == 2) {
+            size_t k = 0;
+            while (*i < n && s[*i] != ';' && s[*i] != '}' && s[*i] != '{' && s[*i] != '\\') {
+                if (k + 1 < sizeof(look->fonts[0]))
+                    look->fonts[id][k++] = s[*i];
+                (*i)++;
+            }
+            look->fonts[id][k] = 0;
+            id = -1;
+        } else {
+            (*i)++;
+        }
+    }
+}
+
+static void rtf_mark(struct rtf_look *look)
+{
+    if (!look || look->seen)
+        return;
+    look->seen = true;
+    look->style.color = look->cf > 0 && look->cf < look->ncolors ? look->colors[look->cf] : 0xffffffffu;
+    look->style.has_color = look->style.color != 0xffffffffu;
+    look->style.twips = look->fs ? look->fs * 10 : 0;
+    look->style.weight = look->bold ? 700 : 400;
+    look->style.tab = look->tab;
+    str_copy(look->style.face, look->font >= 0 && look->font < 4 ? look->fonts[look->font] : "", sizeof(look->style.face));
+}
+
+static void rtf_to_text(const char *s, size_t n, struct sbuf *out, struct rtf_look *look)
 {
     int depth = 0, skip = -1, pending = 0, codepage = 1252;
     int uc[32] = {1};
@@ -149,6 +251,8 @@ static void rtf_to_text(const char *s, size_t n, struct sbuf *out)
                 pending--;
                 continue;
             }
+            if (c != ' ' || out->n)
+                rtf_mark(look);
             sb_ansi(out, (uint8_t)c, codepage);
             continue;
         }
@@ -210,8 +314,17 @@ static void rtf_to_text(const char *s, size_t n, struct sbuf *out)
             i++;
         if (skip >= 0)
             continue;
-        if (skipped_destination(word)) {
+        if (look && !strcmp(word, "colortbl")) {
+            rtf_colortbl(s, n, &i, look);
+        } else if (look && !strcmp(word, "fonttbl")) {
+            rtf_fonttbl(s, n, &i, look);
+        } else if (skipped_destination(word)) {
             skip = depth;
+        } else if (look && !strcmp(word, "tx") && has && !look->tab) {
+            look->tab = (int)param;
+        } else if (look && (!strcmp(word, "cf") || !strcmp(word, "fs") || !strcmp(word, "b") || !strcmp(word, "f"))) {
+            int *field = word[0] == 'c' ? &look->cf : word[0] == 'b' ? &look->bold : word[1] ? &look->fs : &look->font;
+            *field = has ? (int)param : word[0] == 'b';
         } else if (!strcmp(word, "par") || !strcmp(word, "line") || !strcmp(word, "sect") ||
                    !strcmp(word, "page") || !strcmp(word, "row")) {
             sb_put(out, "\r\n", 2);
@@ -239,7 +352,7 @@ static void rtf_to_text(const char *s, size_t n, struct sbuf *out)
 }
 
 /* the text a stream or EM_SETTEXTEX gives, as UTF-8 for the control */
-static char *rich_text(const char *data, size_t n, bool rtf, bool unicode, int codepage)
+static char *rich_text(const char *data, size_t n, bool rtf, bool unicode, int codepage, struct rtf_look *look)
 {
     struct sbuf out = {0};
     /* like RichEdit, SF_RTF data that is not RTF is read as plain text */
@@ -255,7 +368,7 @@ static char *rich_text(const char *data, size_t n, bool rtf, bool unicode, int c
         unicode = true;
     }
     if (rtf) {
-        rtf_to_text(data, n, &out);
+        rtf_to_text(data, n, &out, look);
     } else if (unicode) {
         const WCHAR *w = (const WCHAR *)data;
         for (size_t i = 0; i < n / 2 && w[i]; i++)
@@ -363,8 +476,12 @@ static LRESULT stream_in(struct w32_window *w, WPARAM flags, EDITSTREAM *es)
     w32_free(buf);
     w32_free(got);
     int codepage = flags & SF_USECODEPAGE ? (int)(flags >> 16) : w32_acp();
-    char *text = raw.p ? rich_text(raw.p, raw.n, flags & SF_RTF, (flags & SF_UNICODE) || codepage == 1200, codepage)
+    struct rtf_look look = {.font = 0};
+    char *text = raw.p ? rich_text(raw.p, raw.n, flags & SF_RTF, (flags & SF_UNICODE) || codepage == 1200, codepage,
+                                   &look)
                        : NULL;
+    if (look.seen && !(flags & SFF_SELECTION))
+        w->rich_style = look.style;
     w32_free(raw.p);
     if (!text)
         text = w32_zalloc(1);
@@ -452,12 +569,314 @@ static size_t utf8_chars(const char *s)
     return n;
 }
 
+/* the byte offset of character position cp (-1 or past the end: the end) */
+static size_t byte_at(const char *s, LONG cp)
+{
+    size_t i = 0;
+    for (LONG n = 0; s[i] && (cp < 0 || n < cp); n++)
+        for (i++; ((uint8_t)s[i] & 0xc0) == 0x80; i++)
+            ;
+    return i;
+}
+
+static size_t chars_in(const char *s, size_t bytes)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < bytes; i++)
+        n += ((uint8_t)s[i] & 0xc0) != 0x80;
+    return n;
+}
+
+static void *struct_ptr(const uint8_t *p, size_t off)
+{
+    uint64_t v = 0;
+    memcpy(&v, p + off, w32->win64 ? 8 : 4);
+    return (void *)(uintptr_t)v;
+}
+
+static bool word_char(char c)
+{
+    return (c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') || c == '_' || (uint8_t)c >= 0x80;
+}
+
+static bool matches_at(const char *t, size_t at, const char *n, size_t len, WPARAM flags)
+{
+    for (size_t k = 0; k < len; k++) {
+        char a = t[at + k], b = n[k];
+        if (!a)
+            return false;
+        if (!(flags & FR_MATCHCASE) && a >= 'A' && a <= 'Z')
+            a += 32;
+        if (!(flags & FR_MATCHCASE) && b >= 'A' && b <= 'Z')
+            b += 32;
+        if (a != b)
+            return false;
+    }
+    return !(flags & FR_WHOLEWORD) || ((!at || !word_char(t[at - 1])) && !word_char(t[at + len]));
+}
+
+/* FINDTEXT(EX): CHARRANGE to search, the text, then (EX) the range found; -1 when it is not there */
+static LRESULT find_text(struct w32_window *w, WPARAM flags, uint8_t *ft, bool wide, bool ex)
+{
+    if (!ft || !w->text)
+        return -1;
+    const void *what = struct_ptr(ft, 8);
+    if (!what)
+        return -1;
+    char *needle;
+    if (wide) {
+        needle = w32_narrow(what);
+    } else {
+        WCHAR *tmp = w32_alloc((strlen(what) + 1) * sizeof(WCHAR));
+        size_t n = tmp ? w32_cp_to_wide(what, -1, tmp, strlen(what) + 1, w32_acp()) : 0;
+        if (tmp)
+            tmp[MIN(n, strlen(what))] = 0;
+        needle = tmp ? w32_narrow(tmp) : NULL;
+        w32_free(tmp);
+    }
+    if (!needle)
+        return -1;
+    LONG lo, hi;
+    memcpy(&lo, ft, 4);
+    memcpy(&hi, ft + 4, 4);
+    size_t len = strlen(needle), from = byte_at(w->text, lo), to = byte_at(w->text, hi), found = (size_t)-1;
+    if (len && (flags & FR_DOWN)) {
+        for (size_t i = from; i + len <= to && found == (size_t)-1; i++)
+            if (matches_at(w->text, i, needle, len, flags))
+                found = i;
+    } else if (len) {
+        size_t stop = hi < 0 ? 0 : to;
+        for (size_t i = from + 1; i-- > stop && found == (size_t)-1;)
+            if (matches_at(w->text, i, needle, len, flags))
+                found = i;
+    }
+    w32_free(needle);
+    if (found == (size_t)-1)
+        return -1;
+    LONG at = (LONG)chars_in(w->text, found), end = at + (LONG)chars_in(w->text + found, len);
+    if (ex) {
+        size_t off = 8 + (w32->win64 ? 8 : 4);
+        memcpy(ft + off, &at, 4);
+        memcpy(ft + off + 4, &end, 4);
+    }
+    return at;
+}
+
+/* TEXTRANGE: the characters in a CHARRANGE copied out, UTF-16 for a Unicode window */
+static LRESULT text_range(struct w32_window *w, uint8_t *tr)
+{
+    if (!tr || !w->text)
+        return 0;
+    void *out = struct_ptr(tr, 8);
+    LONG lo, hi;
+    memcpy(&lo, tr, 4);
+    memcpy(&hi, tr + 4, 4);
+    if (!out)
+        return 0;
+    size_t a = byte_at(w->text, lo), b = byte_at(w->text, hi);
+    if (b < a)
+        b = a;
+    char *piece = w32_alloc(b - a + 1);
+    if (!piece)
+        return 0;
+    memcpy(piece, w->text + a, b - a);
+    piece[b - a] = 0;
+    LRESULT n;
+    if (w->unicode || w32_caller_wide) {
+        size_t c = w32_cp_to_wide(piece, -1, NULL, 0, 1);
+        w32_cp_to_wide(piece, -1, out, c + 1, 1);
+        ((WCHAR *)out)[c] = 0;
+        n = (LRESULT)c;
+    } else {
+        WCHAR *tmp = w32_widen(piece);
+        size_t c = tmp ? w32_wide_to_cp(tmp, -1, NULL, 0, w32_acp()) : 0;
+        if (tmp)
+            w32_wide_to_cp(tmp, -1, out, c + 1, w32_acp());
+        ((char *)out)[c] = 0;
+        w32_free(tmp);
+        n = (LRESULT)c;
+    }
+    w32_free(piece);
+    return n;
+}
+
+/* CHARFORMAT: the one look this control keeps for all its text */
+static void set_char_format(struct w32_window *w, const uint8_t *cf)
+{
+    uint32_t mask, effects, height, color;
+    memcpy(&mask, cf + 4, 4);
+    memcpy(&effects, cf + 8, 4);
+    memcpy(&height, cf + 12, 4);
+    memcpy(&color, cf + 20, 4);
+    struct rich_style *st = &w->rich_style;
+    if (mask & 1)
+        st->weight = effects & 1 ? 700 : 400;
+    if (mask & 0x80000000u)
+        st->twips = (int)height;
+    if (mask & 0x40000000u) {
+        st->has_color = !(effects & 0x40000000u);
+        st->color = color;
+    }
+    if (mask & 0x20000000u) {
+        if (w->unicode || w32_caller_wide) {
+            WCHAR face[32];
+            memcpy(face, cf + 26, sizeof(face));
+            face[31] = 0;
+            char *n = w32_narrow(face);
+            str_copy(st->face, n ? n : "", sizeof(st->face));
+            w32_free(n);
+        } else {
+            memcpy(st->face, cf + 26, 31);
+            st->face[31] = 0;
+        }
+    }
+}
+
+typedef HANDLE(WINAPI *font_fn)(int, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD,
+                                const char *);
+
+/* the text between bytes a and b laid out in the control's look on dc inside box (pixels); box comes back as the
+   space it takes, and with render it is drawn */
+static bool lay_text(struct w32_window *w, HANDLE dc, size_t a, size_t b, LONG box[4], bool wrap, bool render)
+{
+    font_fn create = (font_fn)w32_builtin_lookup("gdi32.dll", "CreateFontA");
+    HANDLE(WINAPI * select)(HANDLE, HANDLE) = (HANDLE(WINAPI *)(HANDLE, HANDLE))w32_builtin_lookup("gdi32.dll", "SelectObject");
+    BOOL(WINAPI * del)(HANDLE) = (BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("gdi32.dll", "DeleteObject");
+    int(WINAPI * caps)(HANDLE, int) = (int(WINAPI *)(HANDLE, int))w32_builtin_lookup("gdi32.dll", "GetDeviceCaps");
+    COLORREF(WINAPI * text_color)(HANDLE, COLORREF) =
+        (COLORREF(WINAPI *)(HANDLE, COLORREF))w32_builtin_lookup("gdi32.dll", "SetTextColor");
+    int(WINAPI * bk_mode)(HANDLE, int) = (int(WINAPI *)(HANDLE, int))w32_builtin_lookup("gdi32.dll", "SetBkMode");
+    int(WINAPI * draw)(HANDLE, const WCHAR *, int, RECT *, UINT, int *) =
+        (int(WINAPI *)(HANDLE, const WCHAR *, int, RECT *, UINT, int *))w32_builtin_lookup("user32.dll", "DrawTextExW");
+    BOOL(WINAPI * metrics)(HANDLE, uint8_t *) = (BOOL(WINAPI *)(HANDLE, uint8_t *))w32_builtin_lookup("gdi32.dll", "GetTextMetricsW");
+    if (!create || !select || !del || !caps || !text_color || !bk_mode || !draw || !metrics || b < a)
+        return false;
+    int dpy = caps(dc, 90);
+    const struct rich_style *st = &w->rich_style;
+    int px = (st->twips > 0 ? st->twips : 200) * (dpy > 0 ? dpy : 96) / 1440;
+    char *face = w32_alloc(32), *piece = w32_alloc(b - a + 1);
+    RECT *r = w32_alloc(sizeof(RECT));
+    int *params = w32_zalloc(5 * sizeof(int));
+    uint8_t *tm = w32_zalloc(64);
+    WCHAR *text = NULL;
+    if (face && piece) {
+        str_copy(face, st->face[0] ? st->face : "Segoe UI", 32);
+        memcpy(piece, w->text + a, b - a);
+        piece[b - a] = 0;
+        text = w32_widen(piece);
+    }
+    w32_free(piece);
+    if (!text || !r || !params || !tm) {
+        w32_free(face);
+        w32_free(text);
+        w32_free(r);
+        w32_free(params);
+        w32_free(tm);
+        return false;
+    }
+    HANDLE font = create(-MAX(px, 1), 0, 0, 0, st->weight ? st->weight : 400, 0, 0, 0, 1, 0, 0, 0, 0, face);
+    HANDLE old = font ? select(dc, font) : NULL;
+    UINT flags = (wrap ? 0x10 : 0) | 0x40 | 0x800; /* DT_WORDBREAK, DT_EXPANDTABS, DT_NOPREFIX */
+    LONG avg = 0;
+    if (metrics(dc, tm))
+        memcpy(&avg, tm + 20, 4);
+    params[0] = 5 * sizeof(int);
+    params[1] = st->tab > 0 && avg > 0 ? MAX(1, (int)((st->tab * (dpy > 0 ? dpy : 96) / 1440 + avg - 1) / avg)) : 0;
+    *r = (RECT){box[0], box[1], box[2], box[3]};
+    draw(dc, text, -1, r, flags | 0x400, params); /* DT_CALCRECT */
+    LONG right = r->right, bottom = r->bottom;
+    if (render) {
+        *r = (RECT){box[0], box[1], box[2], box[3]};
+        text_color(dc, st->has_color ? st->color : w32_colorref(style.text));
+        bk_mode(dc, 1);
+        draw(dc, text, -1, r, flags, params);
+    }
+    box[2] = right;
+    box[3] = bottom;
+    if (old)
+        select(dc, old);
+    if (font)
+        del(font);
+    w32_free(text);
+    w32_free(face);
+    w32_free(r);
+    w32_free(params);
+    w32_free(tm);
+    return true;
+}
+
+/* FORMATRANGE: the text from chrg.cpMin drawn into hdc inside rc (twips); wParam 0 only measures. rc.bottom becomes
+   the bottom of the text, and the result is the first character that did not fit (all of them do). */
+static LRESULT format_range(struct w32_window *w, WPARAM render, uint8_t *fr)
+{
+    if (!fr || !w->text)
+        return 0;
+    size_t p = w32->win64 ? 8 : 4;
+    HANDLE dc = struct_ptr(fr, 0);
+    LONG rc[4], from, to;
+    memcpy(rc, fr + 2 * p, 16);
+    memcpy(&from, fr + 2 * p + 32, 4);
+    memcpy(&to, fr + 2 * p + 36, 4);
+    size_t a = byte_at(w->text, from), b = byte_at(w->text, to);
+    LONG total = (LONG)utf8_chars(w->text);
+    int(WINAPI * caps)(HANDLE, int) = (int(WINAPI *)(HANDLE, int))w32_builtin_lookup("gdi32.dll", "GetDeviceCaps");
+    if (!dc || b <= a || !caps)
+        return total;
+    int dpx = caps(dc, 88), dpy = caps(dc, 90);
+    dpx = dpx > 0 ? dpx : 96;
+    dpy = dpy > 0 ? dpy : 96;
+    LONG box[4] = {rc[0] * dpx / 1440, rc[1] * dpy / 1440, rc[2] * dpx / 1440, rc[3] * dpy / 1440};
+    LONG limit = box[3];
+    if (lay_text(w, dc, a, b, box, true, render)) {
+        LONG bottom = (MIN(box[3], limit) - rc[1] * dpy / 1440) * 1440 / dpy + rc[1];
+        memcpy(fr + 2 * p + 12, &bottom, 4);
+    }
+    return total;
+}
+
+/* EM_REQUESTRESIZE: EN_REQUESTRESIZE tells the parent the size the whole text needs */
+static void request_resize(struct w32_window *w)
+{
+    HANDLE(WINAPI * mem_dc)(HANDLE) = (HANDLE(WINAPI *)(HANDLE))w32_builtin_lookup("gdi32.dll", "CreateCompatibleDC");
+    BOOL(WINAPI * del_dc)(HANDLE) = (BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("gdi32.dll", "DeleteDC");
+    if (!w->parent || !w->text || !mem_dc || !del_dc)
+        return;
+    HANDLE dc = mem_dc(NULL);
+    LONG box[4] = {0, 0, 32767, 32767};
+    bool ok = dc && lay_text(w, dc, 0, strlen(w->text), box, false, false);
+    if (dc)
+        del_dc(dc);
+    if (!ok)
+        return;
+    size_t p = w32->win64 ? 8 : 4, hs = 3 * p;
+    uint8_t *nm = w32_zalloc(hs + 16);
+    if (!nm)
+        return;
+    uint64_t hwnd = (uintptr_t)w, id = (uint64_t)w->id;
+    int code = 0x701;
+    memcpy(nm, &hwnd, p);
+    memcpy(nm + p, &id, p);
+    memcpy(nm + 2 * p, &code, 4);
+    memcpy(nm + hs, box, 16);
+    w32_send(w->parent, WM_NOTIFY, (WPARAM)w->id, (LPARAM)(uintptr_t)nm);
+    w32_free(nm);
+}
+
 LRESULT w32_richedit_msg(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, bool *handled)
 {
     *handled = true;
     switch (msg) {
     case EM_STREAMIN: return stream_in(w, wp, (EDITSTREAM *)lp);
     case EM_STREAMOUT: return stream_out(w, wp, (EDITSTREAM *)lp);
+    case EM_FINDTEXT:
+    case EM_FINDTEXTW:
+    case EM_FINDTEXTEX:
+    case EM_FINDTEXTEXW:
+        return find_text(w, wp, (uint8_t *)lp, msg == EM_FINDTEXTW || msg == EM_FINDTEXTEXW,
+                         msg == EM_FINDTEXTEX || msg == EM_FINDTEXTEXW);
+    case EM_GETTEXTRANGE: return text_range(w, (uint8_t *)lp);
+    case EM_FORMATRANGE: return format_range(w, wp, (uint8_t *)lp);
+    case EM_REQUESTRESIZE: request_resize(w); return 0;
     case EM_SETTEXTEX: {
         const DWORD *st = (const DWORD *)wp;
         UINT cp = st ? st[1] : 0;
@@ -467,23 +886,32 @@ LRESULT w32_richedit_msg(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, b
             return 1;
         }
         size_t n = unicode ? w32_wcslen((const WCHAR *)lp) * 2 : strlen((const char *)lp);
-        set_text(w, rich_text((const char *)lp, n, false, unicode, cp && cp != 1200 ? (int)cp : w32_acp()),
+        set_text(w, rich_text((const char *)lp, n, false, unicode, cp && cp != 1200 ? (int)cp : w32_acp(), NULL),
                  st && (st[0] & 2));
         return 1;
     }
     case EM_GETTEXTLENGTHEX: return w->text ? (LRESULT)utf8_chars(w->text) : 0;
     case EM_EXLIMITTEXT: w->edit_cap = lp ? (size_t)lp : 65536; return 0;
-    case EM_EXGETSEL:
-        if (lp)
-            ((LONG *)lp)[0] = ((LONG *)lp)[1] = (LONG)w->caret;
+    case EM_EXGETSEL: {
+        size_t from, to;
+        w32_edit_selection(w, &from, &to);
+        if (lp && w->text) {
+            ((LONG *)lp)[0] = (LONG)chars_in(w->text, from);
+            ((LONG *)lp)[1] = (LONG)chars_in(w->text, to);
+        }
         return 0;
+    }
     case EM_EXSETSEL:
         if (lp && w->text) {
-            LONG at = ((const LONG *)lp)[1];
-            size_t len = strlen(w->text);
-            w->caret = at < 0 ? len : MIN((size_t)at, len);
+            LONG lo = ((const LONG *)lp)[0], hi = ((const LONG *)lp)[1];
+            if (lo == 0 && hi == -1)
+                w32_edit_select(w, 0, strlen(w->text));
+            else if (lo < 0)
+                w->has_sel = false;
+            else
+                w32_edit_select(w, byte_at(w->text, lo), byte_at(w->text, hi));
         }
-        return (LRESULT)w->caret;
+        return w->text ? (LRESULT)chars_in(w->text, w->caret) : 0;
     case EM_SETBKGNDCOLOR: return 0xffffff;
     case EM_SETEVENTMASK:
     case EM_GETEVENTMASK:
@@ -497,7 +925,19 @@ LRESULT w32_richedit_msg(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, b
     case EM_SETEDITSTYLE:
     case EM_GETEDITSTYLE: return 0;
     case EM_SETCHARFORMAT:
-    case EM_SETPARAFORMAT:
+        if (lp)
+            set_char_format(w, (const uint8_t *)lp);
+        return 1;
+    case EM_SETPARAFORMAT: {
+        const uint8_t *pf = (const uint8_t *)lp;
+        uint32_t mask = 0;
+        int16_t count = 0;
+        if (pf)
+            memcpy(&mask, pf + 4, 4), memcpy(&count, pf + 26, 2);
+        if ((mask & 0x10) && count > 0)
+            memcpy(&w->rich_style.tab, pf + 28, 4);
+        return 1;
+    }
     case EM_SETTARGETDEVICE:
     case EM_SETTYPOGRAPHYOPTIONS:
     case EM_SETZOOM: return 1;

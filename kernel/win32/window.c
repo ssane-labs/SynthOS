@@ -5,6 +5,7 @@
 #include <synth/heap.h>
 #include <synth/keys.h>
 #include <synth/log.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 
 #include "w32gui.h"
@@ -1679,7 +1680,21 @@ LRESULT WINAPI w32_def_window_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
     return def_proc(h, msg, wp, lp, w && w->unicode);
 }
 
+W32_STATE bool w32_caller_wide;
+
+static LRESULT send_as(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, bool unicode);
+
+/* the built-in controls see through w32_caller_wide whether the sender used the W API, for structures with text */
 static LRESULT send_converted(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, bool unicode)
+{
+    bool saved = w32_caller_wide;
+    w32_caller_wide = unicode;
+    LRESULT r = send_as(w, msg, wp, lp, unicode);
+    w32_caller_wide = saved;
+    return r;
+}
+
+static LRESULT send_as(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, bool unicode)
 {
     if (!w)
         return 0;
@@ -1923,7 +1938,7 @@ static UINT WINAPI IsDlgButtonChecked(HANDLE dlg, int id)
 /* a dialog keeps DWLP_MSGRESULT, DWLP_DLGPROC and DWLP_USER at 0, 4 and 8 (NSIS plugins swap the procedure) */
 static bool dialog_slot(const struct w32_window *w, int index)
 {
-    return (w->cls->dialog || w->dlgproc) && (index == 0 || index == 4 || index == 8);
+    return (w->cls->dialog || w->is_dialog || w->dlgproc) && (index == 0 || index == 4 || index == 8);
 }
 
 static intptr_t get_long(struct w32_window *w, int index)
@@ -2657,9 +2672,24 @@ static void ui_logfont(uint8_t *lf, bool wide, LONG weight)
     w32_logfont(lf, wide, -12, weight, 0, 0, "Segoe UI");
 }
 
+/* SPI_SETDESKWALLPAPER: a picture file becomes the desktop background, an empty name the theme's own */
+static BOOL set_wallpaper(const void *name, bool wide)
+{
+    char *win = wide ? w32_narrow(name) : NULL, vfs[PATH_MAX_LEN];
+    const char *path = wide ? win : name;
+    int err = !path || !path[0] ? 0 : w32_path(path, vfs, sizeof(vfs));
+    if (!err)
+        err = setting_apply(NULL, "wallpaper", path && path[0] ? vfs : "auto");
+    w32_free(win);
+    if (err) {
+        w32_set_error(w32_error_from_vfs(err));
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL system_parameters(UINT action, UINT param, void *out, bool wide)
 {
-    UNUSED(param);
     uint8_t *b = out;
     DWORD *d = out;
     int lf = wide ? 92 : 60;
@@ -2714,7 +2744,21 @@ static BOOL system_parameters(UINT action, UINT param, void *out, bool wide)
     case 0x5f: *d = 0; return TRUE;
     case 0x0d:
     case 0x18: *d = 75; return TRUE;
-    case 0x73: if (wide) *(WCHAR *)b = 0; else *b = 0; return TRUE;
+    case 0x14: return set_wallpaper(out, wide);
+    case 0x73: {
+        char cur[PATH_MAX_LEN] = "", win[PATH_MAX_LEN] = "";
+        const struct setting *st = setting_find("wallpaper");
+        if (st)
+            st->get(cur, sizeof(cur));
+        if (cur[0] == '/')
+            w32_path_to_win(cur, win, sizeof(win));
+        size_t cap = param ? param : 260;
+        if (wide)
+            w32_cp_to_wide(win, -1, (WCHAR *)b, cap, 1), ((WCHAR *)b)[MIN(strlen(win), cap - 1)] = 0;
+        else
+            str_copy((char *)b, win, cap);
+        return TRUE;
+    }
     default:
         if (action >= 0x1000 && action < 0x2000 && !(action & 1)) {
             *d = action == 0x1002 || action == 0x1004 || action == 0x1042 || action == 0x1024 || action == 0x1012 ||

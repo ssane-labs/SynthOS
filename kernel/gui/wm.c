@@ -705,6 +705,9 @@ static struct ghost *ghost_new(enum anim_kind kind, struct window *w)
     g->ms = ghost_ms(kind, w->flags);
     g->anchor = w->anchor;
     g->start = hal_ticks_ms();
+    /* the first frame may reach the screen before the next tick measures it: damage covers it from the start */
+    int m = MAX(g->margin, glass_margin());
+    g->drawn = (struct rect){w->frame.x - m, w->frame.y - m, w->frame.w + 2 * m, w->frame.h + 2 * m};
     g->next = ghosts;
     ghosts = g;
     return g;

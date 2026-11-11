@@ -600,6 +600,108 @@ static void ole_test(void)
     printf("imagelist first=%d count=%d size=%dx%d\n", first, il_count(il), cx, cy);
 }
 
+static int dlg_init, dlg_list;
+
+static INT_PTR CALLBACK own_dlg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)wp;
+    (void)lp;
+    if (msg == WM_INITDIALOG) {
+        dlg_init++;
+        dlg_list = (int)SendDlgItemMessageW(h, 100, LB_ADDSTRING, 0, (LPARAM)L"Boot Time");
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static LRESULT CALLBACK own_class_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    return DefDlgProcW(h, msg, wp, lp);
+}
+
+/* a dialog of the program's own class (BGInfo): WM_INITDIALOG reaches the dialog procedure through DefDlgProc, and
+   a control named by the predefined ordinal 0x83 is a list box */
+static void dialog_class_test(HWND parent)
+{
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = own_class_proc;
+    wc.cbWndExtra = DLGWINDOWEXTRA;
+    wc.lpszClassName = L"OwnDialog";
+    RegisterClassW(&wc);
+    static WORD tmpl[64];
+    WORD *p = tmpl;
+    DLGTEMPLATE *d = (DLGTEMPLATE *)p;
+    d->style = WS_POPUP | WS_CAPTION;
+    d->cdit = 1;
+    d->cx = 100;
+    d->cy = 60;
+    p = (WORD *)(d + 1);
+    *p++ = 0;
+    for (const WCHAR *c = L"OwnDialog";; c++) {
+        *p++ = *c;
+        if (!*c)
+            break;
+    }
+    *p++ = 0;
+    if ((ULONG_PTR)p & 2)
+        p++;
+    DLGITEMTEMPLATE *it = (DLGITEMTEMPLATE *)p;
+    it->style = WS_CHILD | WS_VISIBLE | LBS_NOTIFY;
+    it->cx = 80;
+    it->cy = 40;
+    it->id = 100;
+    p = (WORD *)(it + 1);
+    *p++ = 0xffff;
+    *p++ = 0x83;
+    *p++ = 0;
+    *p++ = 0;
+    HWND dlg = CreateDialogIndirectParamW(NULL, (DLGTEMPLATE *)tmpl, parent, own_dlg_proc, 0);
+    char cls[32] = "";
+    GetClassNameA(GetDlgItem(dlg, 100), cls, sizeof(cls));
+    printf("dlgclass init=%d list=%s count=%d\n", dlg_init, cls, (int)SendDlgItemMessageW(dlg, 100, LB_GETCOUNT, 0, 0));
+    DestroyWindow(dlg);
+}
+
+/* what BGInfo does with its template: find the fields, read their names, replace them and lay the text out */
+static void richfind_test(HWND parent)
+{
+    HWND re = CreateWindowExW(0, L"RICHEDIT50W", L"", WS_CHILD | ES_MULTILINE, 0, 0, 200, 100, parent, (HMENU)9,
+                              NULL, NULL);
+    SetWindowTextW(re, L"Name:\t<Host>\tend");
+    FINDTEXTEXW ft = {{0, -1}, L"<", {0, 0}};
+    LONG at = (LONG)SendMessageW(re, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft);
+    FINDTEXTW close = {{at, -1}, L">"};
+    LONG end = (LONG)SendMessageW(re, EM_FINDTEXTW, FR_DOWN, (LPARAM)&close);
+    WCHAR name[16] = L"";
+    TEXTRANGEW tr = {{at, end + 1}, name};
+    SendMessageW(re, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
+    CHARRANGE sel = {at, end + 1};
+    SendMessageW(re, EM_EXSETSEL, 0, (LPARAM)&sel);
+    SendMessageW(re, EM_REPLACESEL, 0, (LPARAM)L"SYNTH");
+    WCHAR text[32] = L"";
+    GetWindowTextW(re, text, 32);
+    for (WCHAR *c = text; *c; c++)
+        if (*c == '\t')
+            *c = '|';
+    HDC dc = CreateCompatibleDC(NULL);
+    FORMATRANGE fr = {dc, dc, {0, 0, 1440 * 4, 1440 * 4}, {0, 0, 1440 * 4, 1440 * 4}, {0, -1}};
+    LONG fits = (LONG)SendMessageW(re, EM_FORMATRANGE, FALSE, (LPARAM)&fr);
+    RECT a = {0, 0, 400, 100}, b = {0, 0, 400, 100};
+    DrawTextA(dc, "ab", -1, &a, DT_CALCRECT | DT_EXPANDTABS);
+    DrawTextA(dc, "a\tb", -1, &b, DT_CALCRECT | DT_EXPANDTABS);
+    DeleteDC(dc);
+    HWND tb = CreateWindowExW(0, TOOLBARCLASSNAMEW, L"", WS_CHILD | TBSTYLE_TOOLTIPS, 0, 0, 100, 20, parent, NULL,
+                              NULL, NULL);
+    printf("richfind at=%ld found=%ld end=%ld name=%ls text=%ls fits=%d tall=%d tabs=%d tips=%d\n", at,
+           ft.chrgText.cpMax, end, name, text, fits == (LONG)wcslen(text), fr.rc.bottom > 0, b.right > a.right + 10,
+           SendMessageW(tb, TB_GETTOOLTIPS, 0, 0) != 0);
+    WCHAR wall[MAX_PATH] = L"?";
+    BOOL set = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (void *)L"C:\\pic.bmp", 0);
+    SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, wall, 0);
+    SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (void *)L"", 0);
+    printf("wallpaper set=%d now=%ls\n", set, wall);
+}
+
 static void shlwapi_test(void)
 {
     HMODULE sh = LoadLibraryA("shlwapi.dll");
@@ -637,6 +739,8 @@ int main(void)
         tree_test(parent);
         rebar_test(parent);
         header_test(parent);
+        dialog_class_test(parent);
+        richfind_test(parent);
         mdi_test(parent);
         find_test(parent);
         dialogs_test(parent);

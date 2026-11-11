@@ -482,8 +482,35 @@ static LRESULT progress_msg(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp
     }
 }
 
+bool w32_edit_selection(struct w32_window *w, size_t *from, size_t *to)
+{
+    size_t len = w->text ? strlen(w->text) : 0;
+    if (!w->has_sel || w->sel_at != w->caret || w->caret > len || w->sel_anchor == w->caret) {
+        *from = *to = MIN(w->caret, len);
+        return false;
+    }
+    *from = MIN(MIN(w->sel_anchor, w->caret), len);
+    *to = MIN(MAX(w->sel_anchor, w->caret), len);
+    return *from < *to;
+}
+
+void w32_edit_select(struct w32_window *w, size_t anchor, size_t caret)
+{
+    size_t len = w->text ? strlen(w->text) : 0;
+    w->caret = MIN(caret, len);
+    w->sel_anchor = MIN(anchor, len);
+    w->sel_at = w->caret;
+    w->has_sel = true;
+}
+
 static void edit_insert(struct w32_window *w, const char *s)
 {
+    size_t from, to;
+    if (w32_edit_selection(w, &from, &to)) {
+        memmove(w->text + from, w->text + to, strlen(w->text + to) + 1);
+        w->caret = from;
+    }
+    w->has_sel = false;
     size_t len = strlen(w->text), add = strlen(s);
     size_t limit = w->edit_cap ? w->edit_cap : 32767;
     if (len + add > limit)
@@ -678,15 +705,19 @@ LRESULT WINAPI w32_control_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
     case BM_GETSTATE: return (w->checked ? 1 : 0) | (w->pressed ? 4 : 0);
     case BM_CLICK: click(w); return 0;
     case EM_GETSEL: {
-        DWORD c = (DWORD)w->caret;
+        size_t from, to;
+        w32_edit_selection(w, &from, &to);
         if (wp)
-            *(DWORD *)wp = c;
+            *(DWORD *)wp = (DWORD)from;
         if (lp)
-            *(DWORD *)lp = c;
-        return (LRESULT)(c | c << 16);
+            *(DWORD *)lp = (DWORD)to;
+        return (LRESULT)(MIN(from, 0xffffu) | MIN(to, 0xffffu) << 16);
     }
     case EM_SETSEL:
-        w->caret = MIN((size_t)(lp == -1 ? strlen(w->text) : (size_t)lp), strlen(w->text));
+        if ((int)wp == -1)
+            w->has_sel = false;
+        else
+            w32_edit_select(w, (int)wp < 0 ? 0 : (size_t)wp, lp == -1 ? strlen(w->text) : (size_t)lp);
         w32_invalidate(w, NULL, true);
         return 0;
     case EM_REPLACESEL:
