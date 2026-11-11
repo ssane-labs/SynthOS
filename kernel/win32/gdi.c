@@ -55,7 +55,7 @@ struct gdi_obj {
     struct canvas canvas;
     int bpp;
     void *bits;
-    bool mapped, dib;
+    bool mapped, dib, mono;
     struct rect region;
     uint32_t *colors;
     int ncolors;
@@ -134,7 +134,8 @@ COLORREF w32_syscolor(int index)
 static struct gdi_obj *obj(HANDLE h)
 {
     struct gdi_obj *o = h;
-    if ((uintptr_t)h < 0x10000 || !o || o->magic != W32_GDI_MAGIC)
+    if ((uintptr_t)h < 0x10000 || (o != &default_bitmap_obj && !w32_heap_owns(o, sizeof(*o))) ||
+        o->magic != W32_GDI_MAGIC)
         return NULL;
     return o;
 }
@@ -2548,6 +2549,8 @@ static HANDLE WINAPI CreateBitmap(int w, int h, UINT planes, UINT bpp, const voi
 {
     UNUSED(planes);
     struct gdi_obj *o = new_bitmap(w, -h, NULL, 32);
+    if (o)
+        o->mono = bpp == 1 && planes == 1;
     if (!o || !bits || w <= 0 || h <= 0)
         return o;
     if (bpp == 32) {
@@ -2817,7 +2820,13 @@ static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx
     if (!dw || !dh)
         return TRUE;
     struct bitmap_info bmi = {40, sb ? sb->canvas.w : 0, sb ? sb->height : 0, 1, (WORD)(sb ? sb->bpp : 32), 0, 0, 0, 0, 0, 0};
-    if (rop == SRCCOPY && uses_src && !(sb && sb->bpp != 32) && dw == sw && dh == sh && dw > 0 && dh > 0) {
+    /* colour to monochrome: the source DC's background colour turns white, the rest black;
+       monochrome to colour: black takes the destination's text colour, white its background colour */
+    bool to_mono = d->memory && d->s.bitmap && d->s.bitmap->mono, from_mono = sb && sb->mono;
+    int convert = uses_src && to_mono != from_mono ? (to_mono ? 1 : 2) : 0;
+    uint32_t key = s ? w32_rgb(s->s.bk) & 0xffffff : 0, fore = w32_rgb(d->s.text) & 0xffffff,
+             back = w32_rgb(d->s.bk) & 0xffffff;
+    if (rop == SRCCOPY && uses_src && !convert && !(sb && sb->bpp != 32) && dw == sw && dh == sh && dw > 0 && dh > 0) {
         /* BitBlt: rows of a 32-bit source copied as they are (how programs present their frames) */
         int x0 = MAX(dt.clip.x - (dt.ox + dx), MAX(-(st.ox + sx), 0));
         int x1 = MIN(dt.clip.x + dt.clip.w - (dt.ox + dx), MIN(st.c->w - (st.ox + sx), dw));
@@ -2864,7 +2873,13 @@ static BOOL stretch(HANDLE hd, int dx, int dy, int dw, int dh, HANDLE hs, int sx
                     src = st.c->px[py * st.c->stride + px];
                 }
             }
+            if (convert == 1)
+                src = (src & 0xffffff) == key ? 0xffffff : 0;
+            else if (convert == 2)
+                src = src & 0xffffff ? back : fore;
             uint32_t v = rop == ROP_ALPHA ? alpha_blend(src, *out) : raster(src & 0xffffff, *out & 0xffffff, pat, rop);
+            if (to_mono)
+                v = v & 0xffffff ? 0xffffff : 0;
             *out = (v & 0xffffff) | 0xff000000u;
         }
     }
@@ -3733,6 +3748,22 @@ static bool bitmap_pixel(struct gdi_obj *b, int x, int y, uint32_t *out)
     return true;
 }
 
+bool w32_bitmap_pixel(HANDLE bitmap, int x, int y, uint32_t *out)
+{
+    struct gdi_obj *b = obj(bitmap);
+    return b && b->kind == OBJ_BITMAP && bitmap_pixel(b, x, y, out);
+}
+
+bool w32_bitmap_size(HANDLE bitmap, int *w, int *h)
+{
+    struct gdi_obj *b = obj(bitmap);
+    if (!b || b->kind != OBJ_BITMAP)
+        return false;
+    *w = b->canvas.w;
+    *h = b->canvas.h;
+    return true;
+}
+
 /* images from a bitmap strip: a mask (set = transparent) or the bitmap's own alpha decide what shows */
 static void il_store(struct image_list *il, int index, struct gdi_obj *b, struct gdi_obj *mask, bool keyed,
                      uint32_t key, int n)
@@ -3798,10 +3829,8 @@ static BOOL WINAPI ImageList_Replace(void *h, int i, HANDLE bitmap, HANDLE mask)
     return TRUE;
 }
 
-/* icons carry no pixels here: the slot is kept, empty */
 static int WINAPI ImageList_ReplaceIcon(void *h, int i, HANDLE icon)
 {
-    UNUSED(icon);
     struct image_list *il = il_of(h);
     if (!il || i >= il->count)
         return -1;
@@ -3810,7 +3839,8 @@ static int WINAPI ImageList_ReplaceIcon(void *h, int i, HANDLE icon)
             return -1;
         i = il->count++;
     }
-    memset(il_cell(il, i), 0, (size_t)il->cx * (size_t)il->cy * 4);
+    if (!w32_icon_render(icon, il_cell(il, i), il->cx, il->cy))
+        memset(il_cell(il, i), 0, (size_t)il->cx * (size_t)il->cy * 4);
     return i;
 }
 
@@ -3979,7 +4009,7 @@ static HANDLE WINAPI ImageList_GetIcon(void *h, int i, UINT flags)
 {
     UNUSED(flags);
     struct image_list *il = il_of(h);
-    return il && i >= 0 && i < il->count ? (HANDLE)(uintptr_t)(0x30000u | 32512u) : NULL;
+    return il && i >= 0 && i < il->count ? w32_icon_from_argb(il_cell(il, i), il->cx, il->cy, il->cx) : NULL;
 }
 
 static void *WINAPI ImageList_Merge(void *a, int ia, void *b, int ib, int dx, int dy)

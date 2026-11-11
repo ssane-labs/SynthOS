@@ -127,12 +127,6 @@ enum {
     POPUP_ITEMS = 48,
 };
 
-typedef struct {
-    UINT type, id, item, action, state;
-    HANDLE hwnd, dc;
-    RECT rect;
-    uintptr_t data;
-} DRAWITEMSTRUCT;
 
 typedef struct {
     UINT type, id, item, width, height;

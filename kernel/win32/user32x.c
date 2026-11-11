@@ -1333,12 +1333,6 @@ static LRESULT WINAPI SendMessageTimeoutW(HANDLE h, UINT msg, WPARAM wp, LPARAM 
     return 1;
 }
 
-static HANDLE WINAPI CreateIconIndirect(void *info)
-{
-    UNUSED(info);
-    return w32_zalloc(16);
-}
-
 static void WINAPI no_op4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
     UNUSED(a);
@@ -1659,9 +1653,6 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("IsWindowArranged", w32_zero1),
     W32_AS("GetMenuInfo", w32_zero2),
     W32_AS("SetMenuInfo", w32_one2),
-    W32_AS("DrawIconEx", w32_one9),
-    W32_FN(CreateIconIndirect),
-    W32_AS("GetIconInfo", w32_zero2),
     W32_FN(MonitorFromWindow),
     W32_FN(MonitorFromPoint),
     W32_AS("MonitorFromRect", MonitorFromWindow),

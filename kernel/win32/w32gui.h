@@ -214,6 +214,8 @@ struct w32_window {
     struct w32_window *focus;
     enum control_kind control;
     bool pressed, hot, checked;
+    HANDLE image; /* BM_SETIMAGE / STM_SETIMAGE: a bitmap, or an icon when image_icon */
+    bool image_icon;
     char *edit_buf;
     size_t edit_cap, edit_len, caret;
     size_t sel_anchor, sel_at; /* a selection from sel_anchor to the caret, while the caret is still at sel_at */
@@ -240,6 +242,13 @@ struct w32_window {
     } rich_style;
     void *list;
 };
+
+typedef struct {
+    UINT type, id, item, action, state;
+    HANDLE hwnd, dc;
+    RECT rect;
+    uintptr_t data;
+} DRAWITEMSTRUCT;
 
 struct w32_window *w32_win(HANDLE h);
 struct w32_window *w32_windows(void);
@@ -277,6 +286,14 @@ void w32_dc_damage(HANDLE dc, struct rect r);
 struct canvas *w32_dc_target(HANDLE dc, int *ox, int *oy, struct rect *clip);
 HANDLE w32_bitmap_argb(int w, int h, const uint32_t *px, int stride);
 struct canvas *w32_bitmap_canvas(HANDLE bitmap);
+bool w32_bitmap_pixel(HANDLE bitmap, int x, int y, uint32_t *out);
+bool w32_bitmap_size(HANDLE bitmap, int *w, int *h);
+HANDLE w32_icon_load(HANDLE inst, const void *name, bool wide, bool icon, int cx, int cy);
+bool w32_icon_render(HANDLE icon, uint32_t *out, int w, int h);
+HANDLE w32_icon_from_argb(const uint32_t *px, int w, int h, int stride);
+bool w32_icon_size(HANDLE icon, int *w, int *h);
+void w32_icon_paint(HANDLE icon, struct canvas *c, struct rect clip, int x, int y, int w, int h, UINT how);
+HANDLE w32_icon_copy(HANDLE icon, int cx, int cy);
 const struct ui_font *w32_pick_font(int height, int weight, const char *face, int pitch);
 uint32_t w32_stream_call(void *stream, int slot, const void *buf, uint32_t n, uint32_t *done);
 HANDLE w32_dc_font(HANDLE dc);

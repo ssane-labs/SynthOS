@@ -63,6 +63,15 @@ static const char *control_class(uint16_t ordinal, const char *name)
     }
 }
 
+/* SS_ICON / SS_BITMAP: the control's text names the resource */
+static void static_image(struct w32_window *w, HANDLE inst, const void *name, bool icon)
+{
+    uint32_t size = 0;
+    const void *dib = icon ? NULL : w32_find_resource(inst, (const void *)2, name, &size);
+    w->image = icon ? w32_icon_load(inst, name, false, true, 32, 32) : dib ? w32_bitmap_from_dib(dib, size) : NULL;
+    w->image_icon = icon;
+}
+
 static int px_x(int dlu)
 {
     return dlu * BASE_X / 4;
@@ -159,6 +168,9 @@ static HANDLE create_dialog(HANDLE inst, const void *templ, HANDLE owner, DLGPRO
         HANDLE c = w32_create_window(item_ex, class_of, text ? text : "", item_style | WS_CHILD, px_x(ix), px_y(iy),
                                      px_x(icx), px_y(icy), dlg, (HANDLE)(uintptr_t)id, inst, NULL);
         struct w32_window *cw = w32_win(c);
+        if (cw && cw->control == CK_STATIC && ((item_style & 0x1f) == 3 || (item_style & 0x1f) == 0xe) &&
+            (title_ord || text))
+            static_image(cw, inst, title_ord ? (const void *)(uintptr_t)title_ord : text, (item_style & 0x1f) == 3);
         if (cw) {
             cw->font = font;
             if (!first_tab && (item_style & WS_TABSTOP))

@@ -5,7 +5,7 @@
 #include <richedit.h>
 #include <commctrl.h>
 
-static int measured, drawn, last_notify;
+static int measured, drawn, last_notify, button_drawn;
 static int tab_notify;
 static int list_changed, last_command;
 static int tree_selected, tree_expanding, tree_deleted;
@@ -21,6 +21,8 @@ static LRESULT CALLBACK parent_proc(HWND h, UINT m, WPARAM w, LPARAM l)
     }
     if (m == WM_DRAWITEM) {
         drawn++;
+        if (((DRAWITEMSTRUCT *)l)->CtlType == ODT_BUTTON)
+            button_drawn++;
         return TRUE;
     }
     if (m == WM_COMMAND) {
@@ -722,6 +724,57 @@ static void shlwapi_test(void)
            urlis(L"https://x.org/", 0), urlis(L"C:\\x", 3), hr ? "" : a, (long)hr, ctype(L"x.TXT", L"text/plain"));
 }
 
+/* icons with pixels: made from a colour bitmap with alpha, drawn over a background, through an image list; a colour
+   bitmap blitted into a monochrome one keys on the source's background colour (CButtonST's masks); owner-drawn and
+   image buttons */
+static void icon_test(HWND parent)
+{
+    HDC dc = CreateCompatibleDC(NULL);
+    HBITMAP target = CreateBitmap(8, 8, 1, 32, NULL);
+    SelectObject(dc, target);
+    RECT all = {0, 0, 8, 8};
+    HBRUSH red = CreateSolidBrush(RGB(255, 0, 0));
+    FillRect(dc, &all, red);
+    DWORD px[16];
+    for (int i = 0; i < 16; i++)
+        px[i] = i == 5 ? 0xff0000ffu : 0;
+    HBITMAP color = CreateBitmap(4, 4, 1, 32, px), mask = CreateBitmap(4, 4, 1, 1, NULL);
+    ICONINFO ii = {TRUE, 0, 0, mask, color};
+    HICON icon = CreateIconIndirect(&ii);
+    DrawIconEx(dc, 0, 0, icon, 0, 0, 0, NULL, DI_NORMAL);
+    COLORREF clear = GetPixel(dc, 0, 0), solid = GetPixel(dc, 1, 1);
+    ICONINFO back = {0};
+    BITMAP bm = {0};
+    BOOL got = GetIconInfo(icon, &back);
+    GetObjectA(back.hbmColor, sizeof(bm), &bm);
+    HIMAGELIST il = ImageList_Create(4, 4, ILC_COLOR32 | ILC_MASK, 1, 1);
+    int at = ImageList_ReplaceIcon(il, -1, icon);
+    FillRect(dc, &all, red);
+    ImageList_Draw(il, at, dc, 4, 4, ILD_NORMAL);
+    COLORREF listed = GetPixel(dc, 5, 5), list_clear = GetPixel(dc, 4, 4);
+    HDC src = CreateCompatibleDC(NULL), mono = CreateCompatibleDC(NULL);
+    HBITMAP pic = CreateBitmap(2, 1, 1, 32, (DWORD[]){0xff00ff, 0x123456});
+    SelectObject(src, pic);
+    SelectObject(mono, mask);
+    SetBkColor(src, RGB(255, 0, 255));
+    BitBlt(mono, 0, 0, 2, 1, src, 0, 0, SRCCOPY);
+    printf("icon clear=%06lx solid=%06lx info=%d size=%ldx%ld list=%06lx/%06lx mask=%06lx/%06lx\n", clear, solid, got,
+           bm.bmWidth, bm.bmHeight, listed, list_clear, GetPixel(mono, 0, 0), GetPixel(mono, 1, 0));
+    HWND own = CreateWindowExA(0, "BUTTON", "own", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 40, 20, parent, (HMENU)77,
+                               NULL, NULL);
+    SendMessageA(own, WM_PRINTCLIENT, (WPARAM)dc, PRF_CLIENT);
+    HWND pictured = CreateWindowExA(0, "BUTTON", "", WS_CHILD | BS_ICON, 0, 0, 40, 20, parent, NULL, NULL, NULL);
+    SendMessageA(pictured, BM_SETIMAGE, IMAGE_ICON, (LPARAM)icon);
+    printf("buttons owner=%d image=%d\n", button_drawn > 0, (HICON)SendMessageA(pictured, BM_GETIMAGE, IMAGE_ICON, 0) == icon);
+    DestroyWindow(own);
+    DestroyWindow(pictured);
+    ImageList_Destroy(il);
+    DestroyIcon(icon);
+    DeleteDC(src);
+    DeleteDC(mono);
+    DeleteDC(dc);
+}
+
 /* BCMenu relabels its menu bar by position with MF_STRING: the item keeps its submenu */
 static void menu_test(void)
 {
@@ -754,6 +807,7 @@ int main(void)
         header_test(parent);
         dialog_class_test(parent);
         richfind_test(parent);
+        icon_test(parent);
         mdi_test(parent);
         find_test(parent);
         dialogs_test(parent);

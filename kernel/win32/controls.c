@@ -23,6 +23,19 @@ enum {
     BM_SETCHECK = 0xf1,
     BM_GETSTATE = 0xf2,
     BM_CLICK = 0xf5,
+    WM_DRAWITEM = 0x2b,
+    BM_GETIMAGE = 0xf6,
+    BM_SETIMAGE = 0xf7,
+    BS_OWNERDRAW = 0xb,
+    BS_ICON = 0x40,
+    BS_BITMAP = 0x80,
+    SS_ICON = 0x3,
+    SS_BITMAP = 0xe,
+    SS_CENTERIMAGE = 0x200,
+    STM_SETICON = 0x170,
+    STM_GETICON = 0x171,
+    STM_SETIMAGE = 0x172,
+    STM_GETIMAGE = 0x173,
     ES_CENTER = 0x1,
     ES_RIGHT = 0x2,
     ES_MULTILINE = 0x4,
@@ -142,12 +155,67 @@ static uint32_t text_color(struct w32_window *w, struct paint_ctx *p)
     return p->custom_text ? w32_rgb(p->text) : style.text;
 }
 
+static bool image_size(struct w32_window *w, int *iw, int *ih)
+{
+    return w->image && (w->image_icon ? w32_icon_size(w->image, iw, ih) : w32_bitmap_size(w->image, iw, ih));
+}
+
+/* a button's or static's image at (x, y); bitmaps without alpha are opaque */
+static void paint_image(struct w32_window *w, struct paint_ctx *p, int x, int y)
+{
+    int iw, ih;
+    if (!image_size(w, &iw, &ih))
+        return;
+    struct rect clip = p->c->clip;
+    if (w->image_icon) {
+        w32_icon_paint(w->image, p->c, clip, x, y, iw, ih, 3);
+        return;
+    }
+    struct canvas *src = w32_bitmap_canvas(w->image);
+    bool alpha = false;
+    for (int n = 0; src && n < iw * ih && !alpha; n++)
+        alpha = src->px[(n / iw) * src->stride + n % iw] >> 24 != 0;
+    for (int yy = 0; yy < ih; yy++)
+        for (int xx = 0; xx < iw; xx++) {
+            int tx = x + xx, ty = y + yy;
+            uint32_t px;
+            if (tx < clip.x || ty < clip.y || tx >= clip.x + clip.w || ty >= clip.y + clip.h ||
+                !w32_bitmap_pixel(w->image, xx, yy, &px))
+                continue;
+            if (!alpha)
+                px |= 0xff000000u;
+            gfx_pixel(p->c, tx, ty, px);
+        }
+}
+
+static void paint_owner(struct w32_window *w, struct paint_ctx *p)
+{
+    DRAWITEMSTRUCT *d = w32_zalloc(sizeof(*d));
+    if (!d)
+        return;
+    d->type = 4;
+    d->id = (UINT)w->id;
+    d->action = 1;
+    d->state = (w->pressed ? 1 : 0) | (w->enabled ? 0 : 4) | (w32_focus() == w ? 0x10 : 0);
+    d->hwnd = w;
+    d->dc = p->dc;
+    d->rect = (RECT){0, 0, w->rect.w, w->rect.h};
+    w32_send(w->parent, WM_DRAWITEM, (WPARAM)w->id, (LPARAM)d);
+    w32_free(d);
+}
+
 static void paint_button(struct w32_window *w)
 {
     struct paint_ctx p;
     if (!begin(w, &p, WM_CTLCOLORBTN))
         return;
     unsigned kind = w->style & 0xf;
+    if (kind == BS_OWNERDRAW) {
+        if (w->parent)
+            paint_owner(w, &p);
+        end(w, &p);
+        return;
+    }
     char label[128];
     strip(label, sizeof(label), w->text);
     const struct ui_font *f = font_for(w);
@@ -184,7 +252,17 @@ static void paint_button(struct w32_window *w)
         if (w->pressed && primary)
             gfx_round(p.c, b, 6, ALPHA(0, 50));
         uint32_t color = primary ? style.accent_text : text_color(w, &p);
-        gfx_text_box(p.c, b, f, label, w->enabled ? color : style.tertiary, ALIGN_CENTER);
+        int iw, ih;
+        if (image_size(w, &iw, &ih)) {
+            /* the image alone (BS_ICON/BS_BITMAP or no text), else the image left of the text */
+            bool alone = (w->style & (BS_ICON | BS_BITMAP)) || !*label;
+            int tw = alone ? 0 : gfx_text_width(f, label) + 4, x = b.x + (b.w - iw - tw) / 2;
+            paint_image(w, &p, x + (w->pressed ? 1 : 0), b.y + (b.h - ih) / 2 + (w->pressed ? 1 : 0));
+            if (!alone)
+                gfx_text(p.c, x + iw + 4, b.y + (b.h - f->height) / 2, f, label, w->enabled ? color : style.tertiary);
+        } else {
+            gfx_text_box(p.c, b, f, label, w->enabled ? color : style.tertiary, ALIGN_CENTER);
+        }
     }
     end(w, &p);
 }
@@ -198,7 +276,12 @@ static void paint_static(struct w32_window *w)
     if (!begin(w, &p, WM_CTLCOLORSTATIC))
         return;
     unsigned kind = w->style & 0x1f;
-    if (kind == SS_BLACKRECT || kind == SS_GRAYRECT || kind == SS_WHITERECT) {
+    int iw, ih;
+    if ((kind == SS_ICON || kind == SS_BITMAP) && image_size(w, &iw, &ih)) {
+        bool center = w->style & SS_CENTERIMAGE;
+        paint_image(w, &p, p.r.x + (center ? (p.r.w - iw) / 2 : 0), p.r.y + (center ? (p.r.h - ih) / 2 : 0));
+    } else if (kind == SS_ICON || kind == SS_BITMAP) {
+    } else if (kind == SS_BLACKRECT || kind == SS_GRAYRECT || kind == SS_WHITERECT) {
         gfx_fill(p.c, p.r, kind == SS_BLACKRECT ? style.text : kind == SS_GRAYRECT ? style.secondary : style.content);
     } else if (kind == SS_ETCHEDHORZ) {
         gfx_fill(p.c, (struct rect){p.r.x, p.r.y, p.r.w, 1}, style.separator);
@@ -704,6 +787,18 @@ LRESULT WINAPI w32_control_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case BM_GETSTATE: return (w->checked ? 1 : 0) | (w->pressed ? 4 : 0);
     case BM_CLICK: click(w); return 0;
+    case BM_GETIMAGE:
+    case STM_GETICON:
+    case STM_GETIMAGE: return (LRESULT)w->image;
+    case BM_SETIMAGE:
+    case STM_SETICON:
+    case STM_SETIMAGE: {
+        HANDLE old = w->image;
+        w->image = (HANDLE)(msg == STM_SETICON ? wp : (WPARAM)lp);
+        w->image_icon = msg == STM_SETICON || wp == 1 || wp == 2;
+        w32_invalidate(w, NULL, true);
+        return (LRESULT)old;
+    }
     case EM_GETSEL: {
         size_t from, to;
         w32_edit_selection(w, &from, &to);

@@ -2794,10 +2794,20 @@ static HANDLE WINAPI LoadCursorA(HANDLE inst, LPCSTR name)
     return (HANDLE)(0x20000u | ((uintptr_t)name & 0xffff));
 }
 
+static HANDLE load_icon(HANDLE inst, const void *name, bool wide)
+{
+    HANDLE h = w32_icon_load(inst, name, wide, true, 32, 32);
+    return h ? h : (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
+}
+
 static HANDLE WINAPI LoadIconA(HANDLE inst, LPCSTR name)
 {
-    UNUSED(inst);
-    return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
+    return load_icon(inst, name, false);
+}
+
+static HANDLE WINAPI LoadIconW(HANDLE inst, LPCWSTR name)
+{
+    return load_icon(inst, name, true);
 }
 
 static HANDLE load_bitmap(HANDLE inst, const void *name, bool section)
@@ -2820,25 +2830,28 @@ static HANDLE named_bitmap(HANDLE inst, const void *name, bool wide, bool sectio
     return h;
 }
 
-static HANDLE load_image(HANDLE inst, const void *name, UINT type, UINT flags, bool wide)
+static HANDLE load_image(HANDLE inst, const void *name, UINT type, int cx, int cy, UINT flags, bool wide)
 {
     if (type == 0)
         return (flags & 0x10) ? NULL : named_bitmap(inst, name, wide, flags & 0x2000);
+    if (type == 1 && !(flags & 0x10)) {
+        if ((flags & 0x40) && !cx)
+            cx = cy = 32;
+        HANDLE h = w32_icon_load(inst, name, wide, true, cx ? cx : 32, cy ? cy : cx ? cx : 32);
+        if (h || inst)
+            return h;
+    }
     return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
 }
 
 static HANDLE WINAPI LoadImageA(HANDLE inst, LPCSTR name, UINT type, int cx, int cy, UINT flags)
 {
-    UNUSED(cx);
-    UNUSED(cy);
-    return load_image(inst, name, type, flags, false);
+    return load_image(inst, name, type, cx, cy, flags, false);
 }
 
 static HANDLE WINAPI LoadImageW(HANDLE inst, LPCWSTR name, UINT type, int cx, int cy, UINT flags)
 {
-    UNUSED(cx);
-    UNUSED(cy);
-    return load_image(inst, name, type, flags, true);
+    return load_image(inst, name, type, cx, cy, flags, true);
 }
 
 static HANDLE WINAPI LoadBitmapA(HANDLE inst, LPCSTR name)
@@ -3398,11 +3411,6 @@ static int WINAPI ShowCursor(BOOL show)
     return show ? 1 : 0;
 }
 
-static BOOL WINAPI DestroyIcon(HANDLE icon)
-{
-    UNUSED(icon);
-    return TRUE;
-}
 
 static struct w32_menu *menu_of(HANDLE h)
 {
@@ -3662,11 +3670,8 @@ static BOOL WINAPI IsMenu(HANDLE h)
 
 static HANDLE WINAPI CopyImage(HANDLE h, UINT type, int cx, int cy, UINT flags)
 {
-    UNUSED(type);
-    UNUSED(cx);
-    UNUSED(cy);
     UNUSED(flags);
-    return h;
+    return type == 1 || type == 2 ? w32_icon_copy(h, cx, cy) : h;
 }
 
 static int WINAPI GetMenuItemCount(HANDLE h)
@@ -4741,9 +4746,9 @@ static const struct w32_export window_exports[] = {
     W32_FN(ReleaseCapture), W32_FN(GetCapture), W32_FN(SetFocus), W32_FN(GetFocus), W32_FN(GetCursorPos),
     W32_FN(SetCursorPos), W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(GetSystemMetrics),
     W32_FN(SystemParametersInfoA), W32_FN(SystemParametersInfoW), W32_FN(SystemParametersInfoForDpi), W32_FN(LoadCursorA),
-    W32_AS("LoadCursorW", LoadCursorA), W32_FN(LoadIconA), W32_AS("LoadIconW", LoadIconA), W32_FN(LoadImageA),
+    W32_AS("LoadCursorW", LoadCursorA), W32_FN(LoadIconA), W32_FN(LoadIconW), W32_FN(LoadImageA),
     W32_FN(LoadImageW),
-    W32_FN(LoadBitmapA), W32_FN(LoadBitmapW), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(DestroyIcon), W32_FN(GetCursor), W32_FN(DestroyCursor),
+    W32_FN(LoadBitmapA), W32_FN(LoadBitmapW), W32_FN(SetCursor), W32_FN(ShowCursor), W32_FN(GetCursor), W32_FN(DestroyCursor),
     W32_FN(SetScrollInfo), W32_FN(GetScrollInfo), W32_FN(SetScrollPos), W32_FN(GetScrollPos), W32_FN(SetScrollRange),
     W32_FN(GetScrollRange), W32_FN(ShowScrollBar), W32_FN(EnableScrollBar), W32_FN(GetScrollBarInfo), W32_FN(ScrollWindowEx),
     W32_FN(ScrollWindow), W32_FN(ScrollDC), W32_FN(IsWindowUnicode), W32_FN(ShowOwnedPopups), W32_FN(DefFrameProcW),

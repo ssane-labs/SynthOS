@@ -699,6 +699,10 @@ config w32headless on; winctl | grep richfind; config w32headless off
 richfind at=6 found=7 end=11 name=<Host> text=Name:|SYNTH|end fits=1 tall=1 tabs=1 tips=1
 config w32headless on; winctl | grep wallpaper; config w32headless off
 wallpaper set=1 now=C:\pic.bmp
+config w32headless on; winctl | grep "icon clear"; config w32headless off
+icon clear=0000ff solid=ff0000 info=1 size=4x4 list=ff0000/0000ff mask=ffffff/000000
+config w32headless on; winctl | grep buttons; config w32headless off
+buttons owner=1 image=1
 winctl | grep shlwapi
 shlwapi wild=4 sep=8 url=1 file=0 path=C:\a b\c.txt hr=0 text=1
 winctl | grep "menu text"

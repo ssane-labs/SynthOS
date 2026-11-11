@@ -85,6 +85,13 @@ void *w32_alloc(size_t size)
     return p;
 }
 
+/* a pointer into the process heap (where GDI objects, icons and windows live): handles a program made up are not */
+bool w32_heap_owns(const void *p, size_t size)
+{
+    const uint8_t *b = p;
+    return b >= w32->heap.start && b + size <= w32->heap.end && b + size >= b;
+}
+
 void *w32_zalloc(size_t size)
 {
     void *p = heap_alloc(&w32->heap, size);

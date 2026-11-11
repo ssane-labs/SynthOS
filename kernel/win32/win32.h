@@ -485,6 +485,7 @@ DWORD w32_error_from_vfs(int err);
 
 void *w32_alloc(size_t size);
 void *w32_zalloc(size_t size);
+bool w32_heap_owns(const void *p, size_t size);
 void *w32_realloc(void *ptr, size_t size);
 void w32_free(void *ptr);
 size_t w32_msize(void *ptr);

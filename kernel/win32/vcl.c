@@ -58,28 +58,6 @@ static BOOL WINAPI OemToCharBuffW(LPCSTR in, LPWSTR out, DWORD n)
     return TRUE;
 }
 
-static HANDLE WINAPI CreateIcon(HANDLE inst, int w, int h, BYTE planes, BYTE bpp, const void *and_bits,
-                                const void *xor_bits)
-{
-    UNUSED(inst);
-    UNUSED(planes);
-    UNUSED(bpp);
-    UNUSED(and_bits);
-    UNUSED(xor_bits);
-    if (w <= 0 || h <= 0)
-        return NULL;
-    HANDLE(WINAPI * make)(void *) = (HANDLE(WINAPI *)(void *))w32_builtin_lookup("user32.dll", "CreateIconIndirect");
-    return make ? make(NULL) : NULL;
-}
-
-static BOOL WINAPI DrawIcon(HANDLE dc, int x, int y, HANDLE icon)
-{
-    BOOL(WINAPI * draw)(HANDLE, int, int, HANDLE, int, int, UINT, HANDLE, UINT) =
-        (BOOL(WINAPI *)(HANDLE, int, int, HANDLE, int, int, UINT, HANDLE, UINT))w32_builtin_lookup("user32.dll",
-                                                                                                    "DrawIconEx");
-    return draw ? draw(dc, x, y, icon, 0, 0, 0, NULL, 3) : FALSE;
-}
-
 #define BUILTIN(dll, name, type) ((type)w32_builtin_lookup(dll, name))
 
 static BOOL draw_state(HANDLE dc, HANDLE brush, void *fn, intptr_t data, uintptr_t wdata, int x, int y, int cx, int cy,
@@ -187,29 +165,11 @@ static BOOL WINAPI GetComboBoxInfo(HANDLE h, uint8_t *info)
     return TRUE;
 }
 
-static HANDLE WINAPI CreateIconFromResourceEx(const uint8_t *bits, DWORD size, BOOL icon, DWORD version, int cx, int cy,
-                                              UINT flags)
-{
-    UNUSED(icon);
-    UNUSED(version);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(flags);
-    if (!bits || size < 8)
-        return NULL;
-    return BUILTIN("user32.dll", "CreateIconIndirect", HANDLE(WINAPI *)(void *))(NULL);
-}
-
-static HANDLE WINAPI CreateIconFromResource(const uint8_t *bits, DWORD size, BOOL icon, DWORD version)
-{
-    return CreateIconFromResourceEx(bits, size, icon, version, 0, 0, 0);
-}
-
 static const struct w32_export vcl_user32[] = {
     W32_FN(CharUpperBuffW), W32_FN(CharLowerBuffW), W32_FN(CharToOemBuffA), W32_FN(OemToCharBuffA),
-    W32_FN(CharToOemBuffW), W32_FN(OemToCharBuffW), W32_FN(CreateIcon), W32_FN(DrawIcon),
+    W32_FN(CharToOemBuffW), W32_FN(OemToCharBuffW), 
     W32_FN(DrawStateW), W32_FN(DrawStateA), W32_FN(GetMenuBarInfo), W32_FN(GetMenuItemRect),
-    W32_FN(GetComboBoxInfo), W32_FN(CreateIconFromResourceEx), W32_FN(CreateIconFromResource),
+    W32_FN(GetComboBoxInfo), 
 };
 
 /* charset, ANSI code page and font signature bit */
@@ -558,14 +518,9 @@ static BOOL WINAPI GetCaretPos(POINT *p)
     return TRUE;
 }
 
-static HANDLE WINAPI CopyIcon(HANDLE icon)
-{
-    return icon;
-}
-
 static const struct w32_export vcl_user32_more[] = {
     W32_FN(BeginDeferWindowPos), W32_FN(DeferWindowPos), W32_FN(EndDeferWindowPos), W32_FN(SubtractRect),
-    W32_FN(SetCaretPos), W32_FN(GetCaretPos), W32_AS("HideCaret", w32_one1), W32_FN(CopyIcon),
+    W32_FN(SetCaretPos), W32_FN(GetCaretPos), W32_AS("HideCaret", w32_one1),
     W32_AS("AttachThreadInput", w32_one3), W32_AS("DrawCaption", w32_one4), W32_AS("EndMenu", w32_one0),
     W32_AS("LockWindowUpdate", w32_one1), W32_AS("PhysicalToLogicalPoint", w32_one2),
     W32_AS("LogicalToPhysicalPoint", w32_one2),
