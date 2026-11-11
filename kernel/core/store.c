@@ -472,6 +472,23 @@ static int install_extra(const struct store_app *a, const struct store_ui *ui, c
     return err;
 }
 
+/* AutoHotkey runs <its name>.ahk from its folder when started without a script: give both builds a first one */
+static void starter_scripts(const char *dir)
+{
+    char *data;
+    size_t len;
+    if (vfs_read_all("/system/store/autohotkey.ahk", &data, &len) != 0)
+        return;
+    static const char *const names[] = {"AutoHotkey32.ahk", "AutoHotkey64.ahk"};
+    for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
+        char path[PATH_MAX_LEN];
+        path_join(dir, names[i], path, sizeof(path));
+        if (!vfs_exists(path))
+            vfs_write_all(path, data, len);
+    }
+    kfree(data);
+}
+
 static int install_zip(const struct store_app *a, const struct store_ui *ui, char *msg, size_t cap)
 {
     struct http_response resp;
@@ -506,6 +523,8 @@ static int install_zip(const struct store_app *a, const struct store_ui *ui, cha
     }
     if (!strcmp(a->post, "python"))
         pkg_python_site(NULL, dir);
+    if (!strcmp(a->post, "autohotkey"))
+        starter_scripts(dir);
     char bin[PATH_MAX_LEN];
     if (a->bin[0]) {
         path_join(dir, a->bin, bin, sizeof(bin));

@@ -243,9 +243,14 @@ static void list_test(HWND parent)
     SendMessageW(sb, SB_SETTEXTW, 1, (LPARAM)L"3 files");
     WCHAR st[16] = {0};
     SendMessageW(sb, SB_GETTEXTW, 1, (LPARAM)st);
-    printf("toolbar count=%d cmd=%d checked=%d status=%ls parts=%d\n", (int)SendMessageW(tb, TB_BUTTONCOUNT, 0, 0),
-           last_command, (int)SendMessageW(tb, TB_ISBUTTONCHECKED, 102, 0), st,
-           (int)SendMessageW(sb, SB_GETPARTS, 0, 0));
+    HBITMAP strip = CreateBitmap(48, 16, 1, 32, NULL);
+    HWND tb2 = CreateToolbarEx(parent, WS_CHILD, 12, 3, NULL, (UINT_PTR)strip, buttons, 1, 16, 16, 48, 16,
+                               sizeof(TBBUTTON));
+    RECT sr;
+    SendMessageW(tb2, TB_GETITEMRECT, 0, (LPARAM)&sr);
+    printf("toolbar count=%d cmd=%d checked=%d status=%ls parts=%d strip=%d\n",
+           (int)SendMessageW(tb, TB_BUTTONCOUNT, 0, 0), last_command, (int)SendMessageW(tb, TB_ISBUTTONCHECKED, 102, 0),
+           st, (int)SendMessageW(sb, SB_GETPARTS, 0, 0), sr.right - sr.left < 40);
 }
 
 /* a rebar that does not align to its parent still takes the parent's width; mixed buttons show only chosen text */
@@ -275,6 +280,38 @@ static void rebar_test(HWND parent)
     printf("rebar width=%d height=%d mixed=%d\n", rr.right - rr.left == pr.right, rr.bottom - rr.top >= 24,
            shown.right - shown.left > 2 * (plain.right - plain.left));
     DestroyWindow(rb);
+}
+
+/* columns added at Header_GetItemCount keep their order; tabs keep TCM_SETITEMEXTRA bytes */
+static void header_test(HWND parent)
+{
+    HWND lv = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | LVS_REPORT, 0, 0, 300, 200, parent, (HMENU)22, NULL,
+                              NULL);
+    HWND head = (HWND)SendMessageW(lv, LVM_GETHEADER, 0, 0);
+    const WCHAR *names[3] = {L"Entry", L"Description", L"Path"};
+    for (int i = 0; i < 3; i++) {
+        LVCOLUMNW col = {0};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.cx = 80;
+        col.pszText = (WCHAR *)names[i];
+        SendMessageW(lv, LVM_INSERTCOLUMNW, Header_GetItemCount(head), (LPARAM)&col);
+    }
+    WCHAR first[16] = {0};
+    HDITEMW hi = {0};
+    hi.mask = HDI_TEXT | HDI_WIDTH;
+    hi.pszText = first;
+    hi.cchTextMax = 16;
+    SendMessageW(head, HDM_GETITEMW, 0, (LPARAM)&hi);
+    HWND tab = CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD, 0, 0, 200, 30, parent, (HMENU)23, NULL, NULL);
+    SendMessageW(tab, TCM_SETITEMEXTRA, 8, 0);
+    struct { TCITEMHEADERW h; DWORD a; const WCHAR *b; } in = {{TCIF_TEXT | TCIF_PARAM, 0, 0, L"Tab", 0, -1}, 7, L"data"},
+                                                       out = {{TCIF_PARAM, 0, 0, NULL, 0, 0}, 0, NULL};
+    SendMessageW(tab, TCM_INSERTITEMW, 0, (LPARAM)&in);
+    SendMessageW(tab, TCM_GETITEMW, 0, (LPARAM)&out);
+    printf("header count=%d first=%ls width=%d extra=%ls\n", Header_GetItemCount(head), first, hi.cxy,
+           out.b ? out.b : L"-");
+    DestroyWindow(tab);
+    DestroyWindow(lv);
 }
 
 static HTREEITEM tree_add(HWND tv, HTREEITEM parent, HTREEITEM after, const WCHAR *text, int param)
@@ -579,6 +616,7 @@ int main(void)
         list_test(parent);
         tree_test(parent);
         rebar_test(parent);
+        header_test(parent);
         mdi_test(parent);
         find_test(parent);
         dialogs_test(parent);

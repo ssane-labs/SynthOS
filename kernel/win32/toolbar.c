@@ -331,6 +331,9 @@ static LRESULT add_bitmap(struct w32_window *w, struct tb *s, int n, const uint8
                          : (HANDLE)id;
     if (!bitmap)
         return first;
+    struct canvas *c = w32_bitmap_canvas(bitmap);
+    if (!s->own_il && c && n > 0 && c->w / n > 0 && c->w / n < s->iw)
+        s->iw = c->w / n;
     if (!s->own_il) {
         void *(WINAPI * create)(int, int, UINT, int, int) =
             (void *(WINAPI *)(int, int, UINT, int, int))w32_builtin_lookup("comctl32.dll", "ImageList_Create");

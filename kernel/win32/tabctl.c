@@ -65,6 +65,7 @@ struct tab {
     int image;
     uint64_t param;
     uint32_t state;
+    uint8_t *extra;
 };
 
 struct tabs {
@@ -73,6 +74,7 @@ struct tabs {
     int fixed_w, fixed_h, min_w, pad_x, pad_y;
     HANDLE images;
     uint32_t ex;
+    int extra;
     bool unicode;
 };
 
@@ -143,6 +145,30 @@ static void item_write(uint8_t *p, const struct tab *t, bool wide)
             memcpy((char *)v.text, s, n);
             ((char *)v.text)[n] = 0;
         }
+    }
+}
+
+/* TCM_SETITEMEXTRA: programs keep more than an LPARAM per tab, right after the item header */
+static bool big_extra(struct tabs *s)
+{
+    return s->extra > (w32->win64 ? 8 : 4);
+}
+
+static void extra_io(struct tabs *s, struct tab *t, uint8_t *p, bool set)
+{
+    uint32_t mask;
+    memcpy(&mask, p, 4);
+    if (!big_extra(s) || !(mask & TCIF_PARAM))
+        return;
+    uint8_t *data = p + (w32->win64 ? 32 : 24);
+    if (set) {
+        if (!t->extra && !(t->extra = w32_zalloc((size_t)s->extra)))
+            return;
+        memcpy(t->extra, data, (size_t)s->extra);
+    } else if (t->extra) {
+        memcpy(data, t->extra, (size_t)s->extra);
+    } else {
+        memset(data, 0, (size_t)s->extra);
     }
 }
 
@@ -258,10 +284,11 @@ static LRESULT insert(struct w32_window *w, struct tabs *s, int at, const void *
     at = at < 0 || at > s->count ? s->count : at;
     memmove(s->t + at + 1, s->t + at, sizeof(*s->t) * (size_t)(s->count - at));
     struct tab *t = &s->t[at];
-    *t = (struct tab){NULL, -1, 0, 0};
+    *t = (struct tab){NULL, -1, 0, 0, NULL};
     struct item_view v;
     item_read(item, &v);
     item_apply(t, &v, wide);
+    extra_io(s, t, (uint8_t *)item, true);
     if (!t->text)
         t->text = w32_strdup("");
     s->count++;
@@ -278,6 +305,7 @@ static bool remove_tab(struct w32_window *w, struct tabs *s, int i)
     if (i < 0 || i >= s->count)
         return false;
     w32_free(s->t[i].text);
+    w32_free(s->t[i].extra);
     memmove(s->t + i, s->t + i + 1, sizeof(*s->t) * (size_t)(s->count - i - 1));
     s->count--;
     if (s->cur > i || s->cur >= s->count)
@@ -292,8 +320,10 @@ static bool remove_tab(struct w32_window *w, struct tabs *s, int i)
 
 static void clear(struct tabs *s)
 {
-    for (int i = 0; i < s->count; i++)
+    for (int i = 0; i < s->count; i++) {
         w32_free(s->t[i].text);
+        w32_free(s->t[i].extra);
+    }
     s->count = 0;
     s->first = 0;
     s->cur = s->focus = -1;
@@ -411,6 +441,7 @@ LRESULT WINAPI w32_tab_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         if ((int)wp < 0 || (int)wp >= s->count || !ptr)
             return FALSE;
         item_write(ptr, &s->t[wp], msg == TCM_GETITEMW);
+        extra_io(s, &s->t[wp], ptr, false);
         return TRUE;
     case TCM_SETITEMA:
     case TCM_SETITEMW: {
@@ -419,6 +450,7 @@ LRESULT WINAPI w32_tab_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         struct item_view v;
         item_read(ptr, &v);
         item_apply(&s->t[wp], &v, msg == TCM_SETITEMW);
+        extra_io(s, &s->t[wp], ptr, true);
         w32_invalidate(w, NULL, true);
         return TRUE;
     }
@@ -520,7 +552,11 @@ LRESULT WINAPI w32_tab_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         return (LRESULT)old;
     }
     case TCM_GETEXTENDEDSTYLE: return (LRESULT)s->ex;
-    case TCM_SETITEMEXTRA: return TRUE;
+    case TCM_SETITEMEXTRA:
+        if (s->count || (int)wp < 0 || (int)wp > 256)
+            return FALSE;
+        s->extra = (int)wp;
+        return TRUE;
     case TCM_GETTOOLTIPS:
     case TCM_SETTOOLTIPS: return 0;
     case CCM_SETUNICODEFORMAT: {

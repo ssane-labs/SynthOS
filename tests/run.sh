@@ -691,8 +691,10 @@ config w32headless on; winctl | grep mdi; config w32headless off
 mdi hook=3 active=1 next=1 left=1 id=101 fill=1 activations=4 top=1
 config w32headless on; winctl | grep rebar; config w32headless off
 rebar width=1 height=1 mixed=1
+config w32headless on; winctl | grep header; config w32headless off
+header count=3 first=Entry width=80 extra=data
 config w32headless on; winctl | grep toolbar; config w32headless off
-toolbar count=3 cmd=102 checked=1 status=3 files parts=2
+toolbar count=3 cmd=102 checked=1 status=3 files parts=2 strip=1
 config w32headless on; winctl | grep findtext; config w32headless off
 findtext shown=needle next=1 case=1 text=hay term=1 gone=1
 config w32headless on; winctl | grep dialogs; config w32headless off
@@ -980,6 +982,7 @@ kind = zip
 url = https://10.0.2.2:$port/store/hello.zip
 sha256 = $hello_sum
 strip = hello
+post = autohotkey
 check = readme.txt
 
 [single]
@@ -1099,6 +1102,10 @@ cat /home/apps/hello/readme.txt
 hello from the store
 cat /home/apps/hello/bin/tool.txt
 a store tool in bin
+ls /home/apps/hello | tr A-Z a-z
+autohotkey64.ahk
+cat /home/apps/hello/AutoHotkey32.ahk | grep Single
+#SingleInstance Force
 store info hello
 Hello 1.0 by SynthOS tests (Testing, installed)
 store get single | tail -n 1; cat /home/apps/single/single.txt

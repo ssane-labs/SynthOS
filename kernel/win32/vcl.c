@@ -442,9 +442,39 @@ static HANDLE WINAPI ExtractIconA(HANDLE inst, LPCSTR file, UINT index)
     return ExtractIconW(inst, (LPCWSTR)file, index);
 }
 
+/* the icon of a file or of the program that opens it: the generic application icon */
+static HANDLE WINAPI ExtractAssociatedIconW(HANDLE inst, LPWSTR file, WORD *index)
+{
+    UNUSED(inst);
+    if (index)
+        *index = 0;
+    return file ? (HANDLE)(uintptr_t)(0x30000u | 32512u) : NULL;
+}
+
+static HANDLE WINAPI ExtractAssociatedIconA(HANDLE inst, LPSTR file, WORD *index)
+{
+    return ExtractAssociatedIconW(inst, (LPWSTR)file, index);
+}
+
+static HANDLE WINAPI ExtractAssociatedIconExW(HANDLE inst, LPWSTR file, WORD *index, WORD *id)
+{
+    if (id)
+        *id = 0;
+    return ExtractAssociatedIconW(inst, file, index);
+}
+
+static HANDLE WINAPI ExtractAssociatedIconExA(HANDLE inst, LPSTR file, WORD *index, WORD *id)
+{
+    return ExtractAssociatedIconExW(inst, (LPWSTR)file, index, id);
+}
+
 static const struct w32_export vcl_shell32[] = {
     W32_FN(ExtractIconW),
     W32_FN(ExtractIconA),
+    W32_FN(ExtractAssociatedIconW),
+    W32_FN(ExtractAssociatedIconA),
+    W32_FN(ExtractAssociatedIconExW),
+    W32_FN(ExtractAssociatedIconExA),
 };
 
 W32_EXPORTS(vcl_shell32_module, "shell32.dll", vcl_shell32);

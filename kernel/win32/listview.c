@@ -135,6 +135,7 @@ struct lv {
     COLORREF bk, text, text_bk;
     bool unicode;
     int8_t notify_wide;
+    HANDLE header;
 };
 
 static struct lv *lv_of(struct w32_window *w)
@@ -929,6 +930,90 @@ static LRESULT text_width(struct w32_window *w, uintptr_t text, bool wide)
     return width;
 }
 
+/* SysHeader32 of a report list view: a hidden child that answers HDM_* from the list's columns */
+enum { HDM_GETITEMCOUNT = 0x1200, HDM_GETITEMA = 0x1203, HDM_SETITEMA = 0x1204, HDM_LAYOUT = 0x1205,
+       HDM_GETITEMRECT = 0x1207, HDM_GETITEMW = 0x120b, HDM_SETITEMW = 0x120c, HDM_GETORDERARRAY = 0x1211,
+       HDM_SETORDERARRAY = 0x1212, HDI_WIDTH = 1, HDI_TEXT = 2, HDI_FORMAT = 4, HDI_ORDER = 0x80 };
+
+static void header_item(struct lv_col *c, int i, uint8_t *p, bool wide, bool set)
+{
+    uint32_t mask;
+    memcpy(&mask, p, 4);
+    bool x64 = w32->win64;
+    if (set) {
+        if (mask & HDI_WIDTH)
+            c->width = MAX(0, get32(p + 4));
+        if (mask & HDI_FORMAT)
+            c->fmt = get32(p + (x64 ? 28 : 20)) & 3;
+        if (mask & HDI_TEXT) {
+            char *t = dup_text(get_ptr(p + 8), wide);
+            if (t != CALLBACK_TEXT) {
+                w32_free(c->text);
+                c->text = t;
+            }
+        }
+        return;
+    }
+    if (mask & HDI_WIDTH)
+        memcpy(p + 4, &c->width, 4);
+    if (mask & HDI_FORMAT) {
+        int fmt = (c->fmt & 3) | 0x4000;
+        memcpy(p + (x64 ? 28 : 20), &fmt, 4);
+    }
+    if (mask & HDI_ORDER)
+        memcpy(p + (x64 ? 44 : 32), &i, 4);
+    uintptr_t out = get_ptr(p + 8);
+    int cch = get32(p + (x64 ? 24 : 16));
+    if ((mask & HDI_TEXT) && out && cch > 0) {
+        const char *t = c->text ? c->text : "";
+        if (wide) {
+            size_t n = w32_cp_to_wide(t, (int)strlen(t), (WCHAR *)out, (size_t)cch - 1, 65001);
+            ((WCHAR *)out)[n] = 0;
+        } else {
+            str_copy((char *)out, t, (size_t)cch);
+        }
+    }
+}
+
+LRESULT WINAPI w32_header_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct w32_window *w = w32_win(h), *list = w ? w->parent : NULL;
+    struct lv *s = list && list->list && ((struct lv *)list->list)->header == h ? list->list : NULL;
+    if (!s)
+        return w ? w32_def_window_proc(h, msg, wp, lp) : 0;
+    uint8_t *ptr = (uint8_t *)(uintptr_t)(uint32_t)lp;
+    int i = (int)wp;
+    bool valid = i >= 0 && i < s->ncols;
+    switch (msg) {
+    case HDM_GETITEMCOUNT: return s->ncols;
+    case HDM_GETITEMA:
+    case HDM_GETITEMW:
+        if (!valid || !ptr)
+            return FALSE;
+        header_item(&s->cols[i], i, ptr, msg == HDM_GETITEMW, false);
+        return TRUE;
+    case HDM_SETITEMA:
+    case HDM_SETITEMW:
+        if (!valid || !ptr)
+            return FALSE;
+        header_item(&s->cols[i], i, ptr, msg == HDM_SETITEMW, true);
+        w32_invalidate(list, NULL, true);
+        return TRUE;
+    case HDM_GETITEMRECT:
+        if (!valid || !ptr)
+            return FALSE;
+        *(RECT *)ptr = (RECT){col_x(s, i) - s->xoff, 0, col_x(s, i) - s->xoff + s->cols[i].width, head_h(list, s)};
+        return TRUE;
+    case HDM_GETORDERARRAY:
+        for (int k = 0; ptr && k < i && k < s->ncols; k++)
+            memcpy(ptr + k * 4, &k, 4);
+        return ptr != NULL && i >= s->ncols;
+    case HDM_SETORDERARRAY: return TRUE;
+    case HDM_LAYOUT: return TRUE;
+    default: return w32_def_window_proc(h, msg, wp, lp);
+    }
+}
+
 LRESULT WINAPI w32_listview_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
     struct w32_window *w = w32_win(h);
@@ -1154,6 +1239,10 @@ LRESULT WINAPI w32_listview_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
     case 0x102a: /* LVM_UPDATE */
     case 0x1016: /* LVM_ARRANGE */ w32_invalidate(w, NULL, false); return TRUE;
     case 0x101f: /* LVM_GETHEADER */
+        if (!s->header)
+            s->header = w32_create_window(0, "SysHeader32", "", WS_CHILD, 0, 0, w->rect.w, head_h(w, s), w,
+                                          (HANDLE)0, NULL, NULL);
+        return (LRESULT)(uintptr_t)s->header;
     case 0x1018: /* LVM_GETEDITCONTROL */
     case 0x1017: /* LVM_EDITLABELA */
     case 0x1076: /* LVM_EDITLABELW */ return 0;

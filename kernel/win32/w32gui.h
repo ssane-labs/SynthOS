@@ -302,6 +302,7 @@ enum { WH_CBT = 5, HCBT_CREATEWND = 3, HCBT_DESTROYWND = 4 };
 LRESULT w32_call_hooks(int id, int code, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_mdiclient_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_scrollbar_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT WINAPI w32_header_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_toolbar_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_status_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT WINAPI w32_tooltip_proc(HANDLE hwnd, UINT msg, WPARAM wp, LPARAM lp);

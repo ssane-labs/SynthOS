@@ -134,6 +134,11 @@ static void layout(void)
     }
     static const char *const fixed[2] = {"Window", "Help"};
     for (int i = 0; i < 2; i++) {
+        bool own = false;
+        for (int k = 0; f && f->menus && k < f->menu_count && !own; k++)
+            own = !str_casecmp(f->menus[k].title, fixed[i]);
+        if (own)
+            continue;
         w = gfx_text_width(&font_sans, fixed[i]) + 2 * PAD;
         titles[title_count++] = (struct title){{x, ty, w, MENUBAR_HEIGHT}, fixed[i], i ? T_HELP : T_WINDOW};
         x += w;
