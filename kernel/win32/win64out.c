@@ -231,6 +231,7 @@ static const struct w64_export com_exports[] = {
     W64_FN("CoUnmarshalInterface", h_no_object2),
     W64_FN("D3D12CreateDevice", h_no_object3),
     W64_FN("SHCreateItemFromParsingName", h_no_object3),
+    W64_FN("SHCreateShellItem", h_no_object3),
     W64_FN("CoGetObject", h_no_object3),
     W64_FN("AccessibleObjectFromWindow", h_no_object3),
     W64_FN("CreateStdAccessibleObject", h_no_object3),

@@ -1145,6 +1145,161 @@ static WCHAR *WINAPI StrFormatKBSizeW(uint64_t bytes, WCHAR *out, UINT cap)
     return out;
 }
 
+enum { GCT_LFNCHAR = 1, GCT_SHORTCHAR = 2, GCT_WILD = 4, GCT_SEPARATOR = 8 };
+
+static UINT WINAPI PathGetCharTypeW(WCHAR c)
+{
+    if (c < 32 || c == '"' || c == '<' || c == '>' || c == '|')
+        return 0;
+    if (c == '*' || c == '?')
+        return GCT_WILD;
+    if (c == '\\' || c == ':' || c == '/')
+        return GCT_SEPARATOR;
+    if (c >= 0x80 || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+        return GCT_LFNCHAR | GCT_SHORTCHAR;
+    if (c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']' || c == '.')
+        return GCT_LFNCHAR;
+    return GCT_LFNCHAR | GCT_SHORTCHAR;
+}
+
+static UINT WINAPI PathGetCharTypeA(UINT c)
+{
+    return PathGetCharTypeW((WCHAR)(c & 0xff));
+}
+
+/* the length of "scheme:" at the start of a URL, 0 when there is none (a drive letter is not a scheme) */
+static size_t url_scheme(const WCHAR *u)
+{
+    size_t n = 0;
+    while (u[n] && ((u[n] >= 'a' && u[n] <= 'z') || (u[n] >= 'A' && u[n] <= 'Z') || (n && u[n] >= '0' && u[n] <= '9') ||
+                    (n && (u[n] == '+' || u[n] == '-' || u[n] == '.'))))
+        n++;
+    return n > 1 && u[n] == ':' ? n + 1 : 0;
+}
+
+static bool scheme_is(const WCHAR *u, const char *name)
+{
+    size_t n = strlen(name);
+    for (size_t i = 0; i < n; i++)
+        if (!u[i] || (u[i] | 0x20) != name[i])
+            return false;
+    return true;
+}
+
+enum { URLIS_URL, URLIS_OPAQUE, URLIS_NOHISTORY, URLIS_FILEURL, URLIS_APPLIABLE, URLIS_DIRECTORY, URLIS_HASQUERY };
+
+static BOOL WINAPI UrlIsW(const WCHAR *url, int what)
+{
+    if (!url || !url_scheme(url))
+        return FALSE;
+    size_t n = w32_wcslen(url);
+    switch (what) {
+    case URLIS_URL:
+    case URLIS_APPLIABLE: return TRUE;
+    case URLIS_OPAQUE: return scheme_is(url, "mailto:") || scheme_is(url, "javascript:") || scheme_is(url, "news:");
+    case URLIS_NOHISTORY: return scheme_is(url, "mailto:") || scheme_is(url, "javascript:") || scheme_is(url, "about:");
+    case URLIS_FILEURL: return scheme_is(url, "file:");
+    case URLIS_DIRECTORY: return url[n - 1] == '/' || url[n - 1] == '\\';
+    case URLIS_HASQUERY:
+        for (size_t i = 0; i < n; i++)
+            if (url[i] == '?')
+                return TRUE;
+        return FALSE;
+    default: return FALSE;
+    }
+}
+
+static BOOL WINAPI UrlIsA(const char *url, int what)
+{
+    WCHAR w[1024];
+    return url && strlen(url) < 1024 && to_wide(url, w) && UrlIsW(w, what);
+}
+
+static int hex_digit(WCHAR c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'f' ? (c | 0x20) - 'a' + 10 : -1;
+}
+
+/* file:///C:/a%20b or file://server/share -> C:\a b or \\server\share */
+static long WINAPI PathCreateFromUrlW(const WCHAR *url, WCHAR *path, DWORD *len, DWORD reserved)
+{
+    UNUSED(reserved);
+    if (!url || !path || !len || !scheme_is(url, "file:"))
+        return (long)0x80070057;
+    const WCHAR *p = url + 5;
+    WCHAR tmp[1024];
+    size_t n = 0;
+    if (p[0] == '/' && p[1] == '/') {
+        p += 2;
+        if (p[0] == '/')
+            p++;
+        else if (!((p[0] | 0x20) >= 'a' && (p[0] | 0x20) <= 'z' && (p[1] == ':' || p[1] == '|')) &&
+                 !(p[0] == 'l' && scheme_is(p, "localhost/")))
+            tmp[n++] = '\\', tmp[n++] = '\\';
+        else if (scheme_is(p, "localhost/"))
+            p += 10;
+    }
+    for (; *p && n + 1 < 1024; p++) {
+        WCHAR c = *p;
+        if (c == '%' && hex_digit(p[1]) >= 0 && hex_digit(p[2]) >= 0) {
+            c = (WCHAR)(hex_digit(p[1]) * 16 + hex_digit(p[2]));
+            p += 2;
+        } else if (c == '|' && n == 1) {
+            c = ':';
+        }
+        tmp[n++] = c == '/' ? '\\' : c;
+    }
+    tmp[n] = 0;
+    if (n + 1 > *len) {
+        *len = (DWORD)n + 1;
+        return (long)0x80004003;
+    }
+    memcpy(path, tmp, (n + 1) * sizeof(WCHAR));
+    *len = (DWORD)n;
+    return 0;
+}
+
+/* the path shortened with an ellipsis to about dx pixels of the dialog font */
+static BOOL WINAPI PathCompactPathW(HANDLE dc, WCHAR *path, UINT dx)
+{
+    UNUSED(dc);
+    if (!path)
+        return FALSE;
+    WCHAR out[260];
+    UINT chars = MAX(dx / 7, 5u);
+    if (w32_wcslen(path) < chars || !PathCompactPathExW(out, path, MIN(chars, 259u) + 1, 0))
+        return TRUE;
+    memcpy(path, out, (w32_wcslen(out) + 1) * sizeof(WCHAR));
+    return TRUE;
+}
+
+static int w32_wcsicmp_ascii(const WCHAR *w, const char *a)
+{
+    for (;; w++, a++) {
+        WCHAR c = *w >= 'A' && *w <= 'Z' ? *w + 32 : *w;
+        char d = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a;
+        if (c != (WCHAR)(uint8_t)d || !c)
+            return c - (WCHAR)(uint8_t)d;
+    }
+}
+
+static BOOL WINAPI PathIsContentTypeW(const WCHAR *path, const WCHAR *type)
+{
+    static const char *const types[][2] = {
+        {".txt", "text/plain"}, {".htm", "text/html"}, {".html", "text/html"}, {".xml", "text/xml"},
+        {".css", "text/css"}, {".js", "application/javascript"}, {".jpg", "image/jpeg"}, {".jpeg", "image/jpeg"},
+        {".png", "image/png"}, {".gif", "image/gif"}, {".bmp", "image/bmp"}, {".pdf", "application/pdf"},
+        {".zip", "application/x-zip-compressed"}, {".json", "application/json"},
+    };
+    if (!path || !type)
+        return FALSE;
+    const WCHAR *ext = PathFindExtensionW(path);
+    for (size_t i = 0; i < ARRAY_SIZE(types); i++)
+        if (!w32_wcsicmp_ascii(ext, types[i][0]) && !w32_wcsicmp_ascii(type, types[i][1]))
+            return TRUE;
+    return FALSE;
+}
+
 static const struct w32_export shlwapi_exports[] = {
     W32_FN(StrFormatKBSizeA),
     W32_FN(StrFormatKBSizeW),
@@ -1183,7 +1338,8 @@ static const struct w32_export shlwapi_exports[] = {
     W32_FN(PathRemoveBackslashW),
     W32_FN(PathRemoveBlanksW),
     W32_FN(PathSkipRootW),
-    W32_FN(PathCompactPathExW),
+    W32_FN(PathCompactPathExW), W32_FN(PathCompactPathW), W32_FN(PathGetCharTypeW), W32_FN(PathGetCharTypeA),
+    W32_FN(UrlIsW), W32_FN(UrlIsA), W32_FN(PathCreateFromUrlW), W32_FN(PathIsContentTypeW),
     W32_FN(PathFindFileNameA),
     W32_FN(PathFindExtensionA),
     W32_FN(PathIsRelativeA),

@@ -600,6 +600,26 @@ static void ole_test(void)
     printf("imagelist first=%d count=%d size=%dx%d\n", first, il_count(il), cx, cy);
 }
 
+static void shlwapi_test(void)
+{
+    HMODULE sh = LoadLibraryA("shlwapi.dll");
+    UINT(WINAPI * chartype)(WCHAR) = (void *)GetProcAddress(sh, "PathGetCharTypeW");
+    BOOL(WINAPI * urlis)(const WCHAR *, int) = (void *)GetProcAddress(sh, "UrlIsW");
+    HRESULT(WINAPI * from_url)(const WCHAR *, WCHAR *, DWORD *, DWORD) = (void *)GetProcAddress(sh, "PathCreateFromUrlW");
+    BOOL(WINAPI * ctype)(const WCHAR *, const WCHAR *) = (void *)GetProcAddress(sh, "PathIsContentTypeW");
+    if (!chartype || !urlis || !from_url || !ctype) {
+        printf("shlwapi missing\n");
+        return;
+    }
+    WCHAR path[64];
+    DWORD n = 64;
+    HRESULT hr = from_url(L"file:///C:/a%20b/c.txt", path, &n, 0);
+    char a[64];
+    WideCharToMultiByte(CP_ACP, 0, path, -1, a, sizeof(a), NULL, NULL);
+    printf("shlwapi wild=%u sep=%u url=%d file=%d path=%s hr=%ld text=%d\n", chartype('*'), chartype('\\'),
+           urlis(L"https://x.org/", 0), urlis(L"C:\\x", 3), hr ? "" : a, (long)hr, ctype(L"x.TXT", L"text/plain"));
+}
+
 int main(void)
 {
     WNDCLASSA wc = {0};
@@ -625,5 +645,6 @@ int main(void)
     gdi_test();
     user_test();
     ole_test();
+    shlwapi_test();
     return 0;
 }

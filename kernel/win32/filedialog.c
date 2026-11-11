@@ -737,6 +737,22 @@ static uint32_t WINAPI SHCreateItemFromParsingName(const WCHAR *path, void *bc, 
     return hr;
 }
 
+/* our item ids hold whole paths, so the child id alone names the item */
+static uint32_t WINAPI SHCreateShellItem(const void *parent, void *folder, const void *pidl, void **out)
+{
+    UNUSED(parent);
+    UNUSED(folder);
+    if (!out)
+        return E_POINTER;
+    *out = NULL;
+    BOOL(WINAPI * to_path)(const void *, WCHAR *) =
+        (BOOL(WINAPI *)(const void *, WCHAR *))w32_builtin_lookup("shell32.dll", "SHGetPathFromIDListW");
+    WCHAR path[260];
+    if (!pidl || !to_path || !to_path(pidl, path))
+        return 0x80070057u;
+    return SHCreateItemFromParsingName(path, NULL, iid_shell_item, out);
+}
+
 /* OPENFILENAME is the same for A and W apart from the string type. */
 typedef struct {
     DWORD size;
@@ -844,6 +860,7 @@ static BOOL WINAPI GetSaveFileNameA(OPENFILENAME_COMMON *o)
 
 static const struct w32_export dialog_shell_exports[] = {
     W32_FN(SHCreateItemFromParsingName),
+    W32_FN(SHCreateShellItem),
 };
 
 static const struct w32_export dialog_comdlg_exports[] = {

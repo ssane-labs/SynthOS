@@ -693,6 +693,8 @@ config w32headless on; winctl | grep rebar; config w32headless off
 rebar width=1 height=1 mixed=1
 config w32headless on; winctl | grep header; config w32headless off
 header count=3 first=Entry width=80 extra=data
+winctl | grep shlwapi
+shlwapi wild=4 sep=8 url=1 file=0 path=C:\a b\c.txt hr=0 text=1
 config w32headless on; winctl | grep toolbar; config w32headless off
 toolbar count=3 cmd=102 checked=1 status=3 files parts=2 strip=1
 config w32headless on; winctl | grep findtext; config w32headless off
