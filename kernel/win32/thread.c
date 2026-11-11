@@ -813,6 +813,36 @@ static DWORD WINAPI ResumeThread(HANDLE h)
     return previous;
 }
 
+/* every thread of a process at once (debuggers and crash reporters freeze the process they read) */
+static DWORD WINAPI NtSuspendProcess(HANDLE h)
+{
+    struct w32_process *p = w32_process_of(h);
+    if (!p)
+        return 0xc0000008u;
+    struct w32_thread *t = p->threads;
+    do
+        if (t && !t->done)
+            t->suspended++;
+    while (t && (t = t->next) != p->threads);
+    if (p == w32 && w32->current)
+        w32_block();
+    return 0;
+}
+
+static DWORD WINAPI NtResumeProcess(HANDLE h)
+{
+    struct w32_process *p = w32_process_of(h);
+    if (!p)
+        return 0xc0000008u;
+    struct w32_thread *t = p->threads;
+    do
+        if (t && t->suspended)
+            t->suspended--;
+    while (t && (t = t->next) != p->threads);
+    w32_kick(p);
+    return 0;
+}
+
 static DWORD WINAPI GetCurrentThreadId(void)
 {
     return w32_thread_id();
@@ -1961,6 +1991,14 @@ static const struct w32_export thread_exports[] = {
 };
 
 W32_EXPORTS(thread_module, "kernel32.dll", thread_exports);
+
+static const struct w32_export thread_ntdll[] = {
+    W32_FN(NtSuspendProcess),
+    W32_AS("ZwSuspendProcess", NtSuspendProcess),
+    W32_FN(NtResumeProcess),
+    W32_AS("ZwResumeProcess", NtResumeProcess),
+};
+W32_EXPORTS(thread_ntdll_module, "ntdll.dll", thread_ntdll);
 
 static uint32_t stats_every;
 

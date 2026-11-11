@@ -71,6 +71,12 @@ static DWORD WINAPI NtQueryInformationProcess(HANDLE process, int cls, void *inf
             *result = 24;
         return STATUS_SUCCESS;
     }
+    if (cls == 58 && target) {
+        size_t n = w32_handle_list(target, info, len / 4);
+        if (result)
+            *result = (DWORD)(n * 4);
+        return n * 4 > len ? 0xc0000004u : STATUS_SUCCESS;
+    }
     return STATUS_INVALID_INFO_CLASS;
 }
 

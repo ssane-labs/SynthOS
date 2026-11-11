@@ -141,6 +141,18 @@ struct w32_object *w32_handle_get(HANDLE h)
     return &w32->handles[i];
 }
 
+size_t w32_handle_list(struct w32_process *p, uint32_t *out, size_t max)
+{
+    size_t n = 0;
+    for (size_t i = 3; i < W32_MAX_HANDLES; i++)
+        if (p->handles[i].type != WH_FREE) {
+            if (n < max)
+                out[n] = HANDLE_BASE + (uint32_t)i * 4;
+            n++;
+        }
+    return n;
+}
+
 HANDLE w32_std_handle(int which)
 {
     return (HANDLE)(uintptr_t)(HANDLE_BASE + (uintptr_t)which * 4);
@@ -900,6 +912,7 @@ static int run(struct exec_ctx *ctx)
     /* CREATE_SUSPENDED: the image is mapped, nothing of it has run until the parent resumes the thread */
     if (w32->start_suspended && w32->current) {
         w32->current->suspended++;
+        w32->parked = true;
         w32_block();
     }
     if (w32_init_modules() == 0 && !w32->exiting) {
@@ -1391,7 +1404,8 @@ static void child_entry(void)
         orphan_children(p);
     else
         kill_children(p);
-    finish_child(p, (uint32_t)exit_status(rc, started));
+    /* the parent reads the whole 32-bit code (GetExitCodeProcess), not a shell status */
+    finish_child(p, started ? (uint32_t)rc : (uint32_t)exit_status(rc, started));
     w32_leave_forever();
 }
 

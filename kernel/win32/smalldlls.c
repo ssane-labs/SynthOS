@@ -325,25 +325,12 @@ static const struct w32_export imm32_exports[] = {
 
 #define DXGI_ERROR_UNSUPPORTED 0x887a0004u
 
-static uint32_t WINAPI CreateDXGIFactory(const void *iid, void **out)
+static uint32_t WINAPI no_factory(const void *iid, void **out)
 {
     UNUSED(iid);
     *out = NULL;
     return DXGI_ERROR_UNSUPPORTED;
 }
-
-static uint32_t WINAPI CreateDXGIFactory2(UINT flags, const void *iid, void **out)
-{
-    UNUSED(flags);
-    return CreateDXGIFactory(iid, out);
-}
-
-static const struct w32_export dxgi_exports[] = {
-    W32_FN(CreateDXGIFactory),
-    W32_AS("CreateDXGIFactory1", CreateDXGIFactory),
-    W32_FN(CreateDXGIFactory2),
-    W32_AS("DXGIGetDebugInterface1", CreateDXGIFactory2),
-};
 
 static uint32_t WINAPI D3D11CreateDevice(void *adapter, int driver, HANDLE software, UINT flags, const void *levels,
                                          UINT count, UINT sdk, void **device, void *level, void **context)
@@ -375,7 +362,7 @@ static uint32_t WINAPI D3D12CreateDevice(void *adapter, int level, const void *i
 
 static uint32_t WINAPI DXCoreCreateAdapterFactory(const void *iid, void **out)
 {
-    return CreateDXGIFactory(iid, out);
+    return no_factory(iid, out);
 }
 
 static const struct w32_export d3d11_exports[] = {
@@ -384,7 +371,7 @@ static const struct w32_export d3d11_exports[] = {
 
 static const struct w32_export d3d12_exports[] = {
     W32_FN(D3D12CreateDevice),
-    W32_AS("D3D12GetDebugInterface", CreateDXGIFactory),
+    W32_AS("D3D12GetDebugInterface", no_factory),
 };
 
 static const struct w32_export dxcore_exports[] = {
@@ -428,7 +415,6 @@ W32_EXPORTS(comctl32_module, "comctl32.dll", comctl32_exports);
 W32_EXPORTS(dwmapi_module, "dwmapi.dll", dwmapi_exports);
 W32_EXPORTS(wtsapi32_module, "wtsapi32.dll", wtsapi32_exports);
 W32_EXPORTS(imm32_module, "imm32.dll", imm32_exports);
-W32_EXPORTS(dxgi_module, "dxgi.dll", dxgi_exports);
 W32_EXPORTS(d3d11_module, "d3d11.dll", d3d11_exports);
 W32_EXPORTS(d3d12_module, "d3d12.dll", d3d12_exports, .ordinals = d3d12_ordinals,
             .ordinal_count = ARRAY_SIZE(d3d12_ordinals));

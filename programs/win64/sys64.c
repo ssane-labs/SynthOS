@@ -5,6 +5,8 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include "../win32/dxgi_probe.h"
+
 static __attribute__((noinline)) int target(int x)
 {
     return x + 1;
@@ -51,9 +53,15 @@ static void sandbox_test(void)
     ULONG_PTR basic[6] = {0};
     ULONG got = 0;
     LONG status = query ? query(GetCurrentProcess(), 0, basic, sizeof(basic), &got) : -1;
-    printf("sandbox token=%d dup=%d restricted=%d set=%d thread=%d pe=%x status=%lx size=%lu peb=%d pid=%d\n", opened,
-           duped, made, set, again, pe ? pe->FileHeader.Machine : 0, (unsigned long)status, got, basic[1] != 0,
-           basic[4] == GetCurrentProcessId());
+    /* the sandbox's handle closer lists every handle (ProcessHandleTable) and checks one of its own is there */
+    ULONG table[512], listed = 0;
+    LONG tstatus = query ? query(GetCurrentProcess(), 58, table, sizeof(table), &listed) : -1;
+    int found = 0;
+    for (ULONG i = 0; !tstatus && i < listed / 4; i++)
+        found |= (HANDLE)(ULONG_PTR)table[i] == token;
+    printf("sandbox token=%d dup=%d restricted=%d set=%d thread=%d pe=%x status=%lx size=%lu peb=%d pid=%d handles=%d\n",
+           opened, duped, made, set, again, pe ? pe->FileHeader.Machine : 0, (unsigned long)status, got,
+           basic[1] != 0, basic[4] == GetCurrentProcessId(), found);
 }
 
 static int tab_notify;
@@ -130,6 +138,12 @@ int main(void)
     BOOL cls = GetClassInfoW(NULL, L"Button", &wc);
     printf("uilang thread=%x class=%d proc=%d name=%d\n", GetThreadUILanguage(), cls, wc.lpfnWndProc != NULL,
            wc.lpszClassName != NULL);
+    /* ANGLE checks the device context it was given belongs to a window */
+    HDC screen = GetDC(NULL), memory = CreateCompatibleDC(screen);
+    printf("dcwindow screen=%d memory=%d\n", WindowFromDC(screen) != NULL, WindowFromDC(memory) != NULL);
+    DeleteDC(memory);
+    ReleaseDC(NULL, screen);
+    dxgi_probe();
     hook_test();
     sandbox_test();
     window_test();

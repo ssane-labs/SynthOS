@@ -42,5 +42,22 @@ int main(void)
                 VirtualAlloc(want, 4096, MEM_RESERVE, PAGE_NOACCESS) == want;
     printf("himem pool=%d data=%d api=%d io=%d query=%d decommit=%d placed=%d freed=%d\n", pool == want, data, api,
            io, query, decommit, placed, freed);
+    /* V8 maps the GPU's shared buffers into its sandbox above 4 GB; the same pages show at both views */
+    HANDLE section = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20000, NULL);
+    char *low = MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    char *at = (char *)0x6a5e00000000ull, *high = MapViewOfFileEx(section, FILE_MAP_ALL_ACCESS, 0, 0, 0, at);
+    int shared = low && high == at;
+    if (shared) {
+        high[0x1ffff] = 'v';
+        low[5] = 'w';
+        shared = low[0x1ffff] == 'v' && high[5] == 'w';
+    }
+    VirtualQuery(at + 0x10000, &m, sizeof(m));
+    int mapped = m.Type == MEM_MAPPED && m.AllocationBase == at;
+    int odd = !MapViewOfFileEx(section, FILE_MAP_ALL_ACCESS, 0, 0, 0, at + 0x1000);
+    int unmapped = UnmapViewOfFile(high) && UnmapViewOfFile(low) && VirtualQuery(at, &m, sizeof(m)) &&
+                   m.State == MEM_FREE;
+    CloseHandle(section);
+    printf("himem view shared=%d mapped=%d odd=%d unmapped=%d\n", shared, mapped, odd, unmapped);
     return 0;
 }

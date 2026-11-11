@@ -403,9 +403,9 @@ static BOOL WINAPI GetTokenInformation(HANDLE token, int cls, uint8_t *buf, DWOR
     case 5: sid = &user_sid, head = 4; break;
     case 25: sid = &label, head = 8; break;
     case 10: head = 56; break;
+    case 3: /* TOKEN_PRIVILEGES: the count and room for one entry */
     case 7:
     case 17: head = 16; break;
-    case 3:
     case 6:
     case 8:
     case 9:

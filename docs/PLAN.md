@@ -29,8 +29,12 @@
   Cmd+Q/W/M/Space/Tab/Shift+3/4/5, Cmd+Option+Esc.
 - [x] **Файлы: режим Windows** (View → Windows Mode, `config filesmode windows`): путь `C:\Users\root\…`,
   боковая панель «Quick access» и «This PC» (Local Disk C:, Users, Program Files, Windows, Recycle Bin).
-- [ ] **Claude Desktop (Electron, 64 бита)** доходит до своего JavaScript (`Starting app`), дальше падает при
-  чтении каталога ресурсов; работа продолжается.
+- [ ] **Claude Desktop (Electron, 64 бита)** запускается и рисует своё окно: браузер, сеть (TLS), процессы GPU и
+  отрисовки работают. DXGI сообщает адаптер «Microsoft Basic Render Driver» (как Windows без драйвера видеокарты),
+  поэтому Chromium сразу рисует через SwiftShader; процесс GPU рисует в окно браузера (`GetDC` чужого окна);
+  разделяемая память V8 выше 4 ГБ (`MapViewOfFileEx`); `NtSuspendProcess` для Crashpad. Осталось: страница входа
+  claude.ai из тестовой среды отвечает 403 (Cloudflare не пускает адреса дата-центров), проверить вход и чат на
+  обычном подключении.
 - [ ] Остальные пункты списка (1, 2, 7, 9–12, 14, 17, 20–24) — по порядку.
 
 ## Заход «Wormhole II» — после обновления (делать после текущего списка «Wormhole»)

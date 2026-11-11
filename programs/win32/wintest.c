@@ -13,6 +13,8 @@
 #define SECURITY_WIN32
 #include <security.h>
 
+#include "dxgi_probe.h"
+
 static LONG WINAPI filter(EXCEPTION_POINTERS *info)
 {
     printf("filter saw 0x%08lx\n", info->ExceptionRecord->ExceptionCode);
@@ -962,6 +964,8 @@ int main(int argc, char **argv)
         printf("about to crash\n");
         fflush(stdout);
         *p = 1;
+    } else if (!strcmp(mode, "dxgi")) {
+        dxgi_probe();
     } else if (!strcmp(mode, "loop")) {
         printf("looping forever, press Ctrl+C\n");
         fflush(stdout);

@@ -1465,6 +1465,9 @@ static BOOL create_process(const char *app, const char *cmdline, const void *sta
     w32_spawn_suspended = (flags & 4) != 0;
     int err = spawn(app, cmdline, startup, &code, &child, env, wide_env, dir, handles);
     w32_spawn_suspended = false;
+    /* as on Windows, a suspended child has its image and PEB in place when CreateProcess returns */
+    while (!err && child && (flags & 4) && !child->done && !child->proc->parked)
+        w32_yield();
     if (err) {
         w32_set_error((DWORD)err);
         return FALSE;

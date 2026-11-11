@@ -2,6 +2,8 @@
 #include <string.h>
 #include <windows.h>
 
+typedef LONG(NTAPI *process_fn)(HANDLE);
+
 /* 64-bit programs that start each other run side by side (Steam and its CEF helpers talk while both run) */
 int main(int argc, char **argv)
 {
@@ -13,7 +15,7 @@ int main(int argc, char **argv)
             return 9;
         if (shared && !strcmp(shared, "ping"))
             strcpy(shared, "pong");
-        return 5;
+        return 0x1b62; /* a 32-bit exit code, as the sandbox reports SBOX_FATAL_CLOSEHANDLES */
     }
     HANDLE go = CreateEventA(NULL, TRUE, FALSE, "spawn64-go");
     HANDLE map = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 4096, "Local\\spawn64-map");
@@ -24,7 +26,21 @@ int main(int argc, char **argv)
     STARTUPINFOA si = {sizeof(si)};
     PROCESS_INFORMATION pi;
     DWORD code = 0;
-    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    char held[8] = "";
+    HMODULE nt = GetModuleHandleA("ntdll.dll");
+    process_fn suspend = (process_fn)GetProcAddress(nt, "NtSuspendProcess");
+    process_fn resume = (process_fn)GetProcAddress(nt, "NtResumeProcess");
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
+        /* a crash reporter freezes the process it reads: nothing of it runs until it is resumed */
+        if (suspend && resume && !suspend(pi.hProcess)) {
+            ResumeThread(pi.hThread);
+            SetEvent(go);
+            Sleep(300);
+            strcpy(held, shared);
+            resume(pi.hProcess);
+        } else {
+            ResumeThread(pi.hThread);
+        }
         SetEvent(go);
         WaitForSingleObject(pi.hProcess, 10000);
         GetExitCodeProcess(pi.hProcess, &code);
@@ -45,7 +61,7 @@ int main(int argc, char **argv)
     GetOverlappedResult(f, &ov, &got, TRUE);
     CloseHandle(f);
     DeleteFileA("C:\\Temp\\ov64.bin");
-    printf("spawn64 child=%lu map=%s dll32=%d/%lu overlapped=%d %lu %.3s\n", (unsigned long)code, shared,
+    printf("spawn64 held=%s child=%lu map=%s dll32=%d/%lu overlapped=%d %lu %.3s\n", held, (unsigned long)code, shared,
            dll32 != NULL, (unsigned long)dll_error, rd, (unsigned long)got, buf);
     return 0;
 }

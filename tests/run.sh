@@ -359,6 +359,8 @@ windll | head -n 1
 hello from greet.dll, 2+3=5, counter=42
 wintest crash; echo crash=$?
 crash=5
+wintest dxgi
+dxgi made=1 vendor=1414 device=8c software=1 more=1 outputs=1 umd=1 Microsoft Basic Render Driver
 wintest raise | grep filter
 filter saw 0xe0001234
 wintest system | grep -c Windows
@@ -645,10 +647,14 @@ sys64 | grep cpuinfo
 cpuinfo first=0 err=122 ok=1 stride=0 cores=1 caches=4 l2=256k
 sys64 | grep uilang
 uilang thread=409 class=1 proc=1 name=1
+sys64 | grep dcwindow
+dcwindow screen=1 memory=0
+sys64 | grep dxgi
+dxgi made=1 vendor=1414 device=8c software=1 more=1 outputs=1 umd=1 Microsoft Basic Render Driver
 sys64 | grep codehook
 codehook protect=1 old=20 rwx=40 result=40
 sys64 | grep sandbox
-sandbox token=1 dup=1 restricted=1 set=1 thread=1 pe=8664 status=0 size=48 peb=1 pid=1
+sandbox token=1 dup=1 restricted=1 set=1 thread=1 pe=8664 status=0 size=48 peb=1 pid=1 handles=1
 config w32headless on; sys64 | grep tabs | cut -d " " -f 2-; config w32headless off
 del=1 count=2 text=Three param=33 page=1 click=0 notify=1
 config w32headless on; proc64; config w32headless off
@@ -787,10 +793,14 @@ dll64
 dll tls main=1244 thread=1235 again=1244 flags=7
 himem64
 himem pool=1 data=1 api=1 io=1 query=1 decommit=1 placed=1 freed=1
+himem64 | grep view
+himem view shared=1 mapped=1 odd=1 unmapped=1
 dwrite64
 dwrite families=1 name=1 glyphs=1 advance=1 upem=1 head=1 path=1 raster=1 same=1
+dwrite64 | grep dwrite3
+dwrite3 factory2=1 factory3=1 collection=1 fallback=1 gray=1
 spawn64
-spawn64 child=5 map=pong dll32=0/193 overlapped=1 3 678
+spawn64 held=ping child=7010 map=pong dll32=0/193 overlapped=1 3 678
 sock6
 sock6 ok=1 family=23 len=28 port=1 recv=hi6 peer=::1
 cat '/mnt/hdb/Long Name Note.txt'

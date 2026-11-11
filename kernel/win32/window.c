@@ -243,6 +243,13 @@ bool w32_foreign_window(HANDLE h, uint32_t *pid, uint32_t *thread)
     return s != NULL;
 }
 
+/* the desktop window of another process's top-level window: a GPU process draws the browser's frames into it */
+struct window *w32_foreign_wm(HANDLE h)
+{
+    const struct shared_window *s = foreign(h);
+    return s ? s->wm : NULL;
+}
+
 struct w32_window *w32_top(struct w32_window *w)
 {
     while (w && w->parent && (w->style & WS_CHILD))
@@ -2126,7 +2133,7 @@ static HANDLE WINAPI GetDC(HANDLE h)
     struct w32_window *w = w32_win(h);
     if (!w) {
         extern HANDLE w32_screen_dc(void);
-        return w32_screen_dc();
+        return w32_foreign_wm(h) ? w32_foreign_dc(h) : w32_screen_dc();
     }
     return w32_window_dc_live(w);
 }

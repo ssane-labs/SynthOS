@@ -356,7 +356,7 @@ struct w32_process {
     bool dead;
     bool frozen;
     bool detached;
-    bool start_suspended;
+    bool start_suspended, parked;
 };
 
 extern struct w32_process *w32;
@@ -416,6 +416,7 @@ static inline uint32_t w32_ov_event(const uint32_t *ov)
 uint32_t w32_vm_reserve(uint32_t size);
 void w32_vm_set_committed(uint32_t start, uint32_t size, bool on);
 uint32_t w32_vm_map_shared(uint8_t *const *pages, uint32_t count, uint32_t at);
+uint32_t w32_view_length(const void *base);
 bool w32_vm_unmap_shared(uint32_t base);
 void w32_vm_cleanup(void);
 NORETURN void w32_leave_forever(void);
@@ -525,6 +526,7 @@ void w32_signal(void);
 void w32_sock_poll(void);
 void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face);
 struct w32_object *w32_handle_get(HANDLE h);
+size_t w32_handle_list(struct w32_process *p, uint32_t *out, size_t max);
 HANDLE w32_std_handle(int which);
 bool w32_handle_close(HANDLE h);
 

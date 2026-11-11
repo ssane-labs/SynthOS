@@ -6,7 +6,8 @@
 
 /* Addresses above 4 GB for 64-bit programs (Chromium reserves 16 GB pools there). A reservation is bookkeeping;
    its committed pages live in 2 MB shadow slots of one low arena, so 32-bit kernel code reaches them through
-   w64_ptr, and a fault on the high address maps the shadow page's frame there as well. */
+   w64_ptr, and a fault on the high address maps the shadow page's frame there as well. A file view asked for at a
+   high address (V8 puts shared buffers in its sandbox) is mapped low and its high region shadows it linearly. */
 
 #define MEM_COMMIT 0x1000u
 #define MEM_RESERVE 0x2000u
@@ -14,10 +15,12 @@
 #define MEM_RELEASE 0x8000u
 #define MEM_FREE 0x10000u
 #define MEM_PRIVATE 0x20000u
+#define MEM_MAPPED 0x40000u
 #define MEM_RESET 0x80000u
 #define MEM_RESET_UNDO 0x1000000u
 #define PAGE_NOACCESS 0x01u
 #define ERROR_INVALID_ADDRESS 487
+#define ERROR_MAPPED_ALIGNMENT 1132
 #define SLOT_SHIFT 21
 #define SLOT (1u << SLOT_SHIFT)
 #define GRAN 0x10000ull
@@ -27,7 +30,7 @@
 
 struct hregion {
     uint64_t base, size;
-    uint32_t alloc_protect, protect;
+    uint32_t alloc_protect, protect, linear;
     uint16_t *slot;
 };
 
@@ -78,6 +81,8 @@ static uint32_t chunk_of(const struct hregion *r, uint64_t a)
 
 static uint32_t shadow(const struct hregion *r, uint64_t a)
 {
+    if (r->linear)
+        return r->linear + (uint32_t)(a - r->base);
     uint16_t s = r->slot[chunk_of(r, a)];
     return s ? hm->arena + (uint32_t)(s - 1) * SLOT + (uint32_t)(a & (SLOT - 1)) : 0;
 }
@@ -102,6 +107,8 @@ bool w64_high_fault(uint64_t a)
 {
     struct hregion *r = w32 && hm ? region_at(a) : NULL;
     uint32_t low = r ? shadow(r, a) & ~4095u : 0;
+    if (low && r->linear && !vmm_mapped(low) && !w32_vm_fault(low))
+        return false;
     if (!low || !w32_vm_committed(low) || (!vmm_mapped(low) && vmm_commit_range(low, 4096) != 0))
         return false;
     return vmm_high_alias(a & ~4095ull, low) == 0;
@@ -156,6 +163,8 @@ static uint32_t chunk_count(const struct hregion *r)
 static bool commit(struct hregion *r, uint64_t start, uint64_t end)
 {
     struct high_mem *h = hm;
+    if (r->linear)
+        return true;
     if (!arena_init(h))
         return false;
     uint32_t chunks = chunk_count(r);
@@ -182,7 +191,7 @@ static bool commit(struct hregion *r, uint64_t start, uint64_t end)
 static void decommit(struct hregion *r, uint64_t start, uint64_t end)
 {
     struct high_mem *h = hm;
-    for (uint64_t a = start; a < end;) {
+    for (uint64_t a = start; a < end && !r->linear;) {
         uint32_t c = chunk_of(r, a);
         uint64_t stop = MIN(end, ((a >> SLOT_SHIFT) + 1) << SLOT_SHIFT);
         if (r->slot[c]) {
@@ -241,7 +250,7 @@ static struct hregion *add_region(struct high_mem *h, uint64_t base, uint64_t si
         h->regions = grown;
         h->cap = cap;
     }
-    struct hregion r = {base, size, protect, protect, NULL};
+    struct hregion r = {base, size, protect, protect, 0, NULL};
     if (!(r.slot = kzalloc(chunk_count(&r) * sizeof(uint16_t))))
         return NULL;
     int at = 0;
@@ -413,7 +422,7 @@ static uint64_t high_query(uint64_t addr, uint8_t *o)
             end += 4096;
         }
         put_mbi(o, a, r->base, r->alloc_protect, end - a, on ? MEM_COMMIT : MEM_RESERVE, on ? r->protect : 0,
-                MEM_PRIVATE);
+                r->linear ? MEM_MAPPED : MEM_PRIVATE);
         return 48;
     }
     uint64_t next = HIGH_END;
@@ -440,7 +449,54 @@ static uint64_t h_virtual_query(uint64_t *a, const uint64_t *f, void *t)
     return 48;
 }
 
+/* MapViewOfFileEx(mapping, access, offset_hi, offset_lo, bytes, base) */
+static uint64_t h_map_view_ex(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    if (!(a[5] >> 32))
+        return T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4], (uint32_t)a[5]);
+    struct high_mem *h = high();
+    if (!h) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
+    if (a[5] & (GRAN - 1)) {
+        w32_set_error(ERROR_MAPPED_ALIGNMENT);
+        return 0;
+    }
+    uint32_t low = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4], 0);
+    uint64_t length = ALIGN_UP((uint64_t)w32_view_length((const void *)(uintptr_t)low), 4096ull);
+    bool fits = low && !(low & 4095u) && length && range_free(a[5], length);
+    struct hregion *r = fits ? add_region(h, a[5], length, 0x04u) : NULL;
+    if (!r) {
+        if (low)
+            CALL("kernel32.dll", "UnmapViewOfFile", low);
+        if (low)
+            w32_set_error(ERROR_INVALID_ADDRESS);
+        return 0;
+    }
+    r->linear = low;
+    return a[5];
+}
+
+static uint64_t h_unmap_view(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    if (!(a[0] >> 32))
+        return T32(t, (uint32_t)a[0]);
+    struct hregion *r = region_at(a[0]);
+    if (!r || !r->linear || a[0] != r->base) {
+        w32_set_error(ERROR_INVALID_ADDRESS);
+        return 0;
+    }
+    uint32_t low = r->linear;
+    remove_region(r);
+    return T32(t, low);
+}
+
 static const struct w64_export mem_exports[] = {
+    W64_FN("MapViewOfFileEx", h_map_view_ex),
+    W64_FN("UnmapViewOfFile", h_unmap_view),
     W64_FN("VirtualAlloc", h_virtual_alloc),
     W64_FN("VirtualFree", h_virtual_free),
     W64_FN("VirtualProtect", h_virtual_protect),

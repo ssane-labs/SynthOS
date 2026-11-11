@@ -314,5 +314,7 @@ bool w32_menu_append(HANDLE menu, UINT flags, uintptr_t id, const char *text);
 const void *w32_find_resource(HANDLE module, const void *type, const void *name, uint32_t *size);
 
 bool w32_foreign_window(HANDLE h, uint32_t *pid, uint32_t *thread);
+struct window *w32_foreign_wm(HANDLE h);
+HANDLE w32_foreign_dc(HANDLE h);
 
 #endif

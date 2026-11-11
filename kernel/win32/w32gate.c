@@ -238,14 +238,15 @@ const void *w32_native_fn(const void *fn)
     return target ? target : fn;
 }
 
-/* a 64-bit program's code handed to a built-in that has no 64-bit translation for it: never run it in compatibility mode */
+/* a 64-bit program's code handed to a built-in that has no 64-bit translation for it: never run it in compatibility mode;
+   a pointer the built-in kept as the low alias of high memory (a callback's context) goes back as the program's own */
 static bool call_code64(const void *fn, int n, const uint32_t *w, uint64_t *r)
 {
     if (!w32->win64 || !w64_is_code64((uintptr_t)fn))
         return false;
     uint64_t a[32];
     for (int i = 0; i < n && i < 32; i++)
-        a[i] = w[i];
+        a[i] = w64_high_back(w[i]);
     *r = w64_call((uintptr_t)fn, n, a);
     return true;
 }

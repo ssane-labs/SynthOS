@@ -326,6 +326,12 @@ static struct view *find_view(const void *p)
     return NULL;
 }
 
+uint32_t w32_view_length(const void *base)
+{
+    struct view *v = base ? find_view(base) : NULL;
+    return v ? v->length + (uint32_t)((uintptr_t)v->base & 4095u) : 0;
+}
+
 static void flush(struct view *v)
 {
     if (!v->write_back || !v->section->path)

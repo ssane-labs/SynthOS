@@ -90,31 +90,48 @@ w64_syscall:
     mov rcx, r10
     jmp rax
 .resolve:
+    ; the resolver is System V code: keep what the Microsoft x64 convention lets the caller rely on
     shr r11, 4
     push r10
     push rdx
     push r8
     push r9
+    push rsi
+    push rdi
     push rbp
     mov rbp, rsp
     and rsp, -16
-    sub rsp, 64
-    movdqa [rsp], xmm0
-    movdqa [rsp + 16], xmm1
-    movdqa [rsp + 32], xmm2
-    movdqa [rsp + 48], xmm3
+    sub rsp, 224
+%assign i 0
+%rep 4
+    movdqa [rsp + i * 16], xmm %+ i
+%assign i i + 1
+%endrep
+%assign i 6
+%rep 10
+    movdqa [rsp + 64 + (i - 6) * 16], xmm %+ i
+%assign i i + 1
+%endrep
     mov edi, r11d
     cld
     mov eax, [rel w64_service_resolve_fn]
     call rax
     mov cx, TEB64
     mov gs, cx
-    movdqa xmm0, [rsp]
-    movdqa xmm1, [rsp + 16]
-    movdqa xmm2, [rsp + 32]
-    movdqa xmm3, [rsp + 48]
+%assign i 0
+%rep 4
+    movdqa xmm %+ i, [rsp + i * 16]
+%assign i i + 1
+%endrep
+%assign i 6
+%rep 10
+    movdqa xmm %+ i, [rsp + 64 + (i - 6) * 16]
+%assign i i + 1
+%endrep
     mov rsp, rbp
     pop rbp
+    pop rdi
+    pop rsi
     pop r9
     pop r8
     pop rdx

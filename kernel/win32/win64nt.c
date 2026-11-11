@@ -217,10 +217,6 @@ static const struct w64_export nt_exports[] = {
     W64_OUT("ZwOpenThreadToken", 1u << 3),
     W64_OUT("NtOpenThreadTokenEx", 1u << 4),
     W64_OUT("ZwOpenThreadTokenEx", 1u << 4),
-    W64_OUT("NtWriteVirtualMemory", 1u << 4),
-    W64_OUT("ZwWriteVirtualMemory", 1u << 4),
-    W64_OUT("NtReadVirtualMemory", 1u << 4),
-    W64_OUT("ZwReadVirtualMemory", 1u << 4),
 };
 W64_EXPORTS(nt_module, "ntdll.dll", nt_exports);
 

@@ -785,8 +785,11 @@ static uint64_t h_get_proc_address(uint64_t *a, const uint64_t *f, void *t)
         if (img->base != (uint32_t)a[0])
             continue;
         void *fn = img->builtin ? w64_lookup(img->name, name, ordinal, false) : w32_get_proc(img, name, ordinal);
-        if (!fn)
+        if (!fn) {
+            if (img->builtin && name)
+                klog("win32: GetProcAddress(%s, %s) not found", img->name, name);
             w32_set_error(ERROR_PROC_NOT_FOUND);
+        }
         return U(fn);
     }
     w32_set_error(ERROR_MOD_NOT_FOUND);
@@ -1641,9 +1644,70 @@ static uint64_t h_query_process(uint64_t *a, const uint64_t *f, void *t)
     return 0;
 }
 
+/* (process, remote, local, size, &done): the remote address may be above 4 GB in the other process, so it is
+   looked up there, a page at a time */
+static bool process_copy(uint64_t *a, bool write)
+{
+    struct w32_process *p = w32_process_of((HANDLE)(uintptr_t)narrow(a[0])), *self = w32;
+    uint64_t done = 0, n = a[3];
+    bool ok = p != NULL;
+    while (ok && done < n) {
+        uint64_t r = a[1] + done, l = a[2] + done;
+        size_t chunk = (size_t)MIN(n - done, 4096 - (r & 4095));
+        chunk = MIN(chunk, 4096 - (size_t)(l & 4095));
+        void *lp = P(l), *rp;
+        if (p != self)
+            w32_process_enter(p);
+        rp = P(r);
+        if (p != self)
+            w32_process_enter(self);
+        if (p == self)
+            memcpy(write ? rp : lp, write ? lp : rp, chunk);
+        else
+            ok = w32_cross_copy(p, write ? rp : lp, write ? lp : rp, chunk, write);
+        if (ok)
+            done += chunk;
+    }
+    if (a[4])
+        put64(P(a[4]), done);
+    if (!ok)
+        w32_set_error(p ? 299 : ERROR_INVALID_HANDLE);
+    return ok;
+}
+
+static uint64_t h_read_process(uint64_t *a, const uint64_t *f, void *t)
+{
+    return process_copy(a, false);
+}
+
+static uint64_t h_write_process(uint64_t *a, const uint64_t *f, void *t)
+{
+    return process_copy(a, true);
+}
+
+static uint64_t h_nt_read_process(uint64_t *a, const uint64_t *f, void *t)
+{
+    return process_copy(a, false) ? 0 : 0xc000012bull;
+}
+
+static uint64_t h_nt_write_process(uint64_t *a, const uint64_t *f, void *t)
+{
+    return process_copy(a, true) ? 0 : 0xc000012bull;
+}
+
+static const struct w64_export process_copy_exports[] = {
+    W64_FN("ReadProcessMemory", h_read_process),
+    W64_FN("WriteProcessMemory", h_write_process),
+};
+W64_EXPORTS(process_copy_module, "kernel32.dll", process_copy_exports);
+
 static const struct w64_export ntdll_query_exports[] = {
     W64_FN("NtQueryInformationProcess", h_query_process),
     W64_FN("ZwQueryInformationProcess", h_query_process),
+    W64_FN("NtReadVirtualMemory", h_nt_read_process),
+    W64_FN("ZwReadVirtualMemory", h_nt_read_process),
+    W64_FN("NtWriteVirtualMemory", h_nt_write_process),
+    W64_FN("ZwWriteVirtualMemory", h_nt_write_process),
 };
 W64_EXPORTS(ntdll_query_module, "ntdll.dll", ntdll_query_exports);
 

@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <windows.h>
-#include <dwrite.h>
+#include <dwrite_3.h>
 
 /* Chromium draws text with DirectWrite: a 64-bit program walks the built-in fonts and rasterizes a glyph run */
 typedef HRESULT(WINAPI *create_fn)(DWRITE_FACTORY_TYPE, REFIID, IUnknown **);
@@ -73,6 +73,44 @@ int main()
            fonts->GetFontFamilyCount() > 0, name[0] != 0, glyphs[0] && glyphs[1], gm[0].advanceWidth > 0,
            fm.designUnitsPerEm > 0, has && size == 54, wcsstr(path, L".ttf") != NULL, box.right > box.left,
            again != NULL);
+    /* Chromium asks for the Windows 10 factory: font fallback and grayscale glyph runs */
+    IDWriteFactory2 *f2 = NULL;
+    IDWriteFactory3 *f3 = NULL;
+    factory->QueryInterface(__uuidof(IDWriteFactory2), (void **)&f2);
+    factory->QueryInterface(__uuidof(IDWriteFactory3), (void **)&f3);
+    IDWriteFontCollection *fonts3 = NULL;
+    if (f3)
+        static_cast<IDWriteFactory *>(f3)->GetSystemFontCollection(&fonts3, FALSE);
+    IDWriteFontFallback *fallback = NULL;
+    if (f2)
+        f2->GetSystemFontFallback(&fallback);
+    IDWriteGlyphRunAnalysis *gray = NULL;
+    if (f2)
+        f2->CreateGlyphRunAnalysis(&run, NULL, DWRITE_RENDERING_MODE_NATURAL, DWRITE_MEASURING_MODE_NATURAL,
+                                   DWRITE_GRID_FIT_MODE_DISABLED, DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, 0.0f, 32.0f,
+                                   &gray);
+    RECT gbox = {0, 0, 0, 0};
+    int levels = 0;
+    if (gray && SUCCEEDED(gray->GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1, &gbox)) && gbox.right > gbox.left) {
+        UINT32 n = (UINT32)((gbox.right - gbox.left) * (gbox.bottom - gbox.top));
+        BYTE *alpha = (BYTE *)HeapAlloc(GetProcessHeap(), 0, n);
+        if (alpha && SUCCEEDED(gray->CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1, &gbox, alpha, n)))
+            for (UINT32 i = 0; i < n; i++)
+                levels += alpha[i] > 0 && alpha[i] < 255;
+        HeapFree(GetProcessHeap(), 0, alpha);
+    }
+    printf("dwrite3 factory2=%d factory3=%d collection=%d fallback=%d gray=%d\n", f2 != NULL, f3 != NULL,
+           fonts3 && fonts3->GetFontFamilyCount() > 0, fallback != NULL, levels > 0);
+    if (gray)
+        gray->Release();
+    if (fallback)
+        fallback->Release();
+    if (fonts3)
+        fonts3->Release();
+    if (f3)
+        f3->Release();
+    if (f2)
+        f2->Release();
     if (analysis)
         analysis->Release();
     if (again)

@@ -34,6 +34,10 @@ static const uint8_t iid_local_loader[16] =
 static const uint8_t iid_stream[16] = GUID(0x6d4865fe, 0x0ab8, 0x4d91, 0x8f, 0x62, 0x5d, 0xd6, 0xbe, 0x34, 0xa3, 0xe0);
 static const uint8_t iid_analysis[16] = GUID(0x7d97dbf7, 0xe085, 0x42d4, 0x81, 0xe3, 0x6a, 0x88, 0x3b, 0xde, 0xd1, 0x18);
 static const uint8_t iid_strings[16] = GUID(0x08256209, 0x099a, 0x4b34, 0xb8, 0x6d, 0xc2, 0x2b, 0x11, 0x0e, 0x77, 0x71);
+static const uint8_t iid_factory1[16] = GUID(0x30572f99, 0xdac6, 0x41db, 0xa1, 0x6e, 0x04, 0x86, 0x30, 0x7e, 0x60, 0x6a);
+static const uint8_t iid_factory2[16] = GUID(0x0439fc60, 0xca44, 0x4994, 0x8d, 0xee, 0x3a, 0x9a, 0xf7, 0xb7, 0x32, 0xec);
+static const uint8_t iid_factory3[16] = GUID(0x9a1b41c3, 0xd3bb, 0x466a, 0x87, 0xfc, 0xfe, 0x67, 0x55, 0x6a, 0x3b, 0x65);
+static const uint8_t iid_fallback[16] = GUID(0xefa008f9, 0xf7a1, 0x48bf, 0xb0, 0x5c, 0xf2, 0x24, 0x71, 0x3c, 0xc0, 0xff);
 static const uint8_t iid_gdi_interop[16] =
     GUID(0x1edd9491, 0x9853, 0x4299, 0x89, 0x8f, 0x64, 0x32, 0x98, 0x3b, 0x6f, 0x3a);
 
@@ -483,7 +487,10 @@ static uint32_t WINAPI query_interface(struct obj *self, const uint8_t *iid, voi
 {
     if (!out)
         return E_POINTER;
-    if (!memcmp(iid, iid_unknown, 16) || !memcmp(iid, self->iid, 16) || (self->iid2 && !memcmp(iid, self->iid2, 16))) {
+    /* the factory is also IDWriteFactory1..3 (the Windows 10 one programs expect) */
+    bool newer = self->iid2 == iid_factory3 && (!memcmp(iid, iid_factory1, 16) || !memcmp(iid, iid_factory2, 16));
+    if (!memcmp(iid, iid_unknown, 16) || !memcmp(iid, self->iid, 16) || (self->iid2 && !memcmp(iid, self->iid2, 16)) ||
+        newer) {
         __atomic_add_fetch(&self->refs, 1, __ATOMIC_RELAXED);
         *out = self;
         return S_OK;
@@ -555,11 +562,16 @@ static uint32_t WINAPI none5(void *self, A a, A b, A c, void **out)
     return none4(self, a, b, out);
 }
 
-static uint32_t WINAPI none7(void *self, A a, A b, A c, A d, A e, void **out)
+static uint32_t WINAPI none6(void *self, A a, A b, A c, A d, void **out)
 {
     UNUSED(d);
-    UNUSED(e);
     return none5(self, a, b, c, out);
+}
+
+static uint32_t WINAPI none7(void *self, A a, A b, A c, A d, A e, void **out)
+{
+    UNUSED(e);
+    return none6(self, a, b, c, d, out);
 }
 
 static uint32_t WINAPI none9(void *self, A a, A b, A c, A d, A e, A f, A g, void **out)
@@ -1345,6 +1357,7 @@ static uint32_t WINAPI custom_file_reference(void *self, const void *key, UINT s
 struct analysis {
     int32_t rect[4];
     uint8_t *bits;
+    bool gray;
 };
 
 static uint32_t WINAPI analysis_release(struct obj *self)
@@ -1376,7 +1389,7 @@ static uint32_t WINAPI analysis_texture(struct obj *self, int type, const int32_
             uint8_t v = 0;
             if (a->bits && sx >= 0 && sy >= 0 && sx < aw && sy < a->rect[3] - a->rect[1])
                 v = a->bits[sy * aw + sx];
-            if (!type)
+            if (!type && !a->gray)
                 v = v >= 128 ? 255 : 0;
             for (int k = 0; k < bpp; k++)
                 buf[(y * w + x) * bpp + k] = v;
@@ -1434,6 +1447,17 @@ static uint32_t WINAPI glyph_run_analysis(void *self, const struct glyph_run *ru
         return hr;
     }
     return give(out, o);
+}
+
+/* IDWriteFactory2/3::CreateGlyphRunAnalysis: grayscale antialiasing gives the coverage in the 1x1 texture */
+static uint32_t WINAPI glyph_run_analysis2(void *self, const struct glyph_run *run, const uint32_t *matrix, int mode,
+                                           int measuring, int grid, int antialias, uint32_t x, uint32_t y, void **out)
+{
+    UNUSED(grid);
+    uint32_t hr = glyph_run_analysis(self, run, 0x3f800000u, matrix, mode, measuring, x, y, out);
+    if (!hr && antialias == 1)
+        ((struct analysis *)((struct obj *)*out)->extra)->gray = true;
+    return hr;
 }
 
 typedef uint32_t(WINAPI *enum_from_key_fn)(void *, void *, const void *, UINT, void **);
@@ -1569,7 +1593,67 @@ static uint32_t WINAPI custom_rendering_params(struct obj *self, uint32_t gamma,
     return make_params(gamma, contrast, cleartype, geometry, mode, out);
 }
 
-TRAPS(factory, 24, 25, 26, 27)
+static uint32_t WINAPI custom_rendering_params1(struct obj *self, uint32_t gamma, uint32_t contrast, uint32_t gray,
+                                                uint32_t cleartype, uint32_t geometry, uint32_t mode, void **out)
+{
+    UNUSED(gray);
+    return custom_rendering_params(self, gamma, contrast, cleartype, geometry, mode, out);
+}
+
+static uint32_t WINAPI custom_rendering_params2(struct obj *self, uint32_t gamma, uint32_t contrast, uint32_t gray,
+                                                uint32_t cleartype, uint32_t geometry, uint32_t mode, uint32_t grid,
+                                                void **out)
+{
+    UNUSED(grid);
+    return custom_rendering_params1(self, gamma, contrast, gray, cleartype, geometry, mode, out);
+}
+
+static uint32_t WINAPI eudc_collection(void *self, void **out, BOOL check)
+{
+    UNUSED(check);
+    return none2(self, out);
+}
+
+static uint32_t WINAPI system_collection1(void *self, BOOL downloadable, void **out, BOOL check)
+{
+    UNUSED(downloadable);
+    return system_collection(self, out, check);
+}
+
+static uint32_t WINAPI translate_color_run(void *self, A x, A y, A run, A desc, A measuring, A matrix, A palette,
+                                           void **out)
+{
+    none9(self, x, y, run, desc, measuring, matrix, palette, out);
+    return 0x8898500cu; /* DWRITE_E_NOCOLOR */
+}
+
+/* IDWriteFontFallback: no font of ours is a better match than the program's own choice */
+static uint32_t WINAPI fallback_map(void *self, A source, A pos, UINT length, A collection, A family, A weight,
+                                    A style, A stretch, UINT *mapped, void **font, uint32_t *scale)
+{
+    UNUSED(self);
+    UNUSED(source);
+    UNUSED(pos);
+    UNUSED(collection);
+    UNUSED(family);
+    UNUSED(weight);
+    UNUSED(style);
+    UNUSED(stretch);
+    *mapped = length;
+    *font = NULL;
+    *scale = 0x3f800000u;
+    return S_OK;
+}
+
+static const void *const fallback_vtbl[] W32_VTABLE = {query_interface, add_ref, release, fallback_map};
+
+static uint32_t WINAPI system_fallback(void *self, void **out)
+{
+    UNUSED(self);
+    return give(out, com_new(fallback_vtbl, iid_fallback, NULL, 0));
+}
+
+TRAPS(factory, 40, 41, 42, 43)
 
 static const void *const factory_vtbl[] W32_VTABLE = {
     query_interface, add_ref,     release,
@@ -1594,14 +1678,30 @@ static const void *const factory_vtbl[] W32_VTABLE = {
     none2,                  /* CreateTextAnalyzer */
     none5,                  /* CreateNumberSubstitution */
     glyph_run_analysis,     /* CreateGlyphRunAnalysis */
-    trap_factory_24, trap_factory_25, trap_factory_26, trap_factory_27,
+    eudc_collection,          /* IDWriteFactory1: GetEudcFontCollection */
+    custom_rendering_params1, /* CreateCustomRenderingParams */
+    system_fallback,          /* IDWriteFactory2: GetSystemFontFallback */
+    none2,                    /* CreateFontFallbackBuilder */
+    translate_color_run,      /* TranslateColorGlyphRun */
+    custom_rendering_params2, /* CreateCustomRenderingParams */
+    glyph_run_analysis2,      /* CreateGlyphRunAnalysis */
+    glyph_run_analysis2,      /* IDWriteFactory3: CreateGlyphRunAnalysis */
+    custom_rendering_params2, /* CreateCustomRenderingParams */
+    none5,                    /* CreateFontFaceReference (file) */
+    none6,                    /* CreateFontFaceReference (path) */
+    none2,                    /* GetSystemFontSet */
+    none2,                    /* CreateFontSetBuilder */
+    none3,                    /* CreateFontCollectionFromFontSet */
+    system_collection1,       /* GetSystemFontCollection */
+    none2,                    /* GetFontDownloadQueue */
+    trap_factory_40, trap_factory_41, trap_factory_42, trap_factory_43,
 };
 
 static uint32_t WINAPI DWriteCreateFactory(int type, const uint8_t *iid, void **out)
 {
     UNUSED(type);
     scan_fonts();
-    struct obj *f = com_new(factory_vtbl, iid_factory, NULL, 0);
+    struct obj *f = com_new(factory_vtbl, iid_factory, iid_factory3, 0);
     if (!f)
         return E_OUTOFMEMORY;
     uint32_t hr = query_interface(f, iid, out);
@@ -1698,7 +1798,27 @@ static const struct method64 factory_m64[] = {
     {none2, "o"},
     {none5, "iiio"},
     {glyph_run_analysis, "gfpiiffo"},
+    {eudc_collection, "oi"},
+    {custom_rendering_params1, "ffffiio"},
+    {system_fallback, "o"},
+    {none2, "o"},
+    {translate_color_run, "ffpiipio"},
+    {custom_rendering_params2, "ffffiiio"},
+    {glyph_run_analysis2, "gpiiiiffo"},
+    {glyph_run_analysis2, "gpiiiiffo"},
+    {custom_rendering_params2, "ffffiiio"},
+    {none5, "iiio"},
+    {none6, "iiiio"},
+    {none2, "o"},
+    {none2, "o"},
+    {none3, "io"},
+    {system_collection1, "ioi"},
+    {none2, "o"},
     TRAPS64,
+};
+
+static const struct method64 fallback_m64[] = {
+    QI_AR_RL, {fallback_map, "iiiiiiiipop"}, TRAPS64,
 };
 
 static const struct method64 gdi_m64[] = {
@@ -1727,6 +1847,7 @@ static const struct {
     {collection_vtbl, collection_m64, ARRAY_SIZE(collection_m64), "collection"},
     {factory_vtbl, factory_m64, ARRAY_SIZE(factory_m64), "factory"},
     {analysis_vtbl, analysis_m64, ARRAY_SIZE(analysis_m64), "analysis"},
+    {fallback_vtbl, fallback_m64, ARRAY_SIZE(fallback_m64), "fallback"},
     {gdi_vtbl, gdi_m64, ARRAY_SIZE(gdi_m64), "gdi interop"},
 };
 

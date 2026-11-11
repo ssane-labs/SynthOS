@@ -353,6 +353,16 @@ static struct w32_image *load_builtin(const char *name)
     header[0x57] = 0x21;
     header[0x58] = 0x0b;
     header[0x59] = 0x01;
+    if (w32->win64) {
+        /* a 64-bit process sees AMD64 images (a sandbox checks ntdll's header before it starts a child) */
+        header[0x44] = 0x64;
+        header[0x45] = 0x86;
+        header[0x54] = 0xf0;
+        header[0x56] = 0x22;
+        header[0x57] = 0x20;
+        header[0x58] = 0x0b;
+        header[0x59] = 0x02;
+    }
     uint32_t size = 4096;
     memcpy(header + 0x58 + 56, &size, 4);
     img->base = (uint32_t)header;

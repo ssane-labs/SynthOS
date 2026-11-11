@@ -73,6 +73,7 @@ struct dc_state {
 struct w32_dc {
     uint32_t magic;
     struct w32_window *win;
+    HANDLE foreign;
     bool memory, live;
     struct rect visible;
     struct dc_state s;
@@ -302,6 +303,16 @@ HANDLE w32_window_dc_live(struct w32_window *w)
     return d;
 }
 
+HANDLE w32_foreign_dc(HANDLE h)
+{
+    struct w32_dc *d = w32_zalloc(sizeof(*d));
+    if (d) {
+        dc_defaults(d);
+        d->foreign = h;
+    }
+    return d;
+}
+
 HANDLE w32_screen_dc(void)
 {
     struct w32_dc *d = w32_zalloc(sizeof(*d));
@@ -335,6 +346,15 @@ static bool target_of(struct w32_dc *d, struct target *t)
         t->ox = 0;
         t->oy = 0;
         t->clip = (struct rect){0, 0, b->canvas.w, b->canvas.h};
+    } else if (d->foreign) {
+        struct window *wm = w32_foreign_wm(d->foreign);
+        if (!wm)
+            return false;
+        struct rect cr = wm_client_rect(wm);
+        t->c = &wm->surface;
+        t->ox = 0;
+        t->oy = 0;
+        t->clip = rect_intersect((struct rect){0, 0, cr.w, cr.h}, (struct rect){0, 0, t->c->w, t->c->h});
     } else {
         if (!d->win || !w32_win(d->win))
             return false;
@@ -363,7 +383,10 @@ static bool target_of(struct w32_dc *d, struct target *t)
 
 static void damage(struct w32_dc *d, const struct target *t, struct rect r)
 {
-    if (!d->memory && d->win)
+    struct window *wm = d->foreign ? w32_foreign_wm(d->foreign) : NULL;
+    if (wm && !rect_empty(rect_intersect(r, t->clip)))
+        wm_damage_client(wm, rect_intersect(r, t->clip));
+    else if (!d->memory && d->win)
         w32_damage(d->win, rect_intersect(r, t->clip));
 }
 
@@ -4064,7 +4087,17 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(LineDDA), W32_FN(MaskBlt), W32_FN(GetBrushOrgEx),
 };
 
+/* a window's DC belongs to it, the screen's to the desktop window; memory DCs to none */
+static HANDLE WINAPI WindowFromDC(HANDLE h)
+{
+    struct w32_dc *d = dc_of(h);
+    if (!d || d->memory)
+        return NULL;
+    return d->win ? (HANDLE)d->win : d->foreign ? d->foreign : (HANDLE)(uintptr_t)0x10010;
+}
+
 static const struct w32_export gdi_user_exports[] = {
+    W32_FN(WindowFromDC),
     W32_FN(FillRect),    W32_FN(FrameRect), W32_FN(InvertRect),  W32_FN(GetSysColor),   W32_FN(GetSysColorBrush),
     W32_FN(DrawTextA),   W32_FN(DrawTextW), W32_FN(DrawTextExW), W32_FN(DrawFocusRect), W32_FN(DrawFrameControl), W32_FN(DrawEdge),
 };
