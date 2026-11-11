@@ -921,6 +921,67 @@ static HANDLE WINAPI dummy_handle7(uint32_t a, uint32_t b, uint32_t c, uint32_t 
     return dummy_handle4(a, b, c, d);
 }
 
+/* Hooks: a chain per type, newest first; WH_CBT hears about windows being created and destroyed (MFC attaches its
+   window objects there) */
+struct hook {
+    struct hook *next;
+    int id;
+    DWORD thread;
+    void *proc;
+    bool dead;
+};
+
+static W32_STATE struct hook *hooks;
+
+typedef LRESULT(WINAPI *hook_fn)(int, WPARAM, LPARAM);
+
+static HANDLE WINAPI SetWindowsHookExW(int id, void *proc, HANDLE module, DWORD thread)
+{
+    UNUSED(module);
+    struct hook *h = w32_zalloc(sizeof(*h));
+    if (!h || !proc) {
+        w32_free(h);
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    *h = (struct hook){hooks, id, thread, proc, false};
+    hooks = h;
+    return h;
+}
+
+static BOOL WINAPI UnhookWindowsHookEx(HANDLE hook)
+{
+    for (struct hook *h = hooks; h; h = h->next)
+        if (h == hook && !h->dead) {
+            h->dead = true;
+            return TRUE;
+        }
+    w32_set_error(ERROR_INVALID_PARAMETER);
+    return FALSE;
+}
+
+static LRESULT run_hooks(struct hook *h, int id, int code, WPARAM wp, LPARAM lp)
+{
+    DWORD self = w32_thread_id();
+    for (; h; h = h->next)
+        if (h->id == id && !h->dead && (!h->thread || h->thread == self))
+            return W32_CALL(hook_fn, h->proc, code, wp, lp);
+    return 0;
+}
+
+static LRESULT WINAPI CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp)
+{
+    for (struct hook *h = hooks; h; h = h->next)
+        if (h == hook)
+            return run_hooks(h->next, h->id, code, wp, lp);
+    return 0;
+}
+
+LRESULT w32_call_hooks(int id, int code, WPARAM wp, LPARAM lp)
+{
+    return hooks ? run_hooks(hooks, id, code, wp, lp) : 0;
+}
+
 /* Window stations and desktops are named objects as in Windows: a program can make its own (Chromium's sandbox puts
    its renderers on a separate station and desktop) and ask their names; all of them show on the one screen. */
 #define UOI_FLAGS 1
@@ -1681,10 +1742,10 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("GetPointerType", w32_zero2),
     W32_AS("RegisterPointerDeviceNotifications", w32_one2),
     W32_AS("CloseTouchInputHandle", w32_one1),
-    W32_AS("SetWindowsHookExW", dummy_handle4),
-    W32_AS("SetWindowsHookExA", dummy_handle4),
-    W32_AS("UnhookWindowsHookEx", w32_one1),
-    W32_AS("CallNextHookEx", w32_zero4),
+    W32_FN(SetWindowsHookExW),
+    W32_AS("SetWindowsHookExA", SetWindowsHookExW),
+    W32_FN(UnhookWindowsHookEx),
+    W32_FN(CallNextHookEx),
     W32_AS("SetWinEventHook", dummy_handle7),
     W32_AS("UnhookWinEvent", w32_one1),
     W32_AS("NotifyWinEvent", no_op4),

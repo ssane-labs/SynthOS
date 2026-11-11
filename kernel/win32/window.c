@@ -460,7 +460,7 @@ static void builtin_classes(void)
                 {"RichEdit", CK_EDIT, 6, w32_richedit_proc}, {"ListBox", CK_LISTBOX, 6, w32_listbox_proc},
                 {"ComboBox", CK_COMBOBOX, 6, w32_combobox_proc}, {"ComboLBox", CK_LISTBOX, 6, w32_listbox_proc},
                 {"SysTabControl32", CK_TAB, 16, w32_tab_proc}, {"SysListView32", CK_LISTVIEW, 6, w32_listview_proc},
-                {"SysTreeView32", CK_LISTVIEW, 6, w32_treeview_proc}, {"ScrollBar", CK_NONE, 16, w32_scrollbar_proc},
+                {"SysTreeView32", CK_LISTVIEW, 6, w32_treeview_proc}, {"MDIClient", CK_NONE, 13, w32_mdiclient_proc}, {"ScrollBar", CK_NONE, 16, w32_scrollbar_proc},
                 {"ToolbarWindow32", CK_TOOLBAR, 16, w32_toolbar_proc},
                 {"msctls_statusbar32", CK_STATUS, 16, w32_status_proc},
                 {"tooltips_class32", CK_NONE, 0, w32_tooltip_proc},
@@ -784,7 +784,12 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
             cs_class = wide_class = w32_widen(class_name);
     }
     CREATESTRUCT cs = {param, instance, menu, parent_h, height, width, y, x, (LONG)style, cs_title, cs_class, ex};
-    bool created = w32_send(w, WM_NCCREATE, 0, (LPARAM)&cs) && w32_send(w, WM_CREATE, 0, (LPARAM)&cs) != -1;
+    struct {
+        CREATESTRUCT *cs;
+        HANDLE after;
+    } cbt = {&cs, NULL};
+    bool created = !w32_call_hooks(WH_CBT, HCBT_CREATEWND, (WPARAM)(uintptr_t)w, (LPARAM)&cbt) &&
+                   w32_send(w, WM_NCCREATE, 0, (LPARAM)&cs) && w32_send(w, WM_CREATE, 0, (LPARAM)&cs) != -1;
     w32_free(wide_title);
     w32_free(wide_class);
     if (!created) {
@@ -879,6 +884,8 @@ BOOL WINAPI w32_destroy_window(HANDLE h)
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+    if (w32_call_hooks(WH_CBT, HCBT_DESTROYWND, (WPARAM)(uintptr_t)w, 0))
+        return FALSE;
     for (struct w32_window *it = windows; it; it = it->next_all)
         if (it->owner == w && !it->destroyed)
             w32_destroy_window(it);
@@ -1332,14 +1339,34 @@ static HANDLE WINAPI GetWindow(HANDLE h, UINT cmd)
     struct w32_window *w = w32_win(h);
     if (!w)
         return NULL;
+    struct w32_window *first = is_child(w) ? w->parent->child : NULL, *c = first;
     switch (cmd) {
+    case 0: return first;
+    case 1:
+        while (c && c->sibling)
+            c = c->sibling;
+        return c;
     case 2: return w->sibling;
+    case 3:
+        while (c && c->sibling != w)
+            c = c->sibling;
+        return c;
     case 4: return w->owner;
     case 5: return w->child;
-    case 0:
-        return is_child(w) ? w->parent->child : NULL;
     default: return NULL;
     }
+}
+
+static HANDLE WINAPI GetTopWindow(HANDLE h)
+{
+    if (h)
+        return GetWindow(h, 5);
+    if (active)
+        return active;
+    for (struct w32_window *w = windows; w; w = w->next_all)
+        if (!w->destroyed && !is_child(w) && w->visible)
+            return w;
+    return NULL;
 }
 
 static HANDLE WINAPI GetDesktopWindow(void)
@@ -2729,22 +2756,22 @@ static HANDLE WINAPI LoadIconA(HANDLE inst, LPCSTR name)
     return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
 }
 
-static HANDLE load_bitmap(HANDLE inst, const void *name)
+static HANDLE load_bitmap(HANDLE inst, const void *name, bool section)
 {
     uint32_t size = 0;
     const void *dib = w32_find_resource(inst, (const void *)2, name, &size);
-    HANDLE h = dib ? w32_bitmap_from_dib(dib, size) : NULL;
+    HANDLE h = dib ? (section ? w32_dib_section_from_dib : w32_bitmap_from_dib)(dib, size) : NULL;
     if (!h)
         w32_set_error(1814);
     return h;
 }
 
-static HANDLE named_bitmap(HANDLE inst, const void *name, bool wide)
+static HANDLE named_bitmap(HANDLE inst, const void *name, bool wide, bool section)
 {
     if ((uintptr_t)name < 0x10000 || !wide)
-        return load_bitmap(inst, name);
+        return load_bitmap(inst, name, section);
     char *n = w32_narrow(name);
-    HANDLE h = n ? load_bitmap(inst, n) : NULL;
+    HANDLE h = n ? load_bitmap(inst, n, section) : NULL;
     w32_free(n);
     return h;
 }
@@ -2752,7 +2779,7 @@ static HANDLE named_bitmap(HANDLE inst, const void *name, bool wide)
 static HANDLE load_image(HANDLE inst, const void *name, UINT type, UINT flags, bool wide)
 {
     if (type == 0)
-        return (flags & 0x10) ? NULL : named_bitmap(inst, name, wide);
+        return (flags & 0x10) ? NULL : named_bitmap(inst, name, wide, flags & 0x2000);
     return (HANDLE)(0x30000u | ((uintptr_t)name & 0xffff));
 }
 
@@ -2774,14 +2801,14 @@ static HANDLE WINAPI LoadBitmapA(HANDLE inst, LPCSTR name)
 {
     if (!inst && (uintptr_t)name == 32759)
         return w32_check_sheet();
-    return named_bitmap(inst, name, false);
+    return named_bitmap(inst, name, false, false);
 }
 
 static HANDLE WINAPI LoadBitmapW(HANDLE inst, LPCWSTR name)
 {
     if (!inst && (uintptr_t)name == 32759)
         return w32_check_sheet();
-    return named_bitmap(inst, name, true);
+    return named_bitmap(inst, name, true, false);
 }
 
 /* Scroll bars keep their range, page and position for the program; the frame does not draw them. */
@@ -2981,16 +3008,243 @@ static BOOL WINAPI ShowOwnedPopups(HANDLE h, BOOL show)
     return TRUE;
 }
 
-/* MDI frames and children behave as ordinary windows */
-static LRESULT WINAPI DefFrameProcW(HANDLE h, HANDLE client, UINT msg, WPARAM wp, LPARAM lp)
+/* MDI: the client keeps its children maximized, one shown at a time (programs show them as tabs), and tells them
+   about activation; the frame's menu follows the active document */
+enum {
+    WS_EX_MDICHILD = 0x40,
+    WM_MDICREATE = 0x220,
+    WM_MDIDESTROY,
+    WM_MDIACTIVATE,
+    WM_MDIRESTORE,
+    WM_MDINEXT,
+    WM_MDIMAXIMIZE,
+    WM_MDITILE,
+    WM_MDICASCADE,
+    WM_MDIICONARRANGE,
+    WM_MDIGETACTIVE,
+    WM_MDISETMENU = 0x230,
+    WM_MDIREFRESHMENU = 0x234,
+    WM_CHILDACTIVATE_ = 0x22,
+};
+
+struct mdi {
+    HANDLE window_menu;
+    UINT first;
+    unsigned made;
+    struct w32_window *active;
+};
+
+static struct mdi *mdi_of(struct w32_window *client)
 {
-    UNUSED(client);
+    return client && client->proc == w32_mdiclient_proc ? client->list : NULL;
+}
+
+static bool mdi_child(struct w32_window *client, struct w32_window *c)
+{
+    return c && w32_win(c) && c->parent == client && (c->exstyle & WS_EX_MDICHILD);
+}
+
+static struct w32_window *mdi_active(struct w32_window *client)
+{
+    struct mdi *m = mdi_of(client);
+    if (!m)
+        return NULL;
+    if (!mdi_child(client, m->active))
+        m->active = NULL;
+    return m->active;
+}
+
+static void mdi_fit(struct w32_window *client, struct w32_window *c)
+{
+    move_window(c, 0, 0, client->rect.w, client->rect.h, true, true);
+}
+
+static void mdi_activate(struct w32_window *client, struct w32_window *c)
+{
+    struct mdi *m = mdi_of(client);
+    struct w32_window *old = mdi_active(client);
+    if (!m || old == c || (c && !mdi_child(client, c)))
+        return;
+    m->active = c;
+    bool visible = !old || old->visible;
+    if (c) {
+        mdi_fit(client, c);
+        if (visible)
+            show(c, SW_SHOWNA);
+    }
+    if (old) {
+        show(old, SW_HIDE);
+        w32_send(old, WM_MDIACTIVATE, (WPARAM)(uintptr_t)old, (LPARAM)(uintptr_t)c);
+    }
+    if (c) {
+        w32_send(c, WM_CHILDACTIVATE_, 0, 0);
+        w32_send(c, WM_MDIACTIVATE, (WPARAM)(uintptr_t)old, (LPARAM)(uintptr_t)c);
+        if (c->visible)
+            w32_set_focus(c);
+    }
+}
+
+static struct w32_window *mdi_next(struct w32_window *client, struct w32_window *from, bool back)
+{
+    struct w32_window *first = NULL, *prev = NULL, *after = NULL, *last = NULL;
+    bool seen = false;
+    for (struct w32_window *c = client->child; c; c = c->sibling) {
+        if (!mdi_child(client, c))
+            continue;
+        if (!first)
+            first = c;
+        if (c == from) {
+            seen = true;
+            prev = last;
+        } else if (seen && !after) {
+            after = c;
+        }
+        last = c;
+    }
+    struct w32_window *to = back ? (prev ? prev : last) : (after ? after : first);
+    return to == from ? NULL : to;
+}
+
+static bool wide_text(const void *p)
+{
+    const uint8_t *b = p;
+    return (uintptr_t)p >= 0x10000 && b[0] && !b[1];
+}
+
+static struct w32_window *mdi_create(struct w32_window *client, const uint32_t *mcs)
+{
+    struct mdi *m = mdi_of(client);
+    if (!m || !mcs)
+        return NULL;
+    const void *cls = (const void *)(uintptr_t)mcs[0], *title = (const void *)(uintptr_t)mcs[1];
+    bool unicode = wide_text(cls);
+    char *c = unicode ? w32_narrow(cls) : NULL, *t = unicode && title ? w32_narrow(title) : NULL;
+    DWORD style = (mcs[7] | WS_CHILD | WS_MAXIMIZE) & ~(DWORD)(0x00c00000u | 0x00040000u);
+    HANDLE h = create_window(WS_EX_MDICHILD, c ? c : cls, unicode ? t : title, title, cls, style, 0, 0, client->rect.w,
+                             client->rect.h, client, (HANDLE)(uintptr_t)(m->first + m->made++),
+                             (HANDLE)(uintptr_t)mcs[2], (void *)mcs, unicode);
+    w32_free(c);
+    w32_free(t);
+    struct w32_window *w = w32_win(h);
+    if (w)
+        mdi_activate(client, w);
+    return w;
+}
+
+LRESULT WINAPI w32_mdiclient_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct w32_window *w = w32_win(h);
+    if (!w)
+        return 0;
+    struct mdi *m = w->list;
+    switch (msg) {
+    case WM_CREATE: {
+        const CREATESTRUCT *cs = (const CREATESTRUCT *)lp;
+        const uint32_t *ccs = cs ? cs->lpCreateParams : NULL;
+        if (!m && !(m = w->list = w32_zalloc(sizeof(*m))))
+            return -1;
+        if (ccs) {
+            m->window_menu = (HANDLE)(uintptr_t)ccs[0];
+            m->first = ccs[1];
+        }
+        return 0;
+    }
+    case WM_MDICREATE: return (LRESULT)(uintptr_t)mdi_create(w, (const uint32_t *)lp);
+    case WM_MDIDESTROY: {
+        struct w32_window *c = w32_win((HANDLE)wp);
+        if (!mdi_child(w, c))
+            return 0;
+        if (c == mdi_active(w))
+            mdi_activate(w, mdi_next(w, c, false));
+        w32_destroy_window(c);
+        return 0;
+    }
+    case WM_MDIACTIVATE: mdi_activate(w, w32_win((HANDLE)wp)); return 0;
+    case WM_MDINEXT: {
+        struct w32_window *from = wp ? w32_win((HANDLE)wp) : mdi_active(w);
+        if (from)
+            mdi_activate(w, mdi_next(w, from, lp != 0));
+        return 0;
+    }
+    case WM_MDIGETACTIVE:
+        if (lp)
+            *(BOOL *)lp = FALSE;
+        return (LRESULT)(uintptr_t)mdi_active(w);
+    case WM_MDIRESTORE:
+    case WM_MDIMAXIMIZE: return 0;
+    case WM_MDITILE:
+    case WM_MDICASCADE:
+    case WM_MDIICONARRANGE: return TRUE;
+    case WM_MDISETMENU: {
+        struct w32_window *frame = w->parent;
+        HANDLE old = frame ? frame->menu : NULL;
+        if (frame && wp) {
+            frame->menu = (HANDLE)wp;
+            apply_menu(frame);
+        }
+        if (m && lp)
+            m->window_menu = (HANDLE)lp;
+        return (LRESULT)(uintptr_t)old;
+    }
+    case WM_MDIREFRESHMENU: return (LRESULT)(uintptr_t)(w->parent ? w->parent->menu : NULL);
+    case WM_SIZE:
+        for (struct w32_window *c = w->child; c; c = c->sibling)
+            if (mdi_child(w, c))
+                mdi_fit(w, c);
+        return 0;
+    case 0x82: /* WM_NCDESTROY */
+        w32_free(w->list);
+        w->list = NULL;
+        break;
+    }
+    return w32_def_window_proc(h, msg, wp, lp);
+}
+
+static LRESULT WINAPI DefFrameProcW(HANDLE h, HANDLE client_h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    struct w32_window *client = w32_win(client_h);
+    struct mdi *m = mdi_of(client);
+    if (m && msg == WM_SIZE) {
+        struct w32_window *w = w32_win(h);
+        if (w)
+            move_window(client, 0, 0, w->rect.w, w->rect.h, true, true);
+        return DefWindowProcW(h, msg, wp, lp);
+    }
+    if (m && msg == WM_COMMAND && !lp && (UINT)(uint16_t)wp >= m->first && (UINT)(uint16_t)wp < m->first + m->made) {
+        for (struct w32_window *c = client->child; c; c = c->sibling)
+            if (mdi_child(client, c) && c->id == (intptr_t)(uint16_t)wp)
+                mdi_activate(client, c);
+        return 0;
+    }
     return DefWindowProcW(h, msg, wp, lp);
 }
 
 static LRESULT WINAPI DefMDIChildProcW(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
 {
+    struct w32_window *w = w32_win(h), *client = w ? w->parent : NULL;
+    if (mdi_of(client) && mdi_child(client, w)) {
+        switch (msg) {
+        case WM_SETFOCUS:
+        case WM_CHILDACTIVATE_:
+            if (mdi_active(client) != w)
+                mdi_activate(client, w);
+            break;
+        case WM_SHOWWINDOW:
+            if (wp && mdi_active(client) != w)
+                mdi_activate(client, w);
+            break;
+        case WM_CLOSE: w32_send(client, WM_MDIDESTROY, (WPARAM)(uintptr_t)w, 0); return 0;
+        }
+    }
     return DefWindowProcW(h, msg, wp, lp);
+}
+
+static HANDLE WINAPI CreateMDIWindowW(const void *cls, const void *title, DWORD style, int x, int y, int cx, int cy,
+                                      HANDLE parent, HANDLE inst, LPARAM lp)
+{
+    uint32_t mcs[9] = {(uint32_t)(uintptr_t)cls, (uint32_t)(uintptr_t)title, (uint32_t)(uintptr_t)inst, (uint32_t)x,
+                       (uint32_t)y, (uint32_t)cx, (uint32_t)cy, style, (uint32_t)lp};
+    return mdi_create(w32_win(parent), mcs);
 }
 
 static BOOL WINAPI TranslateMDISysAccel(HANDLE client, MSG *msg)
@@ -3206,6 +3460,40 @@ static void label_of(const char *text, char *label, size_t cap, char *shortcut, 
     label[n] = 0;
 }
 
+/* a wide string of letters at p, as owner-drawn menus keep their captions */
+static bool caption_at(const void *p, char *out, size_t cap)
+{
+    if ((uintptr_t)p < 0x10000 || !w32_readable(p, 4))
+        return false;
+    const uint16_t *s = p;
+    size_t n = 0;
+    for (; n + 1 < cap; n++) {
+        if (((uintptr_t)(s + n) & 4095) == 0 && !w32_readable(s + n, 2))
+            return false;
+        if (!s[n])
+            break;
+        if (s[n] < 0x20 && s[n] != '\t')
+            return false;
+        out[n] = s[n] < 0x80 ? (char)s[n] : '?';
+    }
+    out[n] = 0;
+    return n > 0 && n + 1 < cap;
+}
+
+/* the text of an item; an owner-drawn one without text shows the caption its data points at (BCMenu and other menu
+   classes keep a wide string first in the item data) */
+static const char *item_label(struct w32_menu_item *it)
+{
+    if (it->text[0] || !(it->flags & MF_OWNERDRAW) || !it->data)
+        return it->text;
+    const void *data = (const void *)(uintptr_t)it->data;
+    if ((caption_at(data, it->text, sizeof(it->text))) ||
+        (w32_readable(data, 4) && caption_at((const void *)(uintptr_t) * (const uint32_t *)data, it->text, sizeof(it->text))))
+        return it->text;
+    it->text[0] = 0;
+    return it->text;
+}
+
 static void apply_menu(struct w32_window *w)
 {
     struct w32_menu *m = menu_of(w->menu);
@@ -3231,14 +3519,14 @@ static void apply_menu(struct w32_window *w)
                 *out = (struct menu_item){"", 0, NULL};
                 continue;
             }
-            label_of(it->text, bar->labels[count][n], sizeof(bar->labels[count][n]), bar->shortcuts[count][n],
+            label_of(item_label(it), bar->labels[count][n], sizeof(bar->labels[count][n]), bar->shortcuts[count][n],
                      sizeof(bar->shortcuts[count][n]));
             out->label = bar->labels[count][n];
             out->key = (it->flags & (MF_GRAYED | MF_DISABLED)) || it->sub ? -1 : KEY_COMMAND((int)(it->id & 0xffff));
             out->shortcut = bar->shortcuts[count][n][0] ? bar->shortcuts[count][n] : NULL;
         }
         char dummy[4];
-        label_of(top->text, bar->labels[count][MAX_MENU_ITEMS - 1], sizeof(bar->labels[0][0]), dummy, sizeof(dummy));
+        label_of(item_label(top), bar->labels[count][MAX_MENU_ITEMS - 1], sizeof(bar->labels[0][0]), dummy, sizeof(dummy));
         bar->menus[count] = (struct app_menu){bar->labels[count][MAX_MENU_ITEMS - 1], bar->items[count], n};
         count++;
     }
@@ -4378,7 +4666,7 @@ static const struct w32_export window_exports[] = {
     W32_FN(ScreenToClient), W32_FN(MapWindowPoints), W32_FN(AdjustWindowRect), W32_FN(AdjustWindowRectEx),
     W32_FN(MoveWindow), W32_FN(SetWindowPos), W32_FN(UpdateLayeredWindow), W32_FN(BringWindowToTop), W32_FN(SetForegroundWindow),
     W32_FN(GetLastActivePopup), W32_FN(GetForegroundWindow), W32_FN(SetActiveWindow), W32_FN(GetActiveWindow), W32_FN(GetParent),
-    W32_FN(SetParent), W32_FN(GetDlgItem), W32_FN(GetDlgCtrlID), W32_FN(GetWindow), W32_FN(GetDesktopWindow),
+    W32_FN(SetParent), W32_FN(GetDlgItem), W32_FN(GetDlgCtrlID), W32_FN(GetWindow), W32_FN(GetTopWindow), W32_FN(GetDesktopWindow),
     W32_FN(EnumChildWindows), W32_FN(EnumWindows), W32_FN(FindWindowA), W32_FN(FindWindowW),
     W32_FN(DefWindowProcA), W32_FN(DefWindowProcW), W32_FN(CallWindowProcA),
     W32_AS("CallWindowProcW", CallWindowProcA), W32_FN(SendMessageA), W32_FN(SendMessageW),
@@ -4412,7 +4700,7 @@ static const struct w32_export window_exports[] = {
     W32_FN(SetScrollInfo), W32_FN(GetScrollInfo), W32_FN(SetScrollPos), W32_FN(GetScrollPos), W32_FN(SetScrollRange),
     W32_FN(GetScrollRange), W32_FN(ShowScrollBar), W32_FN(EnableScrollBar), W32_FN(GetScrollBarInfo), W32_FN(ScrollWindowEx),
     W32_FN(ScrollWindow), W32_FN(ScrollDC), W32_FN(IsWindowUnicode), W32_FN(ShowOwnedPopups), W32_FN(DefFrameProcW),
-    W32_AS("DefFrameProcA", DefFrameProcW), W32_FN(DefMDIChildProcW), W32_AS("DefMDIChildProcA", DefMDIChildProcW),
+    W32_AS("DefFrameProcA", DefFrameProcW), W32_FN(DefMDIChildProcW), W32_AS("DefMDIChildProcA", DefMDIChildProcW), W32_FN(CreateMDIWindowW), W32_AS("CreateMDIWindowA", CreateMDIWindowW),
     W32_FN(TranslateMDISysAccel), W32_FN(GetKeyNameTextA), W32_FN(GetKeyNameTextW), W32_FN(LoadKeyboardLayoutW),
  W32_FN(CreateMenu),
     W32_AS("CreatePopupMenu", CreateMenu), W32_FN(DestroyMenu), W32_FN(AppendMenuA), W32_FN(AppendMenuW),

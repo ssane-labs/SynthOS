@@ -292,6 +292,52 @@ static void tree_test(HWND parent)
            (int)p.lParam, tree_selected, tree_expanding, tree_deleted, (int)SendMessageW(tv, TVM_GETCOUNT, 0, 0));
 }
 
+static int cbt_created, mdi_activations;
+static HHOOK cbt_hook;
+
+static LRESULT CALLBACK cbt_proc(int code, WPARAM w, LPARAM l)
+{
+    if (code == HCBT_CREATEWND && ((CBT_CREATEWNDA *)l)->lpcs)
+        cbt_created++;
+    return CallNextHookEx(cbt_hook, code, w, l);
+}
+
+static LRESULT CALLBACK doc_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_MDIACTIVATE && (HWND)l == h)
+        mdi_activations++;
+    return DefMDIChildProcA(h, m, w, l);
+}
+
+/* an MDI client with two documents; a CBT hook sees each window being made */
+static void mdi_test(HWND parent)
+{
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = doc_proc;
+    wc.lpszClassName = "ctldoc";
+    RegisterClassA(&wc);
+    cbt_hook = SetWindowsHookExA(WH_CBT, cbt_proc, NULL, GetCurrentThreadId());
+    CLIENTCREATESTRUCT ccs = {NULL, 100};
+    HWND client = CreateWindowExA(0, "MDICLIENT", NULL, WS_CHILD | WS_VISIBLE, 0, 0, 200, 200, parent, NULL, NULL, &ccs);
+    MDICREATESTRUCTA mcs = {"ctldoc", "one", NULL, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0};
+    HWND one = (HWND)SendMessageA(client, WM_MDICREATE, 0, (LPARAM)&mcs);
+    mcs.szTitle = "two";
+    HWND two = (HWND)SendMessageA(client, WM_MDICREATE, 0, (LPARAM)&mcs);
+    UnhookWindowsHookEx(cbt_hook);
+    int created = cbt_created;
+    HWND active = (HWND)SendMessageA(client, WM_MDIGETACTIVE, 0, 0);
+    SendMessageA(client, WM_MDINEXT, 0, 0);
+    HWND next = (HWND)SendMessageA(client, WM_MDIGETACTIVE, 0, 0);
+    SendMessageA(client, WM_MDIDESTROY, (WPARAM)next, 0);
+    HWND left = (HWND)SendMessageA(client, WM_MDIGETACTIVE, 0, 0);
+    RECT r;
+    GetClientRect(two, &r);
+    printf("mdi hook=%d active=%d next=%d left=%d id=%d fill=%d activations=%d top=%d\n", created, active == two, next == one,
+           left == two && !IsWindow(one), GetDlgCtrlID(two), r.right == 200 && r.bottom == 200, mdi_activations,
+           GetTopWindow(parent) != NULL);
+    DestroyWindow(client);
+}
+
 static void find_test(HWND parent)
 {
     static WCHAR what[32] = L"needle";
@@ -415,6 +461,16 @@ static void gdi_test(void)
     WORD count = 0;
     GetObjectA(pal, sizeof(count), &count);
     printf("palette entries=%u green=%u nearest=%u count=%u\n", n, back[1].peGreen, nearest, count);
+
+    BITMAPINFOHEADER bi = {sizeof(bi), 5, 3, 1, 24, BI_RGB};
+    void *bits = NULL;
+    HBITMAP dib = CreateDIBSection(dc, (BITMAPINFO *)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    DIBSECTION ds = {0};
+    BITMAP plain = {0};
+    int got = GetObjectA(dib, sizeof(ds), &ds), small = GetObjectA(bmp, sizeof(ds), &plain);
+    printf("dibsection size=%d bits=%d bpp=%d pitch=%ld height=%ld ddb=%d\n", got, ds.dsBm.bmBits == bits,
+           ds.dsBmih.biBitCount, (long)ds.dsBm.bmWidthBytes, (long)ds.dsBmih.biHeight, small);
+    DeleteObject(dib);
     SelectObject(dc, old);
     DeleteObject(bmp);
     DeleteObject(pal);
@@ -493,6 +549,7 @@ int main(void)
         tab_test(parent);
         list_test(parent);
         tree_test(parent);
+        mdi_test(parent);
         find_test(parent);
         dialogs_test(parent);
         DestroyWindow(parent);

@@ -33,6 +33,8 @@ struct gp_image {
     uint32_t format;
     int raw;
     bool borrowed;
+    uint8_t *sync; /* the program's buffer with another layout (bottom-up rows), refreshed when drawing ends */
+    int sync_stride;
     struct gp_lock {
         int x, y, w, h;
         uint32_t mode, format;
@@ -373,6 +375,10 @@ static int WINAPI GdipCreateBitmapFromScan0(int w, int h, int stride, uint32_t f
     if (!im)
         return w <= 0 || h <= 0 ? InvalidParameter : OutOfMemory;
     im->format = format;
+    if (scan0) {
+        im->sync = scan0;
+        im->sync_stride = stride;
+    }
     if (scan0)
         for (int y = 0; y < h; y++) {
             const uint8_t *row = stride < 0 ? scan0 - (ptrdiff_t)y * -stride : scan0 + (size_t)y * (size_t)stride;
@@ -518,11 +524,20 @@ int w32_gp_clone_area(int x, int y, int w, int h, uint32_t format, void *image, 
     return GdipCloneBitmapAreaI(x, y, w, h, format, image, out);
 }
 
+static void sync_out(struct gp_image *im)
+{
+    if (!im || !im->sync)
+        return;
+    for (int y = 0; y < im->h; y++)
+        row_out(im->format, im->px + (size_t)y * (size_t)im->stride, im->sync + (ptrdiff_t)y * im->sync_stride, im->w);
+}
+
 static int WINAPI GdipDisposeImage(void *image)
 {
     struct gp_image *im = IMG(image);
     if (!im)
         return InvalidParameter;
+    sync_out(im);
     if (!im->borrowed)
         w32_free(im->all);
     w32_free(im->delays);
@@ -1450,6 +1465,7 @@ static int WINAPI GdipDeleteGraphics(void *graphics)
         if (release)
             release(g->window, g->dc);
     }
+    sync_out(g->img);
     gp_free(g);
     return Ok;
 }
@@ -2448,6 +2464,81 @@ static int WINAPI GdipAddPathEllipseI(void *path, int x, int y, int w, int h)
     return w32_gp_path_ellipse(path, x, y, w, h);
 }
 
+/* cosine (times 1024) of an angle in 1/16 degrees, from the 32-step table */
+static int cos16(int a)
+{
+    a %= 5760;
+    if (a < 0)
+        a += 5760;
+    int i = a / 180, f = a % 180;
+    return (ellipse_cos[i] * (180 - f) + ellipse_cos[(i + 1) % 32] * f) / 180;
+}
+
+/* an arc of the ellipse in the box, angles in 1/16 degrees clockwise from the x axis */
+int w32_gp_arc_points(int x, int y, int w, int h, int start, int sweep, int *pts, int max)
+{
+    int n = MIN(MAX(ABS(sweep) / 180 + 2, 2), max);
+    for (int i = 0; i < n; i++) {
+        int a = start + sweep * i / (n - 1);
+        pts[i * 2] = x + w / 2 + cos16(a) * w / 2048;
+        pts[i * 2 + 1] = y + h / 2 + cos16(a - 1440) * h / 2048;
+    }
+    return n;
+}
+
+int w32_gp_path_arc(void *path, int x, int y, int w, int h, int start, int sweep)
+{
+    int pts[2 * 66];
+    return w32_gp_path_add(path, pts, w32_gp_arc_points(x, y, w, h, start, sweep, pts, 66), false);
+}
+
+/* a cubic Bezier as 17 points */
+int w32_gp_bezier_points(const int *c, int *pts)
+{
+    enum { N = 16 };
+    for (int i = 0; i <= N; i++) {
+        int t = i, u = N - t;
+        for (int k = 0; k < 2; k++)
+            pts[i * 2 + k] = (u * u * u * c[k] + 3 * u * u * t * c[2 + k] + 3 * u * t * t * c[4 + k] + t * t * t * c[6 + k]) / (N * N * N);
+    }
+    return N + 1;
+}
+
+static int WINAPI GdipAddPathBezierI(void *path, int x1, int y1, int x2, int y2, int x3, int y3, int x4, int y4)
+{
+    int pts[34];
+    return w32_gp_path_add(path, pts, w32_gp_bezier_points((const int[]){x1, y1, x2, y2, x3, y3, x4, y4}, pts), false);
+}
+
+static int WINAPI GdipAddPathBeziersI(void *path, const int *c, int n)
+{
+    if (!c || n < 4)
+        return InvalidParameter;
+    for (int i = 0; i + 3 < n; i += 3) {
+        int pts[34], r = w32_gp_path_add(path, pts, w32_gp_bezier_points(c + i * 2, pts), false);
+        if (r)
+            return r;
+    }
+    return Ok;
+}
+
+static int WINAPI GdipDrawBezierI(void *graphics, void *pen, int x1, int y1, int x2, int y2, int x3, int y3, int x4, int y4)
+{
+    int pts[34];
+    return w32_gp_draw_lines(graphics, pen, pts, w32_gp_bezier_points((const int[]){x1, y1, x2, y2, x3, y3, x4, y4}, pts), false);
+}
+
+static int WINAPI GdipDrawBeziersI(void *graphics, void *pen, const int *c, int n)
+{
+    if (!c || n < 4)
+        return InvalidParameter;
+    for (int i = 0; i + 3 < n; i += 3) {
+        int pts[34];
+        w32_gp_draw_lines(graphics, pen, pts, w32_gp_bezier_points(c + i * 2, pts), false);
+    }
+    return Ok;
+}
+
 static bool path_bounds(const struct gp_path *p, int *r)
 {
     if (!p->n)
@@ -2764,6 +2855,7 @@ static const struct w32_export gdiplus_exports[] = {
     W32_FN(GdipIsInfiniteRegion), W32_FN(GdipGetClip), W32_FN(GdipSetClipRegion), W32_FN(GdipGetRegionHRgn),
     W32_FN(GdipCreatePath), W32_FN(GdipDeletePath), W32_FN(GdipResetPath), W32_FN(GdipStartPathFigure),
     W32_FN(GdipClosePathFigure), W32_FN(GdipAddPathRectangleI), W32_FN(GdipAddPathLineI), W32_FN(GdipAddPathPolygonI), W32_FN(GdipAddPathEllipseI),
+    W32_FN(GdipAddPathBezierI), W32_FN(GdipAddPathBeziersI), W32_FN(GdipDrawBezierI), W32_FN(GdipDrawBeziersI),
     W32_FN(GdipCreatePathGradientFromPath), W32_FN(GdipSetPathGradientCenterColor),
     W32_FN(GdipSetPathGradientSurroundColorsWithCount), W32_FN(GdipSetLinePresetBlend),
     W32_FN(GdipWindingModeOutline), W32_FN(GdipGetPointCount), W32_FN(GdipFillPath), W32_FN(GdipDrawPath),

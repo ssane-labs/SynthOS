@@ -55,7 +55,7 @@ struct gdi_obj {
     struct canvas canvas;
     int bpp;
     void *bits;
-    bool mapped;
+    bool mapped, dib;
     struct rect region;
     uint32_t *colors;
     int ncolors;
@@ -738,8 +738,22 @@ static int get_object(HANDLE h, int size, void *out, bool wide)
     if (o->kind == OBJ_BITMAP) {
         if (!out)
             return 24;
-        uint32_t bm[6] = {0, (uint32_t)o->canvas.w, (uint32_t)o->canvas.h, (uint32_t)(o->canvas.w * 4),
-                          1u | 32u << 16, (uint32_t)o->bits};
+        uint32_t bpp = o->bpp ? (uint32_t)o->bpp : 32;
+        uint32_t bm[6] = {0, (uint32_t)o->canvas.w, (uint32_t)o->canvas.h, ((uint32_t)o->canvas.w * bpp + 31) / 32 * 4,
+                          1u | bpp << 16, (uint32_t)o->bits};
+        if (size >= 84 && o->dib) {
+            /* DIBSECTION: the BITMAP, then the BITMAPINFOHEADER (a positive height is bottom-up) */
+            uint32_t ds[21] = {0};
+            memcpy(ds, bm, 24);
+            ds[6] = 40;
+            ds[7] = (uint32_t)o->canvas.w;
+            ds[8] = (uint32_t)o->height;
+            ds[9] = 1u | bpp << 16;
+            ds[11] = bm[3] * (uint32_t)o->canvas.h;
+            ds[15] = (uint32_t)o->ncolors;
+            memcpy(out, ds, 84);
+            return 84;
+        }
         memcpy(out, bm, (size_t)MIN(size, 24));
         return MIN(size, 24);
     }
@@ -2548,6 +2562,7 @@ static HANDLE WINAPI CreateDIBSection(HANDLE h, const struct bitmap_info *bmi, U
         return NULL;
     }
     o->mapped = shared != NULL;
+    o->dib = true;
     if (bmi->bpp <= 8) {
         int n = bmi->used && bmi->used <= (1u << bmi->bpp) ? (int)bmi->used : 1 << bmi->bpp;
         if ((o->colors = w32_zalloc(sizeof(uint32_t) * (size_t)n))) {
@@ -2572,12 +2587,12 @@ static uint32_t dib_pixel_in(const struct bitmap_info *bmi, const uint32_t *pale
         palette = gray;
     switch (bmi->bpp) {
     case 32: return ((const uint32_t *)p)[x] | 0xff000000u;
-    case 24: return RGB(p[x * 3 + 2], p[x * 3 + 1], p[x * 3]);
+    case 24: return RGB(p[x * 3 + 2], p[x * 3 + 1], p[x * 3]) | 0xff000000u;
     case 16: {
         uint16_t v = (uint16_t)(p[x * 2] | p[x * 2 + 1] << 8);
         if (bmi->compression == 3)
-            return RGB((v >> 11) << 3, ((v >> 5) & 63) << 2, (v & 31) << 3);
-        return RGB(((v >> 10) & 31) << 3, ((v >> 5) & 31) << 3, (v & 31) << 3);
+            return RGB((v >> 11) << 3, ((v >> 5) & 63) << 2, (v & 31) << 3) | 0xff000000u;
+        return RGB(((v >> 10) & 31) << 3, ((v >> 5) & 31) << 3, (v & 31) << 3) | 0xff000000u;
     }
     case 8: return palette[p[x]] | 0xff000000u;
     case 4: return palette[(p[x / 2] >> (x & 1 ? 0 : 4)) & 15] | 0xff000000u;
@@ -2857,6 +2872,25 @@ HANDLE w32_bitmap_from_dib(const void *dib, uint32_t size)
     if (o)
         SetDIBits(NULL, o, 0, (UINT)height, (const uint8_t *)dib + offset, bmi, 0);
     return o;
+}
+
+/* LoadImage with LR_CREATEDIBSECTION: a DIB section in the resource's own format */
+HANDLE w32_dib_section_from_dib(const void *dib, uint32_t size)
+{
+    const struct bitmap_info *bmi = dib;
+    if (!bmi || size < sizeof(*bmi) || bmi->bpp == 32 || bmi->compression != 0 || bmi->width <= 0 || bmi->width > 8192 ||
+        !bmi->height || bmi->height > 8192 || bmi->height < -8192 || (bmi->bpp != 24 && bmi->bpp != 8 && bmi->bpp != 4 && bmi->bpp != 1))
+        return w32_bitmap_from_dib(dib, size);
+    uint32_t colors = bmi->bpp <= 8 ? (bmi->used ? bmi->used : 1u << bmi->bpp) : 0;
+    uint32_t offset = bmi->size + colors * 4, height = (uint32_t)(bmi->height < 0 ? -bmi->height : bmi->height);
+    uint32_t stride = ((uint32_t)bmi->width * bmi->bpp + 31) / 32 * 4;
+    if (bmi->size > size || offset + stride * height > size)
+        return NULL;
+    void *bits = NULL;
+    HANDLE h = CreateDIBSection(NULL, bmi, 0, &bits, NULL, 0);
+    if (h && bits)
+        memcpy(bits, (const uint8_t *)dib + offset, stride * height);
+    return h;
 }
 
 static BOOL WINAPI BitBlt(HANDLE hd, int dx, int dy, int w, int h, HANDLE hs, int sx, int sy, DWORD rop)

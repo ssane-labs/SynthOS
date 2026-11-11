@@ -371,6 +371,7 @@ bool w32_cross_copy(struct w32_process *p, void *to, const void *from, size_t n,
 struct w32_process *w32_ring_next(struct w32_process *p);
 void w32_reap(void);
 HANDLE w32_bitmap_from_dib(const void *dib, uint32_t size);
+HANDLE w32_dib_section_from_dib(const void *dib, uint32_t size);
 struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own);
 bool w32_is_host(const struct w32_process *p);
 struct w32_thread *w32_host_thread(void);
@@ -700,6 +701,7 @@ void w32_yield(void);
 void w32_preempt(void);
 void w32_input_boost(void);
 uint32_t w32_thread_id(void);
+bool w32_readable(const void *p, size_t size);
 void w32_idle(int ms);
 void w32_gui_cleanup(void);
 void w32_winsock_cleanup(void);

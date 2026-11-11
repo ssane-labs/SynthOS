@@ -45,5 +45,8 @@ int w32_gp_font_height(void *font);
 int w32_gp_clip_bounds(void *graphics, int *rect);
 int w32_gp_image_res(void *image);
 int w32_gp_path_ellipse(void *path, int x, int y, int w, int h);
+int w32_gp_path_arc(void *path, int x, int y, int w, int h, int start, int sweep);
+int w32_gp_arc_points(int x, int y, int w, int h, int start, int sweep, int *pts, int max);
+int w32_gp_bezier_points(const int *c, int *pts);
 
 #endif

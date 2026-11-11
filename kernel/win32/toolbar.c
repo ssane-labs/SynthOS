@@ -168,7 +168,7 @@ struct tb {
     int nstrings;
     int bw, bh, iw, ih, pad_x, pad_y;
     int struct_size, pressed, images_used;
-    HANDLE il, own_il;
+    HANDLE il, own_il, disabled_il, hot_il;
     struct w32_window *target;
     uint32_t ex;
 };
@@ -206,6 +206,13 @@ static int button_h(struct w32_window *w, struct tb *s)
     return MAX(h, s->bh);
 }
 
+/* a separate arrow shows with TBSTYLE_EX_DRAWDDARROWS or BTNS_WHOLEDROPDOWN; without the extended style the whole
+   button drops down */
+static bool has_arrow(struct tb *s, const struct tb_button *b)
+{
+    return (b->style & TBSTYLE_DROPDOWN) && ((s->ex & 1) || (b->style & 0x80));
+}
+
 static int button_w(struct w32_window *w, struct tb *s, int i)
 {
     struct tb_button *b = &s->b[i];
@@ -217,7 +224,7 @@ static int button_w(struct w32_window *w, struct tb *s, int i)
         return b->width;
     int width = s->iw + s->pad_x, text = b->text && b->text[0] ? gfx_text_width(w32_ctl_font(w), b->text) + 8 : 0;
     width = (w->style & TBSTYLE_LIST) ? width + text : MAX(width, text);
-    if (b->style & TBSTYLE_DROPDOWN)
+    if (has_arrow(s, b))
         width += 12;
     return MAX(width, s->bw);
 }
@@ -384,19 +391,26 @@ static void paint_toolbar(struct w32_window *w, struct tb *s)
         bool enabled = b->state & TBSTATE_ENABLED, down = (b->state & (TBSTATE_PRESSED | TBSTATE_CHECKED)) != 0;
         if (down)
             gfx_round(p.c, r, 5, style.control_pressed);
-        int ix = list ? r.x + 4 : r.x + (r.w - ((b->style & TBSTYLE_DROPDOWN) ? 12 : 0) - s->iw) / 2;
+        int ix = list ? r.x + 4 : r.x + (r.w - (has_arrow(s, b) ? 12 : 0) - s->iw) / 2;
         int iy = list ? r.y + (r.h - s->ih) / 2 : r.y + 3;
-        if (s->il && b->image >= 0 && draw)
-            draw(s->il, b->image, p.dc, ix - p.r.x, iy - p.r.y, 1);
+        HANDLE il = !enabled && s->disabled_il ? s->disabled_il : s->il;
+        if (il && b->image >= 0 && draw)
+            draw(il, b->image, p.dc, ix - p.r.x, iy - p.r.y, 1);
         uint32_t color = enabled ? style.text : style.tertiary;
         if (b->text && b->text[0]) {
             struct rect tr = list ? (struct rect){ix + s->iw + 4, r.y, r.x + r.w - ix - s->iw - 6, r.h}
                                   : (struct rect){r.x + 2, iy + s->ih + 1, r.w - 4, f->height + 2};
-            gfx_text_box(p.c, tr, f, b->text, color, list ? ALIGN_LEFT : ALIGN_CENTER);
+            char shown[96];
+            size_t n = 0;
+            for (const char *c = b->text; *c && n + 1 < sizeof(shown); c++)
+                if (*c != '&' || c[1] == '&')
+                    shown[n++] = *c == '&' ? *++c : *c;
+            shown[n] = 0;
+            gfx_text_box(p.c, tr, f, shown, color, list ? ALIGN_LEFT : ALIGN_CENTER);
         }
-        if (b->style & TBSTYLE_DROPDOWN)
+        if (has_arrow(s, b))
             gfx_text_box(p.c, (struct rect){r.x + r.w - 13, r.y, 12, r.h}, f, "v", color, ALIGN_CENTER);
-        if (!enabled && s->il && b->image >= 0)
+        if (!enabled && !s->disabled_il && s->il && b->image >= 0)
             for (int y = 0; y < s->ih; y += 2)
                 gfx_fill(p.c, (struct rect){ix, iy + y, s->iw, 1}, style.window);
     }
@@ -573,6 +587,15 @@ LRESULT WINAPI w32_toolbar_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         return (LRESULT)(uintptr_t)old;
     }
     case TB_GETIMAGELIST: return (LRESULT)(uintptr_t)s->il;
+    case 0x434: /* TB_SETHOTIMAGELIST */
+    case 0x436: { /* TB_SETDISABLEDIMAGELIST */
+        HANDLE *slot = msg == 0x434 ? &s->hot_il : &s->disabled_il, old = *slot;
+        *slot = (HANDLE)(uintptr_t)(uint32_t)lp;
+        w32_invalidate(w, NULL, true);
+        return (LRESULT)(uintptr_t)old;
+    }
+    case 0x435: return (LRESULT)(uintptr_t)s->hot_il;
+    case 0x437: return (LRESULT)(uintptr_t)s->disabled_il;
     case TB_SETBUTTONSIZE:
         s->bw = (int16_t)lp;
         s->bh = (int16_t)(lp >> 16);
@@ -678,7 +701,8 @@ LRESULT WINAPI w32_toolbar_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         if (k < 0 || (s->b[k].style & TBSTYLE_SEP) || !(s->b[k].state & TBSTATE_ENABLED))
             return 0;
         struct rect r = button_rect(w, s, k);
-        if ((s->b[k].style & TBSTYLE_DROPDOWN) && (int16_t)lp >= r.x + r.w - 13) {
+        if ((s->b[k].style & TBSTYLE_DROPDOWN) &&
+            (!(s->ex & 1) || (s->b[k].style & 0x80) || (int16_t)lp >= r.x + r.w - 13)) {
             dropdown(w, s, k);
             return 0;
         }

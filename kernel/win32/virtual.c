@@ -642,6 +642,11 @@ static BOOL bad_pointer(const void *p, SIZE_T size, bool write)
     }
 }
 
+bool w32_readable(const void *p, size_t size)
+{
+    return !bad_pointer(p, size, false);
+}
+
 static BOOL WINAPI IsBadReadPtr(const void *p, SIZE_T size)
 {
     return bad_pointer(p, size, false);

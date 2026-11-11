@@ -195,6 +195,39 @@ static int WINAPI GdipAddPathEllipse(void *path, REAL x, REAL y, REAL w, REAL h)
     return w32_gp_path_ellipse(path, (int)x, (int)y, (int)w, (int)h);
 }
 
+static int WINAPI GdipAddPathArc(void *path, REAL x, REAL y, REAL w, REAL h, REAL start, REAL sweep)
+{
+    return w32_gp_path_arc(path, R(x), R(y), R(w), R(h), (int)(start * 16), (int)(sweep * 16));
+}
+
+static int WINAPI GdipAddPathArcI(void *path, int x, int y, int w, int h, REAL start, REAL sweep)
+{
+    return w32_gp_path_arc(path, x, y, w, h, (int)(start * 16), (int)(sweep * 16));
+}
+
+static int WINAPI GdipDrawArcI(void *graphics, void *pen, int x, int y, int w, int h, REAL start, REAL sweep)
+{
+    int pts[2 * 66];
+    return w32_gp_draw_lines(graphics, pen, pts, w32_gp_arc_points(x, y, w, h, (int)(start * 16), (int)(sweep * 16), pts, 66), false);
+}
+
+static int WINAPI GdipDrawArc(void *graphics, void *pen, REAL x, REAL y, REAL w, REAL h, REAL start, REAL sweep)
+{
+    return GdipDrawArcI(graphics, pen, R(x), R(y), R(w), R(h), start, sweep);
+}
+
+static int WINAPI GdipAddPathBezier(void *path, REAL x1, REAL y1, REAL x2, REAL y2, REAL x3, REAL y3, REAL x4, REAL y4)
+{
+    int pts[34], c[8] = {R(x1), R(y1), R(x2), R(y2), R(x3), R(y3), R(x4), R(y4)};
+    return w32_gp_path_add(path, pts, w32_gp_bezier_points(c, pts), false);
+}
+
+static int WINAPI GdipDrawBezier(void *graphics, void *pen, REAL x1, REAL y1, REAL x2, REAL y2, REAL x3, REAL y3, REAL x4, REAL y4)
+{
+    int pts[34], c[8] = {R(x1), R(y1), R(x2), R(y2), R(x3), R(y3), R(x4), R(y4)};
+    return w32_gp_draw_lines(graphics, pen, pts, w32_gp_bezier_points(c, pts), false);
+}
+
 static int WINAPI GdipAddPathLine(void *path, REAL x0, REAL y0, REAL x1, REAL y1)
 {
     return w32_gp_path_add(path, (const int[]){R(x0), R(y0), R(x1), R(y1)}, 2, false);
@@ -484,6 +517,8 @@ static const struct w32_export gdiplus_fp_exports[] = {
     W32_FN(GdipScaleWorldTransform), W32_FN(GdipRotateWorldTransform), W32_FN(GdipSetClipRect),
     W32_FN(GdipGetClipBounds), W32_AS("GdipGetVisibleClipBounds", GdipGetClipBounds), W32_FN(GdipGetRegionBounds),
     W32_FN(GdipCreateRegionRect), W32_FN(GdipAddPathRectangle), W32_FN(GdipAddPathLine), W32_FN(GdipAddPathEllipse), W32_FN(GdipAddPathPolygon),
+    W32_FN(GdipAddPathArc), W32_FN(GdipAddPathArcI), W32_FN(GdipDrawArcI), W32_FN(GdipDrawArc), W32_FN(GdipAddPathBezier),
+    W32_FN(GdipDrawBezier),
     W32_FN(GdipCreateLineBrush), W32_FN(GdipCreateLineBrushFromRect), W32_FN(GdipCreatePen1), W32_FN(GdipCreatePen2),
     W32_FN(GdipSetPenWidth), W32_FN(GdipGetPenWidth), W32_FN(GdipGetImageHorizontalResolution),
     W32_AS("GdipGetImageVerticalResolution", GdipGetImageHorizontalResolution), W32_FN(GdipBitmapSetResolution),
