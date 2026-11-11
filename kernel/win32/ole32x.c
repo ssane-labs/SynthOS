@@ -287,7 +287,41 @@ static uint32_t WINAPI PropVariantCopy(uint16_t *dst, const uint16_t *src)
     return S_OK;
 }
 
+/* embedding: objects run in this process and are always running; nothing is linked or created in place */
+static DWORD WINAPI OleCreate(const void *clsid, const void *iid, DWORD render, void *format, void *site, void *storage,
+                                void **out)
+{
+    UNUSED(clsid);
+    UNUSED(iid);
+    UNUSED(render);
+    UNUSED(format);
+    UNUSED(site);
+    UNUSED(storage);
+    if (out)
+        *out = NULL;
+    return 0x80040154u;
+}
+
+static DWORD WINAPI OleTranslateAccelerator(void *frame, void *info, void *msg)
+{
+    UNUSED(frame);
+    UNUSED(info);
+    UNUSED(msg);
+    return 1;
+}
+
 static const struct w32_export ole32x_exports[] = {
+    W32_FN(OleCreate),
+    W32_FN(OleTranslateAccelerator),
+    W32_AS("OleLockRunning", w32_zero3),
+    W32_AS("OleRun", w32_zero1),
+    W32_AS("OleIsRunning", w32_one1),
+    W32_AS("OleIsCurrentClipboard", w32_one1),
+    W32_AS("CoLockObjectExternal", w32_zero3),
+    W32_AS("OleDestroyMenuDescriptor", w32_zero1),
+    W32_AS("OleCreateMenuDescriptor", w32_zero2),
+    W32_AS("OleSetMenuDescriptor", w32_zero5),
+    W32_AS("IsAccelerator", w32_zero4),
     W32_FN(CoInitialize),
     W32_FN(CoInitializeEx),
     W32_FN(CoUninitialize),

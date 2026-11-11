@@ -44,5 +44,6 @@ int w32_gp_text_span(const WCHAR *text, int len, void *font, int first, int coun
 int w32_gp_font_height(void *font);
 int w32_gp_clip_bounds(void *graphics, int *rect);
 int w32_gp_image_res(void *image);
+int w32_gp_path_ellipse(void *path, int x, int y, int w, int h);
 
 #endif

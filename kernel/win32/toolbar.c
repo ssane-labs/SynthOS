@@ -644,6 +644,28 @@ LRESULT WINAPI w32_toolbar_proc(HANDLE h, UINT msg, WPARAM wp, LPARAM lp)
         s->pad_y = (int16_t)(lp >> 16);
         return old;
     }
+    case 0x465: { /* TB_GETMETRICS: padding, bar padding, button spacing */
+        int32_t *m = (int32_t *)(uintptr_t)(uint32_t)lp;
+        if (m) {
+            if (m[1] & 1) {
+                m[2] = s->pad_x;
+                m[3] = s->pad_y;
+            }
+            if (m[1] & 2)
+                m[4] = m[5] = 0;
+            if (m[1] & 4)
+                m[6] = m[7] = 0;
+        }
+        return 0;
+    }
+    case 0x466: { /* TB_SETMETRICS */
+        const int32_t *m = (const int32_t *)(uintptr_t)(uint32_t)lp;
+        if (m && (m[1] & 1)) {
+            s->pad_x = (int16_t)m[2];
+            s->pad_y = (int16_t)m[3];
+        }
+        return 0;
+    }
     case TB_SETSTYLE: w->style = (uint32_t)lp; w32_invalidate(w, NULL, true); return 0;
     case TB_GETSTYLE: return (LRESULT)w->style;
     case WM_PAINT: paint_toolbar(w, s); return 0;

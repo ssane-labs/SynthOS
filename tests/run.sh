@@ -685,6 +685,8 @@ config w32headless on; winctl | grep tabs; config w32headless off
 tabs del=1 count=2 text=Three param=33 page=1 click=0 notify=1
 config w32headless on; winctl | grep listview; config w32headless off
 listview count=3 first=gamma sub=a1.1 find=1 sel=2 changed=1 virtual=500 text=a420.1
+config w32headless on; winctl | grep treeview; config w32headless off
+treeview first=Email sel=1 down=3 notify=3 expanding=1 deleted=3 count=1
 config w32headless on; winctl | grep toolbar; config w32headless off
 toolbar count=3 cmd=102 checked=1 status=3 files parts=2
 config w32headless on; winctl | grep findtext; config w32headless off

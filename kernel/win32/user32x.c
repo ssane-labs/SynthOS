@@ -1728,6 +1728,7 @@ static const struct w32_export user32x_exports[] = {
     W32_FN(IntersectRect),
     W32_FN(UnionRect),
     W32_FN(PtInRect),
+    W32_AS("DragDetect", w32_zero3),
     W32_FN(CharToOemBuffW),
     W32_FN(OemToCharBuffA),
     W32_AS("GetGuiResources", w32_zero2),

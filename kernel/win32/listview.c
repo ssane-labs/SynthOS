@@ -563,9 +563,10 @@ static void get_item(struct w32_window *w, struct lv *s, int i, uint8_t *p, bool
 {
     uint32_t mask;
     memcpy(&mask, p, 4);
-    int sub = get32(p + 8), image, cch = get32(p + off_cch());
+    int sub = get32(p + 8), image = s->items[i].image, cch = get32(p + off_cch());
     char buf[260];
-    const char *t = cell_text(w, s, i, sub, buf, sizeof(buf), &image);
+    const char *t = mask & (LVIF_TEXT | LVIF_IMAGE) ? cell_text(w, s, i, sub, buf, sizeof(buf), mask & LVIF_IMAGE ? &image : NULL)
+                                                   : "";
     struct lv_item *it = &s->items[i];
     if ((mask & LVIF_TEXT) && cch > 0) {
         uintptr_t out = get_ptr(p + off_text());

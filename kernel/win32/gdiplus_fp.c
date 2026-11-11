@@ -190,6 +190,11 @@ static int WINAPI GdipAddPathRectangle(void *path, REAL x, REAL y, REAL w, REAL 
     return w32_gp_path_add(path, (const int[]){x0, y0, x1, y0, x1, y1, x0, y1}, 4, true);
 }
 
+static int WINAPI GdipAddPathEllipse(void *path, REAL x, REAL y, REAL w, REAL h)
+{
+    return w32_gp_path_ellipse(path, (int)x, (int)y, (int)w, (int)h);
+}
+
 static int WINAPI GdipAddPathLine(void *path, REAL x0, REAL y0, REAL x1, REAL y1)
 {
     return w32_gp_path_add(path, (const int[]){R(x0), R(y0), R(x1), R(y1)}, 2, false);
@@ -478,7 +483,7 @@ static const struct w32_export gdiplus_fp_exports[] = {
     W32_FN(GdipDrawImageRectRect), W32_FN(GdipDrawImagePointRect), W32_FN(GdipTranslateWorldTransform),
     W32_FN(GdipScaleWorldTransform), W32_FN(GdipRotateWorldTransform), W32_FN(GdipSetClipRect),
     W32_FN(GdipGetClipBounds), W32_AS("GdipGetVisibleClipBounds", GdipGetClipBounds), W32_FN(GdipGetRegionBounds),
-    W32_FN(GdipCreateRegionRect), W32_FN(GdipAddPathRectangle), W32_FN(GdipAddPathLine), W32_FN(GdipAddPathPolygon),
+    W32_FN(GdipCreateRegionRect), W32_FN(GdipAddPathRectangle), W32_FN(GdipAddPathLine), W32_FN(GdipAddPathEllipse), W32_FN(GdipAddPathPolygon),
     W32_FN(GdipCreateLineBrush), W32_FN(GdipCreateLineBrushFromRect), W32_FN(GdipCreatePen1), W32_FN(GdipCreatePen2),
     W32_FN(GdipSetPenWidth), W32_FN(GdipGetPenWidth), W32_FN(GdipGetImageHorizontalResolution),
     W32_AS("GdipGetImageVerticalResolution", GdipGetImageHorizontalResolution), W32_FN(GdipBitmapSetResolution),

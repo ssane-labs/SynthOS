@@ -444,6 +444,31 @@ static int WINAPI GdipCreateHBITMAPFromBitmap(void *image, HANDLE *out, uint32_t
     return Ok;
 }
 
+static int WINAPI GdipGetImagePaletteSize(void *image, int *size)
+{
+    if (!IMG(image) || !size)
+        return InvalidParameter;
+    *size = 12;
+    return Ok;
+}
+
+static int WINAPI GdipGetImagePalette(void *image, uint32_t *palette, int size)
+{
+    if (!IMG(image) || !palette || size < 8)
+        return InvalidParameter;
+    palette[0] = palette[1] = 0;
+    return Ok;
+}
+
+static int WINAPI GdipCreateHICONFromBitmap(void *image, HANDLE *out)
+{
+    HANDLE(WINAPI * make)(void *) = (HANDLE(WINAPI *)(void *))w32_builtin_lookup("user32.dll", "CreateIconIndirect");
+    if (!IMG(image) || !out)
+        return InvalidParameter;
+    *out = make ? make(NULL) : NULL;
+    return *out ? Ok : OutOfMemory;
+}
+
 static struct gp_image *image_copy(const struct gp_image *src, int x0, int y0, int w, int h, bool all_frames)
 {
     int frames = all_frames ? src->frames : 1;
@@ -2404,6 +2429,81 @@ static int WINAPI GdipAddPathPolygonI(void *path, const int *pts, int n)
     return w32_gp_path_add(path, pts, n, true);
 }
 
+/* an ellipse is a polygon of 32 points (cosines times 1024) */
+static const short ellipse_cos[32] = {1024, 1004, 946, 851, 724, 569, 392, 200, 0, -200, -392, -569, -724, -851, -946, -1004, -1024, -1004, -946, -851, -724, -569, -392, -200, 0, 200, 392, 569, 724, 851, 946, 1004};
+
+int w32_gp_path_ellipse(void *path, int x, int y, int w, int h)
+{
+    int pts[64];
+    for (int i = 0; i < 32; i++) {
+        pts[i * 2] = x + w / 2 + ellipse_cos[i] * w / 2048;
+        pts[i * 2 + 1] = y + h / 2 + ellipse_cos[(i + 24) % 32] * h / 2048;
+    }
+    GdipStartPathFigure(path);
+    return w32_gp_path_add(path, pts, 32, true);
+}
+
+static int WINAPI GdipAddPathEllipseI(void *path, int x, int y, int w, int h)
+{
+    return w32_gp_path_ellipse(path, x, y, w, h);
+}
+
+static bool path_bounds(const struct gp_path *p, int *r)
+{
+    if (!p->n)
+        return false;
+    int x0 = p->pts[0], y0 = p->pts[1], x1 = x0, y1 = y0;
+    for (int i = 1; i < p->n; i++) {
+        x0 = MIN(x0, p->pts[i * 2]);
+        x1 = MAX(x1, p->pts[i * 2]);
+        y0 = MIN(y0, p->pts[i * 2 + 1]);
+        y1 = MAX(y1, p->pts[i * 2 + 1]);
+    }
+    r[0] = x0, r[1] = y0, r[2] = x1 - x0, r[3] = y1 - y0;
+    return true;
+}
+
+/* A path gradient blends from the center color to the surround color; it is drawn as a vertical blend over the
+   path's bounds (center color at the top). */
+static int WINAPI GdipCreatePathGradientFromPath(void *path, void **out)
+{
+    struct gp_path *p = gp_of(path, GP_PATH);
+    int r[4];
+    if (!p || !out || !path_bounds(p, r))
+        return InvalidParameter;
+    return w32_gp_gradient(r[0], r[1], r[0], r[1] + r[3], 0xffffffffu, 0xffffffffu, out);
+}
+
+static int WINAPI GdipSetPathGradientCenterColor(void *brush, uint32_t color)
+{
+    struct gp_brush *b = BRUSH(brush);
+    if (!b)
+        return InvalidParameter;
+    b->color = color;
+    return Ok;
+}
+
+static int WINAPI GdipSetPathGradientSurroundColorsWithCount(void *brush, const uint32_t *colors, int *count)
+{
+    struct gp_brush *b = BRUSH(brush);
+    if (!b || !colors || !count || *count < 1)
+        return InvalidParameter;
+    b->color2 = colors[0];
+    return Ok;
+}
+
+/* the first and last colors of a preset blend become the ends of the gradient */
+static int WINAPI GdipSetLinePresetBlend(void *brush, const uint32_t *colors, const void *positions, int count)
+{
+    UNUSED(positions);
+    struct gp_brush *b = BRUSH(brush);
+    if (!b || !colors || count < 2)
+        return InvalidParameter;
+    b->color = colors[0];
+    b->color2 = colors[count - 1];
+    return Ok;
+}
+
 static int WINAPI GdipWindingModeOutline(void *path, void *matrix, int flatness)
 {
     UNUSED(matrix);
@@ -2614,7 +2714,8 @@ static const struct w32_export gdiplus_exports[] = {
     W32_AS("GdipLoadImageFromStreamICM", GdipLoadImageFromStream),
     W32_AS("GdipCreateBitmapFromStream", GdipLoadImageFromStream),
     W32_AS("GdipCreateBitmapFromStreamICM", GdipLoadImageFromStream), W32_FN(GdipCreateBitmapFromScan0),
-    W32_FN(GdipCreateBitmapFromHBITMAP), W32_FN(GdipCreateHBITMAPFromBitmap), W32_FN(GdipCreateBitmapFromGraphics),
+    W32_FN(GdipCreateBitmapFromHBITMAP), W32_FN(GdipCreateHBITMAPFromBitmap), W32_FN(GdipGetImagePaletteSize), W32_FN(GdipGetImagePalette),
+    W32_FN(GdipCreateHICONFromBitmap), W32_FN(GdipCreateBitmapFromGraphics),
     W32_FN(GdipCloneImage), W32_FN(GdipCloneBitmapAreaI), W32_FN(GdipDisposeImage), W32_FN(GdipGetImageWidth),
     W32_FN(GdipGetImageHeight), W32_FN(GdipGetImagePixelFormat), W32_FN(GdipGetImageType), W32_FN(GdipGetImageFlags),
     W32_FN(GdipGetImageRawFormat), W32_FN(GdipImageGetFrameDimensionsCount), W32_FN(GdipImageGetFrameDimensionsList),
@@ -2662,7 +2763,9 @@ static const struct w32_export gdiplus_exports[] = {
     W32_FN(GdipCreateRegion), W32_FN(GdipCreateRegionRectI), W32_FN(GdipDeleteRegion), W32_FN(GdipGetRegionBoundsI),
     W32_FN(GdipIsInfiniteRegion), W32_FN(GdipGetClip), W32_FN(GdipSetClipRegion), W32_FN(GdipGetRegionHRgn),
     W32_FN(GdipCreatePath), W32_FN(GdipDeletePath), W32_FN(GdipResetPath), W32_FN(GdipStartPathFigure),
-    W32_FN(GdipClosePathFigure), W32_FN(GdipAddPathRectangleI), W32_FN(GdipAddPathLineI), W32_FN(GdipAddPathPolygonI),
+    W32_FN(GdipClosePathFigure), W32_FN(GdipAddPathRectangleI), W32_FN(GdipAddPathLineI), W32_FN(GdipAddPathPolygonI), W32_FN(GdipAddPathEllipseI),
+    W32_FN(GdipCreatePathGradientFromPath), W32_FN(GdipSetPathGradientCenterColor),
+    W32_FN(GdipSetPathGradientSurroundColorsWithCount), W32_FN(GdipSetLinePresetBlend),
     W32_FN(GdipWindingModeOutline), W32_FN(GdipGetPointCount), W32_FN(GdipFillPath), W32_FN(GdipDrawPath),
     W32_FN(GdipCreateBitmapFromGdiDib), W32_FN(GdipCreateHatchBrush), W32_FN(GdipSetPropertyItem),
     W32_FN(GdipGetStringFormatFlags), W32_FN(GdipSetStringFormatMeasurableCharacterRanges),

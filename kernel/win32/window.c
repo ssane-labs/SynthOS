@@ -102,6 +102,8 @@ static W32_STATE int quit_code;
 static W32_STATE bool quit_posted;
 static W32_STATE struct w32_window *capture;
 static W32_STATE struct w32_window *active;
+/* focus given before any window of the program is active (a child of a hidden main window) */
+static W32_STATE struct w32_window *loose_focus;
 static W32_STATE uint16_t next_atom;
 static W32_STATE int mouse_x, mouse_y;
 static W32_STATE unsigned key_mods;
@@ -385,7 +387,7 @@ struct w32_window *w32_focus(void)
 {
     struct w32_window *top = active;
     if (!top)
-        return NULL;
+        return loose_focus && w32_win(loose_focus) ? loose_focus : NULL;
     return top->focus && w32_win(top->focus) ? top->focus : top;
 }
 
@@ -397,6 +399,7 @@ void w32_set_focus(struct w32_window *w)
     struct w32_window *top = w32_top(w);
     if (top)
         top->focus = w;
+    loose_focus = active ? NULL : w;
     if (old)
         w32_send(old, WM_KILLFOCUS, (WPARAM)w, 0);
     if (w)
@@ -457,6 +460,7 @@ static void builtin_classes(void)
                 {"RichEdit", CK_EDIT, 6, w32_richedit_proc}, {"ListBox", CK_LISTBOX, 6, w32_listbox_proc},
                 {"ComboBox", CK_COMBOBOX, 6, w32_combobox_proc}, {"ComboLBox", CK_LISTBOX, 6, w32_listbox_proc},
                 {"SysTabControl32", CK_TAB, 16, w32_tab_proc}, {"SysListView32", CK_LISTVIEW, 6, w32_listview_proc},
+                {"SysTreeView32", CK_LISTVIEW, 6, w32_treeview_proc}, {"ScrollBar", CK_NONE, 16, w32_scrollbar_proc},
                 {"ToolbarWindow32", CK_TOOLBAR, 16, w32_toolbar_proc},
                 {"msctls_statusbar32", CK_STATUS, 16, w32_status_proc},
                 {"tooltips_class32", CK_NONE, 0, w32_tooltip_proc},
@@ -2806,7 +2810,6 @@ static int clamp_pos(const struct w32_scroll *b, int pos)
 
 static int WINAPI SetScrollInfo(HANDLE h, int bar, const struct scroll_info *si, BOOL redraw)
 {
-    UNUSED(redraw);
     struct w32_scroll *b = bar_of(h, bar);
     if (!b || !si)
         return 0;
@@ -2819,6 +2822,8 @@ static int WINAPI SetScrollInfo(HANDLE h, int bar, const struct scroll_info *si,
     if (si->mask & 4)
         b->pos = si->pos;
     b->pos = clamp_pos(b, b->pos);
+    if (bar == 2 && redraw)
+        w32_invalidate(w32_win(h), NULL, true);
     return b->pos;
 }
 
@@ -2842,12 +2847,13 @@ static BOOL WINAPI GetScrollInfo(HANDLE h, int bar, struct scroll_info *si)
 
 static int WINAPI SetScrollPos(HANDLE h, int bar, int pos, BOOL redraw)
 {
-    UNUSED(redraw);
     struct w32_scroll *b = bar_of(h, bar);
     if (!b)
         return 0;
     int old = b->pos;
     b->pos = clamp_pos(b, pos);
+    if (bar == 2 && redraw)
+        w32_invalidate(w32_win(h), NULL, true);
     return old;
 }
 

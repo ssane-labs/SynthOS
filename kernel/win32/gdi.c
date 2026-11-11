@@ -2105,6 +2105,73 @@ static int WINAPI GetTextFaceA(HANDLE h, int cap, LPSTR out)
     return (int)strlen(face) + 1;
 }
 
+static int WINAPI GetTextFaceW(HANDLE h, int cap, LPWSTR out)
+{
+    char face[64];
+    int n = GetTextFaceA(h, sizeof(face), face);
+    if (out && cap > 0) {
+        int i = 0;
+        for (; i < cap - 1 && face[i]; i++)
+            out[i] = (WCHAR)(uint8_t)face[i];
+        out[i] = 0;
+    }
+    return n;
+}
+
+/* the fonts are Unicode fonts used through code page 1252: ANSI_CHARSET with Latin 1 in the signature */
+static int WINAPI GetTextCharsetInfo(HANDLE h, DWORD *sig, DWORD flags)
+{
+    UNUSED(h);
+    UNUSED(flags);
+    if (sig) {
+        memset(sig, 0, 24);
+        sig[0] = 3;
+        sig[4] = 1;
+    }
+    return 0;
+}
+
+static int WINAPI GetTextCharset(HANDLE h)
+{
+    return GetTextCharsetInfo(h, NULL, 0);
+}
+
+static BOOL WINAPI PtInRegion(HANDLE rgn, int x, int y)
+{
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION)
+        return FALSE;
+    struct rect r = o->region;
+    return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+}
+
+static BOOL WINAPI RectInRegion(HANDLE rgn, const RECT *rc)
+{
+    struct gdi_obj *o = obj(rgn);
+    if (!o || o->kind != OBJ_REGION || !rc)
+        return FALSE;
+    struct rect r = rect_intersect(o->region, (struct rect){rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top});
+    return r.w > 0 && r.h > 0;
+}
+
+/* bounds accumulation is not kept: the rectangle is always empty (DCB_RESET) */
+static UINT WINAPI GetBoundsRect(HANDLE h, RECT *out, UINT flags)
+{
+    UNUSED(h);
+    UNUSED(flags);
+    if (out)
+        *out = (RECT){0, 0, 0, 0};
+    return 1;
+}
+
+static UINT WINAPI SetBoundsRect(HANDLE h, const RECT *r, UINT flags)
+{
+    UNUSED(h);
+    UNUSED(r);
+    UNUSED(flags);
+    return 2;
+}
+
 enum {
     DT_CENTER = 0x1,
     DT_RIGHT = 0x2,
@@ -4100,7 +4167,9 @@ static const struct w32_export gdi_exports[] = {
     W32_FN(SetPixelV), W32_FN(GetPixel), W32_FN(TextOutA), W32_FN(TextOutW), W32_FN(ExtTextOutA), W32_FN(ExtTextOutW),
     W32_FN(GetTextExtentPoint32A), W32_FN(GetTextExtentPoint32W), W32_AS("GetTextExtentPointA", GetTextExtentPoint32A),
     W32_AS("GetTextExtentPointW", GetTextExtentPoint32W), W32_FN(GetTextMetricsA), W32_FN(GetTextMetricsW),
-    W32_FN(GetTextFaceA), W32_FN(CreateCompatibleDC), W32_FN(DeleteDC), W32_FN(CreateDCW), W32_AS("CreateDCA", CreateDCW),
+    W32_FN(GetTextFaceA), W32_FN(GetTextFaceW), W32_FN(GetTextCharsetInfo), W32_FN(GetTextCharset),
+    W32_FN(PtInRegion), W32_FN(RectInRegion), W32_FN(GetBoundsRect), W32_FN(SetBoundsRect),
+    W32_AS("GetPolyFillMode", w32_one1), W32_AS("CopyMetaFileW", w32_zero2), W32_AS("CopyMetaFileA", w32_zero2), W32_FN(CreateCompatibleDC), W32_FN(DeleteDC), W32_FN(CreateDCW), W32_AS("CreateDCA", CreateDCW),
     W32_AS("CreateICW", CreateDCW), W32_AS("CreateICA", CreateDCW), W32_FN(CreateCompatibleBitmap),
     W32_FN(CreateBitmap), W32_FN(CreateDIBSection), W32_FN(StretchDIBits), W32_FN(SetDIBitsToDevice),
     W32_FN(GetDIBits), W32_FN(BitBlt), W32_FN(StretchBlt), W32_FN(PatBlt), W32_FN(GetDeviceCaps), W32_FN(GdiFlush),

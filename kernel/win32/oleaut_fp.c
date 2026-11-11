@@ -1,3 +1,4 @@
+#include <synth/fmt.h>
 #include <synth/string.h>
 
 #include "win32.h"
@@ -67,7 +68,34 @@ static INT WINAPI VariantTimeToSystemTime(double v, SYSTEMTIME *st)
     return TRUE;
 }
 
+/* the US English form: "11/11/2026 3:04:05 PM", the date or the time alone when the other part is zero */
+static uint32_t WINAPI VarBstrFromDate(double v, DWORD lcid, DWORD flags, WCHAR **out)
+{
+    UNUSED(lcid);
+    SYSTEMTIME st;
+    if (!out || !VariantTimeToSystemTime(v, &st))
+        return 0x80070057u;
+    char text[48], date[24] = "", time[24] = "";
+    bool no_time = (flags & 2) || (!st.hour && !st.minute && !st.second);
+    bool no_date = (flags & 1) || (int64_t)v == 0;
+    if (!no_date || no_time)
+        ksnprintf(date, sizeof(date), "%u/%u/%u", st.month, st.day, st.year);
+    if (!no_time)
+        ksnprintf(time, sizeof(time), "%u:%02u:%02u %s", st.hour % 12 ? st.hour % 12 : 12, st.minute, st.second,
+                  st.hour < 12 ? "AM" : "PM");
+    ksnprintf(text, sizeof(text), "%s%s%s", date, *date && *time ? " " : "", time);
+    WCHAR wide[48];
+    size_t i = 0;
+    for (; text[i]; i++)
+        wide[i] = (WCHAR)text[i];
+    wide[i] = 0;
+    WCHAR *(WINAPI * alloc)(const WCHAR *) = (WCHAR * (WINAPI *)(const WCHAR *)) w32_builtin_lookup("oleaut32.dll", "SysAllocString");
+    *out = alloc ? alloc(wide) : NULL;
+    return *out ? 0 : 0x8007000eu;
+}
+
 static const struct w32_export oleaut_fp_exports[] = {
+    W32_FN(VarBstrFromDate),
     W32_FN(SystemTimeToVariantTime),
     W32_FN(VariantTimeToSystemTime),
 };

@@ -1111,7 +1111,43 @@ static WCHAR *WINAPI StrFormatByteSizeW(uint64_t bytes, WCHAR *out, UINT cap)
     return out;
 }
 
+/* "1,234 KB": whole kilobytes, rounded up, with thousands separators */
+static void kb_size(uint64_t bytes, char *out, size_t cap)
+{
+    char digits[24], tmp[40];
+    ksnprintf(digits, sizeof(digits), "%llu", (unsigned long long)((bytes + 1023) / 1024));
+    size_t n = strlen(digits), k = 0;
+    for (size_t i = 0; i < n && k < sizeof(tmp) - 4; i++) {
+        if (i && (n - i) % 3 == 0)
+            tmp[k++] = ',';
+        tmp[k++] = digits[i];
+    }
+    tmp[k] = 0;
+    ksnprintf(out, cap, "%s KB", tmp);
+}
+
+static char *WINAPI StrFormatKBSizeA(uint64_t bytes, char *out, UINT cap)
+{
+    if (cap)
+        kb_size(bytes, out, cap);
+    return out;
+}
+
+static WCHAR *WINAPI StrFormatKBSizeW(uint64_t bytes, WCHAR *out, UINT cap)
+{
+    char tmp[40];
+    kb_size(bytes, tmp, sizeof(tmp));
+    size_t n = MIN(strlen(tmp), cap ? cap - 1 : 0);
+    for (size_t i = 0; i < n; i++)
+        out[i] = (WCHAR)tmp[i];
+    if (cap)
+        out[n] = 0;
+    return out;
+}
+
 static const struct w32_export shlwapi_exports[] = {
+    W32_FN(StrFormatKBSizeA),
+    W32_FN(StrFormatKBSizeW),
     W32_FN(UrlCanonicalizeW),
     W32_FN(PathFindFileNameW),
     W32_FN(PathFindExtensionW),

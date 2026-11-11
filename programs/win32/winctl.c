@@ -8,6 +8,7 @@
 static int measured, drawn, last_notify;
 static int tab_notify;
 static int list_changed, last_command;
+static int tree_selected, tree_expanding, tree_deleted;
 static UINT find_msg;
 static DWORD find_flags;
 
@@ -40,6 +41,12 @@ static LRESULT CALLBACK parent_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         find_flags = ((FINDREPLACEW *)l)->Flags;
     if (m == WM_NOTIFY && ((NMHDR *)l)->code == LVN_ITEMCHANGED)
         list_changed++;
+    if (m == WM_NOTIFY && (((NMHDR *)l)->code == TVN_SELCHANGEDW || ((NMHDR *)l)->code == TVN_SELCHANGEDA))
+        tree_selected = (int)((NMTREEVIEWW *)l)->itemNew.lParam;
+    if (m == WM_NOTIFY && (((NMHDR *)l)->code == TVN_ITEMEXPANDINGW || ((NMHDR *)l)->code == TVN_ITEMEXPANDINGA))
+        tree_expanding++;
+    if (m == WM_NOTIFY && (((NMHDR *)l)->code == TVN_DELETEITEMW || ((NMHDR *)l)->code == TVN_DELETEITEMA))
+        tree_deleted++;
     if (m == WM_NOTIFY && ((NMHDR *)l)->code == TCN_SELCHANGE)
         tab_notify = TCN_SELCHANGE;
     return DefWindowProcA(h, m, w, l);
@@ -239,6 +246,50 @@ static void list_test(HWND parent)
     printf("toolbar count=%d cmd=%d checked=%d status=%ls parts=%d\n", (int)SendMessageW(tb, TB_BUTTONCOUNT, 0, 0),
            last_command, (int)SendMessageW(tb, TB_ISBUTTONCHECKED, 102, 0), st,
            (int)SendMessageW(sb, SB_GETPARTS, 0, 0));
+}
+
+static HTREEITEM tree_add(HWND tv, HTREEITEM parent, HTREEITEM after, const WCHAR *text, int param)
+{
+    TVINSERTSTRUCTW in = {0};
+    in.hParent = parent;
+    in.hInsertAfter = after;
+    in.item.mask = TVIF_TEXT | TVIF_PARAM;
+    in.item.pszText = (WCHAR *)text;
+    in.item.lParam = param;
+    return (HTREEITEM)SendMessageW(tv, TVM_INSERTITEMW, 0, (LPARAM)&in);
+}
+
+static void tree_test(HWND parent)
+{
+    HWND tv = CreateWindowExW(0, WC_TREEVIEWW, L"", WS_CHILD | TVS_HASBUTTONS | TVS_LINESATROOT, 0, 0, 200, 200, parent,
+                              (HMENU)12, NULL, NULL);
+    HTREEITEM root = tree_add(tv, TVI_ROOT, TVI_LAST, L"General", 1);
+    tree_add(tv, root, TVI_SORT, L"Web", 3);
+    HTREEITEM mail = tree_add(tv, root, TVI_SORT, L"Email", 2);
+    tree_add(tv, TVI_ROOT, TVI_LAST, L"Backup", 4);
+    SendMessageW(tv, TVM_EXPAND, TVE_EXPAND, (LPARAM)root);
+    HTREEITEM child = (HTREEITEM)SendMessageW(tv, TVM_GETNEXTITEM, TVGN_CHILD, (LPARAM)root);
+    WCHAR text[16] = {0};
+    TVITEMW it = {0};
+    it.mask = TVIF_TEXT | TVIF_STATE;
+    it.hItem = child;
+    it.pszText = text;
+    it.cchTextMax = 16;
+    it.stateMask = TVIS_EXPANDED;
+    SendMessageW(tv, TVM_GETITEMW, 0, (LPARAM)&it);
+    RECT r;
+    *(HTREEITEM *)&r = mail;
+    SendMessageW(tv, TVM_GETITEMRECT, TRUE, (LPARAM)&r);
+    SendMessageW(tv, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(r.left + 3, r.top + 3));
+    HTREEITEM sel = (HTREEITEM)SendMessageW(tv, TVM_GETNEXTITEM, TVGN_CARET, 0);
+    SendMessageW(tv, WM_KEYDOWN, VK_DOWN, 0);
+    TVITEMW p = {0};
+    p.mask = TVIF_PARAM;
+    p.hItem = (HTREEITEM)SendMessageW(tv, TVM_GETNEXTITEM, TVGN_CARET, 0);
+    SendMessageW(tv, TVM_GETITEMW, 0, (LPARAM)&p);
+    SendMessageW(tv, TVM_DELETEITEM, 0, (LPARAM)root);
+    printf("treeview first=%ls sel=%d down=%d notify=%d expanding=%d deleted=%d count=%d\n", text, sel == mail,
+           (int)p.lParam, tree_selected, tree_expanding, tree_deleted, (int)SendMessageW(tv, TVM_GETCOUNT, 0, 0));
 }
 
 static void find_test(HWND parent)
@@ -441,6 +492,7 @@ int main(void)
         controls_test(parent);
         tab_test(parent);
         list_test(parent);
+        tree_test(parent);
         find_test(parent);
         dialogs_test(parent);
         DestroyWindow(parent);

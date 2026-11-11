@@ -461,7 +461,14 @@ static BOOL WINAPI SetFileCompletionNotificationModes(HANDLE h, uint8_t flags)
     return TRUE;
 }
 
+static BOOL WINAPI GetNumaHighestNodeNumber(ULONG *node)
+{
+    *node = 0;
+    return TRUE;
+}
+
 static const struct w32_export sysinfo_kernel32[] = {
+    W32_FN(GetNumaHighestNodeNumber),
     W32_FN(IsWow64Process2),
     W32_FN(SetThreadDescription),
     W32_FN(GetThreadDescription),

@@ -958,6 +958,42 @@ static DWORD WINAPI lsa_denied4(DWORD a, DWORD b, DWORD c, DWORD d)
     return 0xc0000022u;
 }
 
+static DWORD WINAPI LsaQueryInformationPolicy(HANDLE policy, DWORD cls, void **out)
+{
+    UNUSED(policy);
+    UNUSED(cls);
+    *out = NULL;
+    return 0xc0000022u;
+}
+
+static DWORD WINAPI LsaFreeMemory(void *p)
+{
+    w32_free(p);
+    return 0;
+}
+
+/* software restriction policies: there are none, so no level is defined */
+static BOOL WINAPI SaferCreateLevel(DWORD scope, DWORD level, DWORD flags, HANDLE *out, void *reserved)
+{
+    UNUSED(scope);
+    UNUSED(level);
+    UNUSED(flags);
+    UNUSED(reserved);
+    *out = NULL;
+    w32_set_error(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
+static BOOL WINAPI SaferIdentifyLevel(DWORD count, void *paths, HANDLE *out, void *reserved)
+{
+    UNUSED(count);
+    UNUSED(paths);
+    UNUSED(reserved);
+    *out = NULL;
+    w32_set_error(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
 static DWORD WINAPI EventRegister(const void *guid, void *callback, void *context, uint64_t *handle)
 {
     UNUSED(guid);
@@ -1130,6 +1166,12 @@ static const struct w32_export security_exports[] = {
     W32_AS("LsaOpenPolicy", lsa_denied4),
     W32_AS("LsaAddAccountRights", lsa_denied4),
     W32_AS("LsaClose", w32_zero1),
+    W32_FN(LsaQueryInformationPolicy),
+    W32_FN(LsaFreeMemory),
+    W32_FN(SaferCreateLevel),
+    W32_FN(SaferIdentifyLevel),
+    W32_AS("SaferCloseLevel", w32_one1),
+    W32_AS("SaferComputeTokenFromLevel", w32_zero5),
     W32_AS("ChangeServiceConfigW", w32_fail11),
     W32_AS("QueryServiceConfigW", w32_fail4),
     W32_AS("QueryServiceStatus", w32_fail2),

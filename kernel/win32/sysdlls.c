@@ -1256,6 +1256,43 @@ static struct safearray *WINAPI SafeArrayCreate(uint16_t vt, UINT dims, const in
     return bounds ? sa_create(vt, dims, bounds) : NULL;
 }
 
+/* a new count and lower bound for the last dimension; the elements that remain keep their place in memory */
+static uint32_t WINAPI SafeArrayRedim(struct safearray *sa, const int32_t *bound)
+{
+    if (!sa || !bound || (int32_t)bound[0] < 0)
+        return 0x80070057u;
+    if (sa->locks)
+        return 0x8002000du;
+    uint32_t old = sa_total(sa) * sa->element_size;
+    sa->bound[0].count = (uint32_t)bound[0];
+    sa->bound[0].lower = bound[1];
+    uint32_t size = sa_total(sa) * sa->element_size;
+    uint8_t *data = w32_zalloc((size_t)size + 1);
+    if (!data)
+        return 0x8007000eu;
+    memcpy(data, sa->data, MIN(old, size));
+    w32_free(sa->data);
+    sa->data = data;
+    return 0;
+}
+
+/* error objects and pictures loaded from streams are not made */
+static uint32_t WINAPI CreateErrorInfo(void **out)
+{
+    *out = NULL;
+    return 0x80004001u;
+}
+
+static uint32_t WINAPI OleLoadPicture(void *stream, LONG size, BOOL runmode, const void *iid, void **out)
+{
+    UNUSED(stream);
+    UNUSED(size);
+    UNUSED(runmode);
+    UNUSED(iid);
+    *out = NULL;
+    return 0x80004001u;
+}
+
 static uint16_t sa_vartype(const struct safearray *sa)
 {
     return (uint16_t)((const uint32_t *)sa)[-1];
@@ -1466,6 +1503,7 @@ static uint32_t WINAPI GetErrorInfo(uint32_t reserved, void **out)
 static const struct w32_export oleaut32_exports[] = {
     W32_FN(SysAllocString), W32_FN(SysAllocStringLen), W32_FN(SysFreeString),
     W32_FN(SysStringLen),   W32_FN(VariantClear),      W32_AS("VariantInit", VariantClear),
+    W32_FN(SafeArrayRedim), W32_FN(CreateErrorInfo), W32_FN(OleLoadPicture),
     W32_FN(GetErrorInfo),   W32_FN(SetErrorInfo),      W32_FN(VariantCopy),       W32_FN(SysAllocStringByteLen),
     W32_FN(SysStringByteLen), W32_FN(VarBstrCmp),      W32_FN(SafeArrayCreateVector),
     W32_FN(SafeArrayDestroy), W32_FN(SafeArrayGetDim), W32_FN(SafeArrayGetLBound),
@@ -1489,6 +1527,8 @@ static const char *const oleaut32_ordinals[] = {
     [25] = "SafeArrayGetElement", [26] = "SafeArrayPutElement", [77] = "SafeArrayGetVartype",
     [149] = "SysStringByteLen", [150] = "SysAllocStringByteLen", [161] = "LoadTypeLib", [162] = "LoadRegTypeLib",
     [184] = "SystemTimeToVariantTime", [185] = "VariantTimeToSystemTime",
+    [12] = "VariantChangeType", [40] = "SafeArrayRedim", [114] = "VarBstrFromDate", [202] = "CreateErrorInfo",
+    [418] = "OleLoadPicture",
     [200] = "GetErrorInfo",  [201] = "SetErrorInfo",  [314] = "VarBstrCmp",      [411] = "SafeArrayCreateVector",
 };
 

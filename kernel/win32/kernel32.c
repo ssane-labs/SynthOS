@@ -810,7 +810,16 @@ static void *WINAPI HeapReAlloc(HANDLE heap, DWORD flags, void *ptr, SIZE_T size
 {
     UNUSED(heap);
     size_t old = w32_msize(ptr);
-    void *p = w32_realloc(ptr, size);
+    /* HEAP_REALLOC_IN_PLACE_ONLY (_expand): the block must not move, only shrink or fit its slack */
+    if (flags & 0x10) {
+        if (!ptr || size > old) {
+            w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+            return NULL;
+        }
+        return ptr;
+    }
+    /* a zero size keeps a (tiny) block: callers go on using it */
+    void *p = w32_realloc(ptr, size ? size : 1);
     if (p && (flags & HEAP_ZERO_MEMORY) && size > old)
         memset((uint8_t *)p + old, 0, size - old);
     return p;
@@ -855,6 +864,8 @@ static void *WINAPI GlobalAlloc(UINT flags, SIZE_T size)
 
 static void *WINAPI GlobalReAlloc(void *mem, SIZE_T size, UINT flags)
 {
+    if (flags & 0x80) /* GMEM_MODIFY: only the attributes change */
+        return mem;
     return HeapReAlloc(NULL, (flags & 0x40) ? HEAP_ZERO_MEMORY : 0, mem, size);
 }
 
