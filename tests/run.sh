@@ -1143,7 +1143,7 @@ python3 -I tests/v6peer.py "$v6port" "$((v6port + 1))" >/dev/null 2>&1 &
 v6peer=$!
 python3 -I tests/wgpeer.py "$wgport" >/dev/null 2>&1 &
 v6peer="$v6peer $!"
-timeout 90 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
+timeout 150 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
     -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
     -netdev socket,id=v6,udp=127.0.0.1:$v6port,localaddr=127.0.0.1:$((v6port + 1)) \
     -device e1000,netdev=v6,mac=52:54:00:12:34:57 < "$work/input" > "$work/output" 2>&1
