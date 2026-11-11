@@ -69,8 +69,11 @@ int main()
     fonts->GetFontFromFontFace(face, &back);
     if (back)
         back->CreateFontFace(&again);
-    printf("dwrite families=%d name=%d glyphs=%d advance=%d upem=%d head=%d path=%d raster=%d same=%d\n",
-           fonts->GetFontFamilyCount() > 0, name[0] != 0, glyphs[0] && glyphs[1], gm[0].advanceWidth > 0,
+    /* Chromium's browser process opens the font file the path names and hands the handle to the renderer */
+    HANDLE opened = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    printf("dwrite families=%d name=%d arial=%d opens=%d glyphs=%d advance=%d upem=%d head=%d path=%d raster=%d same=%d\n",
+           fonts->GetFontFamilyCount() > 0, name[0] != 0, exists && !wcscmp(name, L"Arial"), opened != INVALID_HANDLE_VALUE,
+           glyphs[0] && glyphs[1], gm[0].advanceWidth > 0,
            fm.designUnitsPerEm > 0, has && size == 54, wcsstr(path, L".ttf") != NULL, box.right > box.left,
            again != NULL);
     /* Chromium asks for the Windows 10 factory: font fallback and grayscale glyph runs */

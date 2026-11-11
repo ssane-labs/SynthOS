@@ -183,7 +183,15 @@ static int to_vfs(const char *cwd, const char *path, char *out, size_t cap)
     int err = path_resolve(cwd, upath[0] ? upath : "/", abs, sizeof(abs));
     if (err)
         return err;
-    return vfs_resolve_nocase(abs, out, cap);
+    err = vfs_resolve_nocase(abs, out, cap);
+    /* C:\Windows\Fonts holds the user's fonts and the ones that come with the system */
+    if (!err && str_starts(out, "/home/fonts/") && !vfs_exists(out)) {
+        char sys[PATH_MAX_LEN];
+        ksnprintf(sys, sizeof(sys), "/system/fonts/%s", out + strlen("/home/fonts/"));
+        if (vfs_resolve_nocase(sys, sys, sizeof(sys)) == 0 && vfs_exists(sys))
+            str_copy(out, sys, cap);
+    }
+    return err;
 }
 
 /* the Secure Boot key of this computer is out of reach of Windows programs */

@@ -29,12 +29,13 @@
   Cmd+Q/W/M/Space/Tab/Shift+3/4/5, Cmd+Option+Esc.
 - [x] **Файлы: режим Windows** (View → Windows Mode, `config filesmode windows`): путь `C:\Users\root\…`,
   боковая панель «Quick access» и «This PC» (Local Disk C:, Users, Program Files, Windows, Recycle Bin).
-- [ ] **Claude Desktop (Electron, 64 бита)** запускается и рисует своё окно: браузер, сеть (TLS), процессы GPU и
-  отрисовки работают. DXGI сообщает адаптер «Microsoft Basic Render Driver» (как Windows без драйвера видеокарты),
-  поэтому Chromium сразу рисует через SwiftShader; процесс GPU рисует в окно браузера (`GetDC` чужого окна);
-  разделяемая память V8 выше 4 ГБ (`MapViewOfFileEx`); `NtSuspendProcess` для Crashpad. Осталось: страница входа
-  claude.ai из тестовой среды отвечает 403 (Cloudflare не пускает адреса дата-центров), проверить вход и чат на
-  обычном подключении.
+- [x] **Claude Desktop (Electron, 64 бита)** работает: окно, страницы claude.ai, ввод и чат. DXGI сообщает адаптер
+  «Microsoft Basic Render Driver» (как Windows без драйвера видеокарты), поэтому Chromium сразу рисует через
+  SwiftShader; процесс GPU рисует в окно браузера (`GetDC` чужого окна); разделяемая память V8 выше 4 ГБ
+  (`MapViewOfFileEx`); `NtSuspendProcess` для Crashpad. DirectWrite показывает стандартные семейства Windows (Arial,
+  Segoe UI, Times New Roman…) под их именами, а `C:\Windows\Fonts` открывает и системные шрифты — без этого Blink не
+  находил ни одного шрифта и процесс страницы падал. Проверено на тестовой копии claude.ai; настоящий claude.ai из
+  тестовой среды отвечает 403 (Cloudflare не пускает адреса дата-центров) — вход проверить на обычной сети.
 - [ ] Остальные пункты списка (1, 2, 7, 9–12, 14, 17, 20–24) — по порядку.
 
 ## Заход «Wormhole II» — после обновления (делать после текущего списка «Wormhole»)

@@ -796,7 +796,7 @@ himem pool=1 data=1 api=1 io=1 query=1 decommit=1 placed=1 freed=1
 himem64 | grep view
 himem view shared=1 mapped=1 odd=1 unmapped=1
 dwrite64
-dwrite families=1 name=1 glyphs=1 advance=1 upem=1 head=1 path=1 raster=1 same=1
+dwrite families=1 name=1 arial=1 opens=1 glyphs=1 advance=1 upem=1 head=1 path=1 raster=1 same=1
 dwrite64 | grep dwrite3
 dwrite3 factory2=1 factory3=1 collection=1 fallback=1 gray=1
 spawn64

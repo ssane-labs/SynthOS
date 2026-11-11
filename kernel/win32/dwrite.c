@@ -226,6 +226,8 @@ static void scan_dir(const char *dir)
     vfs_closedir(&d);
 }
 
+static void add_win_families(void);
+
 static void scan_fonts(void)
 {
     if (scanned)
@@ -245,6 +247,41 @@ static void scan_fonts(void)
             family_first[family_count++] = i;
         }
     }
+    add_win_families();
+}
+
+static int alias_family(const char *name);
+
+/* The families every Windows has: each one is an installed family under that name, so a program that checks the
+   name of what it got (Chromium does) finds Arial as Arial. Family objects for them are WIN_FAMILY + n. */
+#define WIN_FAMILY 0x10000
+static const char *const win_families[] = {"Segoe UI",  "Arial",   "Tahoma",          "Verdana", "Calibri",
+                                           "Microsoft Sans Serif", "Times New Roman", "Georgia", "Cambria",
+                                           "Courier New",          "Consolas",        "Lucida Console"};
+static int win_count, win_name[ARRAY_SIZE(win_families)], win_real[ARRAY_SIZE(win_families)];
+
+static void add_win_families(void)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(win_families); i++) {
+        bool installed = false;
+        for (int k = 0; k < family_count; k++)
+            installed |= !str_casecmp(faces[family_first[k]].family, win_families[i]);
+        int real = installed ? -1 : alias_family(win_families[i]);
+        if (real >= 0) {
+            win_name[win_count] = (int)i;
+            win_real[win_count++] = real;
+        }
+    }
+}
+
+static int real_family(int family)
+{
+    return family >= WIN_FAMILY ? win_real[family - WIN_FAMILY] : family;
+}
+
+static const char *family_name(int family)
+{
+    return family >= WIN_FAMILY ? win_families[win_name[family - WIN_FAMILY]] : faces[family_first[family]].family;
 }
 
 static int alias_family(const char *name)
@@ -1005,12 +1042,13 @@ static UINT WINAPI family_font_count(struct obj *o)
 {
     UINT n = 0;
     for (int i = 0; i < face_count; i++)
-        n += faces[i].family_index == o->index;
+        n += faces[i].family_index == real_family(o->index);
     return n;
 }
 
 static int family_face(int family, UINT n)
 {
+    family = real_family(family);
     for (int i = 0; i < face_count; i++)
         if (faces[i].family_index == family && n-- == 0)
             return i;
@@ -1029,7 +1067,8 @@ static uint32_t WINAPI family_font(struct obj *o, UINT n, void **out)
 
 static uint32_t WINAPI family_names(struct obj *o, void **out)
 {
-    return give(out, new_strings(family_first[o->index], NULL));
+    int real = real_family(o->index);
+    return give(out, new_strings(family_first[real], o->index != real ? family_name(o->index) : NULL));
 }
 
 static uint32_t WINAPI family_match(struct obj *o, int weight, int stretch, int style, void **out)
@@ -1037,7 +1076,7 @@ static uint32_t WINAPI family_match(struct obj *o, int weight, int stretch, int 
     UNUSED(stretch);
     int best = -1, best_score = 1 << 30;
     for (int i = 0; i < face_count; i++) {
-        if (faces[i].family_index != o->index)
+        if (faces[i].family_index != real_family(o->index))
             continue;
         int score = (faces[i].weight > weight ? faces[i].weight - weight : weight - faces[i].weight) + (faces[i].font_style != style ? 10000 : 0);
         if (score < best_score) {
@@ -1083,7 +1122,13 @@ struct families {
 static UINT WINAPI collection_count(struct obj *o)
 {
     const struct families *c = o->extra;
-    return (UINT)(c ? c->count : family_count);
+    return (UINT)(c ? c->count : win_count + family_count);
+}
+
+/* the family behind an index of a collection: the Windows names come first in the system one */
+static int collection_at(const struct families *c, UINT i)
+{
+    return c ? c->family[i] : i < (UINT)win_count ? WIN_FAMILY + (int)i : (int)i - win_count;
 }
 
 static uint32_t WINAPI collection_family(struct obj *o, UINT index, void **out)
@@ -1093,7 +1138,7 @@ static uint32_t WINAPI collection_family(struct obj *o, UINT index, void **out)
         *out = NULL;
         return E_INVALIDARG;
     }
-    return give(out, new_family(c ? c->family[index] : (int)index));
+    return give(out, new_family(collection_at(c, index)));
 }
 
 static uint32_t WINAPI collection_find(struct obj *o, const WCHAR *name, UINT *index, BOOL *exists)
@@ -1105,14 +1150,14 @@ static uint32_t WINAPI collection_find(struct obj *o, const WCHAR *name, UINT *i
         n[k] = name[k] < 0x80 ? (char)name[k] : '?';
     n[k] = 0;
     for (UINT i = 0; i < collection_count(o); i++)
-        if (!str_casecmp(faces[family_first[c ? c->family[i] : (int)i]].family, n)) {
+        if (!str_casecmp(family_name(collection_at(c, i)), n)) {
             *index = i;
             *exists = TRUE;
             return S_OK;
         }
     int alias = c ? -1 : alias_family(n);
     *exists = alias >= 0;
-    *index = alias >= 0 ? (UINT)alias : 0xffffffffu;
+    *index = alias >= 0 ? (UINT)(win_count + alias) : 0xffffffffu;
     return S_OK;
 }
 

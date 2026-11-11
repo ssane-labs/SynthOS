@@ -471,7 +471,7 @@ static void on_fault(int vector, uint32_t eip, uint32_t address)
         if (!img->builtin && eip >= img->base && eip - img->base < img->size)
             ksnprintf(where, sizeof(where), " (%s+0x%x)", img->name, eip - img->base);
     /* a jump to nowhere left no frame chain: the return addresses still on the stack tell where it came from */
-    for (uint32_t sp = r[7] - 16, i = 0; i < 24 && (sp >= 0xc0000000u ? sp < 0xfff00000u : vmm_mapped(sp)); i++, sp += 4) {
+    for (uint32_t sp = r[7] - 16, i = 0; i < (w32->win64 ? 600u : 24u) && (sp >= 0xc0000000u ? sp < 0xfff00000u : vmm_mapped(sp)); i++, sp += 4) {
         uint32_t v = *(uint32_t *)sp;
         for (struct w32_image *img = w32->images; img; img = img->next)
             if (!img->builtin && v >= img->base && v - img->base < img->size)
