@@ -1195,6 +1195,19 @@ static char *crt_tempnam(const char *dir, const char *prefix)
     return out;
 }
 
+static WCHAR *crt_wtempnam(const WCHAR *dir, const WCHAR *prefix)
+{
+    char *d = w32_narrow(dir), *p = w32_narrow(prefix), *name = crt_tempnam(d, p);
+    size_t n = w32_cp_to_wide(name, -1, NULL, 0, 1);
+    WCHAR *out = w32_alloc((n + 1) * sizeof(WCHAR));
+    if (out)
+        w32_cp_to_wide(name, -1, out, n + 1, 1);
+    w32_free(d);
+    w32_free(p);
+    w32_free(name);
+    return out;
+}
+
 static CRT_FILE *crt_tmpfile(void)
 {
     char name[64];
@@ -1885,6 +1898,7 @@ static const struct w32_export stdio_exports[] = {
     W32_AS("_fileno", crt_fileno), W32_AS("setvbuf", crt_setvbuf), W32_AS("setbuf", crt_setbuf),
     W32_AS("_filbuf", crt_filbuf), W32_AS("_flsbuf", crt_flsbuf), W32_AS("_getw", crt_getw),
     W32_AS("_putw", crt_putw), W32_AS("tmpnam", crt_tmpnam), W32_AS("_tempnam", crt_tempnam),
+    W32_AS("_wtempnam", crt_wtempnam),
     W32_AS("tmpfile", crt_tmpfile), W32_AS("strerror", crt_strerror), W32_AS("perror", crt_perror),
     W32_AS("strerror_s", crt_strerror_s), W32_AS("__sys_errlist", crt_sys_errlist), W32_AS("__sys_nerr", crt_sys_nerr),
     W32_AS("_stat64i32", crt_stat64i32), W32_AS("_wstat64i32", crt_wstat64i32), W32_AS("_fstat64i32", crt_fstat64i32),

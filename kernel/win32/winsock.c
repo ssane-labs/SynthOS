@@ -1803,7 +1803,7 @@ static const char *const winsock_ordinals[] = {
     [17] = "recvfrom",       [18] = "select",        [19] = "send",          [20] = "sendto",
     [21] = "setsockopt",     [22] = "shutdown",      [23] = "socket",        [51] = "gethostbyaddr",
     [52] = "gethostbyname",  [53] = "getprotobyname", [54] = "getprotobynumber", [55] = "getservbyname",
-    [56] = "getservbyport", [57] = "gethostname",   [111] = "WSAGetLastError",
+    [56] = "getservbyport", [57] = "gethostname",   [101] = "WSAAsyncSelect", [111] = "WSAGetLastError",
     [112] = "WSASetLastError", [115] = "WSAStartup", [116] = "WSACleanup",   [151] = "__WSAFDIsSet",
     [1141] = "AcceptEx", [1142] = "GetAcceptExSockaddrs",
 };
@@ -1819,7 +1819,7 @@ static const char *const wsock32_ordinals[] = {
     [17] = "recvfrom",       [18] = "select",        [19] = "send",          [20] = "sendto",
     [21] = "setsockopt",     [22] = "shutdown",      [23] = "socket",        [51] = "gethostbyaddr",
     [52] = "gethostbyname",  [53] = "getprotobyname", [54] = "getprotobynumber", [55] = "getservbyname",
-    [56] = "getservbyport", [57] = "gethostname",   [111] = "WSAGetLastError",
+    [56] = "getservbyport", [57] = "gethostname",   [101] = "WSAAsyncSelect", [111] = "WSAGetLastError",
     [112] = "WSASetLastError", [115] = "WSAStartup", [116] = "WSACleanup",   [151] = "__WSAFDIsSet",
     [1141] = "AcceptEx", [1142] = "GetAcceptExSockaddrs",
 };

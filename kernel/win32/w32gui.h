@@ -262,6 +262,11 @@ void w32_fill_brush(HANDLE dc, const RECT *r, HANDLE brush);
 struct canvas *w32_dc_canvas(HANDLE dc, int *ox, int *oy);
 bool w32_gui_pick_file(const struct gui_picker *o, char *out, size_t cap);
 void w32_dc_damage(HANDLE dc, struct rect r);
+struct canvas *w32_dc_target(HANDLE dc, int *ox, int *oy, struct rect *clip);
+HANDLE w32_bitmap_argb(int w, int h, const uint32_t *px, int stride);
+struct canvas *w32_bitmap_canvas(HANDLE bitmap);
+const struct ui_font *w32_pick_font(int height, int weight, const char *face, int pitch);
+uint32_t w32_stream_call(void *stream, int slot, const void *buf, uint32_t n, uint32_t *done);
 HANDLE w32_dc_font(HANDLE dc);
 COLORREF w32_dc_text_color(HANDLE dc);
 

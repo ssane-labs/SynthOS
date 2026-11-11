@@ -51,6 +51,7 @@ enum {
     MF_DISABLED = 0x0002,
     MF_CHECKED = 0x0008,
     MF_POPUP = 0x0010,
+    MF_OWNERDRAW = 0x0100,
     MF_SEPARATOR = 0x0800,
 };
 
@@ -74,6 +75,7 @@ struct w32_menu_item {
     uintptr_t id;
     struct w32_menu *sub;
     unsigned flags;
+    uint32_t data;
 };
 
 struct w32_menu {
@@ -188,11 +190,13 @@ struct shared_window {
     struct window *wm;
 };
 
-static struct shared_window shared_windows[SHARED_WINDOWS];
+static struct shared_window *shared_windows;
 
 static void share(struct w32_window *w)
 {
     struct shared_window *slot = NULL;
+    if (!shared_windows && !(shared_windows = kzalloc(sizeof(*shared_windows) * SHARED_WINDOWS)))
+        return;
     for (int i = 0; i < SHARED_WINDOWS; i++) {
         struct shared_window *s = &shared_windows[i];
         if (s->owner == w32 && s->hwnd == w) {
@@ -208,7 +212,7 @@ static void share(struct w32_window *w)
 
 static void unshare(struct w32_window *w)
 {
-    for (int i = 0; i < SHARED_WINDOWS; i++)
+    for (int i = 0; shared_windows && i < SHARED_WINDOWS; i++)
         if (shared_windows[i].owner == w32 && shared_windows[i].hwnd == w)
             shared_windows[i].owner = NULL;
 }
@@ -221,7 +225,7 @@ static const struct shared_window *foreign(HANDLE h)
     for (struct w32_window *it = windows; it; it = it->next_all)
         if (it == h)
             return NULL;
-    for (int i = 0; i < SHARED_WINDOWS; i++)
+    for (int i = 0; shared_windows && i < SHARED_WINDOWS; i++)
         if (shared_windows[i].owner && shared_windows[i].owner != w32 && shared_windows[i].hwnd == h)
             return &shared_windows[i];
     return NULL;
@@ -3132,7 +3136,9 @@ static BOOL insert_item(struct w32_menu *m, int at, UINT flags, uintptr_t id, co
         it->sub = menu_of((HANDLE)id);
     else
         it->id = id;
-    if (!(flags & MF_SEPARATOR) && text && (uintptr_t)text >= 0x10000)
+    if (flags & MF_OWNERDRAW)
+        it->data = (uint32_t)(uintptr_t)text;
+    else if (!(flags & MF_SEPARATOR) && text && (uintptr_t)text >= 0x10000)
         str_copy(it->text, text, sizeof(it->text));
     m->count++;
     return TRUE;
@@ -3156,10 +3162,19 @@ static BOOL WINAPI AppendMenuA(HANDLE h, UINT flags, uintptr_t id, LPCSTR text)
     return insert_item(menu_of(h), -1, flags, id, text);
 }
 
+/* the string of a W call, or for an owner-drawn item its data as it came */
+static char *menu_text(LPCWSTR text, UINT flags, const char **pass)
+{
+    char *n = text && (uintptr_t)text >= 0x10000 && !(flags & (MF_SEPARATOR | 0x0104)) ? w32_narrow(text) : NULL;
+    *pass = flags & MF_OWNERDRAW ? (const char *)text : n;
+    return n;
+}
+
 static BOOL WINAPI AppendMenuW(HANDLE h, UINT flags, uintptr_t id, LPCWSTR text)
 {
-    char *n = text && (uintptr_t)text >= 0x10000 ? w32_narrow(text) : NULL;
-    BOOL ok = insert_item(menu_of(h), -1, flags, id, n);
+    const char *pass;
+    char *n = menu_text(text, flags, &pass);
+    BOOL ok = insert_item(menu_of(h), -1, flags, id, pass);
     w32_free(n);
     return ok;
 }
@@ -3351,7 +3366,9 @@ static void set_item(struct w32_menu_item *it, UINT flags, uintptr_t id, const c
     it->flags = flags & ~(unsigned)MF_BYPOSITION;
     it->sub = (flags & MF_POPUP) ? menu_of((HANDLE)id) : NULL;
     it->id = (flags & MF_POPUP) ? 0 : id;
-    if (flags & MF_SEPARATOR)
+    if (flags & MF_OWNERDRAW)
+        it->data = (uint32_t)(uintptr_t)text;
+    else if (flags & MF_SEPARATOR)
         it->text[0] = 0;
     else if (text && (uintptr_t)text >= 0x10000)
         str_copy(it->text, text, sizeof(it->text));
@@ -3359,13 +3376,15 @@ static void set_item(struct w32_menu_item *it, UINT flags, uintptr_t id, const c
 
 static BOOL WINAPI InsertMenuW(HANDLE h, UINT pos, UINT flags, uintptr_t id, LPCWSTR text)
 {
-    char *n = text && (uintptr_t)text >= 0x10000 && !(flags & (MF_SEPARATOR | 0x0104)) ? w32_narrow(text) : NULL;
+    const char *pass;
+    char *n = menu_text(text, flags, &pass);
     struct w32_menu *m = menu_of(h);
     int at = -1;
     if (m && !(flags & MF_BYPOSITION) && !locate(m, pos, 0, &at))
         at = -1;
     struct w32_menu *in = m && at >= 0 && !(flags & MF_BYPOSITION) ? locate(m, pos, 0, &at) : m;
-    BOOL ok = insert_item(in, (flags & MF_BYPOSITION) ? (pos == 0xffffffffu ? -1 : (int)pos) : at, flags & ~0x400u, id, n);
+    BOOL ok = insert_item(in, (flags & MF_BYPOSITION) ? (pos == 0xffffffffu ? -1 : (int)pos) : at, flags & ~0x400u, id,
+                          pass);
     w32_free(n);
     return ok;
 }
@@ -3382,13 +3401,14 @@ static BOOL modify(HANDLE h, UINT pos, UINT flags, uintptr_t id, const char *tex
 
 static BOOL WINAPI ModifyMenuA(HANDLE h, UINT pos, UINT flags, uintptr_t id, LPCSTR text)
 {
-    return modify(h, pos, flags, id, (flags & 0x0104) ? NULL : text);
+    return modify(h, pos, flags, id, (flags & 0x0104) && !(flags & MF_OWNERDRAW) ? NULL : text);
 }
 
 static BOOL WINAPI ModifyMenuW(HANDLE h, UINT pos, UINT flags, uintptr_t id, LPCWSTR text)
 {
-    char *n = text && (uintptr_t)text >= 0x10000 && !(flags & (MF_SEPARATOR | 0x0104)) ? w32_narrow(text) : NULL;
-    BOOL ok = modify(h, pos, flags, id, n);
+    const char *pass;
+    char *n = menu_text(text, flags, &pass);
+    BOOL ok = modify(h, pos, flags, id, pass);
     w32_free(n);
     return ok;
 }
@@ -3542,6 +3562,8 @@ static BOOL get_item_info(HANDLE h, UINT item, BOOL by_pos, uint32_t *info, bool
         info[MII_ID] = (uint32_t)it->id;
     if (mask & 4)
         info[MII_SUB] = (uint32_t)(uintptr_t)it->sub;
+    if (mask & 0x20)
+        info[MII_DATA] = it->data;
     if (mask & 0x50)
         info_text(info, it->text, wide);
     return TRUE;
@@ -3570,6 +3592,8 @@ static void apply_item_info(struct w32_menu_item *it, const uint32_t *info, bool
         it->sub = menu_of((HANDLE)(uintptr_t)info[MII_SUB]);
         it->flags = it->sub ? it->flags | MF_POPUP : it->flags & ~(unsigned)MF_POPUP;
     }
+    if (mask & 0x20)
+        it->data = info[MII_DATA];
     bool text = (mask & 0x40) || ((mask & 0x10) && !(info[MII_TYPE] & 0x904));
     if (text && info[MII_TEXT] >= 0x10000) {
         if (wide) {
@@ -3822,7 +3846,11 @@ int w32_gui_message_box(const char *text, const char *caption, UINT type)
     struct box_result *saved = box;
     box = &result;
     struct window *owner = active && active->wm ? active->wm : NULL;
-    if (!ui_alert(owner, caption ? caption : "Message", text ? text : "", icon, sets[set], counts[set], box_pick)) {
+    KARR(const char *) labels[3];
+    for (int i = 0; i < counts[set]; i++)
+        labels[i] = (KARR(const char *))(uintptr_t)sets[set][i];
+    if (!ui_alert(owner, caption ? caption : "Message", text ? text : "", icon, (const char *const *)labels,
+                  counts[set], box_pick)) {
         box = saved;
         return 0;
     }
@@ -4128,7 +4156,7 @@ static struct deferred {
     struct window *wm;
     struct w32_process *proc;
     struct gui_event e;
-} deferred[DEFERRED_MAX];
+} *deferred;
 static unsigned deferred_count;
 
 static bool defer(struct window *wm, const struct gui_event *e, int kind)
@@ -4136,7 +4164,9 @@ static bool defer(struct window *wm, const struct gui_event *e, int kind)
     struct w32_bridge *b = wm->data;
     if (!b || b->process == w32)
         return false;
-    if (deferred_count < DEFERRED_MAX) {
+    if (!deferred)
+        deferred = kmalloc(sizeof(*deferred) * DEFERRED_MAX);
+    if (deferred && deferred_count < DEFERRED_MAX) {
         struct deferred *d = &deferred[deferred_count++];
         d->wm = wm;
         d->proc = b->process;
@@ -4296,7 +4326,7 @@ void w32_gdi_reset(void);
 void w32_gui_cleanup(void)
 {
     w32_gdi_reset();
-    for (int i = 0; i < SHARED_WINDOWS; i++)
+    for (int i = 0; shared_windows && i < SHARED_WINDOWS; i++)
         if (shared_windows[i].owner == w32)
             shared_windows[i].owner = NULL;
     for (struct w32_window *w = windows; w; w = w->next_all)

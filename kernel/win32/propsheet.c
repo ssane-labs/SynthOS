@@ -702,6 +702,15 @@ static const struct w32_export propsheet_exports[] = {
 };
 
 static const char *const comctl32_ordinals[] = {
+    [6] = "CreateStatusWindowA",
+    [13] = "MakeDragList",
+    [14] = "LBItemFromPt",
+    [15] = "DrawInsert",
+    [17] = "InitCommonControls",
+    [410] = "SetWindowSubclass",
+    [411] = "GetWindowSubclass",
+    [412] = "RemoveWindowSubclass",
+    [413] = "DefSubclassProc",
     [344] = "TaskDialog",
     [380] = "LoadIconMetric",
     [381] = "LoadIconWithScaleDown",

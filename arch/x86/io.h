@@ -206,6 +206,8 @@ void cpu_set_gate(int vector, uintptr_t handler);
 void *vmm_map_uncached(uint64_t phys, size_t size);
 
 void cpu_init(void);
+void cpu_tss_cr3(uint32_t root);
+void cpu_df_init(void);
 const struct cpu_info *cpu_info(void);
 uint16_t pit_counter(void);
 void pit_bios_mode(bool bios);

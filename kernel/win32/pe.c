@@ -326,6 +326,74 @@ static struct w32_image *image_new(const char *name)
     return img;
 }
 
+/* A built-in DLL gets a real export directory, as some programs walk kernel32's exports themselves (the Unicode layer
+   for Windows 9x looks for FindResourceW there to tell it runs on NT). */
+struct export_list {
+    const char **names;
+    uint32_t count, cap, chars;
+};
+
+static void export_add(const char *name, void *arg)
+{
+    struct export_list *l = arg;
+    if (l->count == l->cap) {
+        uint32_t cap = l->cap ? l->cap * 2 : 256;
+        const char **grown = krealloc(l->names, cap * sizeof(*grown));
+        if (!grown)
+            return;
+        l->names = grown;
+        l->cap = cap;
+    }
+    l->names[l->count++] = name;
+}
+
+static void export_collect(const char *module, struct export_list *l)
+{
+    w32_builtin_names(module, export_add, l);
+    for (uint32_t gap = l->count / 2; gap; gap /= 2)
+        for (uint32_t i = gap; i < l->count; i++)
+            for (uint32_t j = i; j >= gap && strcmp(l->names[j - gap], l->names[j]) > 0; j -= gap) {
+                const char *t = l->names[j];
+                l->names[j] = l->names[j - gap];
+                l->names[j - gap] = t;
+            }
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < l->count; i++)
+        if (!n || strcmp(l->names[n - 1], l->names[i]))
+            l->names[n++] = l->names[i];
+    l->count = n;
+    l->chars = 0;
+    for (uint32_t i = 0; i < n; i++)
+        l->chars += strlen(l->names[i]) + 1;
+}
+
+static void export_write(uint8_t *header, const char *module, const struct export_list *l)
+{
+    uint32_t dir = 4096, funcs = dir + 40, names = funcs + l->count * 4, ords = names + l->count * 4;
+    uint32_t text = ords + l->count * 2, base = (uint32_t)(uintptr_t)header;
+    uint32_t *dirs = (uint32_t *)(header + 0x58 + 96);
+    uint32_t *d = (uint32_t *)(header + dir);
+    str_copy((char *)header + text, module, 64);
+    d[3] = text;
+    text += strlen(module) + 1;
+    d[4] = 1;
+    d[5] = d[6] = l->count;
+    d[7] = funcs;
+    d[8] = names;
+    d[9] = ords;
+    for (uint32_t i = 0; i < l->count; i++) {
+        void *fn = w32_guest_addr(builtin_lookup(module, l->names[i]));
+        ((uint32_t *)(header + funcs))[i] = fn ? (uint32_t)(uintptr_t)fn - base : 0;
+        ((uint32_t *)(header + names))[i] = text;
+        ((uint16_t *)(header + ords))[i] = (uint16_t)i;
+        size_t len = strlen(l->names[i]) + 1;
+        memcpy(header + text, l->names[i], len);
+        text += len;
+    }
+    dirs[0] = dir;
+    dirs[1] = text - dir;
+}
+
 static struct w32_image *load_builtin(const char *name)
 {
     struct w32_image *img = image_new(name);
@@ -339,9 +407,17 @@ static struct w32_image *load_builtin(const char *name)
         return img;
     }
 #endif
-    uint8_t *header = heap_alloc_aligned(&w32->heap, 4096, 4096);
-    if (!header)
+    struct export_list list = {0};
+    if (!w32->win64)
+        export_collect(name, &list);
+    uint32_t total = 4096 + (list.count ? 40 + list.count * 10 + list.chars + 64 : 0);
+    total = (total + 4095) & ~4095u;
+    uint8_t *header = heap_alloc_aligned(&w32->heap, total, 4096);
+    if (!header) {
+        kfree(list.names);
         return img;
+    }
+    memset(header, 0, total);
     header[0] = 'M';
     header[1] = 'Z';
     header[0x3c] = 0x40;
@@ -363,10 +439,15 @@ static struct w32_image *load_builtin(const char *name)
         header[0x58] = 0x0b;
         header[0x59] = 0x02;
     }
-    uint32_t size = 4096;
+    uint32_t size = total;
     memcpy(header + 0x58 + 56, &size, 4);
+    if (list.count) {
+        header[0x58 + 92] = 16;
+        export_write(header, name, &list);
+    }
+    kfree(list.names);
     img->base = (uint32_t)header;
-    img->size = 4096;
+    img->size = total;
     img->dll = true;
     img->initialized = true;
     ksnprintf(img->path, sizeof(img->path), "/system/win32/%s", name);

@@ -1154,6 +1154,121 @@ static uint8_t *crt_mbsrchr(const uint8_t *s, unsigned c)
     return (uint8_t *)strrchr((const char *)s, (int)c);
 }
 
+/* the _mbs functions of the single-byte code page this CRT runs in are the str ones (the n forms count bytes) */
+static char *mbsncpy(char *d, const char *s, size_t n)
+{
+    size_t i = 0;
+    for (; i < n && s[i]; i++)
+        d[i] = s[i];
+    for (; i < n; i++)
+        d[i] = 0;
+    return d;
+}
+
+static char *mbsncat(char *d, const char *s, size_t n)
+{
+    char *e = d + strlen(d);
+    while (n-- && *s)
+        *e++ = *s++;
+    *e = 0;
+    return d;
+}
+
+static int mbsncmp(const char *a, const char *b, size_t n)
+{
+    for (; n; n--, a++, b++)
+        if (*a != *b || !*a)
+            return (uint8_t)*a - (uint8_t)*b;
+    return 0;
+}
+
+static size_t mbsnbcnt(const char *s, size_t n)
+{
+    size_t i = 0;
+    while (i < n && s[i])
+        i++;
+    return i;
+}
+
+static char *mbscpy(char *d, const char *s)
+{
+    memcpy(d, s, strlen(s) + 1);
+    return d;
+}
+
+static char *mbscat(char *d, const char *s)
+{
+    mbscpy(d + strlen(d), s);
+    return d;
+}
+
+static char *mbsnset(char *s, unsigned c, size_t n)
+{
+    for (size_t i = 0; i < n && s[i]; i++)
+        s[i] = (char)c;
+    return s;
+}
+
+static unsigned mbsnextc(const uint8_t *s)
+{
+    return *s;
+}
+
+static const char *mbsninc(const char *s, size_t n)
+{
+    return s ? s + mbsnbcnt(s, n) : NULL;
+}
+
+static const char *mbsspnp(const char *s, const char *set)
+{
+    s += crt_strspn(s, set);
+    return *s ? s : NULL;
+}
+
+static size_t mbclen(const uint8_t *c)
+{
+    UNUSED(c);
+    return 1;
+}
+
+static int ismbcspace(unsigned c)
+{
+    return c == ' ' || (c >= 9 && c <= 13);
+}
+
+static int mbscpy_s(char *d, size_t size, const char *s)
+{
+    size_t n = s ? strlen(s) : 0;
+    if (!d || !s || n >= size) {
+        if (d && size)
+            *d = 0;
+        return 22;
+    }
+    memcpy(d, s, n + 1);
+    return 0;
+}
+
+static int mbscat_s(char *d, size_t size, const char *s)
+{
+    size_t have = d ? mbsnbcnt(d, size) : size;
+    if (!d || !s || have == size)
+        return 22;
+    return mbscpy_s(d + have, size - have, s);
+}
+
+static int mbsnbcpy_s(char *d, size_t size, const char *s, size_t n)
+{
+    size_t len = s ? mbsnbcnt(s, n) : 0;
+    if (!d || !s || len >= size) {
+        if (d && size)
+            *d = 0;
+        return 22;
+    }
+    memcpy(d, s, len);
+    d[len] = 0;
+    return 0;
+}
+
 static W32_STATE int pending_scan = -1;
 
 static int crt_kbhit(void)
@@ -1340,6 +1455,18 @@ static const struct w32_export stdlib_exports[] = {
     W32_AS("mbsinit", crt_mbsinit), W32_AS("_ismbblead", crt_ismbblead), W32_AS("_ismbbtrail", crt_ismbblead),
     W32_AS("_mbschr", crt_mbschr), W32_AS("_mbsrchr", crt_mbsrchr), W32_AS("_mbslen", strlen),
     W32_AS("_mbscmp", strcmp), W32_AS("_mbsicmp", crt_stricmp), W32_AS("_mbsstr", strstr),
+    W32_AS("_mbsncpy", mbsncpy), W32_AS("_mbsnbcpy", mbsncpy), W32_AS("_mbsncat", mbsncat),
+    W32_AS("_mbsnbcat", mbsncat), W32_AS("_mbsncmp", mbsncmp), W32_AS("_mbsnbcmp", mbsncmp),
+    W32_AS("_mbsnicmp", crt_strnicmp), W32_AS("_mbsnbicmp", crt_strnicmp), W32_AS("_mbsnbcnt", mbsnbcnt),
+    W32_AS("_mbsnccnt", mbsnbcnt), W32_AS("_mbslwr", crt_strlwr), W32_AS("_mbsupr", crt_strupr),
+    W32_AS("_mbsspn", crt_strspn), W32_AS("_mbscspn", crt_strcspn), W32_AS("_mbspbrk", crt_strpbrk),
+    W32_AS("_mbstok", crt_strtok), W32_AS("_mbstok_s", crt_strtok_s), W32_AS("_mbscpy", mbscpy),
+    W32_AS("_mbscat", mbscat), W32_AS("_mbsdup", crt_strdup), W32_AS("_mbsrev", crt_strrev),
+    W32_AS("_mbsset", crt_strset), W32_AS("_mbsnset", mbsnset), W32_AS("_mbsnbset", mbsnset),
+    W32_AS("_mbsnextc", mbsnextc), W32_AS("_mbsninc", mbsninc), W32_AS("_mbsspnp", mbsspnp),
+    W32_AS("_mbscoll", crt_strcoll), W32_AS("_mbsicoll", crt_stricmp), W32_AS("_mbclen", mbclen),
+    W32_AS("_ismbcspace", ismbcspace), W32_AS("_mbscpy_s", mbscpy_s), W32_AS("_mbscat_s", mbscat_s),
+    W32_AS("_mbsnbcpy_s", mbsnbcpy_s),
     W32_AS("_kbhit", crt_kbhit), W32_AS("kbhit", crt_kbhit), W32_AS("_getch", crt_getch),
     W32_AS("getch", crt_getch), W32_AS("_getche", crt_getche), W32_AS("getche", crt_getche),
     W32_AS("_putch", crt_putch), W32_AS("putch", crt_putch), W32_AS("_ungetch", crt_ungetch),

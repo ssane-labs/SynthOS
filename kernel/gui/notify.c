@@ -19,7 +19,7 @@ struct past_note {
     uint64_t when;
 };
 
-static struct past_note history[HISTORY];
+static struct past_note *history;
 static int history_count, unseen;
 static struct window *center;
 static struct ui_state center_st;
@@ -27,6 +27,8 @@ static int center_scroll;
 
 void notify_record(const char *title, const char *text)
 {
+    if (!history && !(history = kmalloc(sizeof(*history) * HISTORY)))
+        return;
     if (history_count == HISTORY)
         memmove(history, history + 1, sizeof(history[0]) * (HISTORY - 1)), history_count--;
     struct past_note *n = &history[history_count++];

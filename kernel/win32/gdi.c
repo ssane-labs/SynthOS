@@ -153,7 +153,7 @@ static struct gdi_obj *make_stock(int kind, COLORREF color, int style)
     return o;
 }
 
-static const struct ui_font *pick_font(int height, int weight, const char *face, int pitch)
+const struct ui_font *w32_pick_font(int height, int weight, const char *face, int pitch)
 {
     int h = height < 0 ? -height : height ? height * 3 / 4 + 1 : 13;
     bool mono = (pitch & 3) == 1;
@@ -401,6 +401,19 @@ struct canvas *w32_dc_canvas(HANDLE h, int *ox, int *oy)
     return t.c;
 }
 
+/* where a DC draws, with its clip: GDI+ graphics paint through this */
+struct canvas *w32_dc_target(HANDLE h, int *ox, int *oy, struct rect *clip)
+{
+    struct w32_dc *d = dc_of(h);
+    struct target t;
+    if (!d || !target_of(d, &t))
+        return NULL;
+    *ox = t.ox;
+    *oy = t.oy;
+    *clip = t.clip;
+    return t.c;
+}
+
 void w32_dc_damage(HANDLE h, struct rect r)
 {
     struct w32_dc *d = dc_of(h);
@@ -590,7 +603,7 @@ static HANDLE make_font(const struct logfont *lf, const char *face)
     o->italic = lf->italic;
     o->underline = lf->underline;
     str_copy(o->face, face ? face : "", sizeof(o->face));
-    o->font = pick_font(lf->height, lf->weight, face, lf->pitch);
+    o->font = w32_pick_font(lf->height, lf->weight, face, lf->pitch);
     return o;
 }
 
@@ -2743,6 +2756,23 @@ static int WINAPI SetDIBits(HANDLE h, HANDLE bitmap, UINT start, UINT lines, con
     return n;
 }
 
+/* a top-down 32-bit bitmap object with a copy of the pixels (GDI+'s GdipCreateHBITMAPFromBitmap) */
+HANDLE w32_bitmap_argb(int w, int h, const uint32_t *px, int stride)
+{
+    struct gdi_obj *o = new_bitmap(w, -h, NULL, 32);
+    if (o && px)
+        for (int y = 0; y < h; y++)
+            memcpy(o->canvas.px + y * o->canvas.stride, px + (size_t)y * (size_t)stride, (size_t)w * 4);
+    return o;
+}
+
+/* the pixels of a 32-bit bitmap object */
+struct canvas *w32_bitmap_canvas(HANDLE bitmap)
+{
+    struct gdi_obj *b = obj(bitmap);
+    return b && b->kind == OBJ_BITMAP && b->bpp == 32 && b->canvas.px ? &b->canvas : NULL;
+}
+
 /* A packed DIB from a program's resources (RT_BITMAP) as a bitmap object. */
 HANDLE w32_bitmap_from_dib(const void *dib, uint32_t size)
 {
@@ -3841,7 +3871,7 @@ static void *WINAPI ImageList_GetDragImage(POINT *pt, POINT *hot)
 
 /* ImageList_Read/Write: the ILHEAD record and BMP images that Windows stores in resources and forms */
 /* IStream::Read/Write on the caller's object: a 64-bit program's has a table of 64-bit pointers */
-static uint32_t stream_call(void *stream, int slot, const void *buf, uint32_t n, uint32_t *done)
+uint32_t w32_stream_call(void *stream, int slot, const void *buf, uint32_t n, uint32_t *done)
 {
 #ifdef __x86_64__
     if (w32->win64) {
@@ -3862,14 +3892,14 @@ static bool istream_read(void *stream, void *buf, uint32_t n)
     if (!got)
         return false;
     *got = 0;
-    bool ok = stream_call(stream, 3, buf, n, got) == 0 && *got == n;
+    bool ok = w32_stream_call(stream, 3, buf, n, got) == 0 && *got == n;
     w32_free(got);
     return ok;
 }
 
 static bool istream_write(void *stream, const void *buf, uint32_t n)
 {
-    return stream_call(stream, 4, buf, n, NULL) == 0;
+    return w32_stream_call(stream, 4, buf, n, NULL) == 0;
 }
 
 static uint8_t *read_bmp(void *stream, struct bitmap_info **info)

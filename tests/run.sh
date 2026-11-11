@@ -691,6 +691,24 @@ config w32headless on; winctl | grep findtext; config w32headless off
 findtext shown=needle next=1 case=1 text=hay term=1 gone=1
 config w32headless on; winctl | grep dialogs; config w32headless off
 dialogs color=1 rgb=10,20,30 sheet=1 inits=1 applies=1
+wincompat exports
+exports walk=1 match=1 ntdll=1
+wincompat processes
+processes system=1 self=1 enum=1
+wincompat timerqueue
+timerqueue made=1 repeats=1 stopped=1
+wincompat actctx
+actctx query=1 context=1 activate=1
+wincompat tables
+tables size=122 tcp=0 udp=0
+wincompat odbc
+odbc connect=-1 state=IM002
+wincompat scm
+scm open=1 service=0 err=1060 listed=1 count=0
+wincompat mbs
+mbs CurrPorts cmp=0
+config w32headless on; wincompat gdiplus; config w32headless off
+gdiplus ok=1 inside=ff336699 outside=00000000
 winctl | grep floodfill
 floodfill ok=1 inside=0000ff outside=ffffff
 winctl | grep palette

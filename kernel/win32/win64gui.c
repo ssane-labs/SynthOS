@@ -473,6 +473,8 @@ static uint64_t h_menu_item(uint64_t *a, const uint64_t *f, void *t)
         for (int i = 2; i < 5; i++)
             memcpy(m + i * 4, &info[i], 4);
         put64(m + 24, info[5]);
+        if (info[1] & 0x20)
+            put64(m + 48, info[8]);
         memcpy(m + 64, &info[10], 4);
     }
     return w64_ret(r);

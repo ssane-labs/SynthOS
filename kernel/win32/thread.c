@@ -406,6 +406,7 @@ static void switch_to(struct w32_thread *next)
     arch_fpu_restore(fpu_of(cur));
     arch_set_irq_depth(cur->irq_depth);
     w32_reap();
+    w32_kuser_update();
 }
 
 void w32_switch_thread(struct w32_thread *t)
@@ -520,6 +521,7 @@ void w32_block(void)
             switch_to(next);
         cur->waiting = false;
     }
+    w32_kuser_update();
     if (sh_interrupted() && !w32->detached)
         w32_exit(STATUS_CONTROL_C_EXIT);
 }
@@ -871,6 +873,35 @@ static BOOL WINAPI SetThreadPriorityBoost(HANDLE h, BOOL disable)
 {
     UNUSED(disable);
     return thread_of(h) != NULL;
+}
+
+static BOOL WINAPI GetProcessPriorityBoost(HANDLE h, BOOL *disabled)
+{
+    UNUSED(h);
+    if (disabled)
+        *disabled = FALSE;
+    return TRUE;
+}
+
+/* LDT_ENTRY: the 8 bytes of the descriptor, as the processor has them */
+static BOOL WINAPI GetThreadSelectorEntry(HANDLE thread, DWORD sel, uint64_t *entry)
+{
+    UNUSED(thread);
+    uint64_t d = arch_selector_entry(sel);
+    if (!entry || !d) {
+        w32_set_error(entry ? 0x5a4 : ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    *entry = d;
+    return TRUE;
+}
+
+static LONG WINAPI WerGetFlags(HANDLE process, DWORD *flags)
+{
+    UNUSED(process);
+    if (flags)
+        *flags = 0;
+    return 0;
 }
 
 static int WINAPI GetThreadPriority(HANDLE h)
@@ -1374,7 +1405,7 @@ static void acquire(struct w32_object *o)
     if (o->type == WH_EVENT && !o->manual)
         *w32_sync_value(o) = 0;
     else if (o->type == WH_TIMER && !o->manual)
-        o->due = 0;
+        o->due = o->max ? MAX(o->due + o->max, hal_ticks_ms() + 1) : 0; /* a periodic timer comes back */
     else if (o->type == WH_SEMAPHORE)
         --*w32_sync_value(o);
     else if (o->type == WH_MUTEX) {
@@ -1894,6 +1925,9 @@ static void reg_wait(void)
         w->objects[w->count++] = o;
         if (r->ms != INFINITE && (!deadline || r->deadline < deadline))
             deadline = MAX(r->deadline, (uint64_t)1);
+        /* a waitable timer turns signaled by itself: wake up when it is due */
+        if (o->type == WH_TIMER && o->due && (!deadline || o->due < deadline))
+            deadline = o->due;
     }
     w->kind = W32_WAIT_OBJECTS;
     w32_wait_process(deadline, false, NULL, NULL);
@@ -1969,7 +2003,10 @@ static const struct w32_export thread_exports[] = {
     W32_FN(CreateThread), W32_FN(ExitThread), W32_FN(TerminateThread), W32_FN(GetExitCodeThread),
     W32_FN(SuspendThread), W32_FN(ResumeThread), W32_FN(GetCurrentThreadId), W32_FN(GetThreadId),
     W32_FN(SetThreadPriority), W32_FN(GetThreadPriority), W32_FN(GetThreadPriorityBoost),
-    W32_FN(SetThreadPriorityBoost), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),
+    W32_FN(SetThreadPriorityBoost), W32_FN(GetProcessPriorityBoost), W32_FN(WerGetFlags),
+    W32_FN(GetThreadSelectorEntry),
+    W32_AS("WerSetFlags", w32_zero1),
+    W32_AS("SetProcessPriorityBoost", w32_one2), W32_FN(SwitchToThread), W32_FN(Sleep), W32_FN(SleepEx),
     W32_FN(CreateEventA), W32_FN(CreateEventW), W32_FN(CreateEventExW), W32_FN(CreateMutexA), W32_FN(CreateMutexW),
     W32_FN(CreateMutexExW), W32_FN(OpenMutexA), W32_FN(OpenMutexW), W32_FN(OpenEventA), W32_FN(OpenEventW),
     W32_FN(OpenSemaphoreA), W32_FN(OpenSemaphoreW), W32_FN(QueueUserAPC), W32_FN(CreateSemaphoreA),

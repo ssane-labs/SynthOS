@@ -12,6 +12,7 @@
 #include <synth/shell.h>
 #include <synth/stream.h>
 #include <synth/string.h>
+#include <synth/time.h>
 #include <synth/vmm.h>
 #include <synth/winpath.h>
 
@@ -514,6 +515,7 @@ static void on_tick(uint32_t eip)
         if (input_info_take())
             w32_dump_status();
     }
+    w32_kuser_update();
     if (ticks % 4 == 0)
         w32_signal_tick();
     /* Packets are picked up here too while a program computes (only program code is interrupted, so the network
@@ -757,6 +759,45 @@ static void put_unicode_string(uint8_t *base, uint32_t off, const WCHAR *s)
     put32(base, off + 4, (uint32_t)s);
 }
 
+/* KUSER_SHARED_DATA: programs (Go's runtime, ntdll) read the clocks and the version straight from this page */
+#define KUSER 0x7ffe0000u
+
+static void ksystem_time(uint8_t *at, uint64_t v)
+{
+    volatile uint32_t *t = (volatile uint32_t *)at;
+    t[2] = (uint32_t)(v >> 32);
+    t[0] = (uint32_t)v;
+    t[1] = (uint32_t)(v >> 32);
+}
+
+void w32_kuser_update(void)
+{
+    uint8_t *k = w32 ? w32->kuser : NULL;
+    if (!k)
+        return;
+    uint64_t ms = hal_ticks_ms();
+    ksystem_time(k + 0x08, ms * 10000ull);
+    ksystem_time(k + 0x14, ((uint64_t)time_now() + 11644473600ull) * 10000000ull + ms % 1000 * 10000ull);
+    ksystem_time(k + 0x320, ms);
+    put32(k, 0x00, (uint32_t)ms);
+}
+
+static void kuser_map(void)
+{
+    uint8_t *k = (uint8_t *)(uintptr_t)w32_vm_alloc_at(KUSER, 4096);
+    if (!k || vmm_commit_range(KUSER, 4096))
+        return;
+    put32(k, 0x04, 1u << 24);
+    put32(k, 0x26c, 10);
+    put32(k, 0x270, 0);
+    put32(k, 0x260, 19045);
+    k[0x274 + 6] = 1;
+    k[0x274 + 10] = 1;
+    k[0x274 + 13] = 1;
+    w32->kuser = k;
+    w32_kuser_update();
+}
+
 static bool build_teb_peb(void)
 {
     w32->teb = heap_alloc_aligned(&w32->heap, 4096, 4096);
@@ -877,7 +918,7 @@ static int run(struct exec_ctx *ctx)
     w32->engine = w32_browser_engine(ctx->path);
     build_command_line(ctx);
     build_environment(ctx);
-    if (!w32->stack || !build_teb_peb() || !w32_threads_start() || (w32->win64 && !w64_setup()))
+    if (!w32->stack || !build_teb_peb() || (kuser_map(), false) || !w32_threads_start() || (w32->win64 && !w64_setup()))
         return E_NOMEM;
 
     /* the loader reads the pages of cached images it maps, so they have to come in from the start */

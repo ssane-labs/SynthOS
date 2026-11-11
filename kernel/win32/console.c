@@ -190,6 +190,12 @@ static BOOL WINAPI GetConsoleScreenBufferInfoEx(HANDLE h, uint8_t *info)
     return TRUE;
 }
 
+static BOOL WINAPI SetConsoleScreenBufferInfoEx(HANDLE h, const uint8_t *info)
+{
+    UNUSED(info);
+    return require(h, true);
+}
+
 static struct coord unpack(DWORD packed)
 {
     return (struct coord){(int16_t)(packed & 0xffff), (int16_t)(packed >> 16)};
@@ -683,6 +689,7 @@ static const struct w32_export console_exports[] = {
     W32_FN(GetStdHandle), W32_FN(SetStdHandle), W32_FN(GetConsoleMode), W32_FN(SetConsoleMode),
     W32_FN(WriteConsoleA), W32_FN(WriteConsoleW), W32_FN(ReadConsoleA), W32_FN(ReadConsoleW),
     W32_FN(SetConsoleTextAttribute), W32_FN(GetConsoleScreenBufferInfo), W32_FN(GetConsoleScreenBufferInfoEx),
+    W32_FN(SetConsoleScreenBufferInfoEx),
     W32_FN(SetConsoleCursorPosition), W32_FN(GetConsoleCursorInfo), W32_FN(SetConsoleCursorInfo),
     W32_FN(FillConsoleOutputCharacterA), W32_FN(FillConsoleOutputCharacterW), W32_FN(FillConsoleOutputAttribute),
     W32_FN(WriteConsoleOutputCharacterA), W32_FN(WriteConsoleOutputCharacterW),

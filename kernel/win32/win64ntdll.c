@@ -8,7 +8,7 @@
    Windows 10 system-call stub (mov r10,rcx; mov eax,N; ...; syscall). Programs that read ntdll's exports
    themselves, or copy and patch its stubs (Chromium's sandbox), see what they expect; the syscall instruction
    arrives at w64_syscall, which jumps to the built-in through the service table. The image sits at the same address
-   in every process, as on Windows. KUSER_SHARED_DATA is mapped next to it. */
+   in every process, as on Windows; process.c maps KUSER_SHARED_DATA next to it. */
 
 #ifdef __x86_64__
 
@@ -17,7 +17,6 @@ SYNTH_TABLE_DECLARE(synth_win64, struct w64_module);
 #define NTDLL_BASE 0x7ff00000u
 #define SERVICES 0x7fc00000u
 #define MAX_SERVICES 65536u
-#define KUSER 0x7ffe0000u
 #define STUB 32u
 #define MAX_NAMES 4096
 
@@ -99,20 +98,6 @@ static bool services_ready(void)
     w64_service_resolve_fn = (uint32_t)(uintptr_t)service_resolve;
     arch_w64_syscall_init();
     return true;
-}
-
-static void kuser_map(void)
-{
-    uint8_t *k = (uint8_t *)(uintptr_t)w32_vm_alloc_at(KUSER, 4096);
-    if (!k)
-        return;
-    put32(k + 0x04, 0x0fa00000u);
-    put32(k + 0x260, 19045);
-    put32(k + 0x26c, 10);
-    put32(k + 0x270, 0);
-    k[0x274 + 6] = 1;
-    k[0x274 + 10] = 1;
-    k[0x274 + 13] = 1;
 }
 
 static void stub_write(uint8_t *p, uint32_t id)
@@ -220,8 +205,6 @@ uint32_t w64_builtin_image(const char *module, uint32_t *size_out)
         at += (uint32_t)len;
     }
     kfree(l);
-    if (!strcmp(module, "ntdll.dll"))
-        kuser_map();
     *size_out = size;
     return base;
 }

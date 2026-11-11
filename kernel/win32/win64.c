@@ -777,7 +777,7 @@ static uint64_t h_create_process_user(uint64_t *a, const uint64_t *f, void *t)
     return create_process(a, t, 1);
 }
 
-static uint64_t h_get_proc_address(uint64_t *a, const uint64_t *f, void *t)
+uint64_t w64_get_proc(uint64_t *a)
 {
     const char *name = a[1] >> 16 ? P(a[1]) : NULL;
     uint32_t ordinal = a[1] >> 16 ? 0 : (uint32_t)a[1];
@@ -794,6 +794,13 @@ static uint64_t h_get_proc_address(uint64_t *a, const uint64_t *f, void *t)
     }
     w32_set_error(ERROR_MOD_NOT_FOUND);
     return 0;
+}
+
+static uint64_t h_get_proc_address(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    return w64_get_proc(a);
 }
 
 static uint64_t h_module_handle_ex(uint64_t *a, const uint64_t *f, void *t)
@@ -1349,6 +1356,10 @@ static const struct w64_export kernel32_exports[] = {
     W64_FN("CreateProcessA", h_create_process),
     W64_FN("CreateProcessW", h_create_process),
     W64_FN("GetProcAddress", h_get_proc_address),
+    W64_OUT("ActivateActCtx", 1u << 1),
+    W64_OUT("CreateTimerQueueTimer", 1u << 0),
+    W64_OUT("GetCurrentActCtx", 1u << 0),
+    W64_OUT("QueryActCtxW", 1u << 6),
     W64_FN("GetModuleHandleExA", h_module_handle_ex),
     W64_FN("GetModuleHandleExW", h_module_handle_ex),
     W64_FN("CreateThread", h_create_thread),
@@ -1724,7 +1735,13 @@ static const struct w64_export shell32_exports[] = {
 };
 W64_EXPORTS(shell32_module, "shell32.dll", shell32_exports);
 
+static uint64_t h_current_peb(uint64_t *a, const uint64_t *f, void *t)
+{
+    return U(w32->peb64);
+}
+
 static const struct w64_export ntdll_exports[] = {
+    W64_FN("RtlGetCurrentPeb", h_current_peb),
     W64_FN("RtlInitUnicodeString", h_init_unicode),
     W64_FN("RtlFreeUnicodeString", h_free_unicode),
     W64_FN("RtlFormatCurrentUserKeyPath", h_user_key_path),

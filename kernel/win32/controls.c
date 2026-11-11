@@ -318,6 +318,26 @@ static LRESULT edit_scroll_code(struct w32_window *w, unsigned code)
     }
 }
 
+/* text with tabs: each one moves to the next stop, 8 average characters apart */
+static int tab_text_n(struct canvas *c, int x, int y, const struct ui_font *f, const char *s, size_t len,
+                      uint32_t color)
+{
+    int stop = MAX(gfx_text_width(f, "n") * 8, 8), at = 0;
+    while (len) {
+        const char *tab = memchr(s, '\t', len);
+        size_t n = tab ? (size_t)(tab - s) : len;
+        if (c)
+            gfx_text_n(c, x + at, y, f, s, n, color);
+        at += gfx_text_width_n(f, s, n);
+        if (!tab)
+            break;
+        at = (at / stop + 1) * stop;
+        s += n + 1;
+        len -= n + 1;
+    }
+    return at;
+}
+
 static void paint_edit(struct w32_window *w)
 {
     struct paint_ctx p;
@@ -343,9 +363,9 @@ static void paint_edit(struct w32_window *w)
         pos = 0;
         while (next_line(f, inner.w, wrap, s, &pos, &start, &len)) {
             if (y + f->height > inner.y && y < inner.y + inner.h)
-                gfx_text_n(p.c, inner.x, y, f, s + start, len, color);
+                tab_text_n(p.c, inner.x, y, f, s + start, len, color);
             if (w->caret >= start && w->caret <= start + len && caret_x < 0) {
-                caret_x = inner.x + gfx_text_width_n(f, s + start, w->caret - start);
+                caret_x = inner.x + tab_text_n(NULL, 0, 0, f, s + start, w->caret - start, 0);
                 caret_y = y;
             }
             y += f->height;

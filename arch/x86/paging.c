@@ -195,6 +195,7 @@ static void *legacy_init(uint32_t table_start, uint32_t table_limit, uint32_t st
         }
         ((uint32_t *)tables[pde])[(virt >> 12) & 1023] = (heap_phys + off) | PTE_PRESENT | PTE_WRITE;
     }
+    cpu_tss_cr3((uint32_t)page_dir);
     __asm__ volatile("mov %0, %%cr3" : : "r"(page_dir) : "memory");
     *size = heap_bytes;
     return (void *)KERNEL_HEAP_VIRT;
@@ -228,6 +229,7 @@ static void *pae_init(uint32_t table_start, uint32_t table_limit, uint32_t start
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
     cr4 |= 1u << 5;
     __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
+    cpu_tss_cr3((uint32_t)pdpt);
     __asm__ volatile("mov %0, %%cr3" : : "r"(pdpt) : "memory");
     *size = heap_bytes;
     return (void *)KERNEL_HEAP_VIRT;
@@ -673,6 +675,7 @@ void vmm_space_switch(struct vmm_space *s)
         }
     current_space = s;
     uint32_t root = space_root(s);
+    cpu_tss_cr3(root);
     __asm__ volatile("mov %0, %%cr3" : : "r"(root) : "memory");
 }
 

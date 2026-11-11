@@ -280,3 +280,341 @@ file = 7z2605.exe
 args = /S
 check = C:\Program Files\7-Zip\7zFM.exe
 uninstall = 7-Zip
+
+[sumatrapdf]
+name = SumatraPDF
+developer = Krzysztof Kowalczyk
+category = Utilities
+icon = viewer
+version = 3.6.1
+size = 10 MB
+summary = Fast reader for PDF, EPUB, MOBI, XPS, DjVu and comic books
+about = The portable 32-bit SumatraPDF unpacked into /home/apps/sumatrapdf. It opens PDF, EPUB, MOBI, FB2, XPS, DjVu, CBZ and CBR files and starts in a fraction of a second.
+kind = zip
+url = https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1.zip
+sha256 = 670e694a5c91633d28ab0df689b4dbf92021183cfe82270ae552cb617a0a07ed
+check = SumatraPDF-3.6.1-32.exe
+open = SumatraPDF-3.6.1-32.exe
+
+[everything]
+name = Everything
+developer = voidtools
+category = Utilities
+icon = files
+version = 1.4.1.1026
+size = 2 MB
+summary = Finds files by name as you type
+about = The portable 32-bit Everything unpacked into /home/apps/everything: type part of a name and the list of matching files updates at once.
+kind = zip
+url = https://www.voidtools.com/Everything-1.4.1.1026.x86.zip
+sha256 = 297196b7a8eff8c31e2644e258d7f62bdc33c0270c214dd7f6635df9c84f9dbe
+check = Everything.exe
+open = Everything.exe
+
+[procexp]
+name = Process Explorer
+developer = Microsoft Sysinternals
+category = Utilities
+icon = terminal
+version = latest
+size = 4 MB
+summary = Shows every running process, its threads, handles and DLLs
+about = Sysinternals Process Explorer, downloaded from Microsoft into /home/apps/procexp: a tree of running programs with their memory, threads and loaded modules.
+kind = zip
+url = https://download.sysinternals.com/files/ProcessExplorer.zip
+check = procexp.exe
+open = procexp.exe
+
+[autoruns]
+name = Autoruns
+developer = Microsoft Sysinternals
+category = Utilities
+icon = terminal
+version = latest
+size = 3 MB
+summary = Lists everything that starts by itself
+about = Sysinternals Autoruns, downloaded from Microsoft into /home/apps/autoruns: programs, services and drivers that start automatically. autorunsc is the command-line version.
+kind = zip
+url = https://download.sysinternals.com/files/Autoruns.zip
+bin = .
+check = Autoruns.exe
+open = Autoruns.exe
+
+[tcpview]
+name = TCPView
+developer = Microsoft Sysinternals
+category = Internet
+icon = terminal
+version = latest
+size = 2 MB
+summary = Live list of network connections and the programs that own them
+about = Sysinternals TCPView, downloaded from Microsoft into /home/apps/tcpview. tcpvcon prints the same list in the Terminal.
+kind = zip
+url = https://download.sysinternals.com/files/TCPView.zip
+bin = .
+check = tcpview.exe
+open = tcpview.exe
+
+[bginfo]
+name = BGInfo
+developer = Microsoft Sysinternals
+category = Utilities
+icon = viewer
+version = latest
+size = 3 MB
+summary = Shows the computer's name, addresses and system details
+about = Sysinternals BGInfo, downloaded from Microsoft into /home/apps/bginfo: collects the host name, IP addresses, memory and OS version into one window.
+kind = zip
+url = https://download.sysinternals.com/files/BGInfo.zip
+check = Bginfo.exe
+open = Bginfo.exe
+
+[keepass]
+name = KeePass
+developer = Dominik Reichl
+category = Utilities
+icon = files
+version = 1.43
+size = 2 MB
+summary = Password manager with an encrypted database
+about = KeePass Classic, the portable edition, unpacked into /home/apps/keepass. Passwords are kept in one file encrypted with AES-256 and opened with a master password.
+kind = zip
+url = https://sourceforge.net/projects/keepass/files/KeePass%201.x/1.43/KeePass-1.43.zip/download
+sha256 = 9a2c58904b9cf6ef3f4e2e5e646e9d4904899631553ec1a431ef4d9adcdd626a
+check = KeePass.exe
+open = KeePass.exe
+
+[vim]
+name = Vim
+developer = Bram Moolenaar and the Vim community
+category = Developer Tools
+icon = code
+version = 9.1.1000
+size = 52 MB
+summary = The classic modal text editor, in a window (gvim) and in the Terminal (vim)
+about = The 32-bit Vim for Windows unpacked into /home/apps/vim: gvim opens its own window, vim runs in the Terminal.
+kind = zip
+url = https://github.com/vim/vim-win32-installer/releases/download/v9.1.1000/gvim_9.1.1000_x86.zip
+sha256 = d565ed257ba2862bf6983b14f750fad739c92a0dd10f63c76c7a9a5bf09668b1
+strip = vim/
+bin = vim91
+check = vim91/gvim.exe
+open = vim91/gvim.exe
+
+[micro]
+name = micro
+developer = Zachary Yedidia
+category = Developer Tools
+icon = terminal
+version = 2.0.14
+size = 12 MB
+summary = A terminal editor with familiar keys: Ctrl+S saves, Ctrl+Q quits
+about = micro unpacked into /home/apps/micro and put on the PATH: syntax highlighting, mouse support, multiple cursors and the usual shortcuts. Run micro file.txt in the Terminal.
+kind = zip
+url = https://github.com/zyedidia/micro/releases/download/v2.0.14/micro-2.0.14-win32.zip
+sha256 = 205c466d21e3a556f05055c27330ada197a92b5c646f45a2ba000ffe22d923fc
+strip = micro-2.0.14/
+bin = .
+check = micro.exe
+
+[tcc]
+name = Tiny C Compiler
+developer = Fabrice Bellard and contributors
+category = Developer Tools
+icon = code
+version = 0.9.27
+size = 1 MB
+summary = A small, very fast C compiler
+about = TCC unpacked into /home/apps/tcc and put on the PATH: tcc hello.c makes hello.exe, and tcc -run hello.c compiles and runs in one step.
+kind = zip
+url = http://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27-win32-bin.zip
+sha256 = 02e2bfe8c272a549b15e4bfa4507bd7e05304692af1761db6c1e8e88af675651
+strip = tcc/
+bin = .
+check = tcc.exe
+
+[autohotkey]
+name = AutoHotkey
+developer = AutoHotkey Foundation
+category = Utilities
+icon = code
+version = 2.0
+size = 4 MB
+summary = Scripts for hotkeys, text expansion and automating windows
+about = AutoHotkey v2 unpacked into /home/apps/autohotkey. Run a script with AutoHotkey32 script.ahk.
+kind = zip
+url = https://www.autohotkey.com/download/ahk-v2.zip
+sha256 = ca1a595aca4528755d8d4cd7fed23d497a37bd9a0b6892072612d68dee1bd00a
+bin = .
+check = AutoHotkey32.exe
+open = AutoHotkey32.exe
+
+[scite]
+name = SciTE
+developer = Neil Hodgson
+category = Developer Tools
+icon = code
+version = 5.6.5
+size = 3 MB
+summary = A light code editor built on Scintilla
+about = The single-file 32-bit SciTE unpacked into /home/apps/scite: syntax highlighting for many languages, folding, and running the current file with F5.
+kind = zip
+url = https://www.scintilla.org/wscite32_565.zip
+sha256 = 0b1b74180735a1f3c069efe5251f84fc607e9344beb82f0dc7286618a5403f64
+strip = wscite/
+check = SciTE32.exe
+open = SciTE32.exe
+
+[fd]
+name = fd
+developer = David Peter
+category = Developer Tools
+icon = terminal
+version = 10.3.0
+size = 3 MB
+summary = A simple, fast replacement for find
+about = fd unpacked into /home/apps/fd and put on the PATH: fd pattern lists the files whose names match, colored, skipping hidden files.
+kind = zip
+url = https://github.com/sharkdp/fd/releases/download/v10.3.0/fd-v10.3.0-i686-pc-windows-msvc.zip
+sha256 = 1e1c1c677d01c1df9e54095d727f61649401ac54a5946cecb3fbe3d002615fd8
+strip = fd-v10.3.0-i686-pc-windows-msvc/
+bin = .
+check = fd.exe
+
+[bat]
+name = bat
+developer = David Peter
+category = Developer Tools
+icon = terminal
+version = 0.26.0
+size = 6 MB
+summary = cat with syntax highlighting and line numbers
+about = bat unpacked into /home/apps/bat and put on the PATH: bat file.c prints the file with colors and line numbers.
+kind = zip
+url = https://github.com/sharkdp/bat/releases/download/v0.26.0/bat-v0.26.0-i686-pc-windows-msvc.zip
+sha256 = d6f4f38815ae2f7f400d8091869ec487f930c36e3f6c189d104e4ddd9e81131d
+strip = bat-v0.26.0-i686-pc-windows-msvc/
+bin = .
+check = bat.exe
+
+[go]
+name = Go
+developer = The Go Authors
+category = Developer Tools
+icon = code
+version = 1.25.4
+size = 205 MB
+summary = The Go programming language: compiler, tools and standard library
+about = The 32-bit Go distribution unpacked into /home/apps/go with go on the PATH: go version, go build, go run main.go.
+kind = zip
+url = https://go.dev/dl/go1.25.4.windows-386.zip
+sha256 = f21fe4990449799a571971fd5efdc38b911667c628c949cbdfb77326cf877606
+strip = go/
+bin = bin
+check = bin/go.exe
+
+[ytdlp]
+name = yt-dlp
+developer = yt-dlp contributors
+category = Internet
+icon = video
+version = 2025.11.12
+size = 14 MB
+summary = Downloads video and audio from thousands of sites
+about = The 32-bit yt-dlp put into /home/apps/ytdlp and on the PATH: yt-dlp URL saves the video into the current folder.
+kind = zip
+url = https://github.com/yt-dlp/yt-dlp/releases/download/2025.11.12/yt-dlp_x86.exe
+sha256 = ce8711187c1ed5fb82bce15efdf9bb84caa7901e9a72136e2c32e39110b18433
+file = yt-dlp.exe
+bin = .
+check = yt-dlp.exe
+
+[winmerge]
+name = WinMerge
+developer = WinMerge Team
+category = Developer Tools
+icon = files
+version = 2.16.44
+size = 30 MB
+summary = Compares and merges files and folders side by side
+about = The portable 32-bit WinMerge unpacked into /home/apps/winmerge: differences are highlighted line by line and can be copied from one side to the other.
+kind = zip
+url = https://sourceforge.net/projects/winmerge/files/stable/2.16.44/winmerge-2.16.44-exe.zip/download
+sha256 = 42528d0b98e6be6ca04afa1c4abbc9b328b257fccc788c8a9bea511fc92343ad
+strip = WinMerge/
+check = WinMergeU.exe
+open = WinMergeU.exe
+
+[cports]
+name = CurrPorts
+developer = NirSoft
+category = Internet
+icon = terminal
+version = latest
+size = 1 MB
+summary = Open TCP and UDP ports and the programs using them
+about = NirSoft CurrPorts unpacked into /home/apps/cports: every open port with its process, remote address and state.
+kind = zip
+url = https://www.nirsoft.net/utils/cports.zip
+check = cports.exe
+open = cports.exe
+
+[sysexp]
+name = SysExp
+developer = NirSoft
+category = Utilities
+icon = viewer
+version = latest
+size = 1 MB
+summary = Reads the text of other programs' windows and controls
+about = NirSoft SysExp unpacked into /home/apps/sysexp: lists the windows, buttons, lists and edit boxes of running programs together with their text.
+kind = zip
+url = https://www.nirsoft.net/utils/sysexp.zip
+check = sysexp.exe
+open = sysexp.exe
+
+[prefetch]
+name = WinPrefetchView
+developer = NirSoft
+category = Utilities
+icon = viewer
+version = latest
+size = 1 MB
+summary = Shows which files programs load when they start
+about = NirSoft WinPrefetchView unpacked into /home/apps/prefetch: reads the Prefetch folder and lists the files each program used at startup.
+kind = zip
+url = https://www.nirsoft.net/utils/winprefetchview.zip
+check = WinPrefetchView.exe
+open = WinPrefetchView.exe
+
+[spacesniffer]
+name = SpaceSniffer
+developer = Uderzo Umberto
+category = Utilities
+icon = files
+version = 1.3.0.2
+size = 2 MB
+summary = Shows what fills the disk as a map of blocks
+about = SpaceSniffer unpacked into /home/apps/spacesniffer: every folder and file is a block sized by how much space it takes.
+kind = zip
+url = https://www.uderzo.it/main_products/space_sniffer/files/spacesniffer_1_3_0_2.zip
+sha256 = 156c45cb53a283d0b919ca8b1e0faf3b967c896b8a580b962e493a27c7f465c2
+check = SpaceSniffer.exe
+open = SpaceSniffer.exe
+
+[neovim]
+name = Neovim
+developer = Neovim contributors
+category = Developer Tools
+icon = code
+version = 0.11.4
+size = 35 MB
+summary = Vim-based editor with Lua plugins and a built-in LSP client
+about = The 64-bit Neovim unpacked into /home/apps/neovim with nvim on the PATH. Run nvim file.txt in the Terminal.
+kind = zip
+url = https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-win64.zip
+sha256 = 77eee5936724b82e45b448e0370abe0911d75fad551c0a25415f4e51719faf34
+strip = nvim-win64/
+bin = bin
+check = bin/nvim.exe
+bits = 64

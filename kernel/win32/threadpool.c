@@ -222,6 +222,107 @@ static void WINAPI CloseThreadpoolTimer(struct tp_item *it)
     w32_free(it);
 }
 
+/* Timer queues (Windows 2000): a timer is a waitable timer whose registered wait calls the program's
+   WAITORTIMERCALLBACK with TRUE; the queues themselves are only names for a group of timers. */
+struct tq_timer {
+    void *callback, *param;
+    HANDLE timer, wait;
+    volatile LONG running;
+    bool closing;
+};
+
+static void WINAPI tq_fired(struct tq_timer *t, uint8_t timed_out)
+{
+    UNUSED(timed_out);
+    if (t->closing)
+        return;
+    __sync_fetch_and_add(&t->running, 1);
+    W32_CALL(void(WINAPI *)(void *, uint8_t), t->callback, t->param, (uint8_t)1);
+    __sync_fetch_and_sub(&t->running, 1);
+}
+
+static void tq_set(struct tq_timer *t, DWORD due, DWORD period)
+{
+    BOOL(WINAPI * set)(HANDLE, const int64_t *, LONG, void *, void *, BOOL) = k32("SetWaitableTimer");
+    int64_t when = due ? -(int64_t)due * 10000 : -1;
+    set(t->timer, &when, (LONG)period, NULL, NULL, FALSE);
+}
+
+static HANDLE WINAPI CreateTimerQueue(void)
+{
+    return w32_zalloc(4);
+}
+
+static BOOL WINAPI DeleteTimerQueueEx(HANDLE queue, HANDLE done)
+{
+    w32_free(queue);
+    if (done && done != INVALID_HANDLE_VALUE)
+        ((BOOL(WINAPI *)(HANDLE))k32("SetEvent"))(done);
+    return TRUE;
+}
+
+static BOOL WINAPI DeleteTimerQueue(HANDLE queue)
+{
+    return DeleteTimerQueueEx(queue, NULL);
+}
+
+static BOOL WINAPI CreateTimerQueueTimer(HANDLE *out, HANDLE queue, void *callback, void *param, DWORD due,
+                                         DWORD period, ULONG flags)
+{
+    UNUSED(queue);
+    struct tq_timer *t = callback ? w32_zalloc(sizeof(*t)) : NULL;
+    if (!t) {
+        w32_set_error(callback ? ERROR_NOT_ENOUGH_MEMORY : ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    t->callback = callback;
+    t->param = param;
+    HANDLE(WINAPI * create)(void *, BOOL, const WCHAR *) = k32("CreateWaitableTimerW");
+    BOOL(WINAPI * reg)(HANDLE *, HANDLE, void *, void *, DWORD, DWORD) = k32("RegisterWaitForSingleObject");
+    t->timer = create(NULL, FALSE, NULL);
+    if (!t->timer || !reg(&t->wait, t->timer, (void *)tq_fired, t, INFINITE,
+                          (flags & ~WT_EXECUTEONLYONCE) | (period ? 0 : WT_EXECUTEONLYONCE))) {
+        if (t->timer)
+            tp_close_handle(t->timer);
+        w32_free(t);
+        return FALSE;
+    }
+    tq_set(t, due, period);
+    *out = t;
+    return TRUE;
+}
+
+static BOOL WINAPI ChangeTimerQueueTimer(HANDLE queue, struct tq_timer *t, ULONG due, ULONG period)
+{
+    UNUSED(queue);
+    if (!t) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    tq_set(t, due, period);
+    return TRUE;
+}
+
+static BOOL WINAPI DeleteTimerQueueTimer(HANDLE queue, struct tq_timer *t, HANDLE done)
+{
+    UNUSED(queue);
+    if (!t) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    t->closing = true;
+    BOOL(WINAPI * unregister)(HANDLE, HANDLE) = k32("UnregisterWaitEx");
+    unregister(t->wait, INVALID_HANDLE_VALUE);
+    if (done == INVALID_HANDLE_VALUE)
+        while (t->running > 0)
+            tp_sleep(1);
+    tp_close_handle(t->timer);
+    w32_free(t);
+    if (done && done != INVALID_HANDLE_VALUE)
+        ((BOOL(WINAPI *)(HANDLE))k32("SetEvent"))(done);
+    return TRUE;
+}
+
 static void *WINAPI CreateThreadpoolWait(void *callback, void *context, void *env)
 {
     UNUSED(env);
@@ -319,6 +420,12 @@ static void WINAPI DisassociateCurrentThreadFromCallback(void *instance)
 
 static const struct w32_export threadpool_exports[] = {
     W32_FN(CreateThreadpoolWork),
+    W32_FN(CreateTimerQueue),
+    W32_FN(DeleteTimerQueue),
+    W32_FN(DeleteTimerQueueEx),
+    W32_FN(CreateTimerQueueTimer),
+    W32_FN(ChangeTimerQueueTimer),
+    W32_FN(DeleteTimerQueueTimer),
     W32_FN(SubmitThreadpoolWork),
     W32_FN(WaitForThreadpoolWorkCallbacks),
     W32_FN(CloseThreadpoolWork),

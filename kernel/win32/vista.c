@@ -236,6 +236,12 @@ static BOOL WINAPI GetFileInformationByHandleEx(HANDLE h, int cls, uint8_t *buf,
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+    if (cls == 10 || cls == 11 || cls == 14 || cls == 15) {
+        DWORD err = w32_dir_info(h, cls, buf, size);
+        if (err)
+            w32_set_error(err);
+        return !err;
+    }
     if (o->type == WH_FILE)
         vfs_fstat(o->file, &st);
     DWORD attr = o->type != WH_FILE ? 0x80 : st.type == VN_DIR ? 0x10 : 0x20;
@@ -587,7 +593,6 @@ static HANDLE WINAPI CreateWaitableTimerW(void *sa, BOOL manual, const WCHAR *na
 static BOOL WINAPI SetWaitableTimerEx(HANDLE h, const int64_t *due, LONG period, void *cb, void *arg, void *ctx,
                                       ULONG delay)
 {
-    UNUSED(period);
     UNUSED(cb);
     UNUSED(arg);
     UNUSED(ctx);
@@ -597,6 +602,7 @@ static BOOL WINAPI SetWaitableTimerEx(HANDLE h, const int64_t *due, LONG period,
         w32_set_error(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+    o->max = period > 0 ? (uint32_t)period : 0;
     int64_t d = *due;
     uint64_t now = hal_ticks_ms();
     if (d < 0) {

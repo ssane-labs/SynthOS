@@ -6,6 +6,8 @@ section .text
 extern x86_interrupt
 global isr_table
 global gdt_flush
+global df_task
+extern x86_double_fault
 
 %macro ISR_NOERR 1
 isr%1:
@@ -51,6 +53,12 @@ isr_common:
     popa
     add esp, 8
     iret
+
+; the double-fault task: runs on its own stack, then switches back to the faulted task (or never returns)
+df_task:
+    call x86_double_fault
+    iret
+    jmp df_task
 
 gdt_flush:
     mov eax, [esp + 4]

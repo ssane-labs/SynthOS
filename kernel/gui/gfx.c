@@ -1156,11 +1156,23 @@ bool gfx_has_glyph(const struct ui_font *f, uint32_t code)
     return lookup(f, code) != NULL;
 }
 
+static const uint8_t *font_pack(const struct ui_font *f)
+{
+    static char *pack;
+    static size_t size;
+    if (f->lz)
+        return f->lz;
+    if (!pack && vfs_read_all("/system/fonts/ui.lz", &pack, &size) != 0)
+        pack = NULL;
+    return pack && (size_t)f->lz_at + f->lz_size <= size ? (const uint8_t *)pack + f->lz_at : NULL;
+}
+
 static const uint8_t *font_alpha(const struct ui_font *f)
 {
     if (!*f->alpha) {
-        uint8_t *data = kmalloc(f->size);
-        if (data && lz4_decode(f->lz, f->lz_size, data, f->size) != f->size) {
+        const uint8_t *lz = font_pack(f);
+        uint8_t *data = lz ? kmalloc(f->size) : NULL;
+        if (data && lz4_decode(lz, f->lz_size, data, f->size) != f->size) {
             kfree(data);
             data = NULL;
         }

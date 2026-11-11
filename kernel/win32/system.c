@@ -1132,8 +1132,13 @@ static void WINAPI RtlGetNtVersionNumbers(DWORD *major, DWORD *minor, DWORD *bui
         *build = 0xf0000000u | 19045;
 }
 
+static void *WINAPI RtlGetCurrentPeb(void)
+{
+    return w32->peb;
+}
+
 static const struct w32_export ntdll_exports[] = {
-    W32_FN(RtlGetVersion), W32_FN(RtlVerifyVersionInfo),
+    W32_FN(RtlGetVersion), W32_FN(RtlVerifyVersionInfo), W32_FN(RtlGetCurrentPeb),
     W32_FN(RtlGetNtVersionNumbers),
     W32_AS("RtlGenRandom", RtlGenRandom),
 };

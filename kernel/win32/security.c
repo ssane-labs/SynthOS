@@ -208,30 +208,112 @@ static DWORD WINAPI SetEntriesInAclA(ULONG count, void *entries, void *old, void
     return 0;
 }
 
-static HANDLE WINAPI no_service(LPCSTR a, LPCSTR b, DWORD access)
+/* The service control manager opens, and lists no services: none are installed, so none can be opened. */
+#define ERROR_SERVICE_DOES_NOT_EXIST 1060
+
+static HANDLE WINAPI OpenSCManagerW(const WCHAR *machine, const WCHAR *db, DWORD access)
 {
-    UNUSED(a);
-    UNUSED(b);
+    UNUSED(db);
     UNUSED(access);
-    w32_set_error(ERROR_ACCESS_DENIED);
+    if (machine && *machine) {
+        w32_set_error(1722);
+        return NULL;
+    }
+    HANDLE h = w32_handle_new(WH_SCM);
+    if (!h)
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+    return h;
+}
+
+static HANDLE WINAPI OpenSCManagerA(LPCSTR machine, LPCSTR db, DWORD access)
+{
+    UNUSED(db);
+    if (machine && *machine) {
+        w32_set_error(1722);
+        return NULL;
+    }
+    return OpenSCManagerW(NULL, NULL, access);
+}
+
+static bool is_scm(HANDLE h)
+{
+    struct w32_object *o = w32_handle_get(h);
+    if (o && o->type == WH_SCM)
+        return true;
+    w32_set_error(ERROR_INVALID_HANDLE);
+    return false;
+}
+
+static HANDLE WINAPI OpenServiceW(HANDLE scm, const void *name, DWORD access)
+{
+    UNUSED(access);
+    if (is_scm(scm))
+        w32_set_error(name ? ERROR_SERVICE_DOES_NOT_EXIST : ERROR_INVALID_PARAMETER);
     return NULL;
 }
 
 static BOOL WINAPI CloseServiceHandle(HANDLE h)
 {
-    UNUSED(h);
-    return TRUE;
+    return is_scm(h) && w32_handle_close(h);
 }
 
 static BOOL WINAPI QueryServiceStatusEx(HANDLE h, int level, void *buf, DWORD size, DWORD *needed)
 {
-    UNUSED(h);
     UNUSED(level);
     UNUSED(buf);
     UNUSED(size);
     UNUSED(needed);
     w32_set_error(ERROR_INVALID_HANDLE);
+    UNUSED(h);
     return FALSE;
+}
+
+static BOOL WINAPI EnumServicesStatusW(HANDLE scm, DWORD type, DWORD state, void *buf, DWORD size, DWORD *needed,
+                                       DWORD *count, DWORD *resume)
+{
+    UNUSED(type);
+    UNUSED(state);
+    UNUSED(buf);
+    UNUSED(size);
+    if (!is_scm(scm))
+        return FALSE;
+    if (!needed || !count) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    *needed = *count = 0;
+    if (resume)
+        *resume = 0;
+    return TRUE;
+}
+
+static BOOL WINAPI EnumServicesStatusExW(HANDLE scm, int level, DWORD type, DWORD state, void *buf, DWORD size,
+                                         DWORD *needed, DWORD *count, DWORD *resume, const void *group)
+{
+    UNUSED(level);
+    UNUSED(group);
+    return EnumServicesStatusW(scm, type, state, buf, size, needed, count, resume);
+}
+
+static HANDLE WINAPI CreateServiceW(HANDLE scm, const void *name, const void *display, DWORD access, DWORD type,
+                                    DWORD start, DWORD error, const void *path, const void *group, DWORD *tag,
+                                    const void *deps, const void *user, const void *password)
+{
+    UNUSED(name);
+    UNUSED(display);
+    UNUSED(access);
+    UNUSED(type);
+    UNUSED(start);
+    UNUSED(error);
+    UNUSED(path);
+    UNUSED(group);
+    UNUSED(tag);
+    UNUSED(deps);
+    UNUSED(user);
+    UNUSED(password);
+    if (is_scm(scm))
+        w32_set_error(ERROR_ACCESS_DENIED);
+    return NULL;
 }
 
 /* A token object: value holds the type (1 primary, 2 impersonation) and the impersonation level, max the integrity
@@ -1009,7 +1091,8 @@ static const struct w32_export security_exports[] = {
     W32_FN(CreateWellKnownSid),
     W32_FN(LookupAccountSidW),
     W32_FN(RegUnLoadKeyW),
-    W32_AS("CreateServiceW", w32_fail13),
+    W32_FN(CreateServiceW),
+    W32_AS("CreateServiceA", CreateServiceW),
     W32_AS("DeleteService", w32_fail1),
     W32_AS("QueryServiceObjectSecurity", w32_fail5),
     W32_AS("SetServiceObjectSecurity", w32_fail3),
@@ -1107,10 +1190,14 @@ static const struct w32_export security_exports[] = {
     W32_FN(InitializeSecurityDescriptor),
     W32_FN(SetSecurityDescriptorDacl),
     W32_FN(SetEntriesInAclA),
-    W32_AS("OpenSCManagerA", no_service),
-    W32_AS("OpenSCManagerW", no_service),
-    W32_AS("OpenServiceA", no_service),
-    W32_AS("OpenServiceW", no_service),
+    W32_FN(OpenSCManagerA),
+    W32_FN(OpenSCManagerW),
+    W32_AS("OpenServiceA", OpenServiceW),
+    W32_FN(OpenServiceW),
+    W32_FN(EnumServicesStatusW),
+    W32_AS("EnumServicesStatusA", EnumServicesStatusW),
+    W32_FN(EnumServicesStatusExW),
+    W32_AS("EnumServicesStatusExA", EnumServicesStatusExW),
     W32_FN(CloseServiceHandle),
     W32_FN(QueryServiceStatusEx),
     W32_FN(OpenProcessToken),

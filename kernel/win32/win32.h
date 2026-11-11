@@ -129,6 +129,8 @@ enum w32_object_type {
     WH_JOB,
     WH_WINSTA,
     WH_DESKTOP,
+    WH_SCM,
+    WH_SNAPSHOT,
 };
 
 enum w32_engine {
@@ -306,6 +308,7 @@ struct w32_process {
     uint8_t *peb;
     uint8_t *teb64;
     uint8_t *peb64;
+    uint8_t *kuser;
     void *w64;
     void *w64_thunks;
     bool win64;
@@ -378,6 +381,7 @@ uint32_t w32_switch_frame(void (*entry)(void), uint8_t *stack_top);
 void w32_switch_thread(struct w32_thread *t);
 extern bool w32_trace;
 void w32_trace_dump(void);
+void w32_kuser_update(void);
 void w32_trace_note(const char *module, const char *name);
 const char *w32_builtin_name(const void *fn);
 void w32_trace_api(const char *name);
@@ -446,6 +450,7 @@ HANDLE w32_handle_put(struct w32_process *p, struct w32_object *o);
 const HANDLE *w32_attribute_handles(const void *attributes, int *count);
 HANDLE w32_inheritable(HANDLE h, const void *sa);
 const char *w32_pipe_name(HANDLE h);
+DWORD w32_dir_info(HANDLE h, int cls, uint8_t *buf, DWORD size);
 struct w32_object *w32_handle_get_in(struct w32_process *p, HANDLE h);
 struct w32_process *w32_process_by_pid(uint32_t pid);
 uint32_t w32_current_pid(void);

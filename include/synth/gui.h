@@ -29,8 +29,8 @@ struct ui_font {
     int ascent;
     int count;
     K64(const struct ui_glyph *glyphs);
-    K64(const uint8_t *lz);
-    uint32_t lz_size, size;
+    K64(const uint8_t *lz); /* NULL: the data is at lz_at in /system/fonts/ui.lz */
+    uint32_t lz_size, size, lz_at;
     K64(const KARR(uint8_t *) *alpha);
 };
 

@@ -42,6 +42,7 @@ void arch_set_irq_depth(int depth);
 void arch_fpu_save(void *area);
 void arch_fpu_restore(const void *area);
 void arch_load_teb_selector(void);
+uint64_t arch_selector_entry(uint32_t sel);
 void arch_w64_set_teb(uint32_t base);
 bool arch_long_supported(void);
 bool arch_long_enter(void);

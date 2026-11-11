@@ -1,8 +1,10 @@
 #include <synth/config.h>
 #if CONFIG_GUI
+#include <synth/fmt.h>
 #include <synth/string.h>
 
 #include "w32gui.h"
+#include "win64.h"
 
 /* RichEdit: a multi-line edit control that takes RTF; formatting is dropped, the text is kept */
 enum {
@@ -306,9 +308,37 @@ static void set_text(struct w32_window *w, char *text, bool selection)
     w32_invalidate(w, NULL, true);
 }
 
+/* the program's callback; a Win64 EDITSTREAM is {cookie, error, pad, callback} with 8-byte cookie and pointer */
+static DWORD stream_call(EDITSTREAM *es, char *buf, LONG n, LONG *got)
+{
+#ifdef __x86_64__
+    if (w32->win64) {
+        uint64_t fn, args[4] = {0, (uintptr_t)buf, (uint64_t)n, (uintptr_t)got};
+        memcpy(&args[0], es, 8);
+        memcpy(&fn, (uint8_t *)es + 16, 8);
+        return (DWORD)w64_call(fn, 4, args);
+    }
+#endif
+    return W32_CALL(DWORD(WINAPI *)(uintptr_t, void *, LONG, LONG *), es->callback, es->cookie, buf, n, got);
+}
+
+static void stream_error(EDITSTREAM *es, DWORD error)
+{
+#ifdef __x86_64__
+    if (w32->win64) {
+        memcpy((uint8_t *)es + 8, &error, 4);
+        return;
+    }
+#endif
+    es->error = error;
+}
+
 static LRESULT stream_in(struct w32_window *w, WPARAM flags, EDITSTREAM *es)
 {
-    if (!es || !es->callback)
+    uint64_t fn = 0;
+    if (es)
+        memcpy(&fn, (uint8_t *)es + (w32->win64 ? 16 : 8), w32->win64 ? 8 : 4);
+    if (!es || !fn)
         return 0;
     struct sbuf raw = {0};
     char *buf = w32_alloc(4096);
@@ -318,13 +348,12 @@ static LRESULT stream_in(struct w32_window *w, WPARAM flags, EDITSTREAM *es)
         w32_free(got);
         return 0;
     }
-    es->error = 0;
+    stream_error(es, 0);
     while (raw.n < RTF_MAX && !raw.failed) {
         *got = 0;
-        DWORD r = W32_CALL(DWORD(WINAPI *)(uintptr_t, void *, LONG, LONG *), es->callback, es->cookie, buf, 4096,
-                           got);
+        DWORD r = stream_call(es, buf, 4096, got);
         if (r) {
-            es->error = r;
+            stream_error(es, r);
             break;
         }
         if (*got <= 0)
@@ -344,6 +373,77 @@ static LRESULT stream_in(struct w32_window *w, WPARAM flags, EDITSTREAM *es)
     return count;
 }
 
+/* the text as RTF, UTF-16 or the code page, handed to the program's callback in pieces */
+static LRESULT stream_out(struct w32_window *w, WPARAM flags, EDITSTREAM *es)
+{
+    uint64_t fn = 0;
+    if (es)
+        memcpy(&fn, (uint8_t *)es + (w32->win64 ? 16 : 8), w32->win64 ? 8 : 4);
+    if (!es || !fn)
+        return 0;
+    struct sbuf out = {0};
+    const char *t = w->text ? w->text : "";
+    int codepage = flags & SF_USECODEPAGE ? (int)(flags >> 16) : w32_acp();
+    bool rtf = flags & SF_RTF, wide = !rtf && ((flags & SF_UNICODE) || codepage == 1200);
+    if (rtf)
+        sb_put(&out, "{\\rtf1\\ansi\\deff0 ", 18);
+    LRESULT chars = 0;
+    while (*t) {
+        uint32_t c = utf8_next(&t);
+        chars++;
+        if (wide) {
+            WCHAR u[2] = {(WCHAR)c, 0};
+            int n = 1;
+            if (c > 0xffff) {
+                u[0] = (WCHAR)(0xd800 + ((c - 0x10000) >> 10));
+                u[1] = (WCHAR)(0xdc00 + ((c - 0x10000) & 0x3ff));
+                n = 2;
+            }
+            sb_put(&out, (const char *)u, (size_t)n * 2);
+        } else if (rtf) {
+            char e[24];
+            if (c == '\\' || c == '{' || c == '}')
+                ksnprintf(e, sizeof(e), "\\%c", (char)c);
+            else if (c == '\n')
+                str_copy(e, "\\par\n", sizeof(e));
+            else if (c == '\r')
+                e[0] = 0;
+            else if (c < 0x80)
+                ksnprintf(e, sizeof(e), "%c", (char)c);
+            else
+                ksnprintf(e, sizeof(e), "\\u%d?", c > 0xffff ? '?' : (int)(int16_t)c);
+            sb_put(&out, e, strlen(e));
+        } else {
+            WCHAR u = c > 0xffff ? '?' : (WCHAR)c;
+            char b[4];
+            size_t n = w32_wide_to_cp(&u, 1, b, sizeof(b), codepage);
+            sb_put(&out, b, n);
+        }
+    }
+    if (rtf)
+        sb_put(&out, "}", 1);
+    char *buf = w32_alloc(4096);
+    LONG *done = w32_alloc(sizeof(LONG));
+    stream_error(es, 0);
+    for (size_t at = 0; buf && done && at < out.n;) {
+        LONG n = (LONG)MIN(out.n - at, 4096);
+        memcpy(buf, out.p + at, (size_t)n);
+        *done = 0;
+        DWORD r = stream_call(es, buf, n, done);
+        if (r) {
+            stream_error(es, r);
+            break;
+        }
+        if (*done <= 0)
+            break;
+        at += (size_t)*done;
+    }
+    w32_free(buf);
+    w32_free(done);
+    w32_free(out.p);
+    return chars;
+}
+
 static size_t utf8_chars(const char *s)
 {
     size_t n = 0;
@@ -357,7 +457,7 @@ LRESULT w32_richedit_msg(struct w32_window *w, UINT msg, WPARAM wp, LPARAM lp, b
     *handled = true;
     switch (msg) {
     case EM_STREAMIN: return stream_in(w, wp, (EDITSTREAM *)lp);
-    case EM_STREAMOUT: return 0;
+    case EM_STREAMOUT: return stream_out(w, wp, (EDITSTREAM *)lp);
     case EM_SETTEXTEX: {
         const DWORD *st = (const DWORD *)wp;
         UINT cp = st ? st[1] : 0;

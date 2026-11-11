@@ -81,6 +81,7 @@ static inline uint64_t w64_ret(uint32_t v)
     return v >= 0xffff0000u ? w64_sx(v) : v;
 }
 
+uint64_t w64_get_proc(uint64_t *a);
 #define T32(target, ...) w64_call32(target, (const uint32_t[]){__VA_ARGS__}, (int)(sizeof((uint32_t[]){__VA_ARGS__}) / 4))
 #define CALL(module, name, ...) T32(w32_builtin_lookup(module, name), __VA_ARGS__)
 

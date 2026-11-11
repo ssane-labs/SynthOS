@@ -26,10 +26,34 @@ extern const uint64_t isr_table[48];
 void gdt_load(const struct table_ptr *ptr);
 
 /* the same selectors as the 32-bit kernel: 0x08/0x10 flat 32-bit, 0x20/0x28 16-bit (BIOS calls), 0x30 64-bit code */
-static uint64_t gdt[8] = {
+static uint64_t gdt[10] = {
     0, 0x00cf9a000000ffffull, 0x00cf92000000ffffull, 0x0040920000000fffull, 0x00009a000000ffffull,
     0x000092000000ffffull, 0x00209a0000000000ull, 0x0040920000001fffull,
 };
+
+/* Programs run at CPL 0 on their own stacks: when a program moves its stack into committed memory that has no page
+   yet (Go's goroutine stacks), the page fault cannot push its frame and becomes a double fault. That one gets a stack
+   of its own (IST 1 of the boot processor's TSS) so the missing page can be mapped and the program goes on. */
+static struct {
+    uint32_t reserved0;
+    uint64_t rsp[3];
+    uint64_t reserved1;
+    uint64_t ist[7];
+    uint64_t reserved2;
+    uint16_t reserved3, iomap;
+} __attribute__((packed)) tss;
+static uint8_t df_stack[16384] __attribute__((aligned(16)));
+
+static void tss_load(void)
+{
+    uint64_t base = (uint64_t)(uintptr_t)&tss, limit = sizeof(tss) - 1;
+    tss.ist[0] = (uint64_t)(uintptr_t)(df_stack + sizeof(df_stack));
+    tss.iomap = sizeof(tss);
+    gdt[8] = (limit & 0xffff) | (base & 0xffffff) << 16 | 0x89ull << 40 | (limit >> 16 & 0xf) << 48 |
+             (base >> 24 & 0xff) << 56;
+    gdt[9] = base >> 32;
+    __asm__ volatile("ltr %w0" : : "r"(0x40));
+}
 
 static uint64_t data_descriptor(uint32_t base, uint32_t limit)
 {
@@ -46,6 +70,21 @@ void arch_w32_set_teb(uint32_t base)
 void arch_w64_set_teb(uint32_t base)
 {
     gdt[7] = data_descriptor(base, 0x1fff);
+}
+
+/* the descriptor a selector names in this processor's GDT (0 when it names none) */
+uint64_t arch_selector_entry(uint32_t sel)
+{
+    struct __attribute__((packed)) {
+        uint16_t limit;
+        uint64_t base;
+    } g = {0, 0};
+    __asm__ volatile("sgdt %0" : "=m"(g));
+    if ((sel & 4) || (sel | 7) > g.limit || !(sel & ~7u))
+        return 0;
+    uint64_t d;
+    memcpy(&d, (const uint8_t *)(uintptr_t)g.base + (sel & ~7u), 8);
+    return d;
 }
 
 void arch_load_teb_selector(void)
@@ -166,6 +205,8 @@ void cpu_init(void)
         uint64_t a = isr_table[i];
         idt[i] = (struct idt_entry){(uint16_t)a, 0x30, 0, 0x8e, (uint16_t)(a >> 16), (uint32_t)(a >> 32), 0};
     }
+    tss_load();
+    idt[8].ist = 1;
     idt_ptr = (struct table_ptr){sizeof(idt) - 1, (uint64_t)(uintptr_t)idt};
     __asm__ volatile("lidt %0" : : "m"(idt_ptr));
     detect_cpu();
@@ -247,6 +288,21 @@ static void backtrace(const struct regs *r, bool console)
     }
 }
 
+/* a double fault from a page fault on the stack itself: map the stack's missing pages and retry the instruction */
+static bool stack_fixup(uint64_t rsp, uint64_t cr2)
+{
+    uint64_t at[3] = {cr2, rsp - 1, (rsp & ~15ull) - 64};
+    bool fixed = false;
+    for (int i = 0; i < 3; i++) {
+        if (at[i] >> 32 || at[i] < VMM_USER_START || vmm_mapped((uintptr_t)at[i]))
+            continue;
+        if (!vmm_commit_fault((uintptr_t)at[i]))
+            return false;
+        fixed = true;
+    }
+    return fixed;
+}
+
 void x86_interrupt(struct regs *r)
 {
     if (r->vector < 32) {
@@ -257,6 +313,8 @@ void x86_interrupt(struct regs *r)
         if (r->vector == 14 && !(r->error & 1) && !(cr2 >> 32) && vmm_commit_fault((uintptr_t)cr2))
             return;
         if (r->vector == 14 && (r->error & 3) == 3 && !(cr2 >> 32) && vmm_cow_fault((uintptr_t)cr2))
+            return;
+        if (r->vector == 8 && stack_fixup(r->rsp, cr2))
             return;
         if (fault_handler && r->vector != 8 && r->vector != 18) {
             fault_regs = r;

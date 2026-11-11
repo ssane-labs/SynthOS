@@ -1,4 +1,5 @@
 #include <synth/arch_win32.h>
+#include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
@@ -43,7 +44,7 @@ void gdt_flush(const struct table_ptr *ptr);
 void long_switch_on(uint32_t pml4, const struct table_ptr *idt);
 void long_switch_off(uint32_t root, const struct table_ptr *idt);
 
-static struct gdt_entry gdt[8];
+static struct gdt_entry gdt[10];
 static struct idt64_entry idt64[256] __attribute__((aligned(16)));
 static struct table_ptr idt32_ptr, idt64_ptr;
 static bool long_active;
@@ -118,6 +119,82 @@ void irq_install(int irq, irq_handler handler)
     irq_unmask(irq);
 }
 
+/* Programs run at CPL 0 on their own stacks: when a program moves its stack into committed memory that has no page
+   yet (Go's goroutine stacks), the page fault cannot push its frame and becomes a double fault. A task gate gives
+   that one a stack of its own: the missing page is mapped and the task switch back retries the instruction. */
+struct tss32 {
+    uint32_t link, esp0, ss0, esp1, ss1, esp2, ss2, cr3, eip, eflags, eax, ecx, edx, ebx, esp, ebp, esi, edi;
+    uint32_t es, cs, ss, ds, fs, gs, ldt;
+    uint16_t trap, iomap;
+} __attribute__((packed));
+
+static struct tss32 main_tss, df_tss;
+void df_task(void);
+
+void cpu_tss_cr3(uint32_t root)
+{
+    main_tss.cr3 = df_tss.cr3 = root;
+}
+
+static bool stack_fixup(uint32_t esp, uint32_t cr2)
+{
+    uint32_t at[3] = {cr2, esp - 1, (esp & ~15u) - 64};
+    bool fixed = false;
+    for (int i = 0; i < 3; i++) {
+        if (at[i] < VMM_USER_START || vmm_mapped(at[i]))
+            continue;
+        if (!vmm_commit_fault(at[i]))
+            return false;
+        fixed = true;
+    }
+    return fixed;
+}
+
+static uint32_t read_cr0(void)
+{
+    uint32_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    return cr0;
+}
+
+/* the task switch back sets CR0.TS: the next FPU instruction lands in x86_interrupt, which clears it */
+void x86_double_fault(void)
+{
+    uint32_t cr2;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    if (!stack_fixup(main_tss.esp, cr2))
+        panic("CPU exception 8 (double fault) at %08x cr2=%08x eax=%08x ebx=%08x ecx=%08x edx=%08x esp=%08x",
+              main_tss.eip, cr2, main_tss.eax, main_tss.ebx, main_tss.ecx, main_tss.edx, main_tss.esp);
+}
+
+static void tss_init(void)
+{
+    uint32_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    main_tss.iomap = df_tss.iomap = sizeof(struct tss32);
+    df_tss.cr3 = main_tss.cr3 = cr3;
+    df_tss.eip = (uint32_t)df_task;
+    df_tss.eflags = 0x2;
+    df_tss.cs = 0x08;
+    df_tss.ss = df_tss.ds = df_tss.es = 0x10;
+    gdt_set(8, (uint32_t)&main_tss, sizeof(struct tss32) - 1, 0x89, 0x00);
+    gdt_set(9, (uint32_t)&df_tss, sizeof(struct tss32) - 1, 0x89, 0x00);
+}
+
+/* once there is a heap (hal_start_cpus): the double-fault task gets its stack and the gate */
+static struct gdt_entry (*ap_gdt)[10];
+
+/* before the other processors start: the double-fault task's stack and their GDTs, on the heap */
+void cpu_df_init(void)
+{
+    ap_gdt = kzalloc(sizeof(*ap_gdt) * MAX_CPUS);
+    uint8_t *stack = kmalloc(8192);
+    if (!stack)
+        return;
+    df_tss.esp = (uint32_t)(stack + 8192) & ~15u;
+    idt[8] = (struct idt_entry){0, 0x48, 0, 0x85, 0};
+}
+
 void cpu_init(void)
 {
     gdt_set(0, 0, 0, 0, 0);
@@ -128,8 +205,10 @@ void cpu_init(void)
     gdt_set(5, 0, 0xffff, 0x92, 0x00);
     gdt_set(6, 0, 0xfffff, 0x9a, 0xa0);
     gdt_set(7, 0, 0x1fff, 0x92, 0x40);
+    tss_init();
     struct table_ptr gp = {sizeof(gdt) - 1, (uint32_t)gdt};
     gdt_flush(&gp);
+    __asm__ volatile("ltr %w0" : : "r"(0x40));
 
     pic_remap();
     for (int i = 0; i < 48; i++) {
@@ -225,7 +304,6 @@ static void cpu_local_init(void)
     }
 }
 
-static struct gdt_entry ap_gdt[MAX_CPUS][8];
 
 /* An application processor's own GDT (it will hold that processor's TEB segments), the shared IDT, its control
    registers. */
@@ -346,6 +424,10 @@ void x86_interrupt(struct regs *r)
             return;
         if (r->vector == 14 && !high && (r->error & 3) == 3 && vmm_cow_fault(cr2))
             return;
+        if (r->vector == 7 && read_cr0() & 8) {
+            __asm__ volatile("clts");
+            return;
+        }
         if (fault_handler && r->vector != 8 && r->vector != 18) {
             fault_regs = r;
             fault_handler((int)r->vector, r->eip, cr2);
@@ -415,6 +497,21 @@ void arch_fpu_restore(const void *area)
         __asm__ volatile("fxrstor (%0)" : : "r"(area) : "memory");
     else
         __asm__ volatile("frstor (%0)" : : "r"(area) : "memory");
+}
+
+/* the descriptor a selector names in this processor's GDT (0 when it names none) */
+uint64_t arch_selector_entry(uint32_t sel)
+{
+    struct __attribute__((packed)) {
+        uint16_t limit;
+        uint64_t base;
+    } g = {0, 0};
+    __asm__ volatile("sgdt %0" : "=m"(g));
+    if ((sel & 4) || (sel | 7) > g.limit || !(sel & ~7u))
+        return 0;
+    uint64_t d;
+    memcpy(&d, (const uint8_t *)(uintptr_t)g.base + (sel & ~7u), 8);
+    return d;
 }
 
 void arch_load_teb_selector(void)

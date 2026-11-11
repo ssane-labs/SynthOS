@@ -1,3 +1,4 @@
+#include <synth/net.h>
 #include <synth/string.h>
 
 #include "win32.h"
@@ -493,7 +494,6 @@ STUB(ReadEventLogW, 7, 0, 38u)
 STUB(mixer3, 3, 6, 0)
 STUB(mixer1, 1, 6, 0)
 STUB(wave_message, 4, 6, 0)
-STUB(GetExtendedTcpTable, 6, 50, 0)
 STUB(GetIfEntry2, 1, 2, 0)
 STUB(ConvertInterfaceGuidToLuid, 2, 87, 0)
 STUB(CompleteAuthToken, 2, 0x80090302u, 0)
@@ -549,8 +549,81 @@ static const struct w32_export probe_winmm[] = {
     W32_AS("waveOutMessage", wave_message),
 };
 
+/* The connection tables: MIB rows of the kernel's IPv4 sockets (addresses and ports in network order). Table classes
+   up to 2 are the basic rows, the others add the owning process, which is the system's. */
+static DWORD socket_table(void *table, DWORD *size, bool tcp, bool owner)
+{
+    struct net_socket_info list[NET_MAX_SOCKETS];
+    int n = net_sockets(list, NET_MAX_SOCKETS);
+    uint32_t cols = (tcp ? 5 : 2) + (owner ? 1 : 0), rows = 0;
+    uint32_t row[6];
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t k = 0;
+        for (int i = 0; i < n; i++) {
+            if ((list[i].type == NET_TCP) != tcp || net_is_v6(list[i].local_ip) || net_is_v6(list[i].remote_ip))
+                continue;
+            if (pass) {
+                uint32_t c = 0;
+                if (tcp)
+                    row[c++] = (uint32_t)list[i].state + 1;
+                row[c++] = net_htonl(list[i].local_ip);
+                row[c++] = net_htons(list[i].local_port);
+                if (tcp) {
+                    row[c++] = list[i].remote_port ? net_htonl(list[i].remote_ip) : 0;
+                    row[c++] = net_htons(list[i].remote_port);
+                }
+                if (owner)
+                    row[c++] = 4;
+                memcpy((uint8_t *)table + 4 + k * cols * 4, row, cols * 4);
+            }
+            k++;
+        }
+        rows = k;
+        DWORD need = 4 + rows * cols * 4;
+        if (!pass && (!table || *size < need)) {
+            *size = need;
+            return ERROR_INSUFFICIENT_BUFFER;
+        }
+    }
+    memcpy(table, &rows, 4);
+    return 0;
+}
+
+static DWORD WINAPI GetExtendedTcpTable(void *table, DWORD *size, BOOL sort, ULONG af, ULONG cls, ULONG reserved)
+{
+    UNUSED(sort);
+    UNUSED(reserved);
+    if (af != 2 || cls > 8)
+        return ERROR_NOT_SUPPORTED;
+    return socket_table(table, size, true, cls > 2);
+}
+
+static DWORD WINAPI GetExtendedUdpTable(void *table, DWORD *size, BOOL sort, ULONG af, ULONG cls, ULONG reserved)
+{
+    UNUSED(sort);
+    UNUSED(reserved);
+    if (af != 2 || cls > 2)
+        return ERROR_NOT_SUPPORTED;
+    return socket_table(table, size, false, cls > 0);
+}
+
+static DWORD WINAPI GetTcpTable(void *table, DWORD *size, BOOL sort)
+{
+    UNUSED(sort);
+    return socket_table(table, size, true, false);
+}
+
+static DWORD WINAPI GetUdpTable(void *table, DWORD *size, BOOL sort)
+{
+    UNUSED(sort);
+    return socket_table(table, size, false, false);
+}
+
 static const struct w32_export probe_iphlpapi[] = {
     W32_FN(GetExtendedTcpTable),
+    W32_FN(GetExtendedUdpTable),
+    W32_FN(GetTcpTable),
+    W32_FN(GetUdpTable),
     W32_FN(GetIfEntry2),
     W32_FN(ConvertInterfaceGuidToLuid),
 };

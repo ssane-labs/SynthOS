@@ -180,6 +180,45 @@ static uint64_t h_set_thread_info(uint64_t *a, const uint64_t *f, void *t)
     return w64_sx((uint32_t)T32(t, (uint32_t)a[0], cls, U(P(a[2])), (uint32_t)a[3]));
 }
 
+/* LdrLoadDll/LdrGetDllHandle(path, flags, UNICODE_STRING *name, HMODULE *out) */
+static uint64_t h_ldr_module(uint64_t *a, const uint64_t *f, void *t)
+{
+    struct {
+        uint16_t length, max;
+        uint32_t buffer;
+    } us = {0, 0, 0};
+    if (a[2]) {
+        const uint8_t *s = P(a[2]);
+        us.length = (uint16_t)(s[0] | s[1] << 8);
+        us.max = (uint16_t)(s[2] | s[3] << 8);
+        us.buffer = U(P(rd64(s + 8)));
+    }
+    uint32_t h = 0, r = (uint32_t)T32(t, 0, 0, a[2] ? U(&us) : 0, U(&h));
+    if (a[3])
+        put64(P(a[3]), h);
+    return w64_sx(r);
+}
+
+/* LdrGetProcedureAddress(module, ANSI_STRING *name, ordinal, void **out): the 64-bit entry, as GetProcAddress */
+static uint64_t h_ldr_proc(uint64_t *a, const uint64_t *f, void *t)
+{
+    char name[128];
+    uint64_t args[2] = {a[0], a[2]};
+    if (a[1]) {
+        const uint8_t *s = P(a[1]);
+        size_t n = (size_t)(s[0] | s[1] << 8);
+        if (n >= sizeof(name))
+            n = sizeof(name) - 1;
+        memcpy(name, P(rd64(s + 8)), n);
+        name[n] = 0;
+        args[1] = (uint64_t)(uintptr_t)name;
+    }
+    uint64_t fn = w64_get_proc(args);
+    if (a[3])
+        put64(P(a[3]), fn);
+    return fn ? 0 : w64_sx(0xc0000139u);
+}
+
 static const struct w64_export nt_exports[] = {
     W64_FN("NtCreateFile", h_create_file),
     W64_FN("ZwCreateFile", h_create_file),
@@ -207,6 +246,9 @@ static const struct w64_export nt_exports[] = {
     W64_FN("ZwCreateEvent", h_create_event),
     W64_FN("NtSetInformationThread", h_set_thread_info),
     W64_FN("ZwSetInformationThread", h_set_thread_info),
+    W64_FN("LdrLoadDll", h_ldr_module),
+    W64_FN("LdrGetDllHandle", h_ldr_module),
+    W64_FN("LdrGetProcedureAddress", h_ldr_proc),
     W64_OUT("NtDuplicateObject", 1u << 3),
     W64_OUT("ZwDuplicateObject", 1u << 3),
     W64_OUT("NtOpenProcessToken", 1u << 2),

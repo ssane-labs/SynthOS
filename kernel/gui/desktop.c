@@ -553,8 +553,15 @@ static bool place_icons(struct desktop_icon *list, int n)
 static struct {
     char path[PATH_MAX_LEN];
     int col, row;
-} layout[LAYOUT_MAX];
+} *layout;
 static int layout_count = -1;
+
+static bool layout_alloc(void)
+{
+    if (!layout)
+        layout = kmalloc(sizeof(*layout) * LAYOUT_MAX);
+    return layout != NULL;
+}
 
 static void layout_file(char *out, size_t cap)
 {
@@ -567,7 +574,7 @@ static void layout_load(void)
     char path[PATH_MAX_LEN], *data;
     size_t size;
     layout_file(path, sizeof(path));
-    if (vfs_read_all(path, &data, &size) != 0)
+    if (!layout_alloc() || vfs_read_all(path, &data, &size) != 0)
         return;
     for (char *p = data, *end = data + size; p < end && layout_count < LAYOUT_MAX;) {
         char *nl = memchr(p, '\n', (size_t)(end - p));
@@ -612,7 +619,7 @@ static void layout_save(void)
     layout_count = 0;
     for (int i = 0; i < icon_count; i++) {
         n += (size_t)ksnprintf(buf + n, cap - n, "%d %d %s\n", icons[i].col, icons[i].row, icons[i].path);
-        if (layout_count < LAYOUT_MAX) {
+        if (layout_count < LAYOUT_MAX && layout_alloc()) {
             str_copy(layout[layout_count].path, icons[i].path, sizeof(layout[0].path));
             layout[layout_count].col = icons[i].col;
             layout[layout_count++].row = icons[i].row;

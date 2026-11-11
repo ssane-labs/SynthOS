@@ -412,7 +412,76 @@ static HANDLE WINAPI RtlDestroyHeap(HANDLE heap)
     return ((BOOL(WINAPI *)(HANDLE))k32("HeapDestroy"))(heap) ? NULL : heap;
 }
 
+/* the loader calls under LoadLibrary (a program can test for NT by looking for them in ntdll's exports) */
+static WCHAR *ustr_copy(const struct unicode_string *s)
+{
+    WCHAR *w = s ? w32_alloc(s->length + 2) : NULL;
+    if (w) {
+        memcpy(w, s->buffer, s->length);
+        w[s->length / 2] = 0;
+    }
+    return w;
+}
+
+static DWORD WINAPI LdrLoadDll(LPCWSTR path, ULONG *flags, struct unicode_string *name, HMODULE *out)
+{
+    UNUSED(path);
+    UNUSED(flags);
+    WCHAR *w = ustr_copy(name);
+    *out = w ? ((HMODULE(WINAPI *)(LPCWSTR))k32("LoadLibraryW"))(w) : NULL;
+    w32_free(w);
+    return *out ? 0 : 0xc0000135u;
+}
+
+static DWORD WINAPI LdrUnloadDll(HMODULE module)
+{
+    return ((BOOL(WINAPI *)(HMODULE))k32("FreeLibrary"))(module) ? 0 : 0xc0000135u;
+}
+
+static DWORD WINAPI LdrGetDllHandle(LPCWSTR path, ULONG *flags, struct unicode_string *name, HMODULE *out)
+{
+    UNUSED(path);
+    UNUSED(flags);
+    WCHAR *w = ustr_copy(name);
+    *out = w ? ((HMODULE(WINAPI *)(LPCWSTR))k32("GetModuleHandleW"))(w) : NULL;
+    w32_free(w);
+    return *out ? 0 : 0xc0000135u;
+}
+
+struct ansi_string {
+    uint16_t length, max_length;
+    char *buffer;
+};
+
+static DWORD WINAPI LdrGetProcedureAddress(HMODULE module, struct ansi_string *name, ULONG ordinal, void **out)
+{
+    char *n = name ? w32_alloc(name->length + 1u) : NULL;
+    if (n) {
+        memcpy(n, name->buffer, name->length);
+        n[name->length] = 0;
+    }
+    *out = ((void *(WINAPI *)(HMODULE, LPCSTR))k32("GetProcAddress"))(module, n ? n : (LPCSTR)(uintptr_t)ordinal);
+    w32_free(n);
+    return *out ? 0 : 0xc0000139u;
+}
+
+/* named sections (\Device\PhysicalMemory and the like) are not there */
+static DWORD WINAPI NtOpenSection(HANDLE *out, DWORD access, struct object_attributes *attr)
+{
+    UNUSED(access);
+    UNUSED(attr);
+    if (out)
+        *out = NULL;
+    return 0xc0000034u;
+}
+
 static const struct w32_export ntcore_exports[] = {
+    W32_FN(NtOpenSection),
+    W32_AS("ZwOpenSection", NtOpenSection),
+    W32_FN(LdrLoadDll),
+    W32_FN(LdrUnloadDll),
+    W32_FN(LdrGetDllHandle),
+    W32_FN(LdrGetProcedureAddress),
     W32_FN(NtCreateFile),
     W32_AS("ZwCreateFile", NtCreateFile),
     W32_FN(NtOpenFile),

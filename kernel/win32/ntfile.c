@@ -429,6 +429,16 @@ static DWORD WINAPI NtQueryDirectoryFile(HANDLE h, HANDLE ev, void *apc, void *c
     return done(iosb, STATUS_SUCCESS, used);
 }
 
+/* GetFileInformationByHandleEx's directory classes (FileIdBoth/FileFull, Restart or not): the same entries */
+DWORD w32_dir_info(HANDLE h, int cls, uint8_t *buf, DWORD size)
+{
+    struct io_status io;
+    DWORD s = NtQueryDirectoryFile(h, NULL, NULL, NULL, &io, buf, size, cls == 10 || cls == 11 ? 37 : 2, FALSE, NULL,
+                                   cls == 11 || cls == 15);
+    return s == STATUS_SUCCESS ? 0 : s == STATUS_NO_MORE_FILES ? ERROR_NO_MORE_FILES
+         : s == STATUS_BUFFER_OVERFLOW ? 234 : s == STATUS_NOT_A_DIRECTORY ? 267 : ERROR_INVALID_HANDLE;
+}
+
 static DWORD WINAPI NtFlushBuffersFile(HANDLE h, struct io_status *iosb)
 {
     struct vstat st;

@@ -1403,6 +1403,13 @@ static BOOL WINAPI GetVolumeInformationW(LPCWSTR root, LPWSTR name, DWORD name_s
     return GetVolumeInformationA(NULL, NULL, 0, serial, max_len, flags, NULL, 0);
 }
 
+static BOOL WINAPI GetVolumeInformationByHandleW(HANDLE file, LPWSTR name, DWORD name_size, DWORD *serial,
+                                                 DWORD *max_len, DWORD *flags, LPWSTR fs, DWORD fs_size)
+{
+    UNUSED(file);
+    return GetVolumeInformationW(NULL, name, name_size, serial, max_len, flags, fs, fs_size);
+}
+
 static DWORD WINAPI GetShortPathNameA(LPCSTR in, LPSTR out, DWORD size)
 {
     return to_ansi_buffer(in, out, size);
@@ -1615,7 +1622,7 @@ static const struct w32_export kernel32_files[] = {
     W32_FN(GetSystemDirectoryW), W32_FN(GetSystemWow64DirectoryA), W32_FN(GetSystemWow64DirectoryW), W32_FN(GetDriveTypeA), W32_FN(GetDriveTypeW), W32_FN(GetLogicalDrives),
     W32_FN(GetLogicalDriveStringsA), W32_FN(GetDiskFreeSpaceA), W32_FN(GetDiskFreeSpaceW),
     W32_FN(GetDiskFreeSpaceExA), W32_FN(GetDiskFreeSpaceExW), W32_FN(GetVolumeInformationA),
-    W32_FN(GetVolumeInformationW), W32_FN(GetShortPathNameA), W32_FN(GetShortPathNameW),
+    W32_FN(GetVolumeInformationW), W32_FN(GetVolumeInformationByHandleW), W32_FN(GetShortPathNameA), W32_FN(GetShortPathNameW),
     W32_AS("GetLongPathNameA", GetShortPathNameA), W32_AS("GetLongPathNameW", GetShortPathNameW),
     W32_FN(AreFileApisANSI), W32_AS("SetFileApisToOEM", SetFileApisNop), W32_AS("SetFileApisToANSI", SetFileApisNop),
     W32_FN(GetEnvironmentVariableA), W32_FN(GetEnvironmentVariableW), W32_FN(SetEnvironmentVariableA),

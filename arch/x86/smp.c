@@ -230,6 +230,9 @@ static uint32_t low_page(void)
 
 int hal_start_cpus(void)
 {
+#ifndef __x86_64__
+    cpu_df_init();
+#endif
     if (!cpu_info()->apic || !cpu_info()->sse || !vmm_pae())
         return 1;
     uint64_t base = rdmsr(APIC_BASE_MSR);
