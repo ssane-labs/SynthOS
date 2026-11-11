@@ -3516,7 +3516,8 @@ static bool caption_at(const void *p, char *out, size_t cap)
             return false;
         if (!s[n])
             break;
-        if (s[n] < 0x20 && s[n] != '\t')
+        /* text, not the halves of a pointer: ASCII, Latin and Cyrillic letters only */
+        if ((s[n] < 0x20 && s[n] != '\t') || (s[n] >= 0x7f && s[n] < 0xa0) || s[n] > 0x52f)
             return false;
         out[n] = s[n] < 0x80 ? (char)s[n] : '?';
     }
@@ -3699,10 +3700,12 @@ static struct w32_menu *locate(struct w32_menu *m, UINT item, UINT flags, int *a
     return NULL;
 }
 
+/* like SetMenuItemInfo underneath: without MF_POPUP the item keeps its submenu (BCMenu relabels its menu bar so) */
 static void set_item(struct w32_menu_item *it, UINT flags, uintptr_t id, const char *text)
 {
-    it->flags = flags & ~(unsigned)MF_BYPOSITION;
-    it->sub = (flags & MF_POPUP) ? menu_of((HANDLE)id) : NULL;
+    struct w32_menu *keep = (flags & MF_POPUP) ? NULL : it->sub;
+    it->flags = (flags & ~(unsigned)MF_BYPOSITION) | (keep ? MF_POPUP : 0);
+    it->sub = (flags & MF_POPUP) ? menu_of((HANDLE)id) : keep;
     it->id = (flags & MF_POPUP) ? 0 : id;
     if (flags & MF_OWNERDRAW)
         it->data = (uint32_t)(uintptr_t)text;

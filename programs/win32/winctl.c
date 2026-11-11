@@ -722,6 +722,19 @@ static void shlwapi_test(void)
            urlis(L"https://x.org/", 0), urlis(L"C:\\x", 3), hr ? "" : a, (long)hr, ctype(L"x.TXT", L"text/plain"));
 }
 
+/* BCMenu relabels its menu bar by position with MF_STRING: the item keeps its submenu */
+static void menu_test(void)
+{
+    HMENU bar = CreateMenu(), file = CreatePopupMenu();
+    AppendMenuA(file, MF_STRING, 101, "&New");
+    AppendMenuA(bar, MF_POPUP, (UINT_PTR)file, "&File");
+    ModifyMenuA(bar, 0, MF_BYPOSITION | MF_STRING, 0, "&File ");
+    char text[16] = "";
+    GetMenuStringA(bar, 0, text, sizeof(text), MF_BYPOSITION);
+    printf("menu text=%s sub=%d count=%d\n", text, GetSubMenu(bar, 0) == file, GetMenuItemCount(GetSubMenu(bar, 0)));
+    DestroyMenu(bar);
+}
+
 int main(void)
 {
     WNDCLASSA wc = {0};
@@ -750,5 +763,6 @@ int main(void)
     user_test();
     ole_test();
     shlwapi_test();
+    menu_test();
     return 0;
 }

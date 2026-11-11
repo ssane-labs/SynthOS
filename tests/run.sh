@@ -701,6 +701,8 @@ config w32headless on; winctl | grep wallpaper; config w32headless off
 wallpaper set=1 now=C:\pic.bmp
 winctl | grep shlwapi
 shlwapi wild=4 sep=8 url=1 file=0 path=C:\a b\c.txt hr=0 text=1
+winctl | grep "menu text"
+menu text=&File  sub=1 count=1
 config w32headless on; winctl | grep toolbar; config w32headless off
 toolbar count=3 cmd=102 checked=1 status=3 files parts=2 strip=1
 config w32headless on; winctl | grep findtext; config w32headless off
