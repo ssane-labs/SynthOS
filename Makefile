@@ -86,6 +86,11 @@ endif
 ifeq ($(CONFIG_EDITOR),0)
 KERNEL_SRC := $(filter-out kernel/apps/edit.c,$(KERNEL_SRC))
 endif
+# apps outside the kernel image (kernel/gui/module.c): position-independent objects linked against this kernel's
+# symbols, put in a second ramdisk (/system/apps/*.sxm) after the system files
+MOD_SRC    := $(if $(filter 0,$(CONFIG_GUI)),,$(wildcard kernel/gui/optional/*.c))
+KERNEL_SRC := $(filter-out kernel/gui/optional/%,$(KERNEL_SRC))
+MOD_BIN    := $(MOD_SRC:kernel/gui/optional/%.c=$(OUT)/modules/system/apps/%.sxm)
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm arch/x86/long.asm
 ifneq ($(X64),)
 KERNEL_ASM := arch/x86/64/entry.asm arch/x86/64/isr.asm $(if $(filter 1,$(W32)),arch/x86/64/win32.asm arch/x86/64/w64.asm)
@@ -240,9 +245,30 @@ $(OUT)/stage2.bin: arch/x86/boot/stage2.asm arch/x86/boot/layout.inc
 	@echo "  NASM    $<"
 	@$(NASM) -f bin -Iarch/x86/boot/ $(BOOT_DEFS) -o $@ $<
 
-$(OUT)/kernel.bin: $(OUT)/kernel.elf $(BUILD)/ramdisk.bin $(BUILD)/tools/mkrd
+$(OUT)/kernel.bin: $(OUT)/kernel.elf $(BUILD)/ramdisk.bin $(OUT)/modules.bin $(BUILD)/tools/mkrd
 	@$(OBJCOPY) -O binary $< $(OUT)/image.bin
-	@$(BUILD)/tools/mkrd --kernel $(OUT)/image.bin $(BUILD)/ramdisk.bin $@
+	@$(BUILD)/tools/mkrd --kernel $(OUT)/image.bin $@ $(BUILD)/ramdisk.bin $(OUT)/modules.bin
+
+MODCFLAGS := $(filter-out -fno-pic -fno-pie -fpie -O2,$(CFLAGS)) -Os -fPIC -fno-plt -fvisibility=hidden -DSYNTH_MODULE
+MODLDFLAGS := $(if $(CROSS),,$(if $(X64),-m elf_x86_64,-m elf_i386)) $(if $(X64),--no-relax) -nostdlib -shared -Bsymbolic -z max-page-size=4096 \
+              -z norelro -z noseparate-code -s --version-script=tools/module.ver --hash-style=sysv $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx && echo --no-warn-rwx-segments)
+
+$(OUT)/obj/optional/%.o: kernel/gui/optional/%.c
+	@mkdir -p $(@D)
+	@echo "  CC      $< (module)"
+	@$(CC) $(MODCFLAGS) -MMD -MP -c $< -o $@
+
+$(OUT)/modules/system/apps/%.sxm: $(OUT)/obj/optional/%.o $(OUT)/kernel.elf tools/modcheck.py tools/module.ver
+	@mkdir -p $(@D)
+	@echo "  LD      $@"
+	@$(LD) $(MODLDFLAGS) --just-symbols=$(OUT)/kernel.elf -e synth_module_app -o $@ $<
+	@python3 -I tools/modcheck.py $@
+
+.SECONDARY: $(MOD_SRC:kernel/gui/optional/%.c=$(OUT)/obj/optional/%.o)
+
+$(OUT)/modules.bin: $(MOD_BIN) $(BUILD)/tools/mkrd
+	@mkdir -p $(OUT)/modules
+	@$(BUILD)/tools/mkrd $(OUT)/modules $@ >/dev/null
 
 $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/$(if $(X64),64/)linker.ld
 	@echo "  LD      $@"

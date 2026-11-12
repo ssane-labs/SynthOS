@@ -340,11 +340,22 @@ UEFI (32/24/16 бит, ×2 на экранах от 1600×1000) и перери�
 имени или началу слова (`launch mon` → System Monitor); поле `extensions` связывает их с типами
 файлов в Файлах. Плавающая точка — только в `calc_fp.c` (правило `*_fp.c`).
 
+**Модули приложений** (`gui/module.c`): `kernel/gui/optional/*.c` собираются с `-fPIC` и связываются
+`ld -shared -Bsymbolic --just-symbols=kernel.elf` в `.sxm` (точка входа — `struct gui_module_entry`:
+приложение и необязательный `tick`). Символы ядра абсолютны, поэтому остаются только RELATIVE-релокации
+(`tools/modcheck.py` проверяет это при сборке); загрузчик прибавляет базу только к значениям внутри образа
+модуля (ld помечает RELATIVE и слоты GOT с адресами ядра — они больше размера модуля, < 1 МиБ, и не
+трогаются). Модули едут вторым ramdisk-пакетом (`mkrd --kernel образ выход ramdisk модули`, цепочка
+`SRDC`). Магазин (`kind = module`) показывает/прячет модуль (`gui_module_show`), при входе
+`store_restore_modules()` показывает записанные; загруженный код не выгружается. `gui_app_nth` /
+`GUI_APPS_FOREACH` обходят встроенные приложения и затем показанные модули; `gui_module_tick()` зовётся из
+цикла стола.
+
 **App Store** (`apps/store.c` + `kernel/core/store.c`): каталог — текст из блоков `[id]` со строками
 `ключ = значение` (`/system/store/catalog.txt`; свежий из релиза кладётся в `/home/etc/store/catalog.txt`,
 установленное — `/home/etc/store/installed`, «id версия» в строке). Виды: `zip` (скачивается в память,
 SHA-256, распаковка в `/home/apps/<id>`, `strip`, `bin` в PATH, `post = python`), `installer` (поток в
-`~/Downloads`, запуск с `args`), `chrome` (`chrome_install`), `builtin`. Установлено ли — по файлу `check`;
+`~/Downloads`, запуск с `args`), `chrome` (`chrome_install`), `builtin`, `module`. Установлено ли — по файлу `check`;
 UPDATE — когда записанная версия zip-приложения отличается от каталога. Окно только просит работу, а
 делает её `store_run()` из цикла стола под общей карточкой прогресса (`gui/progress.c`, ею же пользуется
 Software Update).

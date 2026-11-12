@@ -28,6 +28,20 @@ static int unpack(const void *data, size_t size, const char *dest);
 int ramdisk_unpack(const void *data, size_t size, const char *dest)
 {
     const uint8_t *z = data;
+    if (size >= 4 && !memcmp(z, "SRDC", 4)) {
+        int files = 0;
+        for (size_t off = 4; off + 4 <= size;) {
+            uint32_t len = rd32(z + off);
+            if (len > size - off - 4)
+                return E_IO;
+            int n = ramdisk_unpack(z + off + 4, len, dest);
+            if (n < 0)
+                return n;
+            files += n;
+            off += 4 + ALIGN_UP(len, 4u);
+        }
+        return files;
+    }
     if (size >= 13 && !memcmp(z, "SRDL", 4)) {
         uint32_t raw = rd32(z + 4);
         uint8_t *buf = kmalloc(raw);

@@ -80,6 +80,9 @@ enum icon_id {
     ICON_STORE,
     ICON_CODE,
     ICON_GAMES,
+    ICON_CLOCK,
+    ICON_WEATHER,
+    ICON_NOTES,
     ICON_COUNT,
 };
 
@@ -577,7 +580,32 @@ struct gui_app {
     K64(const struct canvas *picture);
 };
 
+/* an app built as a module (/system/apps/<name>.sxm): the entry point names it */
+struct gui_module_entry {
+    const struct gui_app *app;
+    void (*tick)(void); /* called by the desktop while the module is installed, window or not */
+};
+
+#ifdef SYNTH_MODULE
+#define GUI_APP_TICK(object, fn)                                                                                       \
+    const struct gui_module_entry synth_module_app __attribute__((used)) = {&object, fn}
+#define GUI_APP(object) GUI_APP_TICK(object, NULL)
+#else
 #define GUI_APP(object) SYNTH_REGISTER(synth_gui_apps, struct gui_app, object)
+#endif
+
+/* the built-in apps, then the app modules the App Store turned on */
+const struct gui_app *gui_app_nth(int index);
+#define GUI_APPS_FOREACH(app)                                                                                          \
+    for (const struct gui_app *app, *const *app##_once = (const struct gui_app *const *)1; app##_once;               \
+         app##_once = NULL)                                                                                          \
+        for (int app##_i = 0; (app = gui_app_nth(app##_i)) != NULL; app##_i++)
+int gui_module_show(const char *name, bool shown);
+bool gui_module_shown(const char *name);
+bool gui_module_exists(const char *name);
+const struct gui_app *gui_module_app(int index);
+bool gui_module_owns(const struct gui_app *app);
+void gui_module_tick(void);
 
 const struct gui_app *gui_app_find(const char *name);
 const struct gui_app *gui_app_for_program(const char *path);

@@ -1,6 +1,10 @@
 #include <synth/command.h>
+#include <synth/config.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
+#if CONFIG_GUI
+#include <synth/gui.h>
+#endif
 #include <synth/heap.h>
 #include <synth/http.h>
 #include <synth/input.h>
@@ -69,6 +73,7 @@ static void set_field(struct store_app *a, const char *key, const char *v)
         a->kind = !strcmp(v, "installer") ? STORE_INSTALLER
                   : !strcmp(v, "chrome")  ? STORE_CHROME
                   : !strcmp(v, "builtin") ? STORE_BUILTIN
+                  : !strcmp(v, "module")  ? STORE_MODULE
                                           : STORE_ZIP;
     else if (!strcmp(key, "bits"))
         a->bits = (int)str_to_long(v, NULL, 10);
@@ -110,7 +115,7 @@ static int parse(char *text, struct store_app *out, int max)
     }
     int kept = 0;
     for (int i = 0; i < n; i++)
-        if (out[i].id[0] && out[i].name[0] && (out[i].kind == STORE_BUILTIN || out[i].kind == STORE_CHROME ||
+        if (out[i].id[0] && out[i].name[0] && (out[i].kind == STORE_BUILTIN || out[i].kind == STORE_CHROME || out[i].kind == STORE_MODULE ||
                                                out[i].url[0][0]))
             out[kept++] = out[i];
     return kept;
@@ -196,9 +201,31 @@ bool store_program(const struct store_app *a, char *out, size_t cap)
     return vfs_exists(out);
 }
 
+static bool module_present(const struct store_app *a)
+{
+#if CONFIG_GUI
+    return gui_module_shown(a->id);
+#else
+    UNUSED(a);
+    return false;
+#endif
+}
+
+static bool module_exists(const struct store_app *a)
+{
+#if CONFIG_GUI
+    return gui_module_exists(a->id);
+#else
+    UNUSED(a);
+    return false;
+#endif
+}
+
 static bool present(const struct store_app *a)
 {
     char path[PATH_MAX_LEN];
+    if (a->kind == STORE_MODULE)
+        return module_present(a);
     if (a->check[0]) {
         if (strchr(a->check, ':'))
             return winpath_to_vfs("/", a->check, path, sizeof(path)) == 0 && vfs_exists(path);
@@ -277,7 +304,8 @@ static bool fits(const struct store_app *a)
 enum store_state store_state(const struct store_app *a)
 {
     if (!present(a))
-        return a->kind == STORE_BUILTIN || !fits(a) ? STORE_UNAVAILABLE : STORE_GET;
+        return a->kind == STORE_BUILTIN || !fits(a) || (a->kind == STORE_MODULE && !module_exists(a)) ? STORE_UNAVAILABLE
+                                                                                                    : STORE_GET;
     char version[24];
     if (a->kind == STORE_ZIP && a->version[0] && recorded(a, version, sizeof(version)) && strcmp(version, a->version))
         return STORE_UPDATE;
@@ -639,6 +667,20 @@ int store_install(const struct store_app *a, const struct store_ui *ui, char *ms
         ksnprintf(msg, cap, "%s comes with SynthOS", a->name);
         return present(a) ? 0 : E_NOENT;
     }
+    if (a->kind == STORE_MODULE) {
+#if CONFIG_GUI
+        int err = gui_module_show(a->id, true);
+#else
+        int err = E_NOSYS;
+#endif
+        if (err) {
+            ksnprintf(msg, cap, "%s: %s", a->name, err_str(err));
+            return err;
+        }
+        record(a, true);
+        ksnprintf(msg, cap, "%s is installed", a->name);
+        return 0;
+    }
     if (a->kind == STORE_CHROME) {
         static const struct store_ui none;
         struct omaha_ui o = {.say = omaha_say, .progress = omaha_progress, .cancelled = omaha_cancelled,
@@ -676,6 +718,14 @@ int store_remove(const struct store_app *a, char *uninstall, size_t ucap, char *
         ksnprintf(msg, cap, "%s is part of SynthOS", a->name);
         return E_PERM;
     }
+    if (a->kind == STORE_MODULE) {
+#if CONFIG_GUI
+        gui_module_show(a->id, false);
+#endif
+        record(a, false);
+        ksnprintf(msg, cap, "Removed %s", a->name);
+        return 0;
+    }
     if (a->kind == STORE_INSTALLER) {
 #if CONFIG_WIN32
         struct find_program f = {a->uninstall[0] ? a->uninstall : a->name, uninstall, ucap};
@@ -701,6 +751,24 @@ int store_remove(const struct store_app *a, char *uninstall, size_t ucap, char *
     else
         ksnprintf(msg, cap, "Removed %s", a->name);
     return err;
+}
+
+/* at log-in: the app modules this user installed are shown, the others hidden */
+void store_restore_modules(void)
+{
+#if CONFIG_GUI
+    if (!apps)
+        store_load();
+    for (int i = 0; i < count; i++)
+    {
+        char version[24];
+        if (apps[i].kind == STORE_MODULE) {
+            bool on = recorded(&apps[i], version, sizeof(version));
+            if (on || gui_module_shown(apps[i].id))
+                gui_module_show(apps[i].id, on);
+        }
+    }
+#endif
 }
 
 int store_refresh(const struct store_ui *ui, char *msg, size_t cap)

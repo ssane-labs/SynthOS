@@ -11,6 +11,7 @@
 #include <synth/lnk.h>
 #include <synth/path.h>
 #include <synth/picture.h>
+#include <synth/store.h>
 #include <synth/recovery.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -1054,16 +1055,24 @@ const struct gui_app *gui_app_find(const char *name)
 {
     if (!name || !*name)
         return NULL;
-    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
+    GUI_APPS_FOREACH(app)
         if (str_casecmp(app->name, name) == 0)
             return app;
     const struct gui_app *installed = installed_find(name);
     if (installed)
         return installed;
-    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
+    GUI_APPS_FOREACH(app)
         if (word_prefix(app->name, name))
             return app;
     return NULL;
+}
+
+const struct gui_app *gui_app_nth(int index)
+{
+    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
+        if (!index--)
+            return app;
+    return gui_module_app(index);
 }
 
 bool gui_app_builtin(const struct gui_app *app)
@@ -1071,12 +1080,12 @@ bool gui_app_builtin(const struct gui_app *app)
     SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, it)
         if (it == app)
             return true;
-    return false;
+    return gui_module_owns(app);
 }
 
 void gui_app_foreach(void (*fn)(const struct gui_app *app, void *ctx), void *ctx)
 {
-    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
+    GUI_APPS_FOREACH(app)
         fn(app, ctx);
     installed_foreach(fn, ctx);
 }
@@ -1375,7 +1384,7 @@ bool gui_open_file(const char *path)
         gui_app_launch(picked, path);
         return true;
     }
-    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
+    GUI_APPS_FOREACH(app)
         if (extension_listed(app->extensions, ext)) {
             gui_app_launch(app, path);
             return true;
@@ -1426,6 +1435,7 @@ void gui_session_login(const char *name)
     last_input = hal_ticks_ms();
     if (session && session->idle)
         gui_terminal_run("clear");
+    store_restore_modules();
     autostart_pending = true;
     chrome_auto_arm();
     chromium_auto_arm();
@@ -1884,6 +1894,7 @@ static void pump(int timeout_ms)
         store_run();
         chrome_install_run();
         chromium_run();
+        gui_module_tick();
         in_jobs = false;
     }
     open_queued();
@@ -1994,6 +2005,7 @@ int gui_run(struct shell *sh)
     } else if (!user_logged_in()) {
         gui_login();
     } else {
+        store_restore_modules();
         autostart_pending = true;
         chrome_auto_arm();
         chromium_auto_arm();
@@ -2606,7 +2618,7 @@ COMMAND(appbench, NULL, "dev", "appbench [app...]", "time how long built-in apps
         }
         return 0;
     }
-    SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app)
+    GUI_APPS_FOREACH(app)
         if (app->launch && !wm_app_window(app)
 #if CONFIG_WIN32
             && !installed_shortcut(app)

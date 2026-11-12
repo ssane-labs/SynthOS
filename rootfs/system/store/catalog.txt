@@ -899,3 +899,47 @@ url = https://github.com/jesseduffield/lazygit/releases/download/v0.44.1/lazygit
 sha256 = 1e090b85e90199d8e9d72dde8189b8cfc630d09a4016f65c0e3cdae73c8ffde1
 bin = .
 check = lazygit.exe
+
+[clock]
+name = Clock
+developer = SynthOS
+category = Utilities
+icon = clock
+version = 1.0
+size = 15 KB
+summary = World clock, alarms, stopwatch and timer
+about = An analog clock with the time in cities around the world, alarms that ring even when the app is closed, a stopwatch with laps and a timer with presets. It comes with SynthOS and is added to Launchpad when you install it.
+kind = module
+
+[weather]
+name = Weather
+developer = SynthOS
+category = Utilities
+icon = weather
+version = 1.0
+size = 13 KB
+summary = Forecasts for the places you care about
+about = The weather now, the next hours and the week ahead for any city, in Celsius or Fahrenheit. Forecasts come from open-meteo.com, which needs no account. It comes with SynthOS and is added to Launchpad when you install it.
+kind = module
+
+[notes]
+name = Notes
+developer = SynthOS
+category = Utilities
+icon = notes
+version = 1.0
+size = 11 KB
+summary = Quick notes, searchable and saved as you type
+about = Plain-text notes kept in the Notes folder of your home: the first line is the title, the list is newest first and the search box finds any note. It comes with SynthOS and is added to Launchpad when you install it.
+kind = module
+
+[mines]
+name = Minesweeper
+developer = SynthOS
+category = Games
+icon = games
+version = 1.0
+size = 10 KB
+summary = Clear the field without hitting a mine
+about = The classic puzzle with three levels: left click opens a square, right click flags a mine. It comes with SynthOS and is added to Launchpad when you install it.
+kind = module

@@ -11,6 +11,7 @@ enum store_kind {
     STORE_INSTALLER, /* the vendor's own Windows installer, run with its silent switch */
     STORE_CHROME,    /* Google Chrome from Google's update server */
     STORE_BUILTIN,   /* comes with the image */
+    STORE_MODULE,    /* an app module in the image (/system/apps/<id>.sxm), shown once installed */
 };
 
 enum store_state {
@@ -51,6 +52,7 @@ int store_install(const struct store_app *a, const struct store_ui *ui, char *ms
 int store_remove(const struct store_app *a, char *uninstall, size_t ucap, char *msg, size_t cap);
 int store_refresh(const struct store_ui *ui, char *msg, size_t cap);
 int store_categories(const char *out[], int max);
+void store_restore_modules(void);
 
 struct shell;
 void pkg_add_path(struct shell *sh, const char *dir);

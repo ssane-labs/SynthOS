@@ -1,3 +1,4 @@
 build/
 *.ppm
 keys/
+__pycache__/

@@ -749,6 +749,16 @@ winctl | grep profile
 profile value=Value9 int=17
 winctl | grep profstruct
 profstruct ok=1 same=1 short=0 text=78563412070000001B var=0/8002000a/4000000000/-16
+store info weather
+Weather 1.0 by SynthOS (Utilities, get)
+store get clock; modules | grep clock
+clock        Clock                shown
+store info clock
+Clock 1.0 by SynthOS (Utilities, installed)
+store remove clock; modules | grep clock
+clock        Clock                hidden
+modules load nothere
+modules: nothere: no such file or directory
 winctl | grep safearray
 safearray dims=2 ub1=2 ub2=4 value=99
 winctl | grep imagelist

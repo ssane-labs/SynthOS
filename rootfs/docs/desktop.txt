@@ -168,6 +168,12 @@ Apps
                   General with About, Storage, Date & Time and Login Items
   Screenshot      the screenshot bar; opens a picture to crop and mark up
   System Monitor  memory graph, disks, open windows (End task), kernel log
+
+From the App Store (GET adds them to Launchpad, they come with SynthOS):
+  Clock           world clock, alarms (they ring with the window closed),
+                  stopwatch with laps, timer
+  Weather         now, hourly and the week for any city (open-meteo.com)
+  Notes           plain-text notes in ~/Notes, search, saved as you type
   Minesweeper     three levels; left click opens, right click flags
 
 Sound needs an AC'97 card (QEMU: -device AC97). Without one the songs

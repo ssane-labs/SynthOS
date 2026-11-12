@@ -1853,7 +1853,7 @@ static void login_items(struct page *p)
         struct rect a = {r.x + 14, r.y + 10, 110, 28}, f = {a.x + a.w + 10, a.y, 110, 28};
         if (ui_button(p->ui, a, "Add App...")) {
             int count = 0;
-            SYNTH_TABLE_FOREACH(synth_gui_apps, struct gui_app, app) {
+            GUI_APPS_FOREACH(app) {
                 if (count == (int)ARRAY_SIZE(login_apps))
                     break;
                 bool listed = false;

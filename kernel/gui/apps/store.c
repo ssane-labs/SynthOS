@@ -61,6 +61,9 @@ static enum icon_id app_icon(const struct store_app *a)
          : !strcmp(a->icon, "files")   ? ICON_FILES
          : !strcmp(a->icon, "photos")  ? ICON_PHOTOS
          : !strcmp(a->icon, "installer") ? ICON_INSTALLER
+         : !strcmp(a->icon, "clock")   ? ICON_CLOCK
+         : !strcmp(a->icon, "weather") ? ICON_WEATHER
+         : !strcmp(a->icon, "notes")   ? ICON_NOTES
                                        : ICON_APP;
 }
 

@@ -1096,6 +1096,58 @@ def usb_art():
     return art.done()
 
 
+
+def clock_art():
+    """A white dial with black hands and an orange second hand."""
+    art = Art(hexc("2c2d33"), hexc("0c0c0f"))
+    art.put(ellipse4((30, 30, 226, 226)), (hexc("ffffff"), hexc("e4e6ea")), 50, 3)
+    cx = cy = 128
+
+    def ticks(d):
+        for i in range(60):
+            a = math.radians(i * 6)
+            r0 = 80 if i % 5 else 72
+            d.line([(cx + r0 * math.sin(a), cy - r0 * math.cos(a)), (cx + 88 * math.sin(a), cy - 88 * math.cos(a))],
+                   fill=255, width=6 if i % 5 == 0 else 2)
+    art.put(ticks, hexc("1c1c1e"))
+    art.put(line4([(cx, cy), (cx - 32, cy - 40)], 12), hexc("1c1c1e"))
+    art.put(line4([(cx, cy), (cx + 52, cy - 50)], 9), hexc("1c1c1e"))
+    art.put(line4([(cx - 18, cy + 26), (cx + 40, cy - 56)], 4), hexc("ff9f0a"))
+    art.put(ellipse4((cx - 9, cy - 9, cx + 9, cy + 9)), hexc("ff9f0a"))
+    return art.done()
+
+
+def weather_art():
+    """A sun half behind a cloud on a blue sky."""
+    art = Art(hexc("4aa3ff"), hexc("1b5fd1"))
+    art.put(ellipse4((52, 50, 148, 146)), (hexc("ffe36b"), hexc("ffb21e")), 60, 3)
+    art.put(ellipse4((40, 38, 160, 158)), (255, 220, 90, 70), blur=10)
+
+    def cloud(d):
+        d.ellipse([66, 116, 146, 196], fill=255)
+        d.ellipse([112, 92, 204, 184], fill=255)
+        d.ellipse([168, 132, 224, 188], fill=255)
+        d.rounded_rectangle([66, 150, 224, 198], radius=24, fill=255)
+    art.put(cloud, (hexc("ffffff"), hexc("dbe7f5")), 40, 4)
+    return art.done()
+
+
+def notes_art():
+    """Three sticky notes, the front one with handwriting-like lines."""
+    art = Art(hexc("4b4f58"), hexc("1d1f24"))
+
+    def note(x, y, ang):
+        r = math.radians(ang)
+        pts = [(-62, -62), (62, -62), (62, 62), (-62, 62)]
+        return poly4([(x + px * math.cos(r) - py * math.sin(r), y + px * math.sin(r) + py * math.cos(r)) for px, py in pts])
+    art.put(note(104, 112, -12), (hexc("ff8fb1"), hexc("e95a87")), 40, 4)
+    art.put(note(150, 112, 10), (hexc("8de3a0"), hexc("41b965")), 40, 4)
+    art.put(note(128, 146, 0), (hexc("ffe57a"), hexc("f5c22b")), 50, 5)
+    for i in range(3):
+        y = 122 + i * 22
+        art.put(rr4((86, y, 170 - (34 if i == 2 else 0), y + 6), 3), (120, 90, 20, 170))
+    return art.done()
+
 ICONS = [
     ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_art),
     ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_art),
@@ -1110,7 +1162,7 @@ ICONS = [
     ("ICON_BROWSER", browser_art), ("ICON_PHOTOS", photos_art), ("ICON_MUSIC", music_art),
     ("ICON_VIDEO", video_art), ("ICON_VIEWER", viewer_art), ("ICON_INSTALLER", installer_art),
     ("ICON_SCREENSHOT", screenshot_art), ("ICON_STORE", store_art), ("ICON_CODE", code_art),
-    ("ICON_GAMES", games_art),
+    ("ICON_GAMES", games_art), ("ICON_CLOCK", clock_art), ("ICON_WEATHER", weather_art), ("ICON_NOTES", notes_art),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)

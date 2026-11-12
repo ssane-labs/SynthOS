@@ -198,29 +198,59 @@ static int compress_file(const char *path)
     return 0;
 }
 
-static int pack_kernel(const char *image, const char *ramdisk, const char *path)
+static uint8_t *slurp(const char *path, long *size)
 {
-    FILE *a = fopen(image, "rb"), *b = fopen(ramdisk, "rb");
-    if (!a || !b)
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    *size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *buf = malloc((size_t)*size + 1);
+    if (buf && fread(buf, 1, (size_t)*size, f) != (size_t)*size) {
+        free(buf);
+        buf = NULL;
+    }
+    fclose(f);
+    return buf;
+}
+
+/* the kernel image, then "SYPK", the pack size and the pack: one ramdisk, or "SRDC" and several ramdisks, each with
+   its size in front and padded to 4 bytes (the system files, then the app modules built for this kernel) */
+static int pack_kernel(const char *image, const char *const *disks, int ndisks, const char *path)
+{
+    long n, m = ndisks > 1 ? 4 : 0;
+    uint8_t *img = slurp(image, &n), *part[4];
+    long len[4];
+    if (!img || n < 16 || ndisks > 4)
         return 1;
-    fseek(a, 0, SEEK_END);
-    long n = ftell(a), m;
-    fseek(b, 0, SEEK_END);
-    m = ftell(b);
+    for (int i = 0; i < ndisks; i++) {
+        if (!(part[i] = slurp(disks[i], &len[i])))
+            return 1;
+        m += ndisks > 1 ? 4 + (len[i] + 3) / 4 * 4 : len[i];
+    }
     long total = (n + 15) / 16 * 16 + 8 + m;
     uint8_t *buf = calloc(1, (size_t)total);
-    if (!buf || n < 16)
+    if (!buf)
         return 1;
-    fseek(a, 0, SEEK_SET);
-    fseek(b, 0, SEEK_SET);
-    uint8_t *pack = buf + (n + 15) / 16 * 16;
-    if (fread(buf, 1, (size_t)n, a) != (size_t)n || fread(pack + 8, 1, (size_t)m, b) != (size_t)m)
-        return 1;
-    fclose(a);
-    fclose(b);
+    memcpy(buf, img, (size_t)n);
+    uint8_t *pack = buf + (n + 15) / 16 * 16, *at = pack + 8;
     memcpy(pack, "SYPK", 4);
     uint32_t v = (uint32_t)m;
     memcpy(pack + 4, &v, 4);
+    if (ndisks > 1) {
+        memcpy(at, "SRDC", 4);
+        at += 4;
+    }
+    for (int i = 0; i < ndisks; i++) {
+        if (ndisks > 1) {
+            v = (uint32_t)len[i];
+            memcpy(at, &v, 4);
+            at += 4;
+        }
+        memcpy(at, part[i], (size_t)len[i]);
+        at += ndisks > 1 ? (len[i] + 3) / 4 * 4 : len[i];
+    }
     v = (uint32_t)((total + 511) / 512);
     memcpy(buf + 12, &v, 4);
     FILE *out = fopen(path, "wb");
@@ -232,8 +262,11 @@ static int pack_kernel(const char *image, const char *ramdisk, const char *path)
 
 int main(int argc, char **argv)
 {
+    /* --kernel <image> <output> <ramdisk>...: the old order (image, ramdisk, output) is kept for one ramdisk */
     if (argc == 5 && strcmp(argv[1], "--kernel") == 0)
-        return pack_kernel(argv[2], argv[3], argv[4]);
+        return pack_kernel(argv[2], (const char *const *)&argv[3], 1, argv[4]);
+    if (argc > 5 && strcmp(argv[1], "--kernel") == 0)
+        return pack_kernel(argv[2], (const char *const *)&argv[4], argc - 4, argv[3]);
     /* --raw leaves the pack uncompressed for tools/lzmapack.py */
     bool raw = argc == 4 && strcmp(argv[1], "--raw") == 0;
     if (raw) {
