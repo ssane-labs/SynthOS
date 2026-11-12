@@ -1829,9 +1829,15 @@ static bool light_enabled(const struct window *w, int i)
 }
 
 
+/* WIN_OWNCONTROLS: the program draws its own close/minimize/zoom buttons (a browser's tab strip) */
+static bool has_lights(const struct window *w)
+{
+    return framed(w) && !(w->flags & WIN_OWNCONTROLS);
+}
+
 static bool has_more(const struct window *w)
 {
-    return framed(w) && (w->menus || w->app);
+    return has_lights(w) && (w->menus || w->app);
 }
 
 static struct rect more_rect(const struct window *w)
@@ -1936,7 +1942,8 @@ static void draw_full_title(struct canvas *c, struct window *w)
     if (!(w->flags & WIN_NOTITLE))
         gfx_text_box(c, title_rect(w, y, TITLE_HEIGHT), &font_bold, w->title,
                      active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_LEFT);
-    draw_lights(c, w);
+    if (has_lights(w))
+        draw_lights(c, w);
     if (has_more(w))
         draw_more(c, w);
 }
@@ -1975,7 +1982,8 @@ static void draw_window(struct canvas *c, struct window *w)
                 tr.w = 0;
             gfx_text_box(c, tr, &font_bold, w->title, active ? ALPHA(style.text, 220) : style.tertiary, ALIGN_LEFT);
         }
-        draw_lights(c, w);
+        if (has_lights(w))
+            draw_lights(c, w);
         if (has_more(w))
             draw_more(c, w);
     }
@@ -2156,7 +2164,7 @@ static int edges_at(struct window *w, int x, int y)
 
 static int light_at(struct window *w, int x, int y)
 {
-    if (!framed(w))
+    if (!has_lights(w))
         return -1;
     struct rect cap = capsule_rect(w);
     if (!rect_contains(rect_inset(cap, -2), x, y))
@@ -2177,7 +2185,7 @@ static int light_at_point(struct window *w)
 
 static bool in_traffic_zone(struct window *w, int x, int y)
 {
-    if (!framed(w))
+    if (!has_lights(w))
         return false;
     return rect_contains(rect_inset(capsule_rect(w), -4), x, y);
 }

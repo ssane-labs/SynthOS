@@ -369,6 +369,7 @@ enum window_flags {
     WIN_NOACTIVATE = 1u << 17,
     WIN_FULLSCREEN = 1u << 18,
     WIN_TILED = 1u << 19,
+    WIN_OWNCONTROLS = 1u << 20,
 };
 
 #define MENU_HEADER (-2)

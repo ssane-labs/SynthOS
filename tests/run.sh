@@ -20,6 +20,8 @@ cat > "$work/page.html" <<'EOF'
 <pre>  keep   spaces</pre><p>Caf&eacute; &mdash; &#x41;&#66;</p></body></html>
 EOF
 mcopy -i "$work/fat.img" "$work/page.html" ::/page.html
+python3 -c "import struct,sys; open(sys.argv[1],'wb').write(b'BM'+struct.pack('<IHHIIiiHHIIiiII',90,0,0,54,40,12,1,1,24,0,36,0,0,0,0)+b'\xff'*36)" "$work/flat.bmp" &&
+    mcopy -i "$work/fat.img" "$work/flat.bmp" ::/flat.bmp
 # a WireGuard server on the host (tests/wgpeer.py); the configuration for it goes on the FAT drive
 wgport=$((20000 + $$ % 9000))
 python3 -I tests/wgpeer.py --config "$wgport" > "$work/test-vpn.conf" && mcopy -i "$work/fat.img" "$work/test-vpn.conf" ::/test-vpn.conf
@@ -257,6 +259,8 @@ topng /system/wallpapers/Glacier.jpg /tmp/mist.png; imginfo /tmp/mist.png
 1280x800, 1 frame, average #78899f
 topng /system/wallpapers/Dunes.jpg /tmp/dune.png | grep -c bytes; imginfo /tmp/dune.png; rm /tmp/dune.png /tmp/mist.png
 1280x800, 1 frame, average #8e6262
+topng /mnt/hdb/flat.bmp /tmp/flat.png | grep -v bytes; imginfo /tmp/flat.png; rm /tmp/flat.png
+12x1, 1 frame, average #ffffff
 screenshot
 screenshot: the desktop is not running
 clip set hello clipboard; clip; clip info
