@@ -2,8 +2,8 @@
 #define SYNTH_CONFIG_H
 
 #define SYNTH_NAME "SynthOS"
-#define SYNTH_VERSION "1.1"
-#define SYNTH_CODENAME "Black Hole"
+#define SYNTH_VERSION "1.2"
+#define SYNTH_CODENAME "Nebula"
 
 #ifndef CONFIG_DOS
 #define CONFIG_DOS 1

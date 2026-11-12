@@ -965,8 +965,8 @@ config opentext Viewer; config opentext; config opentext default
 opentext = Viewer
 config openimage nosuchapp
 openimage: invalid value 'nosuchapp'
-fetch | grep "Black Hole"
-SynthOS 1.1 "Black Hole"
+fetch | grep "Nebula"
+SynthOS 1.2 "Nebula"
 music list
 2  Better Days - SynthOS Lofi
 music play 3; music status

@@ -1,3 +1,4 @@
+#include <synth/versions.h>
 #include <synth/log.h>
 #include <synth/config.h>
 #include <synth/command.h>
@@ -1987,6 +1988,8 @@ static void copy_samples(const char *dir, const char *ext)
 static void prepare_home(void)
 {
     static const char *const dirs[] = {"Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"};
+    bool ready = versions_ready;
+    versions_ready = false;
     for (size_t i = 0; i < ARRAY_SIZE(dirs); i++) {
         char path[PATH_MAX_LEN];
         path_join(user_home(), dirs[i], path, sizeof(path));
@@ -1998,6 +2001,7 @@ static void prepare_home(void)
         else if (!strcmp(dirs[i], "Videos"))
             copy_samples(path, ".avi");
     }
+    versions_ready = ready;
 }
 
 int gui_run(struct shell *sh)
