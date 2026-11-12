@@ -23,8 +23,13 @@ static void wr32(uint8_t *p, uint32_t v)
 
 bool image_load(const char *path, struct image *out)
 {
+    return image_load_fit(path, 0, 0, out);
+}
+
+bool image_load_fit(const char *path, int min_w, int min_h, struct image *out)
+{
     struct picture p;
-    if (picture_load(path, &p) != 0)
+    if (picture_load_fit(path, min_w, min_h, &p) != 0)
         return false;
     out->px = p.px;
     out->w = p.w;

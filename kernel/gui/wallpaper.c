@@ -169,7 +169,7 @@ static void paint_mono(struct canvas *c, bool dark)
 static bool paint_image(struct canvas *c, const char *path)
 {
     struct image img;
-    if (!image_load(path, &img))
+    if (!image_load_fit(path, c->w, c->h, &img))
         return false;
     struct canvas src = canvas_make(img.px, img.w, img.h);
     for (int i = 0; i < img.w * img.h; i++)

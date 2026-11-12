@@ -43,6 +43,7 @@ struct jpeg {
     int restart, eob_run;
     bool adobe, no_memory;
     int transform;
+    int bs; /* samples per block side: 8, or 1 for a picture an eighth the size (DC only, no IDCT) */
 };
 
 static bool build_huff(struct huff *t, const uint8_t *counts)
@@ -498,6 +499,14 @@ static void idct_rows(void *ctx, int from, int to)
             i++;
         }
         struct comp *cp = &j->comp[i];
+        if (j->bs == 1) {
+            const uint16_t *q = j->quant[cp->tq];
+            uint8_t *o = cp->plane + (size_t)y * (size_t)cp->bw;
+            for (int x = 0; x < cp->bw; x++)
+                o[x] = clamp(((CLAMP(cp->coef[((size_t)y * (size_t)cp->bw + (size_t)x) * 64] * q[0], -4096, 4096) + 4) >>
+                              3) + 128);
+            continue;
+        }
         int stride = cp->bw * 8;
         for (int x = 0; x < cp->bw; x++)
             idct(cp->coef + ((size_t)y * (size_t)cp->bw + (size_t)x) * 64, j->quant[cp->tq],
@@ -508,7 +517,7 @@ static void idct_rows(void *ctx, int from, int to)
 static void sample_row(const struct jpeg *j, const struct comp *c, const struct upsample *u, int y, int from, int n,
                        uint8_t *dst)
 {
-    size_t stride = (size_t)c->bw * 8;
+    size_t stride = (size_t)c->bw * (size_t)j->bs;
     if (!u->tx) {
         memcpy(dst, c->plane + (size_t)y * stride + (size_t)from, (size_t)n);
         return;
@@ -571,9 +580,13 @@ static int finish(struct jpeg *j, struct picture *out)
 {
     struct convert cv = {j, out, {{0}}};
     int blocks = 0, err = E_NOMEM;
+    if (j->bs == 1) {
+        j->w = (j->w + 7) / 8;
+        j->h = (j->h + 7) / 8;
+    }
     for (int i = 0; i < j->ncomp; i++) {
         struct comp *c = &j->comp[i];
-        c->plane = kmalloc((size_t)c->bw * (size_t)c->bh * 64);
+        c->plane = kmalloc((size_t)c->bw * (size_t)c->bh * (size_t)(j->bs * j->bs));
         if (!c->plane)
             return E_NOMEM;
         blocks += c->bh;
@@ -611,11 +624,13 @@ done:
     return err;
 }
 
-int jpeg_decode(const uint8_t *data, size_t size, struct picture *out)
+/* min_w x min_h > 0: an eighth of the size is enough when it is at least that big (a thumbnail) */
+int jpeg_decode_fit(const uint8_t *data, size_t size, int min_w, int min_h, struct picture *out)
 {
     struct jpeg *j = kzalloc(sizeof(*j));
     if (!j)
         return E_NOMEM;
+    j->bs = 8;
     j->data = data;
     j->end = data + size;
     const uint8_t *p = data + 2;
@@ -713,12 +728,20 @@ int jpeg_decode(const uint8_t *data, size_t size, struct picture *out)
         }
         p += len;
     }
-    if (scanned)
+    if (scanned) {
+        if (min_w > 0 && min_h > 0 && (j->w + 7) / 8 >= min_w && (j->h + 7) / 8 >= min_h)
+            j->bs = 1;
         err = finish(j, out);
+    }
 out:
     release(j);
     kfree(j);
     if (err)
         picture_free(out);
     return err;
+}
+
+int jpeg_decode(const uint8_t *data, size_t size, struct picture *out)
+{
+    return jpeg_decode_fit(data, size, 0, 0, out);
 }

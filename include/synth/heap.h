@@ -20,6 +20,7 @@ struct heap {
     KARR(void *) bins[HEAP_BINS];
     K64(size_t used);
     K64(size_t peak);
+    K64(size_t blocks);
     bool strict;
 };
 

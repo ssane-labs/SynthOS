@@ -1278,19 +1278,53 @@ static int fat_mount(const char *source, struct vnode **root)
     return 0;
 }
 
-static int fat_statfs(struct vnode *root, uint64_t *total, uint64_t *free)
+/* The free clusters: FAT16/32 tables are read in big runs (one command for 64 KB, not one per sector), sectors
+   changed in the cache count as they are there. */
+static int count_free(struct fat *fs)
 {
-    struct fat *fs = node(root)->fs;
-    if (!fs->free_known) {
-        uint32_t count = 0;
-        for (uint32_t c = 2; c < fs->clusters + 2; c++) {
+    uint32_t count = 0, last = fs->clusters + 2;
+    uint8_t *buf = fs->bits == 12 ? NULL : kmalloc(128 * BLOCK_SIZE);
+    if (!buf) {
+        for (uint32_t c = 2; c < last; c++) {
             uint32_t v;
             if (fat_get(fs, c, &v))
                 return E_IO;
             count += v == 0;
         }
-        fs->free_count = count;
-        fs->free_known = true;
+    } else {
+        uint32_t size = (uint32_t)fs->bits / 8, per = BLOCK_SIZE / size, c = 0;
+        for (uint32_t s = 0; s < fs->fat_sectors && c < last;) {
+            uint32_t n = MIN(128u, fs->fat_sectors - s), lba = fs->fat_start + s;
+            int err = wb_sync(fs, lba, n);
+            if (!err)
+                err = block_read(fs->dev, lba, n, buf);
+            if (err) {
+                kfree(buf);
+                return err;
+            }
+            for (uint32_t i = 0; i < n && c < last; i++) {
+                struct cache_line *l = lookup(fs, lba + i);
+                const uint8_t *p = l ? l->data : buf + i * BLOCK_SIZE;
+                for (uint32_t k = 0; k < per && c < last; k++, c++)
+                    if (c >= 2 && (size == 2 ? le16(p + k * 2) : le32(p + k * 4) & 0x0fffffff) == 0)
+                        count++;
+            }
+            s += n;
+        }
+        kfree(buf);
+    }
+    fs->free_count = count;
+    fs->free_known = true;
+    return 0;
+}
+
+static int fat_statfs(struct vnode *root, uint64_t *total, uint64_t *free)
+{
+    struct fat *fs = node(root)->fs;
+    if (!fs->free_known) {
+        int err = count_free(fs);
+        if (err)
+            return err;
     }
     *total = (uint64_t)fs->clusters * fs->cluster_bytes;
     *free = (uint64_t)fs->free_count * fs->cluster_bytes;

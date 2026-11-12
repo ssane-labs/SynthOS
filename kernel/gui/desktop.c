@@ -1,3 +1,4 @@
+#include <synth/log.h>
 #include <synth/config.h>
 #include <synth/command.h>
 #include <synth/console.h>
@@ -2619,6 +2620,8 @@ static void bench_app(struct shell *sh, const struct gui_app *app)
     uint64_t t3 = hal_ticks_ms();
     sh_printf(sh, "  %-14s start %4u ms, first frame %4u ms, shown %4u ms (%d frames)\n", app->name,
               (unsigned)(t1 - t0), (unsigned)(t2 - t0), (unsigned)(t3 - t0), frames);
+    klog("appbench: %s start %u first %u shown %u", app->name, (unsigned)(t1 - t0), (unsigned)(t2 - t0),
+         (unsigned)(t3 - t0));
     wm_destroy(w);
     wm_damage_all();
     wm_render();

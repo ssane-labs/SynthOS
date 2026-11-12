@@ -955,7 +955,7 @@ static void photo_load(struct widget *w, struct rect r)
     if (!photo_path(w, w->pic_index, path, sizeof(path)))
         return;
     struct picture p;
-    if (picture_load(path, &p) != 0)
+    if (picture_load_fit(path, r.w, r.h, &p) != 0)
         return;
     struct canvas src = {p.px, p.w, p.h, p.w, {0, 0, p.w, p.h}};
     if (canvas_alloc(&w->pic, r.w, r.h)) {

@@ -758,7 +758,7 @@ static const struct canvas *thumbnail(struct files *f, const struct entry *e)
     t->size = e->size;
     t->failed = true;
     struct picture p;
-    if (e->size > (16u << 20) || picture_load(path, &p) != 0)
+    if (e->size > (16u << 20) || picture_load_fit(path, 64, 64, &p) != 0)
         return NULL;
     int w = p.w >= p.h ? 64 : MAX(8, 64 * p.w / MAX(p.h, 1)), h = p.h > p.w ? 64 : MAX(8, 64 * p.h / MAX(p.w, 1));
     if (canvas_alloc(&t->c, w, h)) {

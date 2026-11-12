@@ -66,6 +66,7 @@ void heap_create(struct heap *h, void *base, size_t size, bool strict)
     b->prev_phys = NULL;
     b->magic = HEAP_MAGIC;
     b->used = 0;
+    h->blocks = 1;
     free_insert(h, b);
 }
 
@@ -84,6 +85,7 @@ static void split(struct heap *h, struct block *b, size_t size)
     rest->magic = HEAP_MAGIC;
     rest->used = 0;
     b->size = size;
+    h->blocks++;
     struct block *after = next_phys(h, rest);
     if (after)
         after->prev_phys = rest;
@@ -130,6 +132,7 @@ static struct block *merge(struct heap *h, struct block *a, struct block *b)
 {
     a->size += HEADER_SIZE + b->size;
     b->magic = 0;
+    h->blocks--;
     struct block *after = next_phys(h, a);
     if (after)
         after->prev_phys = a;
@@ -227,11 +230,11 @@ void heap_stats_of(struct heap *h, struct heap_stats *out)
     out->used = h->used;
     out->free = out->total - h->used;
     out->peak = h->peak;
-    for (struct block *b = (struct block *)h->start; b; b = next_phys(h, b)) {
-        out->blocks++;
-        if (!b->used && b->size > out->largest_free)
-            out->largest_free = b->size;
-    }
+    out->blocks = h->blocks;
+    /* the largest free block is in the highest bin that has any: no walk over the whole heap */
+    for (int bin = HEAP_BINS - 1; bin >= 0 && !out->largest_free; bin--)
+        for (struct block *b = h->bins[bin]; b; b = b->next_free)
+            out->largest_free = MAX(out->largest_free, b->size);
 }
 
 void *kmalloc(size_t size)

@@ -85,7 +85,8 @@ int picture_decode(const uint8_t *data, size_t size, struct picture *out)
     return E_INVAL;
 }
 
-int picture_load(const char *path, struct picture *out)
+/* min_w x min_h: the size the picture is shown at, so a big JPEG can be decoded smaller */
+int picture_load_fit(const char *path, int min_w, int min_h, struct picture *out)
 {
     char *data;
     size_t size;
@@ -93,9 +94,16 @@ int picture_load(const char *path, struct picture *out)
     int err = vfs_read_all(path, &data, &size);
     if (err)
         return err;
-    err = picture_decode((const uint8_t *)data, size, out);
+    const uint8_t *d = (const uint8_t *)data;
+    err = size >= 3 && d[0] == 0xff && d[1] == 0xd8 ? jpeg_decode_fit(d, size, min_w, min_h, out)
+                                                    : picture_decode(d, size, out);
     kfree(data);
     return err;
+}
+
+int picture_load(const char *path, struct picture *out)
+{
+    return picture_load_fit(path, 0, 0, out);
 }
 
 void picture_free(struct picture *p)

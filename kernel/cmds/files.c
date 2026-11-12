@@ -618,17 +618,25 @@ COMMAND(hexdump, "hd,xxd", "files", "hexdump [file]", "show bytes in hex and tex
     return 0;
 }
 
-COMMAND(imginfo, NULL, "files", "imginfo picture...", "decode PNG, JPEG, GIF or BMP pictures and show their size")
+COMMAND(imginfo, NULL, "files", "imginfo [-s WxH] picture...",
+        "decode PNG, JPEG, GIF or BMP pictures and show their size (-s: as a thumbnail of at least that size)")
 {
-    if (argc < 2)
+    int first = 1, min_w = 0, min_h = 0;
+    if (argc > 2 && !strcmp(argv[1], "-s")) {
+        const char *end;
+        min_w = (int)str_to_long(argv[2], &end, 10);
+        min_h = *end == 'x' ? (int)str_to_long(end + 1, NULL, 10) : 0;
+        first = 3;
+    }
+    if (argc <= first)
         return command_usage(sh, command_find("imginfo"));
     int status = 0;
-    for (int i = 1; i < argc; i++) {
+    for (int i = first; i < argc; i++) {
         char path[PATH_MAX_LEN];
         struct picture p;
         int err = sh_resolve(sh, argv[i], path, sizeof(path));
         if (!err)
-            err = picture_load(path, &p);
+            err = picture_load_fit(path, min_w, min_h, &p);
         if (err) {
             status = sh_error(sh, "imginfo", "%s: %s", argv[i], err == E_INVAL ? "not a picture" : err_str(err));
             continue;

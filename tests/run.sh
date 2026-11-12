@@ -47,6 +47,10 @@ imginfo /system/wallpapers/Dunes.jpg
 1280x800, 1 frame, average #8e6262
 imginfo /system/wallpapers/Glacier.jpg
 1280x800, 1 frame, average #78899f
+imginfo -s 140x88 /system/wallpapers/Glacier.jpg /system/wallpapers/Dunes.jpg
+Glacier.jpg: 160x100, 1 frame, average #7889a0
+imginfo -s 200x88 /system/wallpapers/Dunes.jpg
+Dunes.jpg: 1280x800
 echo "a  b" 'c $USER' $USER
 a  b c $USER root
 calc (2 + 3) * 7
