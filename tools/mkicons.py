@@ -411,17 +411,24 @@ def script_doc():
 
 
 def info_icon():
-    def draw(img, d):
-        d.ellipse([116, 62, 140, 86], fill=(255, 255, 255, 255))
-        rr(d, (114, 102, 142, 194), 10, fill=(255, 255, 255, 255))
-    return circle_badge((130, 168, 218, 255), (78, 120, 184, 255), draw)
+    """About: a blue tile with a white disc and the letter i pressed into it."""
+    art = Art(hexc("6cb6ff"), hexc("1d62d8"))
+    art.put(ellipse4((58, 58, 198, 198)), (hexc("ffffff"), hexc("e3ecf8")), 60, 3)
+    art.put(ellipse4((116, 82, 140, 106)), (hexc("2f7cf0"), hexc("1d5cc8")))
+    art.put(rr4((115, 118, 141, 176), 9), (hexc("2f7cf0"), hexc("1d5cc8")))
+    return art.done()
 
 
 def power_icon():
-    def draw(img, d):
-        d.arc([76, 76, 180, 180], 300, 240, fill=(255, 255, 255, 255), width=14)
-        d.line([(128, 60), (128, 128)], fill=(255, 255, 255, 255), width=14)
-    return circle_badge((222, 120, 112, 255), (182, 74, 70, 255), draw)
+    """Shut down: a graphite tile, the power sign glowing warm red."""
+    art = Art(hexc("5b5f68"), hexc("1d1f24"), glow=40)
+    ring = mask_of(lambda d: d.arc([68, 68, 188, 188], 300, 240, fill=255, width=18))
+    bar = rr4((119, 50, 137, 126), 9)
+    glow = colored(ImageChops.lighter(ring, mask_of(bar)), (255, 90, 70, 150)).filter(ImageFilter.GaussianBlur(9))
+    art.img.alpha_composite(glow)
+    art.put(ring, (hexc("ff8a74"), hexc("e8402f")))
+    art.put(bar, (hexc("ffb3a5"), hexc("ff5a46")))
+    return art.done()
 
 
 def warning_icon():
@@ -1060,22 +1067,27 @@ def exe_art():
 
 
 def computer_art():
-    """An internal disk: brushed aluminium with a light."""
+    """An internal disk seen a little from above: a brushed aluminium block, its lit top, a green light in front."""
     img = blank()
-    body = mask_of(rr4((24, 70, 232, 186), 22))
-    img.alpha_composite(colored(body, (0, 0, 0, 70)).filter(ImageFilter.GaussianBlur(6)), (0, 6))
-    img.alpha_composite(paint_of((hexc("f7f8fa"), hexc("b6bbc4")), body))
-    streaks = Image.new("L", (1, S))
-    for y in range(S):
-        streaks.putpixel((0, y), int(128 + 14 * math.sin(y * 1.7) + 9 * math.sin(y * 4.3 + 1)))
+    block = mask_of(rr4((26, 60, 230, 200), 26))
+    img.alpha_composite(colored(block, (0, 0, 0, 80)).filter(ImageFilter.GaussianBlur(8)), (0, 8))
+    img.alpha_composite(paint_of((hexc("d9dde3"), hexc("8e949e")), block))
+    top = mask_of(rr4((26, 60, 230, 136), 26))
+    img.alpha_composite(paint_of((hexc("fbfcfd"), hexc("d6dae0")), top))
+    streaks = Image.new("L", (S, 1))
+    for x in range(S):
+        streaks.putpixel((x, 0), int(128 + 16 * math.sin(x * 1.3) + 10 * math.sin(x * 3.7 + 1)))
     streaks = streaks.resize((S, S))
-    img.alpha_composite(paint_of(Image.merge("RGBA", (streaks, streaks, streaks, Image.new("L", (S, S), 28))), body))
-    hi, lo = bands(body, 4)
-    img.alpha_composite(colored(ImageChops.multiply(hi, body), (255, 255, 255, 200)))
-    img.alpha_composite(colored(ImageChops.multiply(lo, body), (0, 0, 0, 70)))
-    img.alpha_composite(paint_of((0, 0, 0, 60), mask_of(rr4((40, 150, 216, 152), 1))))
-    img.alpha_composite(paint_of((255, 255, 255, 160), mask_of(rr4((40, 152, 216, 154), 1))))
-    img.alpha_composite(paint_of(radial(198, 168, 10, hexc("c4ffd4"), hexc("1fb455")), mask_of(ellipse4((190, 160, 206, 176)))))
+    img.alpha_composite(paint_of(Image.merge("RGBA", (streaks, streaks, streaks, Image.new("L", (S, S), 30))), top))
+    img.alpha_composite(paint_of((0, 0, 0, 70), mask_of(rr4((40, 134, 216, 137), 1))))
+    img.alpha_composite(paint_of((255, 255, 255, 120), mask_of(rr4((40, 137, 216, 139), 1))))
+    hi, lo = bands(block, 4)
+    img.alpha_composite(colored(ImageChops.multiply(hi, block), (255, 255, 255, 190)))
+    img.alpha_composite(colored(ImageChops.multiply(lo, block), (0, 0, 0, 80)))
+    for i in range(5):
+        img.alpha_composite(paint_of((0, 0, 0, 55), mask_of(rr4((52 + i * 14, 160, 60 + i * 14, 182), 4))))
+    img.alpha_composite(colored(mask_of(ellipse4((186, 160, 210, 184))), (60, 230, 120, 120)).filter(ImageFilter.GaussianBlur(5)))
+    img.alpha_composite(paint_of(radial(196, 170, 10, hexc("d8ffe2"), hexc("1fb455")), mask_of(ellipse4((190, 164, 206, 180)))))
     return img
 
 
