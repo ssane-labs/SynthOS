@@ -183,7 +183,9 @@ void w32_kick_all(void)
 }
 
 /* Locks, condition variables and WaitOnAddress live in one process's memory: only its own threads need to look. */
-static bool precise_waits = true;
+bool w32_precise_waits = true;
+#define precise_waits w32_precise_waits
+uint32_t w32_word_waiters;
 
 void w32_signal_local(void)
 {
@@ -1593,7 +1595,9 @@ void w32_wait_word(const volatile uint32_t *addr, uint32_t mask, uint32_t value,
     w->equal = equal;
     w->deadline = deadline;
     w->site = (uint32_t)(uintptr_t)__builtin_return_address(0);
+    __atomic_add_fetch(&w32_word_waiters, 1, __ATOMIC_SEQ_CST);
     w32_block();
+    __atomic_sub_fetch(&w32_word_waiters, 1, __ATOMIC_SEQ_CST);
     w->kind = W32_WAIT_ANY;
     w->deadline = 0;
 }

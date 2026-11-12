@@ -34,9 +34,11 @@ uint32_t w32_gate_dispatch(uint32_t index, uint32_t args, struct gate_ret *r);
 
 static const struct w32_sig **sigs;
 static size_t sig_count;
-static uint8_t *stubs;
+static uint8_t *stubs, *simple;
 
 #define STUB 10
+
+static const struct w32_sig *sig_of(const void *fn, size_t *index);
 
 bool w32_native_code(const void *fn)
 {
@@ -73,6 +75,17 @@ void w32_gate_init(void)
         if (!out || sigs[out - 1]->fn != sigs[i]->fn)
             sigs[out++] = sigs[i];
     sig_count = out;
+    /* most calls take only integers and pointers and give back one: those skip the general argument shuffle */
+    simple = kzalloc(sig_count ? sig_count : 1);
+    for (size_t i = 0; simple && i < sig_count; i++) {
+        const struct w32_sig *s = sigs[i];
+        bool ok = s->nargs <= 6 && (s->ret == R_VOID || s->ret == R_I32 || s->ret == R_I64 || s->ret == R_SRET);
+        for (int k = 0; ok && k < s->nargs; k++) {
+            uint8_t kind = (uint8_t)s->args[k * 3];
+            ok = kind == K_ZX32 || kind == K_VARARGS || (kind >= K_SX8 && kind <= K_ZX16);
+        }
+        simple[i] = ok;
+    }
     for (size_t i = 0; i < sig_count; i++) {
         uint8_t *s = stubs + i * STUB;
         uint32_t index = (uint32_t)i;
@@ -81,6 +94,24 @@ void w32_gate_init(void)
         memcpy(s + 1, &index, 4);
         s[5] = 0xe9;
         memcpy(s + 6, &rel, 4);
+    }
+    /* the tiniest, most frequent functions are 32-bit code of their own (win32.asm) */
+    static const char *const fast[][2] = {
+        {"kernel32.dll", "GetLastError"}, {"kernel32.dll", "SetLastError"},  {"kernel32.dll", "GetCurrentThreadId"},
+        {"kernel32.dll", "TlsGetValue"},  {"kernel32.dll", "TlsSetValue"},   {"kernel32.dll", "EnterCriticalSection"},
+        {"kernel32.dll", "LeaveCriticalSection"}, {"msvcrt.dll", "memmove"}, {"msvcrt.dll", "memset"},
+        {"msvcrt.dll", "strlen"}, {"msvcrt.dll", "strcmp"}, {"msvcrt.dll", "memcpy"}};
+    extern uint32_t w32_fast_index[];
+    extern const uint32_t w32_fast_code[];
+    for (size_t k = 0; k < ARRAY_SIZE(fast); k++) {
+        size_t i;
+        if (!sig_of(w32_builtin_lookup(fast[k][0], fast[k][1]), &i))
+            panic("win32: no call gate entry for %s", fast[k][1]);
+        w32_fast_index[k] = (uint32_t)i;
+        uint8_t *s = stubs + i * STUB;
+        int32_t rel = (int32_t)(w32_fast_code[k] - (uint32_t)(uintptr_t)(s + 5));
+        s[0] = 0xe9;
+        memcpy(s + 1, &rel, 4);
     }
     for (uint32_t *e = __start_w32vtbl; e < __stop_w32vtbl; e++)
         if (*e)
@@ -143,10 +174,38 @@ const void *w32_gate_target(uint32_t addr)
     return NULL;
 }
 
+typedef uint64_t (*simple_fn)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+static uint32_t dispatch_simple(const struct w32_sig *s, const uint8_t *g, struct gate_ret *r)
+{
+    uint64_t a[6] = {0};
+    for (int k = 0; k < s->nargs; k++) {
+        const uint8_t *p = g + (uint8_t)s->args[k * 3 + 1] * 4u;
+        switch ((uint8_t)s->args[k * 3]) {
+        case K_ZX32: a[k] = *(const uint32_t *)p; break;
+        case K_SX8: a[k] = (uint64_t)(int64_t)(int8_t)p[0]; break;
+        case K_ZX8: a[k] = p[0]; break;
+        case K_SX16: a[k] = (uint64_t)(int64_t)*(const int16_t *)p; break;
+        case K_ZX16: a[k] = *(const uint16_t *)p; break;
+        default: a[k] = (uint32_t)(uintptr_t)p; break;
+        }
+    }
+    const void *outer = w32_gate_current;
+    w32_gate_current = s->fn;
+    uint64_t v = ((simple_fn)s->fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+    w32_gate_current = outer;
+    r->rax = v;
+    r->rdx = s->ret == R_I64 ? v >> 32 : 0;
+    r->kind = 0;
+    return s->pop;
+}
+
 uint32_t w32_gate_dispatch(uint32_t index, uint32_t args, struct gate_ret *r)
 {
     const struct w32_sig *s = sigs[index];
     const uint8_t *g = (const uint8_t *)(uintptr_t)args;
+    if (simple && simple[index] && !w32_trace)
+        return dispatch_simple(s, g, r);
     uint64_t ints[6] = {0}, sse[8] = {0}, stack[64];
     int ni = 0, nx = 0;
     size_t ns = 0;

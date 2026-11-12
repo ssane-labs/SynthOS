@@ -1,5 +1,6 @@
 #include <synth/block.h>
 #include <synth/error.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/string.h>
@@ -71,8 +72,9 @@ struct sfs {
     uint8_t *bitmap;
     uint32_t free_blocks;
     uint32_t hint;
-    bool batch, zero_data;
+    bool batch, zero_data, lazy, pending;
     uint32_t bitmap_lo, bitmap_hi;
+    uint64_t dirty_since;
     uint8_t *ra;
     uint32_t ra_start, ra_count, clock, inode_hint;
     struct cache_line cache[SFS_CACHE];
@@ -162,7 +164,11 @@ static int bwrite(struct sfs *fs, uint32_t blk, const void *buf)
             return err;
     }
     c->used = ++fs->clock;
-    if (fs->batch) {
+    if (fs->batch || fs->lazy) {
+        if (fs->lazy && !fs->pending) {
+            fs->pending = true;
+            fs->dirty_since = hal_ticks_ms();
+        }
         memcpy(c->data, buf, BLOCK_SIZE);
         c->block = blk;
         c->valid = c->dirty = true;
@@ -204,19 +210,40 @@ static int bitmap_sync(struct sfs *fs, uint32_t blk)
 static void batch_begin(struct sfs *fs)
 {
     fs->batch = true;
-    fs->bitmap_lo = UINT32_MAX;
-    fs->bitmap_hi = 0;
+    if (!fs->pending) {
+        fs->bitmap_lo = UINT32_MAX;
+        fs->bitmap_hi = 0;
+    }
 }
 
-static int batch_end(struct sfs *fs)
+/* everything a write left in memory goes to the disk */
+static int sfs_flush(struct sfs *fs)
 {
-    fs->batch = false;
     int err = 0;
     for (uint32_t i = fs->bitmap_lo; i < fs->bitmap_hi && !err; i++)
         err = block_write(fs->dev, fs->sb.bitmap_start + i, 1, fs->bitmap + i * BLOCK_SIZE);
     for (int i = 0; i < SFS_CACHE && !err; i++)
         err = write_back(fs, &fs->cache[i]);
+    fs->bitmap_lo = UINT32_MAX;
+    fs->bitmap_hi = 0;
+    fs->pending = false;
     return err;
+}
+
+/* Small writes to a file (a program writing line by line) stay in the cache until the file is closed, another
+   change is made, a read needs the disk, or two seconds pass: two disk commands per write made them 40 times slower
+   than a copy. */
+static int batch_end(struct sfs *fs)
+{
+    fs->batch = false;
+    if (fs->lazy) {
+        if (!fs->pending) {
+            fs->pending = true;
+            fs->dirty_since = hal_ticks_ms();
+        }
+        return 0;
+    }
+    return sfs_flush(fs);
 }
 
 static int balloc_raw(struct sfs *fs, uint32_t *out, bool zero)
@@ -483,6 +510,8 @@ static long file_io(struct sfs *fs, uint32_t ino, struct sfs_inode *in, uint32_t
                     break;
             if (count > 1) {
                 fs->ra_count = 0;
+                if (fs->pending && (err = sfs_flush(fs)) != 0)
+                    break;
                 if ((err = block_read(fs->dev, blk, count, fs->ra)) != 0)
                     break;
                 fs->ra_start = blk;
@@ -908,7 +937,14 @@ static long s_write(struct vnode *vn, uint32_t off, const void *buf, size_t n)
     struct sfs_node *f = node(vn);
     struct sfs_inode in;
     int err = iget(f->fs, f->ino, &in);
-    return err ? err : file_io(f->fs, f->ino, &in, off, (void *)buf, n, true);
+    if (err)
+        return err;
+    f->fs->lazy = true;
+    long r = file_io(f->fs, f->ino, &in, off, (void *)buf, n, true);
+    f->fs->lazy = false;
+    if (f->fs->pending && hal_ticks_ms() - f->fs->dirty_since >= 2000 && (err = sfs_flush(f->fs)) != 0 && r >= 0)
+        r = err;
+    return r;
 }
 
 static int s_truncate(struct vnode *vn, uint32_t size)
@@ -952,6 +988,8 @@ static int s_stat(struct vnode *vn, struct vstat *st)
 
 static void s_release(struct vnode *vn)
 {
+    if (node(vn)->fs->pending)
+        sfs_flush(node(vn)->fs);
     kfree(node(vn));
 }
 

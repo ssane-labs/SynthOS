@@ -583,6 +583,10 @@ winthread | grep preemption
 preemption: ok
 winthread | grep -c ok
 2
+winthread | grep tls
+tls: 1234 5678 errors=77,0 depth=2 free=1 tid=1
+winthread | grep crt
+crt: aabcdexx 8 1 1 0
 winthread | grep semaphore
 semaphore: got=3 waiter=7
 winthread | grep condition

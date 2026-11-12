@@ -151,6 +151,16 @@ static int ram_readdir(struct vnode *dir, uint32_t index, struct vfs_dirent *out
     return 0;
 }
 
+static int ram_lookup_nocase(struct vnode *dir, const char *name, char *real, size_t cap)
+{
+    for (struct ram_node *c = node_of(dir)->children; c; c = c->next)
+        if (!str_casecmp(c->name, name)) {
+            str_copy(real, c->name, cap);
+            return 0;
+        }
+    return E_NOENT;
+}
+
 static long ram_read(struct vnode *vn, uint32_t off, void *buf, size_t n)
 {
     struct ram_node *f = node_of(vn);
@@ -228,6 +238,7 @@ static const struct vnode_ops ram_ops = {
     .unlink = ram_unlink,
     .rename = ram_rename,
     .readdir = ram_readdir,
+    .lookup_nocase = ram_lookup_nocase,
     .read = ram_read,
     .write = ram_write,
     .truncate = ram_truncate,

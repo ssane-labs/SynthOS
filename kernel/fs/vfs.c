@@ -205,6 +205,7 @@ static bool is_mount_point(const char *path)
 int vfs_open(const char *path, unsigned flags, struct file **out)
 {
     struct vnode *vn = NULL;
+    bool made = false;
     int err = vfs_lookup(path, &vn);
     if (err == 0 && (flags & VFS_CREATE) && (flags & VFS_EXCL)) {
         vnode_put(vn);
@@ -218,6 +219,7 @@ int vfs_open(const char *path, unsigned flags, struct file **out)
             return err;
         err = dir->ops->create ? dir->ops->create(dir, name, VN_FILE, &vn) : E_PERM;
         vnode_put(dir);
+        made = true;
     }
     if (err)
         return err;
@@ -225,7 +227,8 @@ int vfs_open(const char *path, unsigned flags, struct file **out)
         vnode_put(vn);
         return E_ISDIR;
     }
-    if ((flags & VFS_TRUNC) && (flags & VFS_WRITE) && vn->type == VN_FILE) {
+    /* a file just made is empty already: cutting it again would cost a disk write */
+    if ((flags & VFS_TRUNC) && (flags & VFS_WRITE) && vn->type == VN_FILE && !made) {
         err = vn->ops->truncate ? vn->ops->truncate(vn, 0) : E_PERM;
         if (err) {
             vnode_put(vn);

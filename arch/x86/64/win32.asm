@@ -92,6 +92,216 @@ crt_eh_prolog:
     push eax
     ret
 
+; The most frequent tiny functions run here in the program's own mode, without the two mode switches of the gate.
+; Each falls back to the gate (its index in w32_fast_index, set by w32_gate_init) when API tracing is on or the case
+; needs the kernel.
+extern w32_trace
+extern w32_precise_waits
+extern w32_word_waiters
+
+%macro SLOW 1
+    push dword [w32_fast_index + %1 * 4]
+    jmp w32_gate32
+%endmacro
+
+fast_get_last_error:
+    cmp byte [w32_trace], 0
+    jne .slow
+    mov eax, [fs:0x34]
+    ret
+.slow:
+    SLOW 0
+
+fast_set_last_error:
+    cmp byte [w32_trace], 0
+    jne .slow
+    mov eax, [esp + 4]
+    mov [fs:0x34], eax
+    ret 4
+.slow:
+    SLOW 1
+
+fast_thread_id:
+    cmp byte [w32_trace], 0
+    jne .slow
+    mov eax, [fs:0x24]
+    ret
+.slow:
+    SLOW 2
+
+fast_tls_get:
+    cmp byte [w32_trace], 0
+    jne .slow
+    mov ecx, [esp + 4]
+    cmp ecx, 64
+    jae .slow
+    mov eax, [fs:0xe10 + ecx * 4]
+    mov dword [fs:0x34], 0
+    ret 4
+.slow:
+    SLOW 3
+
+fast_tls_set:
+    cmp byte [w32_trace], 0
+    jne .slow
+    mov ecx, [esp + 4]
+    cmp ecx, 64
+    jae .slow
+    mov eax, [esp + 8]
+    mov [fs:0xe10 + ecx * 4], eax
+    mov eax, 1
+    ret 8
+.slow:
+    SLOW 4
+
+; CRITICAL_SECTION: +4 lock count, +8 recursion, +12 owner thread
+fast_enter_cs:
+    cmp byte [w32_trace], 0
+    jne .slow
+    mov ecx, [esp + 4]
+    mov edx, [fs:0x24]
+    cmp [ecx + 12], edx
+    je .mine
+    xor eax, eax
+    lock cmpxchg [ecx + 12], edx
+    jne .slow
+.mine:
+    inc dword [ecx + 8]
+    lock inc dword [ecx + 4]
+    ret 4
+.slow:
+    SLOW 5
+
+fast_leave_cs:
+    cmp byte [w32_trace], 0
+    jne .slow
+    cmp byte [w32_precise_waits], 0
+    je .slow
+    cmp dword [w32_word_waiters], 0
+    jne .slow
+    mov ecx, [esp + 4]
+    mov edx, [fs:0x24]
+    cmp [ecx + 12], edx
+    jne .done
+    cmp dword [ecx + 8], 0
+    jle .done
+    lock dec dword [ecx + 4]
+    dec dword [ecx + 8]
+    jnz .done
+    xor eax, eax
+    xchg [ecx + 12], eax
+.done:
+    ret 4
+.slow:
+    SLOW 6
+
+; msvcrt (cdecl): the caller pops the arguments
+fast_memmove:
+    cmp byte [w32_trace], 0
+    jne .slow
+    push esi
+    push edi
+    mov edi, [esp + 12]
+    mov esi, [esp + 16]
+    mov ecx, [esp + 20]
+    mov eax, edi
+    cmp edi, esi
+    jbe .forward
+    lea edx, [esi + ecx]
+    cmp edi, edx
+    jae .forward
+    lea esi, [esi + ecx - 1]
+    lea edi, [edi + ecx - 1]
+    std
+    rep movsb
+    cld
+    jmp .out
+.forward:
+    mov edx, ecx
+    shr ecx, 2
+    rep movsd
+    mov ecx, edx
+    and ecx, 3
+    rep movsb
+.out:
+    pop edi
+    pop esi
+    ret
+.slow:
+    SLOW 7
+
+fast_memset:
+    cmp byte [w32_trace], 0
+    jne .slow
+    push edi
+    mov edi, [esp + 8]
+    movzx eax, byte [esp + 12]
+    mov ecx, [esp + 16]
+    mov edx, edi
+    imul eax, eax, 0x01010101
+    push ecx
+    shr ecx, 2
+    rep stosd
+    pop ecx
+    and ecx, 3
+    rep stosb
+    mov eax, edx
+    pop edi
+    ret
+.slow:
+    SLOW 8
+
+fast_strlen:
+    cmp byte [w32_trace], 0
+    jne .slow
+    mov edx, [esp + 4]
+    mov eax, edx
+.next:
+    cmp byte [eax], 0
+    je .end
+    inc eax
+    jmp .next
+.end:
+    sub eax, edx
+    ret
+.slow:
+    SLOW 9
+
+fast_strcmp:
+    cmp byte [w32_trace], 0
+    jne .slow
+    push esi
+    mov ecx, [esp + 8]
+    mov edx, [esp + 12]
+.next:
+    movzx eax, byte [ecx]
+    movzx esi, byte [edx]
+    cmp eax, esi
+    jne .differ
+    test eax, eax
+    jz .differ
+    inc ecx
+    inc edx
+    jmp .next
+.differ:
+    sub eax, esi
+    pop esi
+    ret
+.slow:
+    SLOW 10
+
+section .rodata
+global w32_fast_code
+w32_fast_code:
+    dd fast_get_last_error, fast_set_last_error, fast_thread_id, fast_tls_get, fast_tls_set, fast_enter_cs
+    dd fast_leave_cs, fast_memmove, fast_memset, fast_strlen, fast_strcmp
+    dd fast_memmove
+
+section .data
+global w32_fast_index
+w32_fast_index:
+    times 12 dd 0
+
 section .text
 
 [bits 64]

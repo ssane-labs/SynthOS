@@ -1,6 +1,8 @@
 /* Threads, critical sections, events, semaphores and condition variables. */
 #include <process.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <windows.h>
 
 static CRITICAL_SECTION lock;
@@ -116,5 +118,32 @@ int main(void)
     if (f)
         DeleteFiber(f);
     printf("fibers: steps=%d back=%d\n", fiber_steps, GetCurrentFiber() == main_fiber);
+
+    /* the small functions that run without the call gate: TLS (in the TEB and past it), last error, locks, CRT */
+    DWORD slots[70];
+    for (int i = 0; i < 70; i++)
+        slots[i] = TlsAlloc();
+    TlsSetValue(slots[0], (void *)1234);
+    TlsSetValue(slots[69], (void *)5678);
+    SetLastError(77);
+    DWORD e1 = GetLastError();
+    DWORD v1 = (DWORD)(uintptr_t)TlsGetValue(slots[0]), e2 = GetLastError();
+    DWORD v2 = (DWORD)(uintptr_t)TlsGetValue(slots[69]);
+    EnterCriticalSection(&lock);
+    EnterCriticalSection(&lock);
+    LONG depth = lock.RecursionCount;
+    LeaveCriticalSection(&lock);
+    LeaveCriticalSection(&lock);
+    printf("tls: %lu %lu errors=%lu,%lu depth=%ld free=%d tid=%d\n", v1, v2, e1, e2, depth, lock.OwningThread == 0,
+           GetCurrentThreadId() == GetThreadId(GetCurrentThread()));
+    void *(*volatile move)(void *, const void *, size_t) = memmove;
+    void *(*volatile fill)(void *, int, size_t) = memset;
+    size_t (*volatile len)(const char *) = strlen;
+    int (*volatile cmp)(const char *, const char *) = strcmp;
+    char text[16] = "abcdefgh";
+    move(text + 1, text, 5);
+    move(text + 8, text + 2, 0);
+    fill(text + 6, 'x', 2);
+    printf("crt: %s %d %d %d %d\n", text, (int)len(text), cmp("ab", "ac") < 0, cmp("b", "a") > 0, cmp(text, text));
     return 0;
 }
