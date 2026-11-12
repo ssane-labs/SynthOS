@@ -146,12 +146,19 @@ static int esp_kernel_hash(struct blockdev *sys, uint8_t out[32])
     if (!path) {
         if (!(dev = block_add_partition(root, "update-esp", start, ESP_SECTORS)))
             return E_NODEV;
-        vfs_mkdirs(ESP_MOUNT);
-        if (!fat_detect(dev) || vfs_mount("fat", dev->name, ESP_MOUNT)) {
+        if (!fat_detect(dev)) {
             block_unregister(dev);
             return E_NODEV;
         }
-        path = ESP_MOUNT;
+        /* the new partition may have been mounted on its own already */
+        if (!(path = mounted_at(root, start))) {
+            vfs_mkdirs(ESP_MOUNT);
+            if (vfs_mount("fat", dev->name, ESP_MOUNT)) {
+                block_unregister(dev);
+                return E_NODEV;
+            }
+            path = ESP_MOUNT;
+        }
     }
     str_copy(where, path, sizeof(where));
     ksnprintf(file, sizeof(file), "%s/SYNTHOS/KERNEL.BIN", where);
@@ -167,6 +174,8 @@ static int esp_kernel_hash(struct blockdev *sys, uint8_t out[32])
     }
     if (dev) {
         vfs_umount(where);
+        if (strcmp(where, ESP_MOUNT))
+            vfs_unlink(where);
         block_unregister(dev);
     }
     return err < 0 ? err : 0;

@@ -110,6 +110,8 @@ enum cmd {
     CMD_PRIVATE,
     CMD_BAR,
     CMD_PIN_HOME,
+    CMD_PROFILES,
+    CMD_NEXT_PROFILE,
     CMD_COUNT,
 };
 
@@ -190,6 +192,7 @@ static struct browser {
     /* recently used tabs for Ctrl+Tab, the bookmarks bar, private browsing */
     int mru[MAX_TABS], nmru, switch_sel, bar_off;
     bool switching, private_mode, bar;
+    char profile[28];
     struct picture tip_pic;
     char (*files)[NAME_MAX_LEN];
     struct canvas cards[3];
@@ -208,6 +211,8 @@ static const struct menu_item file_items[] = {
     {"Open File...", KEY_COMMAND(CMD_OPEN_FILE), "Ctrl+O"},
     {"Reopen Closed Tab", KEY_COMMAND(CMD_REOPEN), "Ctrl+Shift+T"},
     {"Private Browsing", KEY_COMMAND(CMD_PRIVATE), "Ctrl+Shift+N"},
+    {"Profiles...", KEY_COMMAND(CMD_PROFILES), NULL},
+    {"Next Profile", KEY_COMMAND(CMD_NEXT_PROFILE), "Ctrl+Shift+M"},
     {"Close Tab", KEY_COMMAND(CMD_CLOSE_TAB), "Ctrl+W"},
     {"", 0, NULL},
     {"Save Page", KEY_COMMAND(CMD_SAVE), "Ctrl+S"},
@@ -501,10 +506,20 @@ static int to_page(struct rect v, int d)
     return d * shot_w(v) / MAX(v.w, 1);
 }
 
+/* Profiles: "Default" keeps its data in ~/.obscura, every other one in ~/.obscura/profiles/<name> */
+static bool default_profile(void)
+{
+    return !br || !br->profile[0] || !strcmp(br->profile, "Default");
+}
+
 static void obscura_dir(const char *name, char *out, size_t cap)
 {
-    char dir[PATH_MAX_LEN];
+    char dir[PATH_MAX_LEN], sub[PATH_MAX_LEN];
     path_join(user_home(), ".obscura", dir, sizeof(dir));
+    if (!default_profile()) {
+        ksnprintf(sub, sizeof(sub), "%s/profiles/%s", dir, br->profile);
+        str_copy(dir, sub, sizeof(dir));
+    }
     vfs_mkdirs(dir);
     path_join(dir, name, out, cap);
 }
@@ -521,7 +536,10 @@ static uint32_t url_hash(const char *s)
 
 static void visits_path(char *out, size_t cap)
 {
-    path_join(user_home(), ".obscura-history", out, cap);
+    if (default_profile())
+        path_join(user_home(), ".obscura-history", out, cap);
+    else
+        obscura_dir("history", out, cap);
 }
 
 static void visits_save(void)
@@ -1986,16 +2004,18 @@ static void context_menu(void)
 
 static const struct menu_item logo_menu[] = {
     {"New Tab", 0, "Ctrl+T"},     {"Reopen Closed Tab", 0, "Ctrl+Shift+T"}, {"", 0, NULL},
-    {"History", 0, "Ctrl+H"},     {"Bookmarks", 0, "Ctrl+Shift+B"},         {"Downloads", 0, "Ctrl+J"},
+    {"History", 0, "Ctrl+H"},     {"Bookmarks", 0, "Ctrl+Alt+B"},         {"Downloads", 0, "Ctrl+J"},
     {"Settings", 0, "Ctrl+,"},    {"", 0, NULL},                            {"Import Bookmarks...", 0, NULL},
-    {"Export Bookmarks...", 0, NULL}, {"", 0, NULL},                         {"About Obscura", 0, NULL},
+    {"Export Bookmarks...", 0, NULL}, {"", 0, NULL},                         {"Profiles...", 0, NULL},
+    {"Private Browsing", 0, "Ctrl+Shift+N"}, {"", 0, NULL},                   {"About Obscura", 0, NULL},
 };
 
 static void logo_pick(struct window *owner, int index)
 {
     UNUSED(owner);
     static const int cmds[] = {CMD_NEW_TAB, CMD_REOPEN,   -1,         CMD_HISTORY, CMD_BOOKMARKS, CMD_DOWNLOADS,
-                               CMD_SETTINGS, -1,          CMD_IMPORT, CMD_EXPORT,  -1,            CMD_ABOUT};
+                               CMD_SETTINGS, -1,          CMD_IMPORT, CMD_EXPORT,  -1,            CMD_PROFILES,
+                               CMD_PRIVATE,  -1,          CMD_ABOUT};
     if (index >= 0 && index < (int)ARRAY_SIZE(cmds) && cmds[index] >= 0)
         command(cmds[index]);
 }
@@ -2345,6 +2365,159 @@ static int session_load(void)
     return k;
 }
 
+#define MAX_PROFILES 9
+
+static int profiles(char names[][28], int max)
+{
+    char list[MAX_PROFILES * 28];
+    str_copy(list, app_state("obscura", "profiles", "Default"), sizeof(list));
+    int n = 0;
+    for (char *p = list; p && *p && n < max;) {
+        char *bar = strchr(p, '|');
+        if (bar)
+            *bar = 0;
+        if (*p)
+            str_copy(names[n++], p, 28);
+        p = bar ? bar + 1 : NULL;
+    }
+    if (!n)
+        str_copy(names[n++], "Default", 28);
+    return n;
+}
+
+static void profiles_save(char names[][28], int n)
+{
+    char list[MAX_PROFILES * 28];
+    size_t len = 0;
+    list[0] = 0;
+    for (int i = 0; i < n; i++)
+        len += (size_t)ksnprintf(list + len, sizeof(list) - len, "%s%s", i ? "|" : "", names[i]);
+    app_state_set("obscura", "profiles", list);
+}
+
+static uint32_t profile_color(void)
+{
+    return group_colors[url_hash(br->profile) % ARRAY_SIZE(group_colors)];
+}
+
+/* the window turns to another profile: its own tabs, history and bookmarks */
+static void profile_use(const char *name)
+{
+    if (!strcmp(name, br->profile))
+        return;
+    session_save();
+    br->split_a = br->split_b = 0;
+    for (int i = 0; i < br->ntabs; i++) {
+        picture_free(&br->tabs[i].shot);
+        picture_free(&br->tabs[i].icon);
+    }
+    str_copy(br->profile, name, sizeof(br->profile));
+    app_state_set("obscura", "profile", br->profile);
+    memset(br->tabs, 0, sizeof(br->tabs));
+    memset(br->groups, 0, sizeof(br->groups));
+    br->ntabs = 1;
+    br->cur = 0;
+    br->nmru = br->nhistory = br->nclosed = br->nchips = 0;
+    br->tabs[0].id = ++br->tab_ids;
+    visits_load();
+    br->nbookmarks = list_load("bookmarks", br->bookmarks, MAX_BOOKMARKS);
+    session_load();
+    mru_touch(tab()->id);
+    br->cards_key = 0;
+    br->focus = tab()->url[0] ? F_NONE : F_ASK;
+    ksnprintf(br->status, sizeof(br->status), "Profile: %s", br->profile);
+    wm_set_title(br->win, tab()->title[0] ? tab()->title : "Obscura");
+    if (tab()->url[0] && !internal(tab()->url) && vfs_exists(ENGINE))
+        navigate(tab()->url);
+}
+
+static void profile_new_done(struct window *owner, const char *value)
+{
+    UNUSED(owner);
+    if (!br || !value)
+        return;
+    char name[28];
+    size_t n = 0;
+    for (const char *c = value; *c && n < sizeof(name) - 1; c++)
+        if ((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-' ||
+            *c == '_' || *c == ' ')
+            name[n++] = *c;
+    name[n] = 0;
+    if (!n)
+        return;
+    char names[MAX_PROFILES][28];
+    int count = profiles(names, MAX_PROFILES), i = 0;
+    while (i < count && strcmp(names[i], name))
+        i++;
+    if (i == count) {
+        if (count >= MAX_PROFILES)
+            return;
+        str_copy(names[count++], name, 28);
+        profiles_save(names, count);
+    }
+    profile_use(name);
+    wm_invalidate(br->win);
+}
+
+static void profile_delete_done(struct window *owner, const char *value)
+{
+    UNUSED(owner);
+    UNUSED(value);
+    if (!br || default_profile())
+        return;
+    char names[MAX_PROFILES][28], gone[28];
+    int count = profiles(names, MAX_PROFILES), k = 0;
+    str_copy(gone, br->profile, sizeof(gone));
+    for (int i = 0; i < count; i++)
+        if (strcmp(names[i], gone))
+            str_copy(names[k++], names[i], 28);
+    profiles_save(names, k);
+    profile_use("Default");
+    char dir[PATH_MAX_LEN];
+    ksnprintf(dir, sizeof(dir), "%s/.obscura/profiles/%s", user_home(), gone);
+    vfs_remove_tree(dir);
+    wm_invalidate(br->win);
+}
+
+static char profile_labels[MAX_PROFILES][40];
+static int profile_count;
+
+static void profile_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    char names[MAX_PROFILES][28];
+    int n = profiles(names, MAX_PROFILES);
+    if (index >= 0 && index < n)
+        profile_use(names[index]);
+    else if (index == profile_count + 1)
+        ui_prompt(br->win, "New Profile", "A profile keeps its own tabs, history and bookmarks. Name:", "Work",
+                  profile_new_done);
+    else if (index == profile_count + 2 && !default_profile())
+        ui_confirm(br->win, "Delete Profile", "Delete this profile with its history and bookmarks?",
+                   profile_delete_done);
+    wm_invalidate(br->win);
+}
+
+static void show_profiles(int x, int y)
+{
+    static struct menu_item items[MAX_PROFILES + 3];
+    static const char *const keys[] = {"Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5",
+                                       "Alt+6", "Alt+7", "Alt+8", "Alt+9"};
+    char names[MAX_PROFILES][28];
+    int n = profiles(names, MAX_PROFILES), k = 0;
+    for (int i = 0; i < n; i++) {
+        ksnprintf(profile_labels[i], sizeof(profile_labels[i]), "%s%s", strcmp(names[i], br->profile) ? "   " : "> ",
+                  names[i]);
+        items[k++] = (struct menu_item){profile_labels[i], 0, keys[i]};
+    }
+    profile_count = n;
+    items[k++] = (struct menu_item){"", 0, NULL};
+    items[k++] = (struct menu_item){"New Profile...", 0, NULL};
+    if (!default_profile())
+        items[k++] = (struct menu_item){"Delete This Profile...", 0, NULL};
+    ui_menu_items(br->win, x, y, items, k, profile_pick);
+}
+
 static void copy_all(void)
 {
     size_t cap = (size_t)br->ntabs * URL_MAX + 1, n = 0;
@@ -2488,6 +2661,15 @@ static void command(int cmd)
         if (br->link && tab()->url[0] && !internal(tab()->url))
             push_shot();
         break;
+    case CMD_PROFILES: show_profiles(80, TAB_ROW); break;
+    case CMD_NEXT_PROFILE: {
+        char names[MAX_PROFILES][28];
+        int n = profiles(names, MAX_PROFILES), i = 0;
+        while (i < n && strcmp(names[i], br->profile))
+            i++;
+        profile_use(names[(i + 1) % n]);
+        break;
+    }
     case CMD_CLOSE_UNPINNED:
         for (int i = br->ntabs - 1; i >= 0; i--)
             if (!br->tabs[i].pinned)
@@ -3268,10 +3450,17 @@ static void nav_row(struct ui *ui, struct rect p)
         if (icon_button(ui, b, SYM_PIN, 13, style.accent))
             command(CMD_PIN_HOME);
     }
+    int bx = b.x + 34;
     if (br->private_mode) {
-        struct rect pv = {b.x + 34, p.y + 6, 62, 20};
+        struct rect pv = {bx, p.y + 6, 62, 20};
         if (pill_button(ui, pv, "Private", RGB(88, 54, 150), RGB(255, 255, 255), false))
             command(CMD_PRIVATE);
+        bx += 68;
+    }
+    if (!default_profile()) {
+        struct rect pr = {bx, p.y + 6, MIN(gfx_text_width(&font_sans, br->profile) + 20, 140), 20};
+        if (pill_button(ui, pr, br->profile, profile_color(), RGB(255, 255, 255), false))
+            show_profiles(pr.x, pr.y + pr.h + 4);
     }
     struct rect d = {p.x + p.w - 34, p.y + 4, 26, 24};
     bool dhot;
@@ -4605,6 +4794,13 @@ static bool shortcut(int k)
         command(base == KEY_LEFT ? CMD_BACK : base == KEY_RIGHT ? CMD_FORWARD : CMD_HOME);
         return true;
     }
+    if (((k & KEY_MOD_ALT) || (held & KEY_MOD_ALT)) && !(held & KEY_MOD_CTRL) && base >= '1' && base <= '9') {
+        char names[MAX_PROFILES][28];
+        int n = profiles(names, MAX_PROFILES);
+        if (base - '1' < n)
+            profile_use(names[base - '1']);
+        return true;
+    }
     if (base == KEY_F3) {
         command(shift ? CMD_FIND_PREV : CMD_FIND_NEXT);
         return true;
@@ -4661,6 +4857,11 @@ static bool shortcut(int k)
     case 'e': command(CMD_SPLIT); return true;
     case 'g': command(shift ? CMD_FIND_PREV : CMD_FIND_NEXT); return true;
     case 'u': command(CMD_SOURCE); return true;
+    case 'm':
+        if (!shift)
+            return false;
+        command(CMD_NEXT_PROFILE);
+        return true;
     case 'h': command(CMD_HISTORY); return true;
     case 'j': command(CMD_DOWNLOADS); return true;
     case ',': command(CMD_SETTINGS); return true;
@@ -4833,6 +5034,7 @@ static void launch(const char *arg)
     wm_set_timer(br->win, 30);
     br->ntabs = 1;
     br->tabs[0].id = ++br->tab_ids;
+    str_copy(br->profile, app_state("obscura", "profile", "Default"), sizeof(br->profile));
     session_load();
     mru_touch(tab()->id);
     br->drag_tab = br->tip_tab = br->shown_cur = -1;
