@@ -4,6 +4,21 @@
 # url (up to two, the second is a mirror), sha256 (optional), check (the file that shows it is installed),
 # open (the program to start), bin (put on the PATH), bits = 64 (needs the 64-bit SynthOS)
 
+[obscura]
+name = Obscura
+developer = h4ckf0r0day
+category = Browsers
+icon = browser
+version = 0.2.2
+size = 72 MB
+summary = The engine of SynthOS's own browser: Rust and V8, open source
+about = Obscura is the browser of the 64-bit SynthOS. Its window is part of the system; the page engine (a Rust + V8 headless browser under the Apache 2.0 license, github.com/h4ckf0r0day/obscura) comes with the desktop image or from here, unpacked into /home/apps/obscura. The browser drives it through its MCP interface.
+kind = zip
+url = https://github.com/h4ckf0r0day/obscura/releases/download/v0.2.2/obscura-x86_64-windows.zip
+sha256 = db5a3c951f7172eb8f25e6d71bd7120c7128f70f6daed55a6cc4caaabe1674d6
+check = obscura.exe
+bits = 64
+
 [firefox]
 name = Firefox
 developer = Mozilla
@@ -39,7 +54,7 @@ category = Browsers
 icon = browser
 version = bundled
 summary = The open-source browser that comes with SynthOS
-about = Chromium is part of the SynthOS image and unpacks itself after the first login. It is the default browser until you pick another one in Settings > Apps.
+about = Chromium is part of the 32-bit SynthOS image and unpacks itself after the first login; there it is the default browser until you pick another one in Settings > Apps. The 64-bit image carries Obscura instead.
 kind = builtin
 check = /home/apps/chromium/chrome.exe
 

@@ -29,7 +29,6 @@ enum page {
     SP_REGION,
     SP_ACCOUNT,
     SP_LOOK,
-    SP_BROWSER,
     SP_DONE,
 };
 
@@ -64,7 +63,6 @@ struct setup {
     bool name_edited, autologin, want_focus;
     char error[96];
     int look, appearance, accent;
-    bool chrome;
 };
 
 static struct window *setup_win;
@@ -431,35 +429,9 @@ static void look_page(struct ui *ui, struct setup *s)
     }
     bool back;
     if (nav(ui, s, "Continue", &back))
-        go(s, SP_BROWSER);
+        go(s, SP_DONE);
     if (back)
         go(s, SP_ACCOUNT);
-}
-
-static void browser_page(struct ui *ui, struct setup *s)
-{
-    struct rect r = body(ui, s);
-    title(ui, r, "Your web browser", "Links and web pages open in it.");
-    int cw = (r.w - 20) / 2;
-    const struct gui_app *chromium = gui_app_find("Chromium"), *chrome = gui_app_find("Chrome");
-    if (app_card(ui, (struct rect){r.x, r.y + 70, cw, 220}, chromium, ICON_BROWSER, "Chromium",
-                    "Comes with SynthOS and works right away, even offline. Open source.", !s->chrome))
-        s->chrome = false;
-    if (app_card(ui, (struct rect){r.x + cw + 20, r.y + 70, cw, 220}, chrome, ICON_BROWSER, "Google Chrome",
-                 "Downloaded from Google and installed the first time you open it.", s->chrome))
-        s->chrome = true;
-    int key = KEY_BASE(ui_key(ui));
-    if (key == KEY_LEFT || key == KEY_RIGHT) {
-        ui->consumed = true;
-        s->chrome = key == KEY_RIGHT;
-    }
-    bool back;
-    if (nav(ui, s, "Continue", &back)) {
-        apply("browser", s->chrome ? "chrome" : "chromium");
-        go(s, SP_DONE);
-    }
-    if (back)
-        go(s, SP_LOOK);
 }
 
 static bool finish(struct setup *s)
@@ -521,7 +493,6 @@ static void frame(struct ui *ui, void *data)
     case SP_REGION: region_page(ui, s); break;
     case SP_ACCOUNT: account_page(ui, s); break;
     case SP_LOOK: look_page(ui, s); break;
-    case SP_BROWSER: browser_page(ui, s); break;
     default: done_page(ui, s); break;
     }
 }

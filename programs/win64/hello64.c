@@ -40,6 +40,14 @@ static void bounce(int depth)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "echo")) {
+        char line[256];
+        while (fgets(line, sizeof(line), stdin)) {
+            printf("echo %s", line);
+            fflush(stdout);
+        }
+        return 0;
+    }
     printf("hello from 64-bit Windows code, %d args, argv[0] ends with %s\n", argc,
            strrchr(argv[0], '\\') ? strrchr(argv[0], '\\') + 1 : argv[0]);
     printf("pointer size %zu, long long %lld, hex %llx\n", sizeof(void *), 123456789012345LL, 0xfedcba9876ULL);

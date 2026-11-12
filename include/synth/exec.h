@@ -28,6 +28,11 @@ struct binfmt {
 
 int exec_program(struct exec_ctx *ctx);
 int w32_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd);
+struct w32_link;
+int w32_link_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd, struct w32_link **out);
+int w32_link_write(struct w32_link *l, const void *buf, size_t n);
+int w32_link_read(struct w32_link *l, void *buf, size_t n);
+void w32_link_close(struct w32_link *l);
 void w32_background(void);
 bool w32_in_program(void);
 void w32_host_sleep(uint32_t ms);

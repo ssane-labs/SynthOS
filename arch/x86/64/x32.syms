@@ -10,5 +10,6 @@ kvsnprintf x32_kvsnprintf
 fmt_format x32_fmt_format
 fmt_size x32_fmt_size
 w32_start x32_w32_start
+w32_link_start x32_w32_link_start
 msiexec_main x32_msiexec_main
 winshell_split x32_winshell_split

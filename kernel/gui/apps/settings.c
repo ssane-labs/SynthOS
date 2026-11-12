@@ -1797,11 +1797,15 @@ static void add_browser(const struct winshell_browser *b, void *ctx)
 
 static void browser_popup(struct page *p)
 {
-    browser_labels[0] = "Chromium";
-    browser_values[0] = "chromium";
-    browser_labels[1] = "Google Chrome";
-    browser_values[1] = "chrome";
-    browser_count = 2;
+    browser_count = 0;
+    if (gui_app_find("Obscura")) {
+        browser_labels[browser_count] = "Obscura";
+        browser_values[browser_count++] = "obscura";
+    }
+    browser_labels[browser_count] = "Chromium";
+    browser_values[browser_count++] = "chromium";
+    browser_labels[browser_count] = "Google Chrome";
+    browser_values[browser_count++] = "chrome";
 #if CONFIG_WIN32
     winshell_browsers(add_browser, NULL);
 #endif
@@ -1928,6 +1932,10 @@ static void pane_apps(struct page *p)
                            : bundle_info(&bi)                             ? "Unpacks after login"
                                                                           : "Not in this image";
     section(p, "Browsers");
+    if (gui_app_find("Obscura"))
+        info(p, "Obscura", vfs_exists("/home/apps/obscura/obscura.exe") ? "Installed"
+                           : gui_bundle_has(gui_app_find("Obscura"))     ? "Unpacks after login"
+                                                                        : "Engine from the App Store");
     info(p, "Chromium", chromium);
     info(p, "Google Chrome", vfs_exists("/home/apps/chrome/chrome.exe") ? "Installed" : "Not installed");
     toggle_setting(p, "Download Google Chrome by itself", "On an image without Chromium, after the first login",

@@ -91,6 +91,18 @@ int w32_start(struct shell *sh, const char *path, int argc, char **argv, const c
     return x32_w32_start(sh, path, argc, v, cwd);
 }
 
+int x32_w32_link_start(struct shell *sh, const char *path, int argc, const uint32_t *argv, const char *cwd,
+                       uint32_t *out);
+
+int w32_link_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd, struct w32_link **out)
+{
+    uint32_t v[argc + 1], l = 0;
+    narrow_argv(v, argc, argv);
+    int r = x32_w32_link_start(sh, path, argc, v, cwd, &l);
+    *out = (struct w32_link *)(uintptr_t)l;
+    return r;
+}
+
 int msiexec_main(struct shell *sh, int argc, char **argv)
 {
     uint32_t v[argc + 1];

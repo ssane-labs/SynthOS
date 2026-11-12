@@ -1616,22 +1616,9 @@ void w32_host_sleep(uint32_t ms)
     } while (hal_ticks_ms() < end);
 }
 
-int w32_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd)
+static struct w32_child *start_async(struct shell *sh, const char *path, int argc, char **argv, const char *cwd,
+                                     struct stream *in, struct stream *out, unsigned own)
 {
-    if (w32)
-        return E_BUSY;
-    if (!vmm_available())
-        return E_NOSYS;
-    struct file *f;
-    uint8_t head[512];
-    long n = vfs_open(path, VFS_READ, &f) == 0 ? vfs_read(f, head, sizeof(head)) : -1;
-    if (n >= 0)
-        vfs_close(f);
-    if (n < 64 || !w32_is_pe(head, (size_t)n) || w32_is_pe64(head, (size_t)n))
-        return E_NOEXEC;
-    uint32_t pe = (uint32_t)head[0x3c] | (uint32_t)head[0x3d] << 8;
-    if (pe + 24 + 70 > (uint32_t)n || head[pe + 24 + 68] != 2)
-        return E_NOEXEC;
     if (!pristine_state && (pristine_state = kmalloc(state_size())))
         memcpy(pristine_state, __start_w32state, state_size());
     struct exec_ctx *c = kzalloc(sizeof(*c));
@@ -1639,15 +1626,15 @@ int w32_start(struct shell *sh, const char *path, int argc, char **argv, const c
     if (!c || !copy) {
         kfree(c);
         kfree(copy);
-        return E_NOMEM;
+        return NULL;
     }
     for (int i = 0; i < argc; i++)
         copy[i] = (KARR(char *))(uintptr_t)kstrdup(argv[i]);
-    *c = (struct exec_ctx){sh, kstrdup(path), argc, copy, stream_null(), stream_null(), stream_log(), NULL,
+    *c = (struct exec_ctx){sh, kstrdup(path), argc, copy, in, out, stream_log(), NULL,
                            kstrdup(cwd ? cwd : sh->cwd), NULL};
     struct w32_child *child = NULL;
     if (host_enter()) {
-        child = w32_spawn_async(c, 0);
+        child = w32_spawn_async(c, own);
         host_leave();
     }
     if (!child) {
@@ -1657,10 +1644,140 @@ int w32_start(struct shell *sh, const char *path, int argc, char **argv, const c
         kfree((char *)c->path);
         kfree((char *)c->cwd);
         kfree(c);
-        return E_NOMEM;
     }
+    return child;
+}
+
+static long read_head(const char *path, uint8_t *head, size_t cap)
+{
+    struct file *f;
+    long n = vfs_open(path, VFS_READ, &f) == 0 ? vfs_read(f, head, cap) : -1;
+    if (n >= 0)
+        vfs_close(f);
+    return n;
+}
+
+int w32_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd)
+{
+    if (w32)
+        return E_BUSY;
+    if (!vmm_available())
+        return E_NOSYS;
+    uint8_t head[512];
+    long n = read_head(path, head, sizeof(head));
+    if (n < 64 || !w32_is_pe(head, (size_t)n) || w32_is_pe64(head, (size_t)n))
+        return E_NOEXEC;
+    uint32_t pe = (uint32_t)head[0x3c] | (uint32_t)head[0x3d] << 8;
+    if (pe + 24 + 70 > (uint32_t)n || head[pe + 24 + 68] != 2)
+        return E_NOEXEC;
+    struct w32_child *child = start_async(sh, path, argc, argv, cwd, stream_null(), stream_null(), 0);
+    if (!child)
+        return E_NOMEM;
     w32_child_release(child);
     return 0;
+}
+
+/* A program the desktop talks to: its standard input and output are pipes to the kernel (a browser engine, say). */
+struct w32_link {
+    struct w32_child *child;
+    struct stream *to, *from;
+};
+
+int w32_link_start(struct shell *sh, const char *path, int argc, char **argv, const char *cwd, struct w32_link **out)
+{
+    if (w32)
+        return E_BUSY;
+    if (!vmm_available())
+        return E_NOSYS;
+    uint8_t head[512];
+    long n = read_head(path, head, sizeof(head));
+    if (n < 64 || !w32_is_pe(head, (size_t)n))
+        return E_NOEXEC;
+    struct w32_link *l = kzalloc(sizeof(*l));
+    struct stream *in_rd = NULL, *out_wr = NULL;
+    if (!l || !w32_pipe_streams(&in_rd, &l->to)) {
+        kfree(l);
+        return E_NOMEM;
+    }
+    if (!w32_pipe_streams(&l->from, &out_wr)) {
+        stream_close(in_rd);
+        stream_close(l->to);
+        kfree(l);
+        return E_NOMEM;
+    }
+    l->child = start_async(sh, path, argc, argv, cwd, in_rd, out_wr, 3);
+    if (!l->child) {
+        stream_close(in_rd);
+        stream_close(out_wr);
+        w32_link_close(l);
+        return E_NOMEM;
+    }
+    *out = l;
+    return 0;
+}
+
+int w32_link_write(struct w32_link *l, const void *buf, size_t n)
+{
+    return l->child->done ? E_PIPE : (int)stream_write(l->to, buf, n);
+}
+
+int w32_link_read(struct w32_link *l, void *buf, size_t n)
+{
+    return (int)w32_pipe_poll(l->from, buf, n);
+}
+
+void w32_link_close(struct w32_link *l)
+{
+    if (!l)
+        return;
+    if (l->child) {
+        if (!l->child->done && host_enter()) {
+            w32_terminate_child(l->child, 1);
+            host_leave();
+        }
+        w32_child_release(l->child);
+    }
+    stream_close(l->to);
+    stream_close(l->from);
+    kfree(l);
+}
+
+/* talk: what the desktop does with a browser engine, from the shell - a file in, the answer out */
+COMMAND(talk, NULL, "dev", "talk [-t seconds] <input file> <program> [args...]",
+        "run a Windows program with its input from a file through a pipe and show what it writes")
+{
+    long secs = 10;
+    int i = 1;
+    if (argc > 2 && !strcmp(argv[1], "-t") && str_parse_long(argv[2], &secs))
+        i = 3;
+    if (argc - i < 2)
+        return E_INVAL;
+    char *input = NULL;
+    size_t len = 0;
+    int err = vfs_read_all(argv[i], &input, &len);
+    if (err < 0)
+        return err;
+    char path[PATH_MAX_LEN];
+    struct w32_link *l = NULL;
+    int rc = exec_find(sh, argv[i + 1], path, sizeof(path));
+    if (rc == 0)
+        rc = w32_link_start(sh, path, argc - i - 1, argv + i + 1, NULL, &l);
+    if (rc == 0 && w32_link_write(l, input, len) < 0)
+        rc = E_PIPE;
+    kfree(input);
+    uint64_t end = hal_ticks_ms() + (uint64_t)secs * 1000;
+    char buf[512];
+    while (rc == 0 && hal_ticks_ms() < end && !input_break_pending()) {
+        long n = w32_link_read(l, buf, sizeof(buf));
+        if (n < 0)
+            break;
+        if (n)
+            stream_write(sh->out, buf, (size_t)n);
+        else
+            w32_host_sleep(5);
+    }
+    w32_link_close(l);
+    return rc;
 }
 
 static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)

@@ -138,6 +138,7 @@ enum w32_engine {
     W32_ENGINE_NONE,
     W32_ENGINE_CHROMIUM,
     W32_ENGINE_GECKO,
+    W32_ENGINE_OBSCURA,
 };
 
 /* The folder's names as they were at FindFirstFile: deleting while enumerating skips nothing. */
@@ -377,6 +378,8 @@ struct w32_child *w32_spawn_async(struct exec_ctx *ctx, unsigned own);
 bool w32_is_host(const struct w32_process *p);
 struct w32_thread *w32_host_thread(void);
 void w32_child_release(struct w32_child *c);
+bool w32_pipe_streams(struct stream **rd, struct stream **wr);
+long w32_pipe_poll(struct stream *rd, void *buf, size_t n);
 void w32_terminate_child(struct w32_child *c, uint32_t code);
 void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_top);
 uint32_t w32_switch_frame(void (*entry)(void), uint8_t *stack_top);

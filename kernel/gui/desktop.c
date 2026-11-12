@@ -1172,6 +1172,14 @@ static bool start_program(const char *path, char *args, const char *dir)
     return session && w32_start(session, path, argc, argv, cwd) == 0;
 }
 
+/* a program the desktop talks to through its standard input and output (a browser engine) */
+int gui_link_start(const char *path, int argc, char **argv, struct w32_link **out)
+{
+    char cwd[PATH_MAX_LEN];
+    path_dirname(path, cwd, sizeof(cwd));
+    return session ? w32_link_start(session, path, argc, argv, cwd, out) : E_BUSY;
+}
+
 bool gui_start_program(const char *path, const char *args)
 {
     char copy[512];
@@ -1227,7 +1235,19 @@ bool gui_start_command(const char *cmdline)
 #endif
 
 /* the default browser: a built-in one, or one an installer registered (its key under StartMenuInternet) */
-static bool chrome_default;
+#ifdef __x86_64__
+static char builtin_browser[16] = "obscura";
+#else
+static char builtin_browser[16] = "chromium";
+#endif
+
+static const struct gui_app *builtin_browser_app(void)
+{
+    const struct gui_app *app = !strcmp(builtin_browser, "chrome")    ? gui_app_find("Chrome")
+                                : !strcmp(builtin_browser, "obscura") ? gui_app_find("Obscura")
+                                                                      : NULL;
+    return app ? app : gui_app_find("Chromium");
+}
 static char browser_key[64];
 
 #if CONFIG_WIN32
@@ -1252,8 +1272,7 @@ const struct gui_app *gui_default_browser(void)
             return app;
     }
 #endif
-    const struct gui_app *app = chrome_default ? gui_app_find("Chrome") : NULL;
-    return app ? app : gui_app_find("Chromium");
+    return builtin_browser_app();
 }
 
 static bool open_in_browser(const char *target)
@@ -1264,8 +1283,7 @@ static bool open_in_browser(const char *target)
     if (browser_key[0] && winshell_browser_command(browser_key, target, line, sizeof(line)) && gui_start_command(line))
         return true;
 #endif
-    const struct gui_app *app = chrome_default ? gui_app_find("Chrome") : NULL;
-    const struct gui_app *web = app ? app : gui_app_find("Chromium");
+    const struct gui_app *web = builtin_browser_app();
     if (!web)
         return false;
     gui_app_launch(web, target);
@@ -2409,7 +2427,7 @@ static void get_browser(char *buf, size_t cap)
 #if CONFIG_WIN32
     browser_refresh();
 #endif
-    str_copy(buf, browser_key[0] ? browser_key : chrome_default ? "chrome" : "chromium", cap);
+    str_copy(buf, browser_key[0] ? browser_key : builtin_browser, cap);
 }
 
 /* a registered browser becomes the user's choice for web links and pages in the registry, where programs (and the
@@ -2417,8 +2435,9 @@ static void get_browser(char *buf, size_t cap)
 static int set_browser(struct shell *sh, const char *value)
 {
     UNUSED(sh);
-    if (!strcmp(value, "chromium") || !strcmp(value, "chrome")) {
-        chrome_default = !strcmp(value, "chrome");
+    if (!strcmp(value, "chromium") || !strcmp(value, "chrome") ||
+        (!strcmp(value, "obscura") && gui_app_find("Obscura"))) {
+        str_copy(builtin_browser, value, sizeof(builtin_browser));
 #if CONFIG_WIN32
         if (browser_key[0])
             winshell_set_default_browser(NULL);
@@ -2436,7 +2455,7 @@ static int set_browser(struct shell *sh, const char *value)
     return E_INVAL;
 }
 
-static const struct setting s_browser = {"browser", "chromium|chrome|<installed browser>",
+static const struct setting s_browser = {"browser", "obscura|chromium|chrome|<installed browser>",
                                          "the web browser that opens pages and links", get_browser, set_browser};
 SETTING(s_browser);
 

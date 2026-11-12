@@ -258,6 +258,53 @@ static long null_write(struct stream *s, const void *buf, size_t n)
 
 static const struct stream_ops null_stream_ops = {null_read, null_write, NULL};
 
+static struct stream *pipe_stream(struct w32_pipe *p, bool write)
+{
+    struct stream *s = kzalloc(sizeof(*s));
+    struct pipe_end *e = kzalloc(sizeof(*e));
+    if (!s || !e) {
+        kfree(s);
+        kfree(e);
+        return NULL;
+    }
+    e->pipe = p;
+    e->write = write;
+    if (write)
+        p->writers++;
+    else
+        p->readers++;
+    s->ops = &pipe_stream_ops;
+    s->ctx = e;
+    return s;
+}
+
+/* a pipe with both ends as streams, for a program's standard handles */
+bool w32_pipe_streams(struct stream **rd, struct stream **wr)
+{
+    struct w32_pipe *p = kzalloc(sizeof(*p));
+    if (!p)
+        return false;
+    *rd = pipe_stream(p, false);
+    *wr = *rd ? pipe_stream(p, true) : NULL;
+    if (*wr)
+        return true;
+    if (*rd)
+        stream_close(*rd);
+    else
+        kfree(p);
+    *rd = NULL;
+    return false;
+}
+
+/* what has arrived on the read end of such a pipe, without waiting: 0 for nothing yet, E_PIPE once it is closed */
+long w32_pipe_poll(struct stream *rd, void *buf, size_t n)
+{
+    struct pipe_end *e = rd->ctx;
+    if (e->pipe->rpos == e->pipe->len)
+        return e->pipe->writers > 0 ? 0 : E_PIPE;
+    return w32_pipe_read(e->pipe, buf, n, false);
+}
+
 struct stream *w32_handle_stream(HANDLE h)
 {
     struct w32_object *o = w32_handle_get(h);

@@ -22,6 +22,8 @@ static bool suffix(const char *s, const char *end)
 enum w32_engine w32_browser_engine(const char *path)
 {
     const char *exe = path_basename(path);
+    if (!str_casecmp(exe, "obscura.exe"))
+        return W32_ENGINE_OBSCURA;
     for (size_t i = 0; i < ARRAY_SIZE(chromium_names); i++)
         if (!str_casecmp(exe, chromium_names[i]))
             return W32_ENGINE_CHROMIUM;
@@ -44,9 +46,12 @@ enum w32_engine w32_browser_engine(const char *path)
 }
 
 /* Gecko's sandboxes need restricted tokens and job objects, which SynthOS does not offer: its processes run
-   unsandboxed, as with these variables on Windows. */
+   unsandboxed, as with these variables on Windows. Obscura, the desktop's browser engine, may open pages on the
+   local network like any browser. */
 const char *w32_engine_environment(enum w32_engine e)
 {
+    if (e == W32_ENGINE_OBSCURA)
+        return "OBSCURA_ALLOW_PRIVATE_NETWORK=1\n";
     if (e != W32_ENGINE_GECKO)
         return "";
     return "MOZ_DISABLE_CONTENT_SANDBOX=1\n"

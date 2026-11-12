@@ -131,11 +131,15 @@ ESP_LBA     := 8192
 ESP_SECTORS := 24576
 SYSTEM_SECTORS := $(shell echo $$(( $(ESP_LBA) + $(ESP_SECTORS) )))
 
-# The desktop image carries Chromium (its own 32-bit Windows snapshot, BSD-licensed) as a bundle after the system
-# area; the first boot unpacks it into /home/apps/chromium. BUNDLE=0 or no network leaves it out.
+# The desktop image carries its browser as a bundle after the system area; the first boot unpacks it into
+# /home/apps/<name>. The 64-bit image takes the Obscura engine (Rust + V8, Apache-2.0), the 32-bit one Chromium (its
+# own 32-bit Windows snapshot, BSD-licensed): Obscura is a 64-bit program. BUNDLE=0 or no network leaves it out.
 CHROMIUM_REV ?= 1721499
+OBSCURA_VER  ?= 0.2.2
+BROWSER      ?= $(if $(filter i686,$(ARCH)),chromium,obscura)
 BUNDLE       ?= $(if $(SERIAL),0,1)
-BUNDLE_FILE  := $(if $(filter 1,$(BUNDLE)),$(BUILD)/cache/chromium-$(CHROMIUM_REV).bundle)
+BUNDLE_NAME  := $(if $(filter obscura,$(BROWSER)),obscura-$(OBSCURA_VER),chromium-$(CHROMIUM_REV))
+BUNDLE_FILE  := $(if $(filter 1,$(BUNDLE)),$(BUILD)/cache/$(BUNDLE_NAME).bundle)
 BUNDLE_SECTORS = $(if $(BUNDLE_FILE),$(shell echo $$(( $$(stat -c %s $(BUNDLE_FILE) 2>/dev/null || echo 0) / 512 ))),0)
 DISK_SECTORS   = $(if $(filter 0,$(BUNDLE_SECTORS)),$(IMAGE_SECTORS),$(shell echo $$(( $(SYSTEM_SECTORS) + $(BUNDLE_SECTORS) + 4194304 ))))
 
@@ -147,6 +151,15 @@ $(BUILD)/cache/chrome-win-$(CHROMIUM_REV).zip:
 
 $(BUILD)/cache/chromium-$(CHROMIUM_REV).bundle: $(BUILD)/cache/chrome-win-$(CHROMIUM_REV).zip tools/mkbundle.py
 	@if [ -s $< ]; then python3 -I tools/mkbundle.py $< $@ "Chromium" chrome-win/ _tests.exe; else : > $@; fi
+
+$(BUILD)/cache/obscura-$(OBSCURA_VER).zip:
+	@mkdir -p $(@D)
+	@echo "  FETCH   Obscura $(OBSCURA_VER) (64-bit Windows engine)"
+	@curl -fsSL --retry 3 -o $@.part https://github.com/h4ckf0r0day/obscura/releases/download/v$(OBSCURA_VER)/obscura-x86_64-windows.zip \
+	    && mv $@.part $@ || (rm -f $@.part; echo "  SKIP    no network: the image goes without Obscura"; : > $@)
+
+$(BUILD)/cache/obscura-$(OBSCURA_VER).bundle: $(BUILD)/cache/obscura-$(OBSCURA_VER).zip tools/mkbundle.py
+	@if [ -s $< ]; then python3 -I tools/mkbundle.py $< $@ "Obscura" ""; else : > $@; fi
 EFICC       ?= $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 HAVE_ESP    := $(and $(shell command -v mkfs.fat 2>/dev/null),$(shell command -v mcopy 2>/dev/null))
 

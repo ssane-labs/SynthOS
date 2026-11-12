@@ -10,12 +10,13 @@
 
 #include "../internal.h"
 
-/* Chromium is the browser of SynthOS. The image carries it as a bundle (tools/mkbundle.py, built from Chromium's
-   own Windows snapshot), and a few seconds after the first login it is unpacked into /home/apps/chromium without
-   any network; the Dock icon shows how far it got. */
+/* The image carries a browser as a bundle (tools/mkbundle.py): Chromium's own 32-bit Windows snapshot, or on the
+   64-bit system the Obscura engine. A few seconds after the first login it is unpacked into /home/apps/<name>
+   without any network; the Dock icon shows how far it got. */
 
 #define DIR "/home/apps/chromium"
 #define EXE DIR "/chrome.exe"
+#define OBSCURA_DIR "/home/apps/obscura"
 
 static struct canvas picture;
 static bool picture_tried;
@@ -40,6 +41,8 @@ const struct gui_app *gui_builtin_app_for_program(const char *path)
         load_picture();
         return &chromium_app;
     }
+    if (str_starts(path, OBSCURA_DIR "/") && !str_casecmp(path_basename(path), "obscura.exe"))
+        return gui_app_find("Obscura");
     return chrome_app_for(path);
 }
 
@@ -48,13 +51,35 @@ static struct {
     bool working, pending, failed, open_after;
     uint64_t done, total, drawn, auto_after;
     char arg[PATH_MAX_LEN];
+    const struct gui_app *app;
 } job;
+
+/* which browser the bundle is, where it goes and its start file, which is unpacked last */
+static const struct gui_app *bundle_app(char *dir, size_t cap, const char **exe)
+{
+    struct bundle_info info;
+    if (!bundle_info(&info))
+        return NULL;
+    bool obscura = !strcmp(info.title, "Obscura");
+    if (dir)
+        str_copy(dir, obscura ? OBSCURA_DIR : DIR, cap);
+    if (exe)
+        *exe = obscura ? "obscura.exe" : "chrome.exe";
+    return obscura ? gui_app_find("Obscura") : &chromium_app;
+}
 
 int gui_app_progress(const struct gui_app *app)
 {
-    if (app == &chromium_app)
-        return job.working ? (int)(job.total ? job.done * 1024 / job.total : 0) : -1;
+    if (job.working && app == job.app)
+        return (int)(job.total ? job.done * 1024 / job.total : 0);
+    if (app == &chromium_app || app == gui_app_find("Obscura"))
+        return -1;
     return chrome_app_progress(app);
+}
+
+bool gui_bundle_has(const struct gui_app *app)
+{
+    return app && bundle_app(NULL, 0, NULL) == app;
 }
 
 #define WIN_W 420
@@ -65,7 +90,12 @@ static void paint(struct window *w, struct canvas *c)
     UNUSED(w);
     gfx_clear(c, (struct rect){0, 0, c->w, c->h}, style.content);
     gfx_icon(c, (c->w - 56) / 2, 22, ICON_BROWSER, 56);
-    const char *line = job.failed ? "Chromium could not be set up: the disk may be full." : "Setting up Chromium";
+    char line[96];
+    const char *name = job.app ? job.app->name : "the browser";
+    if (job.failed)
+        ksnprintf(line, sizeof(line), "%s could not be set up: the disk may be full.", name);
+    else
+        ksnprintf(line, sizeof(line), "Setting up %s", name);
     gfx_text_box(c, (struct rect){0, 92, c->w, 24}, &font_title, line, job.failed ? style.error : style.text,
                  ALIGN_CENTER);
     struct rect bar = {48, 136, WIN_W - 96, 8};
@@ -103,7 +133,12 @@ void chromium_auto_arm(void)
 static void start(bool open_after)
 {
     struct bundle_info info;
-    if (job.working || job.pending || vfs_exists(EXE) || !bundle_info(&info))
+    char dir[PATH_MAX_LEN], exe[PATH_MAX_LEN];
+    const char *last;
+    if (job.working || job.pending || !bundle_info(&info) || !(job.app = bundle_app(dir, sizeof(dir), &last)))
+        return;
+    path_join(dir, last, exe, sizeof(exe));
+    if (vfs_exists(exe))
         return;
     job.pending = true;
     job.failed = false;
@@ -133,7 +168,7 @@ static void unpack_finished(int err)
         wm_close(job.win);
     if (job.open_after) {
         job.open_after = false;
-        launch(job.arg[0] ? job.arg : NULL);
+        gui_app_launch(job.app, job.arg[0] ? job.arg : NULL);
     }
 }
 
@@ -146,9 +181,12 @@ void chromium_run(void)
     }
     if (job.pending) {
         job.pending = false;
-        vfs_mkdirs(DIR);
+        char dir[PATH_MAX_LEN];
+        const char *last;
+        bundle_app(dir, sizeof(dir), &last);
+        vfs_mkdirs(dir);
         int err;
-        if (!(unpacking = bundle_job_start(DIR, "chrome.exe", &err))) {
+        if (!(unpacking = bundle_job_start(dir, last, &err))) {
             job.failed = true;
             if (job.win)
                 wm_invalidate(job.win);
@@ -181,12 +219,17 @@ static void launch(const char *arg)
             gui_message("Chromium did not start", "Windows programs cannot run right now.");
         return;
     }
-    struct bundle_info info;
-    if (!bundle_info(&info)) {
-        /* An image without the bundle: Google Chrome comes from the network instead. */
+    if (bundle_app(NULL, 0, NULL) != &chromium_app) {
+        /* An image without Chromium: Google Chrome comes from the network instead. */
         gui_app_launch(gui_app_find("Chrome"), arg);
         return;
     }
+    gui_bundle_unpack(arg);
+}
+
+/* unpack the bundled browser now, in a window with a progress bar, and open it with arg afterwards */
+void gui_bundle_unpack(const char *arg)
+{
     str_copy(job.arg, arg ? arg : "", sizeof(job.arg));
     start(true);
     job.open_after = true;
@@ -194,5 +237,5 @@ static void launch(const char *arg)
         wm_focus(job.win);
         return;
     }
-    job.win = wm_open("Chromium", ICON_BROWSER, WIN_W, WIN_H, &ops, NULL, 0);
+    job.win = wm_open(job.app ? job.app->name : "Browser", ICON_BROWSER, WIN_W, WIN_H, &ops, NULL, 0);
 }

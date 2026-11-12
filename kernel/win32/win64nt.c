@@ -106,6 +106,16 @@ static uint64_t h_create_file(uint64_t *a, const uint64_t *f, void *t)
     return done(a[0], h, a[3], io, r);
 }
 
+/* NtReadFile / NtWriteFile(file, event, apc, apc context, iosb, buffer, length, offset, key): the 64-bit status
+   block has the byte count at +8 */
+static uint64_t h_rw_file(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint32_t io[2] = {0, 0};
+    uint32_t r = (uint32_t)T32(t, (uint32_t)a[0], (uint32_t)a[1], 0, 0, U(io), U(P(a[5])), (uint32_t)a[6],
+                               U(P(a[7])), 0);
+    return done(0, 0, a[4], io, r);
+}
+
 static bool is_afd(uint64_t h)
 {
     struct w32_object *o = w32_handle_get((HANDLE)(uintptr_t)(uint32_t)h);
@@ -301,6 +311,10 @@ static const struct w64_export nt_exports[] = {
     W64_FN("NtSetInformationThread", h_set_thread_info),
     W64_FN("ZwSetInformationThread", h_set_thread_info),
     W64_FN("NtCreateNamedPipeFile", h_not_supported),
+    W64_FN("NtReadFile", h_rw_file),
+    W64_FNTO("ZwReadFile", h_rw_file, "NtReadFile"),
+    W64_FN("NtWriteFile", h_rw_file),
+    W64_FNTO("ZwWriteFile", h_rw_file, "NtWriteFile"),
     W64_FN("NtDeviceIoControlFile", h_device_io),
     W64_FN("ZwDeviceIoControlFile", h_device_io),
     W64_FN("NtCancelIoFileEx", h_cancel_io),

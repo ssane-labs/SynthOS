@@ -847,6 +847,10 @@ hello64 > /tmp/h64.txt; echo rc64=$?; grep -c . /tmp/h64.txt
 rc64=7
 hello64 | grep math; winhello after64 | grep 'arg 1'
 arg 1: after64
+echo one > /tmp/talk.txt; echo two >> /tmp/talk.txt; talk -t 2 /tmp/talk.txt hello64 echo | grep -c echo
+2
+talk -t 1 /tmp/talk.txt hello64 echo | grep two
+echo two
 cpp64
 ~g3 ~v1 ~g2 ~g1 | caught 'deep 5' alive=0
 cpp64 | grep map

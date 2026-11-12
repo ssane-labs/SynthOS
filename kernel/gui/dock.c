@@ -124,8 +124,10 @@ static void pins_default(enum dock_kind k)
 {
     pin_count = 0;
     UNUSED(k);
-    for (size_t i = 0; i < ARRAY_SIZE(pinned) && pin_count < MAX_PINS; i++)
-        str_copy(pins[pin_count++], pinned[i], PATH_MAX_LEN);
+    for (size_t i = 0; i < ARRAY_SIZE(pinned) && pin_count < MAX_PINS; i++) {
+        const struct gui_app *web = !strcmp(pinned[i], "Chromium") ? gui_default_browser() : NULL;
+        str_copy(pins[pin_count++], web ? web->name : pinned[i], PATH_MAX_LEN);
+    }
 }
 
 static void pins_parse(const char *p, size_t len)
