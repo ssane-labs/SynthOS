@@ -1335,7 +1335,7 @@ bool dock_hit(int x, int y)
     return inside(x, y) || item_at(x, y) >= 0;
 }
 
-static void empty_trash(void)
+void dock_empty_trash(void)
 {
     /* the directory is read again after each removal, so deleting never skips an entry */
     for (int left = 4096; left > 0; left--) {
@@ -1367,7 +1367,7 @@ static void pick(struct window *owner, int index)
         if (index == 0)
             gui_open_file(TRASH_DIR);
         else
-            empty_trash();
+            dock_empty_trash();
         return;
     }
     const char *label = menu_buf[index].label;

@@ -416,6 +416,11 @@ void widgets_layout(void)
         if (w->col < 0 && !w->leaving)
             place(w);
         struct rect old = w->r, cell = cell_rect(w->col, w->row, w->cw, w->ch);
+        /* the first clock stands in the exact middle, between the grid's columns, until it is moved */
+        if (widget_opt_int(w, "center", 0)) {
+            struct rect a = wm_work_area(0);
+            cell.x = a.x + (a.w - cell.w) / 2;
+        }
         if (!w->placed) {
             spring_set(&w->ax, cell.x);
             spring_set(&w->ay, cell.y);
@@ -724,6 +729,7 @@ bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks)
         drag = -1;
         w->col = drop_col;
         w->row = drop_row;
+        widget_opt_set(w, "center", 0);
         save();
         widgets_layout();
         gui_desktop_changed();
@@ -839,6 +845,7 @@ void widgets_start(void)
         if (clock) {
             clock->col = MAX(0, (grid_cols() - clock->cw) / 2);
             clock->row = 0;
+            widget_opt_set(clock, "center", 1);
             save();
         }
     }

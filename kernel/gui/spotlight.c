@@ -23,6 +23,8 @@ enum result_kind {
     R_CALC,
     R_SETTING,
     R_FOLDER,
+    R_WEB,
+    R_ACTION,
 };
 
 struct result {
@@ -173,6 +175,98 @@ static void match_path(struct spot *s)
     str_copy(r->detail, vfs_is_dir(path) ? "Folder" : "File", sizeof(r->detail));
 }
 
+/* An address goes to the browser chosen in Settings; anything else can be searched on the web there. */
+static bool looks_like_url(const char *q)
+{
+    if (strstr(q, "://"))
+        return true;
+    if (strchr(q, ' ') || q[0] == '/' || q[0] == '.')
+        return false;
+    const char *dot = strrchr(q, '.');
+    if (!dot || dot == q)
+        return false;
+    int letters = 0;
+    for (const char *p = dot + 1; *p && *p != '/' && *p != ':'; p++) {
+        if (!((*p | 32) >= 'a' && (*p | 32) <= 'z'))
+            return false;
+        letters++;
+    }
+    return letters >= 2;
+}
+
+static void match_web(struct spot *s, bool url)
+{
+    const struct gui_app *b = gui_default_browser();
+    if (!b || s->count >= MAX_RESULTS)
+        return;
+    const char *q = s->query.buf;
+    struct result *r = &s->res[s->count++];
+    *r = (struct result){.kind = R_WEB, .icon = ICON_BROWSER};
+    if (url) {
+        ksnprintf(r->path, sizeof(r->path), "%s%s", strstr(q, "://") ? "" : "https://", q);
+        ksnprintf(r->label, sizeof(r->label), "Open %s", q);
+    } else {
+        size_t n = str_copy(r->path, "https://duckduckgo.com/?q=", sizeof(r->path));
+        for (const char *c = q; *c && n + 4 < sizeof(r->path); c++) {
+            unsigned char ch = (unsigned char)*c;
+            if ((ch | 32) >= 'a' && (ch | 32) <= 'z' ? true : (ch >= '0' && ch <= '9') || strchr("-_.~", ch))
+                r->path[n++] = (char)ch;
+            else
+                n += (size_t)ksnprintf(r->path + n, sizeof(r->path) - n, ch == ' ' ? "+" : "%%%02X", ch);
+        }
+        r->path[n] = 0;
+        ksnprintf(r->label, sizeof(r->label), "Search the web for \"%s\"", q);
+    }
+    str_copy(r->detail, b->name, sizeof(r->detail));
+}
+
+/* things the system does, found by name: "shut", "dark", "trash"... */
+static const struct {
+    const char *name, *words;
+    enum icon_id icon;
+} actions[] = {
+    {"Shut Down", "shut down power off turn off", ICON_POWER},
+    {"Restart", "restart reboot", ICON_POWER},
+    {"Lock Screen", "lock screen", ICON_USER},
+    {"Dark Mode", "dark mode appearance night", ICON_SETTINGS},
+    {"Light Mode", "light mode appearance day", ICON_SETTINGS},
+    {"Empty Trash", "empty trash bin", ICON_TRASH},
+    {"Take Screenshot", "screenshot screen capture", ICON_SCREENSHOT},
+    {"Open Downloads", "downloads", ICON_FOLDER_DOWNLOADS},
+};
+
+static void match_actions(struct spot *s)
+{
+    for (int i = 0; i < (int)ARRAY_SIZE(actions) && s->count < MAX_RESULTS - 2; i++) {
+        if (!contains_ci(actions[i].name, s->query.buf) && !contains_ci(actions[i].words, s->query.buf))
+            continue;
+        struct result *r = &s->res[s->count++];
+        *r = (struct result){.kind = R_ACTION, .icon = actions[i].icon};
+        str_copy(r->label, actions[i].name, sizeof(r->label));
+        ksnprintf(r->path, sizeof(r->path), "%d", i);
+        str_copy(r->detail, "Action", sizeof(r->detail));
+    }
+}
+
+static void run_action(int i)
+{
+    switch (i) {
+    case 0: shell_power_menu(false); break;
+    case 1: shell_power_menu(true); break;
+    case 2: gui_lock(); break;
+    case 3: gui_setting("appearance", "dark"); break;
+    case 4: gui_setting("appearance", "light"); break;
+    case 5: dock_empty_trash(); break;
+    case 6: gui_app_launch(gui_app_find("Screenshot"), NULL); break;
+    case 7: {
+        char path[PATH_MAX_LEN];
+        path_join(user_home(), "Downloads", path, sizeof(path));
+        gui_app_launch(gui_app_find("Files"), path);
+        break;
+    }
+    }
+}
+
 static void update(struct spot *s)
 {
     if (!strcmp(s->last, s->query.buf))
@@ -184,12 +278,23 @@ static void update(struct spot *s)
         return;
     match_calc(s);
     match_path(s);
+    bool url = looks_like_url(s->query.buf);
+    if (url)
+        match_web(s, true);
+    if (s->query.len >= 3)
+        match_actions(s);
     gui_app_foreach(match_app, s);
     if (s->query.len >= 2)
         settings_foreach_pane(match_pane, s);
     search_dir(s, "/home", 0);
     search_dir(s, "/apps", 0);
     search_dir(s, "/docs", 0);
+    if (!url && s->count >= MAX_RESULTS - 1)
+        s->count = MAX_RESULTS - 2;
+    if (!url)
+        match_web(s, false);
+    if (s->count >= MAX_RESULTS)
+        s->count = MAX_RESULTS - 1;
     struct result *r = &s->res[s->count++];
     *r = (struct result){.kind = R_RUN, .icon = ICON_TERMINAL};
     ksnprintf(r->label, sizeof(r->label), "Run \"%s\"", s->query.buf);
@@ -219,6 +324,10 @@ static void open_result(struct spot *s, int i)
         gui_app_launch(gui_app_find("System Settings"), r.path);
     else if (r.kind == R_FOLDER)
         vfs_is_dir(r.path) ? gui_app_launch(gui_app_find("Files"), r.path) : gui_open_file(r.path);
+    else if (r.kind == R_WEB)
+        gui_app_launch(gui_default_browser(), r.path);
+    else if (r.kind == R_ACTION)
+        run_action((int)str_to_long(r.path, NULL, 10));
     else
         gui_terminal_run(query);
 }

@@ -229,6 +229,7 @@ void switcher_next(int held, bool back);
 void desktop_show_toggle(void);
 void shell_system_menu(int x, int y);
 void shell_power_menu(bool restart);
+void dock_empty_trash(void);
 
 #define MEDIA_BANDS 12
 
