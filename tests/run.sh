@@ -45,6 +45,8 @@ dmesg | grep formatted
 sfs: formatted data0
 echo hello world
 hello world
+help welcome
+languages, region, account, look, desktop, Dock, behaviour
 imginfo /system/wallpapers/Dunes.jpg
 1280x800, 1 frame, average #8e6262
 imginfo /system/wallpapers/Glacier.jpg

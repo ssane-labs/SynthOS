@@ -13,22 +13,30 @@
 
 #include "internal.h"
 
-/* The first start of an installed system asks for the keyboard and region, makes the user's account and lets them
-   pick the look and the browser; the look changes behind the card right away. Started from a USB stick, the
-   system first asks whether to try it or to install it. */
+/* The first start of an installed system walks through the languages, region, the user's account, the look, the
+   desktop, the Dock and menu bar and the system's behaviour; every choice takes effect behind the card right away.
+   Started from a USB stick, the system first asks whether to try it or to install it. */
 
 #define SETUP_DONE "/home/.setup-done"
 #define LIVE_DONE "/home/.live-welcome"
 #define SETTINGS_FILE "/home/.synth.conf"
-#define CARD_W 640
-#define CARD_H 520
+#define CARD_W 680
+#define CARD_H 540
+#define WALLS 11
+#define THUMB_W 84
+#define THUMB_H 52
+#define ROW_H 36
 
 enum page {
     SP_LIVE,
     SP_HELLO,
+    SP_LANGUAGE,
     SP_REGION,
     SP_ACCOUNT,
     SP_LOOK,
+    SP_DESKTOP,
+    SP_DOCK,
+    SP_SYSTEM,
     SP_DONE,
 };
 
@@ -57,13 +65,25 @@ struct setup {
     uint64_t tick;
     struct canvas backdrop;
     bool layouts[32];
+    int order[32], norder;
     int zone;
-    bool clock24;
     struct ui_text full, name, pass, pass2;
     bool name_edited, autologin, want_focus;
     char error[96];
     int look, appearance, accent;
+    struct canvas thumbs[WALLS];
+    const struct gui_look *thumbs_look;
+    bool thumbs_dark;
 };
+
+static const char *const wall_names[WALLS] = {"Look", "Mono", "Halo", "Sunrise", "Earthset", "Aurora",
+                                              "Milky Way", "Dunes", "Glacier", "Saturn", "Solid"};
+static const char *const wall_values[WALLS] = {"auto", "mono", "halo", "sunrise", "earthset", "aurora",
+                                               "milkyway", "dunes", "glacier", "saturn", "solid"};
+static const char *const widget_names[8] = {"clock", "analog", "weather", "calendar", "worldclock", "music",
+                                            "notes", "system"};
+static const char *const widget_titles[8] = {"Clock", "Analog Clock", "Weather", "Calendar", "World Clock", "Music",
+                                             "Notes", "System"};
 
 static struct window *setup_win;
 
@@ -88,6 +108,21 @@ bool gui_setup_needed(void)
 static void apply(const char *name, const char *value)
 {
     setting_apply(shell_current(), name, value);
+}
+
+static void current(const char *name, char *buf, size_t cap)
+{
+    const struct setting *st = setting_find(name);
+    buf[0] = 0;
+    if (st && st->get)
+        st->get(buf, cap);
+}
+
+static bool is_on(const char *name)
+{
+    char v[16];
+    current(name, v, sizeof(v));
+    return !strcmp(v, "on");
 }
 
 static void refresh_backdrop(struct setup *s)
@@ -219,34 +254,103 @@ static void hello_page(struct ui *ui, struct setup *s)
     ui_label(ui, (struct rect){r.x, r.y + 196, r.w, 20}, "Привет  ·  Hallo  ·  Bonjour  ·  Hola", &font_title,
              style.accent, ALIGN_CENTER);
     ui_wrap_text(ui->c, (struct rect){r.x + 40, r.y + 246, r.w - 80, 80}, &font_sans,
-                 "SynthOS is installed. A few questions and it is ready: keyboard and region, your account, the look "
-                 "and the browser. Everything can be changed later in System Settings.",
+                 "SynthOS is installed. Let's make it yours: languages and region, your account, the look, the "
+                 "desktop and the Dock, and how the system behaves. Everything can be changed later in System "
+                 "Settings.",
                  style.secondary);
     bool back;
     if (nav(ui, s, "Continue", &back))
+        go(s, SP_LANGUAGE);
+}
+
+static void order_remove(struct setup *s, int k)
+{
+    for (int i = 0; i < s->norder; i++)
+        if (s->order[i] == k) {
+            memmove(&s->order[i], &s->order[i + 1], (size_t)(s->norder - i - 1) * sizeof(int));
+            s->norder--;
+            return;
+        }
+}
+
+static void language_page(struct ui *ui, struct setup *s)
+{
+    struct rect r = body(ui, s);
+    title(ui, r, "Languages", "The system speaks English; tick the languages you type in.");
+    int n = MIN(keymap_count(), 32), cols = 3, y = r.y + 62;
+    for (int i = 0; i < n; i++) {
+        const char *name;
+        keymap_layout_name(i, &name);
+        struct rect cb = {r.x + (i % cols) * (r.w / cols), y + (i / cols) * 25, r.w / cols, 22};
+        if (ui_checkbox(ui, cb, name, &s->layouts[i])) {
+            if (!i)
+                s->layouts[0] = true;
+            else if (s->layouts[i] && s->norder < 32)
+                s->order[s->norder++] = i;
+            else if (!s->layouts[i])
+                order_remove(s, i);
+        }
+    }
+    y += ((n + cols - 1) / cols) * 25 + 10;
+    ui_label(ui, (struct rect){r.x, y, r.w, 16}, "Order: the first language is used at login; click one to put it first.",
+             &font_small, style.tertiary, ALIGN_LEFT);
+    y += 22;
+    int x = r.x;
+    for (int i = 0; i < s->norder; i++) {
+        const char *name, *code = keymap_layout_name(s->order[i], &name);
+        int w = gfx_text_width(&font_sans, name) + 24;
+        if (x + w > r.x + r.w)
+            break;
+        struct rect chip = {x, y, w, 26};
+        if (ui->c) {
+            gfx_round(ui->c, chip, 13, i ? style.group : ALPHA(style.accent, 60));
+            gfx_round_frame(ui->c, chip, 13, i ? style.separator : style.accent);
+            gfx_text_box(ui->c, chip, i ? &font_sans : &font_bold, name, style.text, ALIGN_CENTER);
+        }
+        if (i && ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, chip)) {
+            ui->consumed = true;
+            int k = s->order[i];
+            memmove(&s->order[1], &s->order[0], (size_t)i * sizeof(int));
+            s->order[0] = k;
+        }
+        UNUSED(code);
+        x += w + 8;
+    }
+    bool back;
+    if (nav(ui, s, "Continue", &back))
         go(s, SP_REGION);
+    if (back)
+        go(s, SP_HELLO);
+}
+
+static void switch_row(struct ui *ui, struct rect g, int i, int n, const char *label, const char *setting)
+{
+    struct rect row = {g.x, g.y + i * ROW_H, g.w, ROW_H};
+    ui_group_label(ui, row, label, "", i == n - 1);
+    bool on = is_on(setting);
+    if (ui_switch(ui, (struct rect){row.x + row.w - 50, row.y + (ROW_H - 22) / 2, 36, 22}, &on))
+        apply(setting, on ? "on" : "off");
+}
+
+static void choice_row(struct ui *ui, struct rect r, int y, const char *label, const char *setting,
+                       const char *const *labels, const char *const *values, int n)
+{
+    char v[24];
+    current(setting, v, sizeof(v));
+    int sel = -1;
+    for (int i = 0; i < n; i++)
+        if (!strcmp(v, values[i]))
+            sel = i;
+    ui_label(ui, (struct rect){r.x, y + 6, 150, 20}, label, &font_sans, style.text, ALIGN_LEFT);
+    if (ui_segmented(ui, (struct rect){r.x + 160, y, r.w - 160, 30}, labels, n, &sel))
+        apply(setting, values[sel]);
 }
 
 static void region_page(struct ui *ui, struct setup *s)
 {
     struct rect r = body(ui, s);
-    title(ui, r, "Keyboard and region", "The system speaks English; you can type in these languages:");
-    int n = MIN(keymap_count(), 32), shown = MIN(n, 9), cols = 3, y = r.y + 66;
-    for (int i = 0; i < shown; i++) {
-        const char *name;
-        keymap_layout_name(i, &name);
-        struct rect cb = {r.x + (i % cols) * (r.w / cols), y + (i / cols) * 28, r.w / cols, 24};
-        bool before = s->layouts[i];
-        ui_checkbox(ui, cb, name, &s->layouts[i]);
-        if (i == 0)
-            s->layouts[0] = true;
-        (void)before;
-    }
-    y += ((shown + cols - 1) / cols) * 28 + 4;
-    ui_label(ui, (struct rect){r.x, y, r.w, 16},
-             "Win+Space switches the layout; Language & Region in System Settings has many more.",
-             &font_small, style.tertiary, ALIGN_LEFT);
-    y += 34;
+    title(ui, r, "Region", "Where you are and how the time is shown.");
+    int y = r.y + 70;
     ui_label(ui, (struct rect){r.x, y, r.w, 18}, "Time zone", &font_bold, style.text, ALIGN_LEFT);
     struct rect picker = {r.x, y + 24, r.w, 36};
     if (ui->c) {
@@ -257,7 +361,7 @@ static void region_page(struct ui *ui, struct setup *s)
         ksnprintf(text, sizeof(text), "%s  (%s%s)", z->city, strcmp(z->offset, "UTC") ? "UTC" : "", z->offset);
         gfx_text_box(ui->c, picker, &font_sans, text, style.text, ALIGN_CENTER);
     }
-    int nz = (int)ARRAY_SIZE(zones);
+    int nz = (int)ARRAY_SIZE(zones), was = s->zone;
     if (ui_symbol_button(ui, (struct rect){picker.x + 4, picker.y + 4, 28, 28}, SYM_LEFT, false))
         s->zone = (s->zone + nz - 1) % nz;
     if (ui_symbol_button(ui, (struct rect){picker.x + picker.w - 32, picker.y + 4, 28, 28}, SYM_RIGHT, false))
@@ -267,27 +371,23 @@ static void region_page(struct ui *ui, struct setup *s)
         ui->consumed = true;
         s->zone = (s->zone + (key == KEY_LEFT ? nz - 1 : 1)) % nz;
     }
-    y += 80;
-    struct rect g = ui_group(ui, r.x, y, r.w, 1, 44);
-    ui_group_label(ui, (struct rect){g.x, g.y, g.w, 44}, "24-hour clock", "", true);
-    ui_switch(ui, (struct rect){g.x + g.w - 50, g.y + 11, 36, 22}, &s->clock24);
+    if (s->zone != was) {
+        apply("timezone", zones[s->zone].offset);
+        chrome_changed();
+    }
+    y += 84;
+    ui_label(ui, (struct rect){r.x, y, r.w, 18}, "Clock", &font_bold, style.text, ALIGN_LEFT);
+    struct rect g = ui_group(ui, r.x, y + 24, r.w, 2, ROW_H);
+    switch_row(ui, g, 0, 2, "24-hour time", "clock24");
+    switch_row(ui, g, 1, 2, "Show the date in the menu bar", "clockdate");
     bool back;
     if (nav(ui, s, "Continue", &back)) {
-        char list[160] = "";
-        for (int i = 0; i < n; i++)
-            if (s->layouts[i]) {
-                if (list[0])
-                    str_append(list, ",", sizeof(list));
-                str_append(list, keymap_layout_name(i, NULL), sizeof(list));
-            }
-        apply("keyboard", list);
         apply("timezone", zones[s->zone].offset);
-        apply("clock24", s->clock24 ? "on" : "off");
         chrome_changed();
         go(s, SP_ACCOUNT);
     }
     if (back)
-        go(s, SP_HELLO);
+        go(s, SP_LANGUAGE);
 }
 
 /* The account name follows the full name until it is edited: "Anna Smith" becomes "anna". */
@@ -427,11 +527,204 @@ static void look_page(struct ui *ui, struct setup *s)
             apply("accent", accents[i]);
         }
     }
+    static const char *const glass[] = {"Liquid Glass", "Frosted", "Solid"};
+    static const char *const glass_values[] = {"liquid", "frosted", "solid"};
+    choice_row(ui, r, y + 46, "Transparency", "glass", glass, glass_values, 3);
+    bool back;
+    if (nav(ui, s, "Continue", &back))
+        go(s, SP_DESKTOP);
+    if (back)
+        go(s, SP_ACCOUNT);
+}
+
+static void make_thumbs(struct setup *s)
+{
+    if (s->thumbs[0].px && s->thumbs_dark == style.dark && s->thumbs_look == look_current())
+        return;
+    for (int i = 0; i < WALLS; i++) {
+        if (!s->thumbs[i].px && !canvas_alloc(&s->thumbs[i], THUMB_W, THUMB_H))
+            continue;
+        wallpaper_paint(&s->thumbs[i], i ? wall_values[i] : look_current()->wallpaper, style.dark);
+    }
+    s->thumbs_dark = style.dark;
+    s->thumbs_look = look_current();
+}
+
+static bool widget_on(const char *list, const char *name)
+{
+    size_t n = strlen(name);
+    for (const char *p = list; *p;) {
+        const char *e = strchr(p, ',');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len == n && !strncmp(p, name, n))
+            return true;
+        p += len + (e ? 1 : 0);
+    }
+    return false;
+}
+
+static void widget_toggle(const char *name, bool on)
+{
+    char list[200], out[220] = "";
+    current("widgets", list, sizeof(list));
+    for (const char *p = list; *p;) {
+        const char *e = strchr(p, ',');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        char kind[24];
+        str_copy(kind, p, MIN(len + 1, sizeof(kind)));
+        if (strcmp(kind, "none") && strcmp(kind, name)) {
+            if (out[0])
+                str_append(out, ",", sizeof(out));
+            str_append(out, kind, sizeof(out));
+        }
+        p += len + (e ? 1 : 0);
+    }
+    if (on) {
+        if (out[0])
+            str_append(out, ",", sizeof(out));
+        str_append(out, name, sizeof(out));
+    }
+    apply("widgets", out[0] ? out : "none");
+}
+
+static void desktop_page(struct ui *ui, struct setup *s)
+{
+    struct rect r = body(ui, s);
+    title(ui, r, "Your desktop", "A wallpaper and the widgets on it.");
+    char wall[PATH_MAX_LEN];
+    current("wallpaper", wall, sizeof(wall));
+    make_thumbs(s);
+    int cols = 6, gap = (r.w - cols * THUMB_W) / (cols - 1), y = r.y + 62;
+    for (int i = 0; i < WALLS; i++) {
+        struct rect t = {r.x + (i % cols) * (THUMB_W + gap), y + (i / cols) * (THUMB_H + 24), THUMB_W, THUMB_H};
+        bool sel = !strcmp(wall, wall_values[i]);
+        if (ui->c && s->thumbs[i].px) {
+            gfx_blit_round(ui->c, t, &s->thumbs[i], 8, false);
+            gfx_round_frame(ui->c, t, 8, ALPHA(0, 30));
+            if (sel)
+                gfx_round_frame(ui->c, rect_inset(t, -3), 11, style.accent);
+            gfx_text_box(ui->c, (struct rect){t.x - 6, t.y + t.h + 3, t.w + 12, 16}, &font_small, wall_names[i],
+                         sel ? style.text : style.secondary, ALIGN_CENTER);
+        }
+        if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, t)) {
+            ui->consumed = true;
+            apply("wallpaper", wall_values[i]);
+            refresh_backdrop(s);
+        }
+    }
+    y += 2 * (THUMB_H + 24) + 8;
+    ui_label(ui, (struct rect){r.x, y, r.w, 18}, "Widgets", &font_bold, style.text, ALIGN_LEFT);
+    char kinds[200];
+    current("widgets", kinds, sizeof(kinds));
+    for (int i = 0; i < 8; i++) {
+        bool on = widget_on(kinds, widget_names[i]);
+        struct rect cb = {r.x + (i % 4) * (r.w / 4), y + 24 + (i / 4) * 26, r.w / 4, 22};
+        if (ui_checkbox(ui, cb, widget_titles[i], &on))
+            widget_toggle(widget_names[i], on);
+    }
+    y += 24 + 2 * 26 + 6;
+    bool disk = is_on("desktopdisk");
+    if (ui_checkbox(ui, (struct rect){r.x, y, r.w, 22}, "Show SynthOS HD and other disks on the desktop", &disk))
+        apply("desktopdisk", disk ? "on" : "off");
+    bool back;
+    if (nav(ui, s, "Continue", &back))
+        go(s, SP_DOCK);
+    if (back)
+        go(s, SP_LOOK);
+}
+
+static void dock_preview(struct ui *ui, struct rect pv)
+{
+    if (!ui->c)
+        return;
+    const struct canvas *wp = desktop_wallpaper(0);
+    if (wp && wp->px) {
+        struct canvas shot;
+        if (canvas_alloc(&shot, pv.w, pv.h)) {
+            gfx_scale(&shot, (struct rect){0, 0, pv.w, pv.h}, wp, 255);
+            gfx_blit_round(ui->c, pv, &shot, 10, false);
+            canvas_free(&shot);
+        }
+    } else {
+        gfx_round(ui->c, pv, 10, style.desktop);
+    }
+    gfx_round_frame(ui->c, pv, 10, ALPHA(0, 40));
+    gfx_fill(ui->c, (struct rect){pv.x + 4, pv.y + 3, pv.w - 8, 12}, ALPHA(style.dark ? 0 : 0xffffffffu, 120));
+    char when[40];
+    ksnprintf(when, sizeof(when), "%s%s", is_on("clockdate") ? "Thu 12 Nov  " : "",
+              is_on("clock24") ? (is_on("clockseconds") ? "21:41:07" : "21:41")
+                               : (is_on("clockseconds") ? "9:41:07 PM" : "9:41 PM"));
+    gfx_text_box(ui->c, (struct rect){pv.x + 8, pv.y + 2, pv.w - 16, 14}, &font_small, when, style.text, ALIGN_RIGHT);
+    char mode[16], size[16];
+    current("dockmode", mode, sizeof(mode));
+    current("docksize", size, sizeof(size));
+    if (!strcmp(mode, "off"))
+        return;
+    int icon = !strcmp(size, "small") ? 12 : !strcmp(size, "large") ? 20 : 16, n = 7;
+    int dw = n * (icon + 4) + 10, dh = icon + 10;
+    struct rect dock = {pv.x + (pv.w - dw) / 2, pv.y + pv.h - dh - 6, dw, dh};
+    if (!strcmp(mode, "autohide")) {
+        gfx_fill(ui->c, (struct rect){pv.x + pv.w / 2 - 20, pv.y + pv.h - 4, 40, 2}, ALPHA(0xffffffffu, 160));
+        return;
+    }
+    gfx_round(ui->c, dock, dh / 3, ALPHA(style.dark ? 0 : 0xffffffffu, 140));
+    static const uint32_t colors[] = {0xff0a84ff, 0xff30d158, 0xffff9f0a, 0xffff375f, 0xffbf5af2, 0xff64d2ff,
+                                      0xff8e8e93};
+    for (int i = 0; i < n; i++) {
+        int sz = icon;
+        if (is_on("magnify") && i == 3)
+            sz = icon * 3 / 2;
+        gfx_round(ui->c, (struct rect){dock.x + 7 + i * (icon + 4) - (sz - icon) / 2, dock.y + dock.h - 5 - sz, sz, sz},
+                  sz / 4, colors[i]);
+    }
+}
+
+static void dock_page(struct ui *ui, struct setup *s)
+{
+    struct rect r = body(ui, s);
+    title(ui, r, "Dock and menu bar", "Where your apps wait and what the menu bar shows.");
+    dock_preview(ui, (struct rect){r.x + (r.w - 300) / 2, r.y + 60, 300, 130});
+    int y = r.y + 206;
+    static const char *const modes[] = {"Always shown", "Hide automatically", "Off"};
+    static const char *const mode_values[] = {"show", "autohide", "off"};
+    choice_row(ui, r, y, "Dock", "dockmode", modes, mode_values, 3);
+    static const char *const sizes[] = {"Small", "Medium", "Large"};
+    static const char *const size_values[] = {"small", "medium", "large"};
+    choice_row(ui, r, y + 40, "Icon size", "docksize", sizes, size_values, 3);
+    struct rect g = ui_group(ui, r.x, y + 84, r.w, 2, ROW_H);
+    switch_row(ui, g, 0, 2, "Magnify icons under the pointer", "magnify");
+    switch_row(ui, g, 1, 2, "Show seconds in the menu bar clock", "clockseconds");
+    bool back;
+    if (nav(ui, s, "Continue", &back))
+        go(s, SP_SYSTEM);
+    if (back)
+        go(s, SP_DESKTOP);
+}
+
+static void system_page(struct ui *ui, struct setup *s)
+{
+    struct rect r = body(ui, s);
+    title(ui, r, "How it works", "Shortcuts, comfort and privacy.");
+    int y = r.y + 64;
+    static const char *const keys[] = {"Windows + Mac", "Windows", "Mac"};
+    static const char *const key_values[] = {"both", "windows", "mac"};
+    choice_row(ui, r, y, "Keyboard shortcuts", "shortcuts", keys, key_values, 3);
+    static const char *const nights[] = {"Off", "Evenings", "Always"};
+    static const char *const night_values[] = {"off", "auto", "on"};
+    choice_row(ui, r, y + 40, "Night Shift", "nightshift", nights, night_values, 3);
+    static const char *const locks[] = {"Never", "5 min", "15 min", "1 hour"};
+    static const char *const lock_values[] = {"0", "5", "15", "60"};
+    choice_row(ui, r, y + 80, "Lock when idle", "locktime", locks, lock_values, 4);
+    struct rect g = ui_group(ui, r.x, y + 126, r.w, 4, ROW_H);
+    switch_row(ui, g, 0, 4, "Animations", "animations");
+    switch_row(ui, g, 1, 4, "Natural scrolling", "naturalscroll");
+    switch_row(ui, g, 2, 4, "Look for updates once a day", "autoupdate");
+    switch_row(ui, g, 3, 4, "Do Not Disturb", "dnd");
     bool back;
     if (nav(ui, s, "Continue", &back))
         go(s, SP_DONE);
     if (back)
-        go(s, SP_ACCOUNT);
+        go(s, SP_DOCK);
 }
 
 static bool finish(struct setup *s)
@@ -441,6 +734,14 @@ static bool finish(struct setup *s)
         ksnprintf(s->error, sizeof(s->error), "The account cannot be made: %s", err_str(err));
         return false;
     }
+    char list[160] = "";
+    for (int i = 0; i < s->norder; i++) {
+        if (list[0])
+            str_append(list, ",", sizeof(list));
+        str_append(list, keymap_layout_name(s->order[i], NULL), sizeof(list));
+    }
+    if (list[0])
+        apply("keyboard", list);
     apply("autologin", s->autologin ? s->name.buf : "off");
     settings_save(SETTINGS_FILE);
     vfs_write_all(SETUP_DONE, "1\n", 2);
@@ -451,26 +752,70 @@ static bool finish(struct setup *s)
     return true;
 }
 
+static void summary_row(struct ui *ui, struct rect r, int i, const char *label, const char *value)
+{
+    if (!ui->c)
+        return;
+    int y = r.y + i * 22;
+    gfx_text_box(ui->c, (struct rect){r.x, y, r.w / 2 - 10, 20}, &font_sans, label, style.secondary, ALIGN_RIGHT);
+    gfx_text_box(ui->c, (struct rect){r.x + r.w / 2 + 10, y, r.w / 2 - 10, 20}, &font_bold, value, style.text,
+                 ALIGN_LEFT);
+}
+
 static void done_page(struct ui *ui, struct setup *s)
 {
     struct rect r = body(ui, s);
     if (ui->c) {
-        int cx = r.x + r.w / 2, cy = r.y + 70;
-        gfx_circle(ui->c, cx, cy, 40, style.ok);
-        gfx_symbol(ui->c, cx - 20, cy - 20, SYM_CHECK, 40, RGB(255, 255, 255));
+        int cx = r.x + r.w / 2, cy = r.y + 34;
+        gfx_circle(ui->c, cx, cy, 30, style.ok);
+        gfx_symbol(ui->c, cx - 15, cy - 15, SYM_CHECK, 30, RGB(255, 255, 255));
     }
     char hello[96];
     ksnprintf(hello, sizeof(hello), "All set, %s", s->full.buf);
-    ui_label(ui, (struct rect){r.x, r.y + 130, r.w, 30}, hello, &font_title, style.text, ALIGN_CENTER);
-    ui_wrap_text(ui->c, (struct rect){r.x + 30, r.y + 176, r.w - 60, 100}, &font_sans,
-                 "Install programs from the web or with pkg in the Terminal, change anything in System Settings, and "
-                 "find every app in Launchpad.",
+    ui_label(ui, (struct rect){r.x, r.y + 76, r.w, 30}, hello, &font_title, style.text, ALIGN_CENTER);
+    struct rect list = {r.x, r.y + 120, r.w, 200};
+    char langs[120] = "", v[PATH_MAX_LEN], line[160];
+    for (int i = 0; i < s->norder; i++) {
+        const char *name;
+        keymap_layout_name(s->order[i], &name);
+        if (langs[0])
+            str_append(langs, ", ", sizeof(langs));
+        str_append(langs, name, sizeof(langs));
+    }
+    summary_row(ui, list, 0, "Languages", langs);
+    ksnprintf(line, sizeof(line), "%s, %s clock", zones[s->zone].city, is_on("clock24") ? "24-hour" : "12-hour");
+    summary_row(ui, list, 1, "Region", line);
+    ksnprintf(line, sizeof(line), "%s (%s)%s", s->name.buf, s->pass.len ? "password" : "no password",
+              s->autologin ? ", logs in automatically" : "");
+    summary_row(ui, list, 2, "Account", line);
+    static const char *const modes[3] = {"Auto", "Light", "Dark"};
+    ksnprintf(line, sizeof(line), "%s, %s, accent %s", look_get(s->look)->title, modes[s->appearance],
+              accents[s->accent]);
+    summary_row(ui, list, 3, "Look", line);
+    current("wallpaper", v, sizeof(v));
+    const char *wall = v;
+    for (int i = 0; i < WALLS; i++)
+        if (!strcmp(v, wall_values[i]))
+            wall = i ? wall_names[i] : "From the look";
+    summary_row(ui, list, 4, "Wallpaper", wall);
+    char mode[16], size[16];
+    current("dockmode", mode, sizeof(mode));
+    current("docksize", size, sizeof(size));
+    ksnprintf(line, sizeof(line), "%s, %s icons", !strcmp(mode, "show") ? "always shown" : !strcmp(mode, "off") ? "off" : "hides itself",
+              size);
+    summary_row(ui, list, 5, "Dock", line);
+    current("shortcuts", v, sizeof(v));
+    summary_row(ui, list, 6, "Shortcuts", !strcmp(v, "both") ? "Windows and Mac" : !strcmp(v, "mac") ? "Mac" : "Windows");
+    ui_wrap_text(ui->c, (struct rect){r.x + 30, r.y + 290, r.w - 60, 60}, &font_sans,
+                 "Get more apps in the App Store, change anything in System Settings, and find every app in Launchpad.",
                  style.secondary);
     if (s->error[0])
-        ui_label(ui, (struct rect){r.x, r.y + 260, r.w, 18}, s->error, &font_sans, style.error, ALIGN_CENTER);
+        ui_label(ui, (struct rect){r.x, r.y + 350, r.w, 18}, s->error, &font_sans, style.error, ALIGN_CENTER);
     bool back;
     if (nav(ui, s, "Start", &back))
         finish(s);
+    if (back)
+        go(s, SP_SYSTEM);
 }
 
 static void frame(struct ui *ui, void *data)
@@ -492,7 +837,11 @@ static void frame(struct ui *ui, void *data)
     case SP_HELLO: hello_page(ui, s); break;
     case SP_REGION: region_page(ui, s); break;
     case SP_ACCOUNT: account_page(ui, s); break;
+    case SP_LANGUAGE: language_page(ui, s); break;
     case SP_LOOK: look_page(ui, s); break;
+    case SP_DESKTOP: desktop_page(ui, s); break;
+    case SP_DOCK: dock_page(ui, s); break;
+    case SP_SYSTEM: system_page(ui, s); break;
     default: done_page(ui, s); break;
     }
 }
@@ -522,6 +871,8 @@ static void destroy(struct window *w)
 {
     struct setup *s = w->data;
     canvas_free(&s->backdrop);
+    for (int i = 0; i < WALLS; i++)
+        canvas_free(&s->thumbs[i]);
     memset(&s->pass, 0, sizeof(s->pass));
     memset(&s->pass2, 0, sizeof(s->pass2));
     kfree(s);
@@ -553,10 +904,15 @@ static void open_setup(enum page first)
     if (!s)
         return;
     s->page = first;
-    for (int i = 0; i < keymap_count() && i < 32; i++)
-        s->layouts[i] = keymap_enabled(i);
+    s->norder = keymap_order(s->order, 32);
+    for (int i = 0; i < s->norder; i++)
+        if (s->order[i] >= 0 && s->order[i] < 32)
+            s->layouts[s->order[i]] = true;
+    if (!s->layouts[0] && s->norder < 32) {
+        s->layouts[0] = true;
+        s->order[s->norder++] = 0;
+    }
     s->zone = current_zone();
-    s->clock24 = true;
     s->tick = hal_ticks_ms();
     s->pass.password = s->pass2.password = true;
     for (int i = 0; i < look_count(); i++)
@@ -583,10 +939,12 @@ static void open_setup(enum page first)
 
 void gui_setup(void)
 {
+    if (hal_installed())
+        apply("clock24", "on");
     open_setup(hal_installed() ? SP_HELLO : SP_LIVE);
 }
 
-COMMAND(welcome, NULL, "system", "welcome [live]", "run the first-start assistant: keyboard, account, look, browser")
+COMMAND(welcome, NULL, "system", "welcome [live]", "run the first-start assistant: languages, region, account, look, desktop, Dock, behaviour")
 {
     if (!gui_active())
         return sh_error(sh, "welcome", "start the desktop first");
