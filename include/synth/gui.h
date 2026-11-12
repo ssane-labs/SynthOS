@@ -470,6 +470,7 @@ void wm_set_menus(struct window *w, const struct app_menu *menus, int count);
 void wm_move(struct window *w, int x, int y);
 void wm_resize_client(struct window *w, int cw, int ch);
 void wm_toggle_maximize(struct window *w);
+void wm_begin_move(struct window *w);
 void wm_toggle_fullscreen(struct window *w);
 bool wm_fullscreen_front(void);
 bool wm_fullscreen_menu(void);

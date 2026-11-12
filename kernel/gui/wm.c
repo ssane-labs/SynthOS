@@ -2439,6 +2439,16 @@ static void mouse_down(unsigned button)
     }
 }
 
+/* a window without a title band (a sidebar app) asks for the button it just got to move the window */
+void wm_begin_move(struct window *w)
+{
+    if (drag != DRAG_CLIENT || drag_win != w)
+        return;
+    drag = DRAG_MOVE;
+    drag_x = mouse_x - w->frame.x;
+    drag_y = mouse_y - w->frame.y;
+}
+
 static void mouse_up(unsigned button)
 {
     struct window *w = drag_win;

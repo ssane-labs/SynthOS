@@ -45,6 +45,10 @@
 #define THUMB_W 200
 #define THUMB_H 130
 #define INTERNAL "obscura://"
+#define SIDE_W 232
+#define SPLIT_GAP 6
+#define BAR_ROW 30
+#define RECENT 5
 
 enum req {
     R_NONE,
@@ -97,15 +101,24 @@ enum cmd {
     CMD_CLOSE_OTHERS,
     CMD_COPY_URL,
     CMD_ABOUT,
+    CMD_SPLIT,
+    CMD_SIDEBAR,
+    CMD_FOCUS_MODE,
+    CMD_CLOSE_UNPINNED,
+    CMD_COPY_ALL,
+    CMD_PASTE_GO,
+    CMD_PRIVATE,
+    CMD_BAR,
+    CMD_PIN_HOME,
     CMD_COUNT,
 };
 
 enum focus { F_NONE, F_ASK, F_CMD, F_FIND, F_LIST };
 
 struct tab {
-    char url[URL_MAX], title[96], icon_host[128], error[160], label[24];
+    char url[URL_MAX], title[96], icon_host[128], error[160], label[24], home[URL_MAX];
     struct picture shot, icon;
-    int scroll, page_h, zoom, group;
+    int scroll, page_h, zoom, group, id;
     bool pinned;
 };
 
@@ -170,6 +183,14 @@ static struct browser {
     int find_count, find_index, list_scroll, engine;
     bool tip_shown, middle, cmd_fresh;
     int shown_cur, nfiles;
+    /* Dia's layouts: tabs in a sidebar, focus mode (no tabs until the pointer asks), two pages side by side */
+    bool sidebar, focus_mode, peek, side_drag;
+    int split_a, split_b, split_pct, side_off, side_end, tab_ids, tip_pic_id, last_id;
+    bool split_drag, alt_click;
+    /* recently used tabs for Ctrl+Tab, the bookmarks bar, private browsing */
+    int mru[MAX_TABS], nmru, switch_sel, bar_off;
+    bool switching, private_mode, bar;
+    struct picture tip_pic;
     char (*files)[NAME_MAX_LEN];
     struct canvas cards[3];
     char card_url[3][URL_MAX];
@@ -186,6 +207,7 @@ static const struct menu_item file_items[] = {
     {"Open Location", KEY_COMMAND(CMD_LOCATION), "Ctrl+L"},
     {"Open File...", KEY_COMMAND(CMD_OPEN_FILE), "Ctrl+O"},
     {"Reopen Closed Tab", KEY_COMMAND(CMD_REOPEN), "Ctrl+Shift+T"},
+    {"Private Browsing", KEY_COMMAND(CMD_PRIVATE), "Ctrl+Shift+N"},
     {"Close Tab", KEY_COMMAND(CMD_CLOSE_TAB), "Ctrl+W"},
     {"", 0, NULL},
     {"Save Page", KEY_COMMAND(CMD_SAVE), "Ctrl+S"},
@@ -199,6 +221,8 @@ static const struct menu_item edit_items[] = {
     {"Find Previous", KEY_COMMAND(CMD_FIND_PREV), "Shift+F3"},
     {"", 0, NULL},
     {"Copy Page Address", KEY_COMMAND(CMD_COPY_URL), NULL},
+    {"Copy All Tab Addresses", KEY_COMMAND(CMD_COPY_ALL), NULL},
+    {"Paste and Go", KEY_COMMAND(CMD_PASTE_GO), "Ctrl+Shift+V"},
 };
 
 static const struct menu_item view_items[] = {
@@ -209,6 +233,11 @@ static const struct menu_item view_items[] = {
     {"Actual Size", KEY_COMMAND(CMD_ZOOM_RESET), "Ctrl+0"},
     {"", 0, NULL},
     {"Page Source", KEY_COMMAND(CMD_SOURCE), "Ctrl+U"},
+    {"", 0, NULL},
+    {"Split View", KEY_COMMAND(CMD_SPLIT), "Ctrl+E"},
+    {"Tabs in Sidebar", KEY_COMMAND(CMD_SIDEBAR), "Ctrl+Shift+S"},
+    {"Focus Mode", KEY_COMMAND(CMD_FOCUS_MODE), "Ctrl+Shift+F"},
+    {"Bookmarks Bar", KEY_COMMAND(CMD_BAR), "Ctrl+Shift+B"},
     {"Full Screen", KEY_COMMAND(CMD_FULLSCREEN), "F11"},
 };
 
@@ -223,7 +252,8 @@ static const struct menu_item history_items[] = {
 
 static const struct menu_item bookmark_items[] = {
     {"Bookmark This Page", KEY_COMMAND(CMD_BOOKMARK), "Ctrl+D"},
-    {"Show All Bookmarks", KEY_COMMAND(CMD_BOOKMARKS), "Ctrl+Shift+B"},
+    {"Show All Bookmarks", KEY_COMMAND(CMD_BOOKMARKS), "Ctrl+Alt+B"},
+    {"Bookmarks Bar", KEY_COMMAND(CMD_BAR), "Ctrl+Shift+B"},
 };
 
 static const struct menu_item tab_items[] = {
@@ -235,6 +265,8 @@ static const struct menu_item tab_items[] = {
     {"Rename Tab...", KEY_COMMAND(CMD_RENAME), NULL},
     {"Add Tab to New Group", KEY_COMMAND(CMD_GROUP), NULL},
     {"Close Other Tabs", KEY_COMMAND(CMD_CLOSE_OTHERS), NULL},
+    {"Close Unpinned Tabs", KEY_COMMAND(CMD_CLOSE_UNPINNED), NULL},
+    {"Back to Pinned Page", KEY_COMMAND(CMD_PIN_HOME), NULL},
     {"", 0, NULL},
     {"Settings", KEY_COMMAND(CMD_SETTINGS), "Ctrl+,"},
     {"About Obscura", KEY_COMMAND(CMD_ABOUT), NULL},
@@ -360,15 +392,57 @@ static size_t base64_decode(const char *s, size_t len, uint8_t *out)
 }
 
 /* the panel under the tab strip, and the page in it under its row of buttons */
+static int side_w(void)
+{
+    return br->sidebar && !br->focus_mode ? SIDE_W : 0;
+}
+
 static struct rect panel_rect(const struct window *w)
 {
-    return (struct rect){EDGE, TAB_ROW, MAX(w->surface.w - 2 * EDGE, 1), MAX(w->surface.h - TAB_ROW - EDGE, 1)};
+    int x = side_w() ? side_w() : EDGE, y = br->sidebar || br->focus_mode ? EDGE : TAB_ROW;
+    return (struct rect){x, y, MAX(w->surface.w - x - EDGE, 1), MAX(w->surface.h - y - EDGE, 1)};
 }
 
 static struct rect view_rect(const struct window *w)
 {
     struct rect p = panel_rect(w);
-    return (struct rect){p.x, p.y + NAV_ROW, p.w, MAX(p.h - NAV_ROW, 1)};
+    int top = NAV_ROW + (br->bar ? BAR_ROW : 0);
+    return (struct rect){p.x, p.y + top, p.w, MAX(p.h - top, 1)};
+}
+
+static int tab_index(int id)
+{
+    for (int i = 0; id && i < br->ntabs; i++)
+        if (br->tabs[i].id == id)
+            return i;
+    return -1;
+}
+
+static bool split_on(void)
+{
+    return tab_index(br->split_a) >= 0 && tab_index(br->split_b) >= 0;
+}
+
+static bool in_split(int i)
+{
+    return i >= 0 && i < br->ntabs && br->tabs[i].id && (br->tabs[i].id == br->split_a || br->tabs[i].id == br->split_b);
+}
+
+/* the place of one side of the split, or the whole view */
+static struct rect pane_rect(const struct window *w, int side)
+{
+    struct rect v = view_rect(w);
+    if (!split_on())
+        return v;
+    int pct = br->split_pct ? br->split_pct : 50, left = (v.w - SPLIT_GAP) * pct / 100;
+    return side == 0 ? (struct rect){v.x, v.y, left, v.h}
+                     : (struct rect){v.x + left + SPLIT_GAP, v.y, v.w - left - SPLIT_GAP, v.h};
+}
+
+/* where the page of the current tab is shown */
+static struct rect page_rect(const struct window *w)
+{
+    return pane_rect(w, split_on() && br->tabs[br->cur].id == br->split_b ? 1 : 0);
 }
 
 static struct tab *tab(void)
@@ -486,10 +560,13 @@ static void visits_load(void)
     kfree(data);
 }
 
+static void session_save(void);
+
 static void visits_add(const char *url, const char *title)
 {
-    if (strncmp(url, "http", 4))
+    if (strncmp(url, "http", 4) || br->private_mode)
         return;
+    session_save();
     int i = 0;
     while (i < br->nhistory && strcmp(br->history[i].url, url))
         i++;
@@ -676,7 +753,7 @@ static void push_shot(void)
 static void push_picture(void)
 {
     char args[64];
-    struct rect v = view_rect(br->win);
+    struct rect v = page_rect(br->win);
     int w = layout_w(v), rows = v.h * w / MAX(v.w, 1);
     ksnprintf(args, sizeof(args), "{\"width\":%d,\"height\":%d}", w, CLAMP(tab()->page_h, rows, SHOT_MAX));
     push(R_SHOT, "browser_screenshot", args);
@@ -684,7 +761,7 @@ static void push_picture(void)
 
 static void scroll_by(int dy)
 {
-    struct rect v = view_rect(br->win);
+    struct rect v = page_rect(br->win);
     int top = MAX(tab()->shot.h - to_page(v, v.h), 0), at = CLAMP(tab()->scroll + to_page(v, dy), 0, top);
     if (at != tab()->scroll) {
         tab()->scroll = at;
@@ -729,6 +806,7 @@ static void show_source(const char *html);
 static const char *internal_title(const char *url);
 static void files_refresh(void);
 static void new_tab(const char *url);
+static void split_open(const char *url);
 
 static void navigate(const char *url)
 {
@@ -774,16 +852,16 @@ static void navigate(const char *url)
 }
 
 /* what was typed into the address or the start page: a link, or words to search for */
-static void go(const char *text)
+static void go_as(const char *text, bool search)
 {
     while (*text == ' ')
         text++;
     if (!*text)
         return;
     char url[URL_MAX];
-    if (strstr(text, "://") || !strncmp(text, "about:", 6)) {
+    if (!search && (strstr(text, "://") || !strncmp(text, "about:", 6))) {
         str_copy(url, text, sizeof(url));
-    } else if (strchr(text, '.') && !strchr(text, ' ')) {
+    } else if (!search && strchr(text, '.') && !strchr(text, ' ')) {
         ksnprintf(url, sizeof(url), "https://%s", text);
     } else {
         size_t n = (size_t)ksnprintf(url, sizeof(url), "%s", engines[br->engine].url);
@@ -799,6 +877,11 @@ static void go(const char *text)
         url[n] = 0;
     }
     navigate(url);
+}
+
+static void go(const char *text)
+{
+    go_as(text, false);
 }
 
 static void got_shot(const char *line)
@@ -916,7 +999,12 @@ static void answered(const char *line)
         push_picture();
         break;
     case R_CLICK:
-        if (text && !strncmp(text, "nav:", 4)) {
+        if (text && !strncmp(text, "nav:", 4) && br->alt_click) {
+            char href[URL_MAX];
+            str_copy(href, text + 4, sizeof(href));
+            br->alt_click = false;
+            split_open(href);
+        } else if (text && !strncmp(text, "nav:", 4)) {
             navigate(text + 4);
         } else {
             br->page_input = text && strstr(text, ":input");
@@ -1002,7 +1090,7 @@ static void flush_input(void)
     } else if (br->hover_due && hal_ticks_ms() - br->moved_at > 180) {
         /* the link under the pointer, for the status line */
         br->hover_due = false;
-        struct rect v = view_rect(br->win);
+        struct rect v = page_rect(br->win);
         char js[900];
         ksnprintf(js, sizeof(js), "(function(x,y){" FIND_LINK "var a=L(document.elementFromPoint(x,y),x,y);"
                   "return a?a.href:'';})(%d,%d)",
@@ -1149,7 +1237,7 @@ static void thumb_path(const char *url, char *out, size_t cap)
 static void save_thumb(void)
 {
     const struct picture *p = &tab()->shot;
-    if (!p->px || strncmp(tab()->url, "http", 4))
+    if (!p->px || strncmp(tab()->url, "http", 4) || br->private_mode)
         return;
     struct canvas t;
     if (!canvas_alloc(&t, THUMB_W, THUMB_H))
@@ -1271,13 +1359,39 @@ static void close_overlays(void)
         br->focus = F_NONE;
 }
 
+/* the tabs used last come first, for Ctrl+Tab */
+static void mru_touch(int id)
+{
+    int list[MAX_TABS], n = 0;
+    list[n++] = id;
+    for (int i = 0; i < br->nmru && n < MAX_TABS; i++)
+        if (br->mru[i] != id && tab_index(br->mru[i]) >= 0)
+            list[n++] = br->mru[i];
+    memcpy(br->mru, list, sizeof(int) * (size_t)n);
+    br->nmru = n;
+}
+
+static int recent_tabs(int *out, int max)
+{
+    int n = 0;
+    for (int i = 0; i < br->nmru && n < max; i++)
+        if (tab_index(br->mru[i]) >= 0)
+            out[n++] = tab_index(br->mru[i]);
+    return n;
+}
+
 static void select_tab(int i)
 {
     if (i < 0 || i >= br->ntabs)
         return;
-    if (br->cur >= 0 && br->cur < br->ntabs && br->cur != i)
-        picture_free(&tab()->shot);
+    /* a page out of sight keeps no picture, except the other side of a split */
+    if (br->cur >= 0 && br->cur < br->ntabs && br->cur != i) {
+        br->last_id = tab()->id;
+        if (!in_split(br->cur))
+            picture_free(&tab()->shot);
+    }
     br->cur = i;
+    mru_touch(tab()->id);
     close_overlays();
     br->find_count = 0;
     if (tab()->group)
@@ -1296,10 +1410,12 @@ static void new_tab(const char *url)
         str_copy(br->status, "Too many tabs: close one first.", sizeof(br->status));
         return;
     }
-    if (br->ntabs)
+    if (br->ntabs && !in_split(br->cur))
         picture_free(&tab()->shot);
     memset(&br->tabs[br->ntabs], 0, sizeof(br->tabs[0]));
+    br->tabs[br->ntabs].id = ++br->tab_ids;
     br->cur = br->ntabs++;
+    mru_touch(tab()->id);
     close_overlays();
     ui_text_set(&br->ask, "");
     br->status[0] = 0;
@@ -1308,6 +1424,44 @@ static void new_tab(const char *url)
     wm_set_title(br->win, "Obscura");
     if (url && *url)
         go(url);
+}
+
+/* Split view: the current tab and another one side by side; the other side shows its last picture until it is
+   clicked, as the engine draws one page at a time. */
+static void split_with(int other, bool right)
+{
+    if (other < 0 || other >= br->ntabs || other == br->cur)
+        return;
+    int me = br->tabs[br->cur].id, them = br->tabs[other].id;
+    br->split_a = right ? me : them;
+    br->split_b = right ? them : me;
+    if (!br->split_pct)
+        br->split_pct = 50;
+    select_tab(other);
+}
+
+static void split_open(const char *url)
+{
+    if (br->ntabs >= MAX_TABS)
+        return;
+    br->split_a = tab()->id;
+    br->split_b = br->tab_ids + 1;
+    if (!br->split_pct)
+        br->split_pct = 50;
+    new_tab(url);
+}
+
+static void split_close(int keep)
+{
+    int i = tab_index(keep);
+    br->split_a = br->split_b = 0;
+    for (int k = 0; k < br->ntabs; k++)
+        if (k != br->cur)
+            picture_free(&br->tabs[k].shot);
+    if (i >= 0 && i != br->cur)
+        select_tab(i);
+    else if (br->link && tab()->url[0] && !internal(tab()->url))
+        push_shot();
 }
 
 static void group_tidy(void)
@@ -1331,6 +1485,9 @@ static void close_tab(int i)
         str_copy(br->closed[0], t->url, URL_MAX);
         br->nclosed = MIN(br->nclosed + 1, MAX_CLOSED);
     }
+    bool split = in_split(i);
+    if (split)
+        br->split_a = br->split_b = 0;
     picture_free(&t->shot);
     picture_free(&t->icon);
     memmove(&br->tabs[i], &br->tabs[i + 1], sizeof(br->tabs[0]) * (size_t)(br->ntabs - i - 1));
@@ -1345,6 +1502,8 @@ static void close_tab(int i)
     br->cur = -1;
     if (same) {
         br->cur = CLAMP(next, 0, br->ntabs - 1);
+        if (split && br->link && tab()->url[0] && !internal(tab()->url))
+            push_shot();
         return;
     }
     select_tab(CLAMP(next, 0, br->ntabs - 1));
@@ -1382,9 +1541,11 @@ static void pin_tab(int i)
     struct tab *t = &br->tabs[i];
     if (t->pinned) {
         t->pinned = false;
+        t->home[0] = 0;
         move_tab(i, np - 1);
     } else {
         t->pinned = true;
+        str_copy(t->home, t->url, sizeof(t->home));
         t->group = 0;
         move_tab(i, np);
         group_tidy();
@@ -1607,7 +1768,7 @@ static void found(const char *text)
     p = p ? strchr(p + 1, '\n') : NULL;
     int top = p ? (int)str_to_long(p + 1, NULL, 10) : 0;
     if (br->find_count) {
-        struct rect v = view_rect(br->win);
+        struct rect v = page_rect(br->win);
         int rows = to_page(v, v.h);
         tab()->scroll = CLAMP(top - rows / 3, 0, MAX(MAX(tab()->shot.h, tab()->page_h) - rows, 0));
     }
@@ -1910,10 +2071,13 @@ enum {
     TM_CLOSE,
     TM_CLOSE_OTHERS,
     TM_CLOSE_RIGHT,
+    TM_SPLIT,
+    TM_UNSPLIT,
+    TM_COPY_MD,
     TM_GROUP, /* then one entry per group */
 };
 
-static int tab_menu_ids[16 + MAX_GROUPS];
+static int tab_menu_ids[24 + MAX_GROUPS];
 static char group_labels[MAX_GROUPS][40];
 
 static void tab_menu_pick(struct window *owner, int index)
@@ -1942,6 +2106,14 @@ static void tab_menu_pick(struct window *owner, int index)
             list_save("bookmarks", br->bookmarks, br->nbookmarks);
         break;
     case TM_COPY: gui_set_clipboard(t->url, strlen(t->url)); break;
+    case TM_COPY_MD: {
+        char md[URL_MAX + 120];
+        int n = ksnprintf(md, sizeof(md), "[%s](%s)", t->title[0] ? t->title : t->url, t->url);
+        gui_set_clipboard(md, (size_t)n);
+        break;
+    }
+    case TM_SPLIT: split_with(i, true); break;
+    case TM_UNSPLIT: split_close(t->id); break;
     case TM_CLOSE: close_tab(i); break;
     case TM_CLOSE_OTHERS:
         br->cur = i;
@@ -1960,7 +2132,7 @@ static void tab_menu_pick(struct window *owner, int index)
 
 static void tab_menu(int i, int x, int y)
 {
-    static struct menu_item items[16 + MAX_GROUPS];
+    static struct menu_item items[24 + MAX_GROUPS];
     int n = 0;
     const struct tab *t = &br->tabs[i];
 #define ITEM(label, id) (tab_menu_ids[n] = (id), items[n++] = (struct menu_item){label, 0, NULL})
@@ -1969,6 +2141,10 @@ static void tab_menu(int i, int x, int y)
     ITEM("Duplicate", TM_DUPLICATE);
     ITEM(t->pinned ? "Unpin Tab" : "Pin Tab", TM_PIN);
     ITEM("Rename...", TM_RENAME);
+    if (in_split(i) && split_on())
+        ITEM("Close Split View", TM_UNSPLIT);
+    else if (i != br->cur)
+        ITEM("Open in Split View", TM_SPLIT);
     ITEM("", -1);
     ITEM("Add to New Group...", TM_NEW_GROUP);
     for (int g = 0; g < MAX_GROUPS; g++)
@@ -1981,6 +2157,7 @@ static void tab_menu(int i, int x, int y)
     ITEM("", -1);
     ITEM("Bookmark Tab", TM_BOOKMARK);
     ITEM("Copy Address", TM_COPY);
+    ITEM("Copy as Markdown", TM_COPY_MD);
     ITEM("", -1);
     ITEM("Close Tab", TM_CLOSE);
     ITEM("Close Other Tabs", TM_CLOSE_OTHERS);
@@ -2109,6 +2286,92 @@ static void open_cmd(const char *text)
     br->cmd_fresh = text[0] != 0;
 }
 
+/* the open tabs are kept for the next start: pinned tabs always come back (at the page they were pinned at), the
+   others when "Restore tabs" is on */
+static void session_save(void)
+{
+    if (!br || br->private_mode)
+        return;
+    struct visit *v = kmalloc(sizeof(*v) * MAX_TABS);
+    if (!v)
+        return;
+    int n = 0;
+    for (int i = 0; i < br->ntabs; i++) {
+        const struct tab *t = &br->tabs[i];
+        const char *url = t->pinned && t->home[0] ? t->home : t->url;
+        if (!url[0] || !strncmp(url, "file:", 5))
+            continue;
+        str_copy(v[n].url, url, URL_MAX);
+        ksnprintf(v[n].title, sizeof(v[n].title), "%c%s\x1f%s", t->pinned ? '*' : '-', t->label, t->title);
+        n++;
+    }
+    list_save("session", v, n);
+    kfree(v);
+    app_state_set_number("obscura", "session_cur", br->cur);
+}
+
+static int session_load(void)
+{
+    struct visit *v = kmalloc(sizeof(*v) * MAX_TABS);
+    if (!v)
+        return 0;
+    int n = list_load("session", v, MAX_TABS), k = 0;
+    bool all = app_state_on("obscura", "restore", true);
+    for (int i = 0; i < n; i++) {
+        bool pinned = v[i].title[0] == '*';
+        if (!pinned && !all)
+            continue;
+        struct tab *t = &br->tabs[k++];
+        memset(t, 0, sizeof(*t));
+        t->id = ++br->tab_ids;
+        t->pinned = pinned;
+        str_copy(t->url, v[i].url, sizeof(t->url));
+        if (pinned)
+            str_copy(t->home, v[i].url, sizeof(t->home));
+        char *sep = strchr(v[i].title, 0x1f);
+        if (sep) {
+            *sep = 0;
+            str_copy(t->title, sep + 1, sizeof(t->title));
+        }
+        str_copy(t->label, v[i].title[0] ? v[i].title + 1 : "", sizeof(t->label));
+    }
+    kfree(v);
+    if (k) {
+        br->ntabs = k;
+        br->cur = CLAMP((int)app_state_number("obscura", "session_cur", 0), 0, k - 1);
+        if (!all)
+            br->cur = 0;
+    }
+    return k;
+}
+
+static void copy_all(void)
+{
+    size_t cap = (size_t)br->ntabs * URL_MAX + 1, n = 0;
+    char *text = kmalloc(cap);
+    if (!text)
+        return;
+    for (int i = 0; i < br->ntabs; i++)
+        if (br->tabs[i].url[0] && !internal(br->tabs[i].url))
+            n += (size_t)ksnprintf(text + n, cap - n, "%s\n", br->tabs[i].url);
+    gui_set_clipboard(text, n);
+    kfree(text);
+    ksnprintf(br->status, sizeof(br->status), "Copied the addresses of the open tabs.");
+}
+
+static void paste_go(void)
+{
+    const char *clip = gui_clipboard();
+    if (!clip || !*clip)
+        return;
+    char text[URL_MAX];
+    str_copy(text, clip, sizeof(text));
+    for (char *c = text; *c; c++)
+        if (*c == '\n' || *c == '\r' || *c == '\t')
+            *c = ' ';
+    go(text);
+}
+
 static void command(int cmd)
 {
     switch (cmd) {
@@ -2210,6 +2473,56 @@ static void command(int cmd)
                     "Obscura, the web browser of SynthOS.\n\nPages are drawn by the Obscura engine (Rust and V8, "
                     "Apache License 2.0). Tabs, bookmarks, history, downloads and the start page are part of "
                     "SynthOS.");
+        break;
+    case CMD_SPLIT:
+        if (split_on())
+            split_close(tab()->id);
+        else
+            split_open(NULL);
+        break;
+    case CMD_SIDEBAR:
+        br->sidebar = !br->sidebar;
+        br->focus_mode = false;
+        app_state_set_on("obscura", "sidebar", br->sidebar);
+        br->win->toolbar_h = br->sidebar ? 1 : TAB_ROW;
+        if (br->link && tab()->url[0] && !internal(tab()->url))
+            push_shot();
+        break;
+    case CMD_CLOSE_UNPINNED:
+        for (int i = br->ntabs - 1; i >= 0; i--)
+            if (!br->tabs[i].pinned)
+                close_tab(i);
+        break;
+    case CMD_COPY_ALL: copy_all(); break;
+    case CMD_PASTE_GO: paste_go(); break;
+    case CMD_PIN_HOME:
+        if (tab()->pinned && tab()->home[0] && strcmp(tab()->home, tab()->url)) {
+            char home[URL_MAX];
+            str_copy(home, tab()->home, sizeof(home));
+            navigate(home);
+        }
+        break;
+    case CMD_PRIVATE:
+        br->private_mode = !br->private_mode;
+        str_copy(br->status,
+                 br->private_mode ? "Private browsing: pages are not kept in history, pictures or the saved tabs."
+                                  : "Private browsing is off.",
+                 sizeof(br->status));
+        break;
+    case CMD_BAR:
+        br->bar = !br->bar;
+        app_state_set_on("obscura", "bar", br->bar);
+        if (br->link && tab()->url[0] && !internal(tab()->url))
+            push_shot();
+        break;
+    case CMD_FOCUS_MODE:
+        br->focus_mode = !br->focus_mode;
+        br->peek = false;
+        br->win->toolbar_h = br->focus_mode || br->sidebar ? 1 : TAB_ROW;
+        str_copy(br->status, br->focus_mode ? "Focus mode: move the pointer to the edge for the tabs." : "",
+                 sizeof(br->status));
+        if (br->link && tab()->url[0] && !internal(tab()->url))
+            push_shot();
         break;
     }
     if (br && br->win)
@@ -2479,6 +2792,7 @@ static void draw_tab(struct canvas *c, const struct slot *s, bool hot)
 static void tooltip(struct canvas *c, int W)
 {
     if (br->tip_tab < 0 || br->tip_tab >= br->ntabs || br->drag_tab >= 0 || br->cmd_open ||
+        (br->focus_mode && !br->peek) ||
         hal_ticks_ms() - br->tip_since < 550)
         return;
     const struct slot *s = NULL;
@@ -2493,22 +2807,49 @@ static void tooltip(struct canvas *c, int W)
     const char *title = t->title[0] ? t->title : t->url[0] ? host : "New Tab";
     int w = MIN(MAX(gfx_text_width(&font_bold, title), gfx_text_width(&font_small, host)) + 24, 380);
     int h = host[0] && t->title[0] ? 44 : 30;
-    struct rect r = {CLAMP(s->r.x + s->r.w / 2 - w / 2, 6, W - w - 6), TAB_ROW + 4, w, h};
+    /* the page's last picture under the name, when there is one */
+    bool pic = false;
+    if (t->url[0] && !internal(t->url) && t->id != tab()->id) {
+        int key = (int)url_hash(t->url);
+        if (key != br->tip_pic_id) {
+            char path[PATH_MAX_LEN];
+            picture_free(&br->tip_pic);
+            br->tip_pic_id = key;
+            thumb_path(t->url, path, sizeof(path));
+            if (!vfs_exists(path) || picture_load(path, &br->tip_pic) != 0)
+                picture_free(&br->tip_pic);
+        }
+        pic = br->tip_pic.px != NULL;
+    }
+    int pw = THUMB_W, ph = THUMB_H;
+    if (pic) {
+        w = MAX(w, pw + 16);
+        h += ph + 8;
+    }
+    bool side = br->sidebar && (!br->focus_mode || br->peek);
+    struct rect r = side ? (struct rect){s->r.x + s->r.w + 12, CLAMP(s->r.y, 6, c->h - h - 6), w, h}
+                         : (struct rect){CLAMP(s->r.x + s->r.w / 2 - w / 2, 6, W - w - 6), TAB_ROW + 4, w, h};
     gfx_drop_shadow(c, r, 9, 12, 60, 3);
     gfx_round(c, r, 9, style.dark ? RGB(42, 42, 45) : RGB(255, 255, 255));
     gfx_round_frame(c, r, 9, style.dark ? ALPHA(0xffffffffu, 26) : ALPHA(0, 26));
     struct canvas inner = *c;
     inner.clip = rect_intersect(c->clip, (struct rect){r.x + 12, r.y, r.w - 24, r.h});
     gfx_text(&inner, r.x + 12, r.y + 7, &font_bold, title, style.text);
-    if (h > 30)
+    if (host[0] && t->title[0])
         gfx_text(&inner, r.x + 12, r.y + 25, &font_small, host, style.secondary);
+    if (pic) {
+        struct rect pr = {r.x + 8, r.y + r.h - ph - 8, r.w - 16, ph};
+        struct canvas src = canvas_make(br->tip_pic.px, br->tip_pic.w, br->tip_pic.h);
+        gfx_scale_smooth(c, pr, &src, 255);
+        corners(c, pr, 6, style.dark ? RGB(42, 42, 45) : RGB(255, 255, 255), false);
+    }
     br->tip_shown = true;
 }
 
-static void window_controls(struct ui *ui, int W)
+static void window_controls(struct ui *ui, int x0, int y, int bw)
 {
     for (int k = 0; k < 3; k++) {
-        struct rect r = {W - (3 - k) * 46 + 1, 5, 44, 28};
+        struct rect r = {x0 + k * bw + 1, y, bw - 2, 28};
         bool hot, hit = area(ui, r, &hot);
         if (hit) {
             if (k == 0)
@@ -2697,6 +3038,217 @@ static void strip(struct ui *ui, int W)
         command(CMD_NEW_TAB);
 }
 
+/* ---- the sidebar: window buttons, pinned tabs as a grid of tiles, New Tab, then the tabs and groups as rows ---- */
+
+static void tab_press(struct ui *ui, struct gui_event *e, int i)
+{
+    ui->consumed = true;
+    br->tip_tab = -1;
+    if (e->button == BUTTON_MIDDLE) {
+        close_tab(i);
+    } else if (e->button == BUTTON_RIGHT) {
+        tab_menu(i, e->x, e->y);
+    } else {
+        br->drag_tab = i;
+        if (i != br->cur)
+            select_tab(i);
+        else if (e->clicks >= 2)
+            command(CMD_LOCATION);
+    }
+}
+
+static void row_close(struct ui *ui, struct canvas *c, struct rect row, int i, bool show)
+{
+    struct rect x = {row.x + row.w - 24, row.y + (row.h - 20) / 2, 20, 20};
+    bool hot;
+    if (area(ui, x, &hot) && show) {
+        close_tab(i);
+        return;
+    }
+    if (c && show) {
+        if (hot)
+            gfx_round(c, x, 5, hover_back());
+        gfx_symbol(c, x.x + 5, x.y + 5, SYM_CLOSE, 10, hot ? style.text : dim());
+    }
+}
+
+static void sidebar(struct ui *ui, int H)
+{
+    struct gui_event *e = ui->e;
+    int W = SIDE_W;
+    window_controls(ui, 6, 6, 30);
+    if (!br)
+        return;
+    bool hot;
+    struct rect lr = {W - 64, 7, 28, 26};
+    if (area(ui, lr, &hot)) {
+        ui_menu_items(br->win, lr.x, lr.y + lr.h, logo_menu, (int)ARRAY_SIZE(logo_menu), logo_pick);
+        return;
+    }
+    if (ui->c) {
+        if (hot)
+            gfx_round(ui->c, lr, 7, hover_back());
+        orb(ui->c, lr.x + 14, lr.y + 13, 8, false);
+    }
+    if (icon_button(ui, (struct rect){W - 34, 7, 26, 26}, SYM_SIDEBAR, 14, dim())) {
+        command(CMD_SIDEBAR);
+        return;
+    }
+
+    int n = 0, np = pinned_count(), y = 42;
+    int tw = (W - 16 - 3 * 6) / 4, th = 40;
+    if (e && e->type == EV_MOUSE_UP)
+        br->drag_tab = -1;
+    for (int i = 0; i < np; i++) {
+        struct rect r = {8 + (i % 4) * (tw + 6), y + (i / 4) * (th + 6), tw, th};
+        br->slots[n++] = (struct slot){r, i, 0};
+        bool over = ui_hover(ui, r), sel = i == br->cur;
+        if (ui->c) {
+            gfx_round(ui->c, r, 10, sel ? panel_back() : over ? hover_back()
+                                        : (style.dark ? RGB(20, 20, 22) : RGB(232, 232, 236)));
+            if (sel && loading())
+                spinner(ui->c, r.x + r.w / 2, r.y + r.h / 2, style.text);
+            else
+                site_icon(ui->c, r.x + (r.w - 18) / 2, r.y + (r.h - 18) / 2, 18, br->tabs[i].url, &br->tabs[i].icon);
+        }
+        if (e && e->type == EV_MOUSE_DOWN && rect_contains(r, e->x, e->y)) {
+            tab_press(ui, e, i);
+            return;
+        }
+    }
+    if (np)
+        y += ((np + 3) / 4) * (th + 6) + 4;
+    struct rect nt = {8, y, W - 16, 30};
+    bool nhot;
+    if (area(ui, nt, &nhot)) {
+        command(CMD_NEW_TAB);
+        return;
+    }
+    if (ui->c) {
+        if (nhot)
+            gfx_round(ui->c, nt, 8, hover_back());
+        gfx_symbol(ui->c, nt.x + 10, nt.y + 8, SYM_PLUS, 14, dim());
+        gfx_text(ui->c, nt.x + 34, nt.y + (nt.h - font_sans.height) / 2, &font_sans, "New Tab", style.secondary);
+    }
+    y += 36;
+    if (ui->c)
+        gfx_fill(ui->c, (struct rect){14, y - 3, W - 28, 1}, style.dark ? ALPHA(0xffffffffu, 20) : ALPHA(0, 20));
+
+    struct rect list = {0, y, W, MAX(H - y - 8, 0)};
+    if (e && e->type == EV_WHEEL && rect_contains(list, e->x, e->y)) {
+        br->side_off = CLAMP(br->side_off + e->wheel * 40, 0, MAX(br->side_end - list.h, 0));
+        ui->consumed = true;
+        return;
+    }
+    br->side_off = CLAMP(br->side_off, 0, MAX(br->side_end - list.h, 0));
+    struct canvas clipped;
+    if (ui->c) {
+        clipped = *ui->c;
+        clipped.clip = rect_intersect(ui->c->clip, list);
+    }
+    struct canvas *c = ui->c ? &clipped : NULL;
+    int ry = y - br->side_off;
+    for (int i = np; i < br->ntabs; i++) {
+        struct tab *t = &br->tabs[i];
+        struct group *g = t->group ? &br->groups[t->group - 1] : NULL;
+        bool first = g && (i == np || br->tabs[i - 1].group != t->group);
+        if (first) {
+            struct rect head = {8, ry, W - 16, 28};
+            br->slots[n++] = (struct slot){head, -1, t->group};
+            uint32_t tone = group_colors[g->color % (int)ARRAY_SIZE(group_colors)];
+            bool ghot = rect_contains(list, head.x + 4, head.y + 4) && ui_hover(ui, head);
+            if (c) {
+                if (ghot)
+                    gfx_round(c, head, 8, hover_back());
+                gfx_symbol(c, head.x + 8, head.y + 8, g->collapsed ? SYM_RIGHT : SYM_DOWN, 10, dim());
+                gfx_round(c, (struct rect){head.x + 24, head.y + 10, 8, 8}, 4, tone);
+                gfx_text(c, head.x + 40, head.y + (head.h - font_bold.height) / 2, &font_bold, g->name, style.text);
+            }
+            int gid = t->group;
+            if (ghot && e && e->type == EV_MOUSE_DOWN && rect_contains(head, e->x, e->y)) {
+                ui->consumed = true;
+                if (e->button == BUTTON_RIGHT) {
+                    br->menu_group = gid;
+                    ui_menu_items(br->win, e->x, e->y, group_menu_items, (int)ARRAY_SIZE(group_menu_items),
+                                  group_menu_pick);
+                } else if (e->x > head.x + head.w - 26) {
+                    close_group(gid);
+                } else {
+                    g->collapsed = !g->collapsed;
+                }
+                return;
+            }
+            if (c && ghot)
+                gfx_symbol(c, head.x + head.w - 19, head.y + 9, SYM_CLOSE, 10, dim());
+            ry += 30;
+        }
+        if (g && g->collapsed && i != br->cur)
+            continue;
+        struct rect row = {g ? 20 : 8, ry, W - (g ? 28 : 16), 32};
+        br->slots[n++] = (struct slot){row, i, t->group};
+        bool sel = i == br->cur, over = rect_contains(list, row.x + 4, row.y + 4) && ui_hover(ui, row);
+        if (c) {
+            if (sel)
+                gfx_round(c, row, 9, panel_back());
+            else if (over)
+                gfx_round(c, row, 9, hover_back());
+            if (in_split(i) && split_on())
+                gfx_round(c, (struct rect){row.x + 3, row.y + 8, 3, 16}, 1, style.accent);
+            if (sel && loading())
+                spinner(c, row.x + 18, row.y + 16, style.text);
+            else
+                site_icon(c, row.x + 10, row.y + 8, 16, t->url, &t->icon);
+            struct canvas inner = *c;
+            inner.clip = rect_intersect(c->clip, (struct rect){row.x + 34, row.y, row.w - 34 - 28, row.h});
+            gfx_text(&inner, row.x + 34, row.y + (row.h - font_sans.height) / 2, &font_sans, tab_label(t),
+                     sel || over ? style.text : style.secondary);
+        }
+        if (rect_contains(list, row.x + 4, row.y + 4))
+            row_close(ui, c, row, i, sel || over);
+        if (!br || i >= br->ntabs)
+            return;
+        if (e && e->type == EV_MOUSE_DOWN && rect_contains(list, e->x, e->y) && rect_contains(row, e->x, e->y) &&
+            !(e->button == BUTTON_LEFT && e->x > row.x + row.w - 26)) {
+            tab_press(ui, e, i);
+            return;
+        }
+        if (e && e->type == EV_MOUSE_MOVE && br->drag_tab >= np && (e->buttons & BUTTON_LEFT) && i != br->drag_tab &&
+            rect_contains(row, e->x, e->y)) {
+            int group = t->group;
+            move_tab(br->drag_tab, i);
+            br->tabs[i].group = group;
+            br->drag_tab = i;
+            group_tidy();
+            ui->consumed = true;
+            return;
+        }
+        ry += 34;
+    }
+    br->side_end = ry + br->side_off - y;
+    br->nslots = n;
+    if (e && e->type == EV_MOUSE_MOVE) {
+        int over = -1;
+        for (int i = 0; i < n; i++)
+            if (br->slots[i].tab >= 0 && rect_contains(br->slots[i].r, e->x, e->y) &&
+                (br->slots[i].r.y < y || rect_contains(list, e->x, e->y)))
+                over = br->slots[i].tab;
+        if (over != br->tip_tab) {
+            br->tip_tab = over;
+            br->tip_since = hal_ticks_ms();
+            br->tip_shown = false;
+            wm_invalidate(br->win);
+        }
+    }
+    /* the empty sidebar moves the window, and a double click fills the screen with it */
+    if (e && e->type == EV_MOUSE_DOWN && e->button == BUTTON_LEFT && e->x < W && !ui->consumed) {
+        ui->consumed = true;
+        if (e->clicks >= 2)
+            wm_toggle_maximize(br->win);
+        else
+            wm_begin_move(br->win);
+    }
+}
+
 /* ---- the panel's row: back, forward, reload, the site in the middle, downloads ---- */
 
 static void nav_row(struct ui *ui, struct rect p)
@@ -2711,6 +3263,16 @@ static void nav_row(struct ui *ui, struct rect p)
     b.x += 28;
     if (icon_button(ui, b, SYM_RESTART, 14, dim()))
         command(CMD_RELOAD);
+    if (tab()->pinned && tab()->home[0] && strcmp(tab()->home, tab()->url)) {
+        b.x += 28;
+        if (icon_button(ui, b, SYM_PIN, 13, style.accent))
+            command(CMD_PIN_HOME);
+    }
+    if (br->private_mode) {
+        struct rect pv = {b.x + 34, p.y + 6, 62, 20};
+        if (pill_button(ui, pv, "Private", RGB(88, 54, 150), RGB(255, 255, 255), false))
+            command(CMD_PRIVATE);
+    }
     struct rect d = {p.x + p.w - 34, p.y + 4, 26, 24};
     bool dhot;
     if (area(ui, d, &dhot))
@@ -3272,7 +3834,7 @@ static void settings_page(struct ui *ui, struct rect v)
     int cw = MIN(v.w - 64, 640), x0 = v.x + (v.w - cw) / 2, y = v.y + 24 - br->list_scroll;
     struct gui_event *e = ui->e;
     if (e && e->type == EV_WHEEL && rect_contains(v, e->x, e->y)) {
-        br->list_scroll = CLAMP(br->list_scroll + e->wheel * 60, 0, MAX(760 - v.h, 0));
+        br->list_scroll = CLAMP(br->list_scroll + e->wheel * 60, 0, MAX(860 - v.h, 0));
         ui->consumed = true;
     }
     struct canvas inner;
@@ -3291,7 +3853,7 @@ static void settings_page(struct ui *ui, struct rect v)
         y += 24;                                                                                                       \
     } while (0)
     HEAD("General");
-    struct rect g = ui_group(ui, x0, y, cw, 2, 46);
+    struct rect g = ui_group(ui, x0, y, cw, 4, 46);
     bool is_default = gui_default_browser() == &obscura_app;
     ui_group_label(ui, (struct rect){g.x, g.y, g.w, 46}, "Default browser",
                    is_default ? "Obscura opens links" : NULL, false);
@@ -3301,6 +3863,15 @@ static void settings_page(struct ui *ui, struct rect v)
     ui_group_label(ui, (struct rect){g.x, g.y + 46, g.w, 46}, "Show the welcome cards on new tabs", NULL, true);
     if (ui_switch(ui, (struct rect){g.x + g.w - 58, g.y + 46 + 12, 44, 22}, &intro_on))
         app_state_set_on("obscura", "dismissed", !intro_on);
+    bool restore = app_state_on("obscura", "restore", true);
+    ui_group_label(ui, (struct rect){g.x, g.y + 92, g.w, 46}, "Open the tabs of last time on start",
+                   "Pinned tabs always come back", true);
+    if (ui_switch(ui, (struct rect){g.x + g.w - 58, g.y + 92 + 12, 44, 22}, &restore))
+        app_state_set_on("obscura", "restore", restore);
+    ui_group_label(ui, (struct rect){g.x, g.y + 138, g.w, 46}, "Show the bookmarks bar", NULL, true);
+    bool bar = br->bar;
+    if (ui_switch(ui, (struct rect){g.x + g.w - 58, g.y + 138 + 12, 44, 22}, &bar))
+        command(CMD_BAR);
     y += g.h + 22;
     HEAD("Search engine");
     g = ui_group(ui, x0, y, cw, (int)ARRAY_SIZE(engines), 40);
@@ -3344,14 +3915,14 @@ static void settings_page(struct ui *ui, struct rect v)
 
 /* ---- the page ---- */
 
-static void page_view(struct ui *ui, struct rect v)
+static void page_view(struct ui *ui, struct rect v, struct tab *t)
 {
     if (!ui->c)
         return;
-    const struct picture *p = &tab()->shot;
+    const struct picture *p = &t->shot;
     gfx_clear(ui->c, v, RGB(255, 255, 255));
     if (p->px) {
-        int at = CLAMP(tab()->scroll, 0, MAX(p->h - 1, 0));
+        int at = CLAMP(t->scroll, 0, MAX(p->h - 1, 0));
         if (p->w == v.w) {
             struct canvas src = canvas_make(p->px, p->w, p->h);
             gfx_blit(ui->c, v.x, v.y, &src, (struct rect){0, at, p->w, MIN(v.h, p->h - at)});
@@ -3360,33 +3931,57 @@ static void page_view(struct ui *ui, struct rect v)
             struct canvas src = canvas_make(p->px + (size_t)at * (size_t)p->w, p->w, MAX(rows, 1));
             gfx_scale_smooth(ui->c, (struct rect){v.x, v.y, v.w, rows * v.w / MAX(p->w, 1)}, &src, 255);
         }
-    } else if (tab()->error[0]) {
+    } else if (t->error[0]) {
         gfx_clear(ui->c, v, panel_back());
         int cy = v.y + v.h / 2 - 80;
         gfx_symbol(ui->c, v.x + v.w / 2 - 20, cy, SYM_GLOBE, 40, style.tertiary);
         gfx_text_box(ui->c, (struct rect){v.x, cy + 54, v.w, 28}, &font_title, "This page could not be opened",
                      style.text, ALIGN_CENTER);
         char host[128];
-        host_of(tab()->url, host, sizeof(host));
+        host_of(t->url, host, sizeof(host));
         gfx_text_box(ui->c, (struct rect){v.x, cy + 86, v.w, 18}, &font_bold, host, style.secondary, ALIGN_CENTER);
         struct canvas inner = *ui->c;
         inner.clip = rect_intersect(ui->c->clip, (struct rect){v.x + 40, v.y, v.w - 80, v.h});
-        gfx_text_box(&inner, (struct rect){v.x + 40, cy + 110, v.w - 80, 18}, &font_small, tab()->error,
+        gfx_text_box(&inner, (struct rect){v.x + 40, cy + 110, v.w - 80, 18}, &font_small, t->error,
                      style.tertiary, ALIGN_CENTER);
     } else {
         gfx_clear(ui->c, v, panel_back());
         spinner(ui->c, v.x + v.w / 2, v.y + v.h / 2 - 10, style.secondary);
     }
-    if (busy() || br->queued) {
+    if (t == tab() && (busy() || br->queued)) {
         int w = v.w / 4, x = (int)((hal_ticks_ms() / 3) % (uint64_t)(v.w + w)) - w;
         gfx_fill(ui->c, (struct rect){v.x + MAX(x, 0), v.y, MIN(x + w, v.w) - MAX(x, 0), 2}, style.accent);
     }
     /* where the page is: a thin bar on the right while it scrolls */
     int rows = to_page(v, v.h);
     if (p->px && p->h > rows) {
-        int th = MAX(v.h * rows / p->h, 24), ty = v.y + (v.h - th) * tab()->scroll / MAX(p->h - rows, 1);
+        int th = MAX(v.h * rows / p->h, 24), ty = v.y + (v.h - th) * t->scroll / MAX(p->h - rows, 1);
         gfx_round(ui->c, (struct rect){v.x + v.w - 7, ty, 4, th}, 2, ALPHA(RGB(60, 60, 64), 120));
     }
+}
+
+/* the other side of a split: its last picture, or a card with its name, a little dimmed */
+static void other_pane(struct ui *ui, struct rect v, struct tab *t)
+{
+    if (!ui->c)
+        return;
+    if (t->shot.px && t->url[0] && !internal(t->url)) {
+        page_view(ui, v, t);
+    } else {
+        gfx_clear(ui->c, v, panel_back());
+        int cy = v.y + v.h / 2 - 40;
+        if (t->url[0] && !internal(t->url))
+            site_icon(ui->c, v.x + v.w / 2 - 16, cy, 32, t->url, &t->icon);
+        else
+            orb(ui->c, v.x + v.w / 2, cy + 16, 16, true);
+        struct canvas inner = *ui->c;
+        inner.clip = rect_intersect(ui->c->clip, (struct rect){v.x + 20, v.y, v.w - 40, v.h});
+        gfx_text_box(&inner, (struct rect){v.x + 20, cy + 44, v.w - 40, 22}, &font_bold, tab_label(t), style.text,
+                     ALIGN_CENTER);
+        gfx_text_box(&inner, (struct rect){v.x + 20, cy + 68, v.w - 40, 18}, &font_small, "Click to show this side",
+                     style.secondary, ALIGN_CENTER);
+    }
+    gfx_fill(ui->c, v, style.dark ? ALPHA(0, 70) : ALPHA(RGB(255, 255, 255), 60));
 }
 
 static void get_engine(struct ui *ui, struct rect v)
@@ -3466,10 +4061,16 @@ static void suggestion_open(const struct sugg *s)
     int t = s->tab;
     br->cmd_open = false;
     br->focus = F_NONE;
-    if (s->kind == S_TAB)
+    /* Alt+Enter opens it next to the current page */
+    if (hal_key_modifiers() & KEY_MOD_ALT) {
+        if (s->kind == S_TAB)
+            split_with(t, true);
+        else if (text[0])
+            split_open(text);
+    } else if (s->kind == S_TAB)
         select_tab(t);
     else if (s->kind == S_GO)
-        go(text);
+        go_as(text, (hal_key_modifiers() & KEY_MOD_SHIFT) != 0);
     else
         navigate(text);
 }
@@ -3567,26 +4168,171 @@ static void find_bar(struct ui *ui, struct rect v)
 
 /* ---- the window ---- */
 
-static void frame(struct ui *ui, void *data)
+/* Ctrl+Tab: the tabs used last as cards in the middle of the window */
+static void switcher(struct ui *ui, struct rect p)
 {
-    UNUSED(data);
-    struct window *w = ui->win;
-    int W = w->surface.w, H = w->surface.h;
-    struct rect p = panel_rect(w), v = view_rect(w);
+    int list[RECENT], n = recent_tabs(list, RECENT);
+    int cw = 150, chh = 112, gap = 10, w = n * cw + (n - 1) * gap + 24;
+    struct rect r = {p.x + (p.w - w) / 2, p.y + (p.h - chh - 24) / 2, w, chh + 24};
     struct gui_event *e = ui->e;
     if (ui->c) {
-        gfx_clear(ui->c, (struct rect){0, 0, W, H}, chrome_back());
-        gfx_round(ui->c, p, 10, panel_back());
+        gfx_drop_shadow(ui->c, r, 16, 30, style.dark ? 140 : 60, 8);
+        gfx_round(ui->c, r, 16, style.dark ? RGB(34, 34, 37) : RGB(250, 250, 252));
+        gfx_round_frame(ui->c, r, 16, style.dark ? ALPHA(0xffffffffu, 30) : ALPHA(0, 26));
     }
-    if (br->cmd_open && e && e->type != EV_TIMER && e->type != EV_RESIZE)
-        ui->e = NULL;
-    strip(ui, W);
-    if (!br)
+    for (int k = 0; k < n; k++) {
+        struct tab *t = &br->tabs[list[k]];
+        struct rect c = {r.x + 12 + k * (cw + gap), r.y + 12, cw, chh};
+        if (e && e->type == EV_MOUSE_DOWN && rect_contains(c, e->x, e->y)) {
+            br->switching = false;
+            select_tab(list[k]);
+            ui->consumed = true;
+            return;
+        }
+        if (!ui->c)
+            continue;
+        bool sel = k == br->switch_sel;
+        gfx_round(ui->c, c, 12, sel ? (style.dark ? RGB(58, 58, 63) : RGB(226, 226, 232)) : panel_back());
+        if (sel)
+            gfx_round_frame(ui->c, c, 12, style.accent);
+        if (t->url[0] && !internal(t->url))
+            site_icon(ui->c, c.x + (c.w - 32) / 2, c.y + 18, 32, t->url, &t->icon);
+        else
+            orb(ui->c, c.x + c.w / 2, c.y + 34, 14, true);
+        struct canvas inner = *ui->c;
+        inner.clip = rect_intersect(ui->c->clip, (struct rect){c.x + 8, c.y, c.w - 16, c.h});
+        gfx_text_box(&inner, (struct rect){c.x + 8, c.y + 62, c.w - 16, 18}, &font_bold, tab_label(t), style.text,
+                     ALIGN_CENTER);
+        char host[128];
+        host_of(t->url, host, sizeof(host));
+        gfx_text_box(&inner, (struct rect){c.x + 8, c.y + 82, c.w - 16, 16}, &font_small,
+                     t->url[0] && !internal(t->url) ? host : "Obscura", style.secondary, ALIGN_CENTER);
+    }
+}
+
+/* the bookmarks bar under the panel's row: the first bookmarks as chips, the rest behind a button */
+static int bar_ids[MAX_BOOKMARKS], bar_menu_mark;
+static char bar_names[MAX_BOOKMARKS][64];
+
+static void bar_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    if (index >= 0 && index < MAX_BOOKMARKS && bar_ids[index] >= 0 && bar_ids[index] < br->nbookmarks) {
+        char url[URL_MAX];
+        str_copy(url, br->bookmarks[bar_ids[index]].url, sizeof(url));
+        navigate(url);
+    }
+}
+
+static const struct menu_item mark_menu[] = {
+    {"Open", 0, NULL}, {"Open in New Tab", 0, NULL}, {"Open in Split View", 0, NULL}, {"", 0, NULL},
+    {"Open All Bookmarks", 0, NULL}, {"", 0, NULL}, {"Delete", 0, NULL},
+};
+
+static void mark_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    int b = bar_menu_mark;
+    if (b < 0 || b >= br->nbookmarks)
         return;
-    window_controls(ui, W);
-    if (!br)
+    char url[URL_MAX];
+    str_copy(url, br->bookmarks[b].url, sizeof(url));
+    switch (index) {
+    case 0: navigate(url); break;
+    case 1: new_tab(url); break;
+    case 2: split_open(url); break;
+    case 4:
+        for (int i = 0; i < br->nbookmarks && br->ntabs < MAX_TABS; i++) {
+            str_copy(url, br->bookmarks[i].url, sizeof(url));
+            new_tab(url);
+        }
+        break;
+    case 6:
+        memmove(&br->bookmarks[b], &br->bookmarks[b + 1], sizeof(br->bookmarks[0]) * (size_t)(br->nbookmarks - b - 1));
+        br->nbookmarks--;
+        list_save("bookmarks", br->bookmarks, br->nbookmarks);
+        break;
+    }
+    wm_invalidate(br->win);
+}
+
+static void bookmarks_bar(struct ui *ui, struct rect p)
+{
+    struct rect bar = {p.x, p.y + NAV_ROW, p.w, BAR_ROW};
+    struct gui_event *e = ui->e;
+    if (ui->c)
+        gfx_fill(ui->c, (struct rect){bar.x + 10, bar.y + bar.h - 1, bar.w - 20, 1}, style.separator);
+    if (!br->nbookmarks) {
+        if (ui->c)
+            gfx_text(ui->c, bar.x + 14, bar.y + (bar.h - font_small.height) / 2, &font_small,
+                     "Bookmarks show here: press Ctrl+D on a page to add one.", dim());
         return;
-    nav_row(ui, p);
+    }
+    int x = bar.x + 8, right = bar.x + bar.w - 40, i = 0;
+    for (; i < br->nbookmarks; i++) {
+        const struct visit *b = &br->bookmarks[i];
+        const char *name = b->title[0] ? b->title : b->url;
+        int w = MIN(gfx_text_width(&font_small, name) + 34, 170);
+        if (x + w > right)
+            break;
+        struct rect r = {x, bar.y + 3, w, bar.h - 7};
+        bool hot;
+        if (e && e->type == EV_MOUSE_DOWN && rect_contains(r, e->x, e->y) && e->button != BUTTON_LEFT) {
+            ui->consumed = true;
+            if (e->button == BUTTON_MIDDLE) {
+                char url[URL_MAX];
+                str_copy(url, b->url, sizeof(url));
+                new_tab(url);
+            } else {
+                bar_menu_mark = i;
+                ui_menu_items(br->win, e->x, e->y, mark_menu, (int)ARRAY_SIZE(mark_menu), mark_pick);
+            }
+            return;
+        }
+        if (area(ui, r, &hot)) {
+            char url[URL_MAX];
+            str_copy(url, b->url, sizeof(url));
+            if (hal_key_modifiers() & KEY_MOD_ALT)
+                split_open(url);
+            else
+                navigate(url);
+            return;
+        }
+        if (ui->c) {
+            if (hot)
+                gfx_round(ui->c, r, 7, hover_back());
+            site_icon(ui->c, r.x + 7, r.y + (r.h - 14) / 2, 14, b->url, NULL);
+            struct canvas inner = *ui->c;
+            inner.clip = rect_intersect(ui->c->clip, (struct rect){r.x + 26, r.y, r.w - 32, r.h});
+            gfx_text(&inner, r.x + 26, r.y + (r.h - font_small.height) / 2, &font_small, name, style.secondary);
+        }
+        x += w + 4;
+    }
+    if (i < br->nbookmarks) {
+        struct rect more = {bar.x + bar.w - 34, bar.y + 3, 26, bar.h - 7};
+        if (icon_button(ui, more, SYM_MORE, 14, dim())) {
+            static struct menu_item items[MAX_BOOKMARKS];
+            int n = 0;
+            for (int k = i; k < br->nbookmarks; k++) {
+                ksnprintf(bar_names[n], sizeof(bar_names[n]), "%.60s",
+                          br->bookmarks[k].title[0] ? br->bookmarks[k].title : br->bookmarks[k].url);
+                bar_ids[n] = k;
+                items[n] = (struct menu_item){bar_names[n], 0, NULL};
+                n++;
+            }
+            ui_menu_items(br->win, more.x - 160, more.y + more.h + 4, items, n, bar_pick);
+        }
+    }
+}
+
+/* what is over the page in focus mode while the pointer is at the window's edge */
+static struct rect peek_rect(const struct window *w)
+{
+    return br->sidebar ? (struct rect){0, 0, SIDE_W, w->surface.h} : (struct rect){0, 0, w->surface.w, TAB_ROW};
+}
+
+static void content(struct ui *ui, struct rect v)
+{
     const char *url = tab()->url;
     if (!vfs_exists(ENGINE) && !internal(url))
         get_engine(ui, v);
@@ -3601,25 +4347,162 @@ static void frame(struct ui *ui, void *data)
     else if (internal(url))
         settings_page(ui, v);
     else
-        page_view(ui, v);
+        page_view(ui, v, tab());
     if (vfs_exists(ENGINE) && url[0] && !internal(url) && tab()->error[0] && !tab()->shot.px &&
         ui_button(ui, (struct rect){v.x + v.w / 2 - 60, v.y + v.h / 2 + 62, 120, 30}, "Try Again")) {
         char again[URL_MAX];
         str_copy(again, url, sizeof(again));
         navigate(again);
     }
+}
+
+/* the split's two sides, the line between them that moves, and a button on each side that closes the other */
+static void split_view(struct ui *ui, struct rect v)
+{
+    struct window *w = ui->win;
+    struct gui_event *e = ui->e;
+    int mine = br->tabs[br->cur].id == br->split_b ? 1 : 0;
+    int other = tab_index(mine ? br->split_a : br->split_b);
+    struct rect a = pane_rect(w, 0), b = pane_rect(w, 1), cur = mine ? b : a, rest = mine ? a : b;
+    struct rect gap = {a.x + a.w, v.y, SPLIT_GAP, v.h};
+    if (ui->c) {
+        gfx_fill(ui->c, (struct rect){gap.x, v.y - 1, gap.w, v.h + 1}, chrome_back());
+        other_pane(ui, rest, &br->tabs[other]);
+    }
+    struct canvas clipped;
+    struct canvas *saved = ui->c;
+    if (ui->c) {
+        clipped = *ui->c;
+        clipped.clip = rect_intersect(ui->c->clip, cur);
+        ui->c = &clipped;
+    }
+    content(ui, cur);
+    ui->c = saved;
+    if (!br)
+        return;
+    struct rect grip = {gap.x - 3, gap.y, gap.w + 6, gap.h};
+    if (e && e->type == EV_MOUSE_DOWN && e->button == BUTTON_LEFT && rect_contains(grip, e->x, e->y)) {
+        br->split_drag = true;
+        ui->consumed = true;
+    } else if (e && e->type == EV_MOUSE_MOVE && br->split_drag) {
+        br->split_pct = CLAMP((e->x - v.x) * 100 / MAX(v.w, 1), 20, 80);
+        ui->consumed = true;
+    } else if (e && e->type == EV_MOUSE_UP && br->split_drag) {
+        br->split_drag = false;
+        if (br->link && tab()->url[0] && !internal(tab()->url))
+            push_shot();
+    }
+    for (int side = 0; side < 2; side++) {
+        struct rect r = side ? b : a;
+        struct rect x = {r.x + r.w - 30, r.y + 8, 22, 22};
+        bool hot;
+        if (area(ui, x, &hot)) {
+            split_close(side ? br->split_a : br->split_b);
+            return;
+        }
+        if (ui->c) {
+            gfx_round(ui->c, x, 11, hot ? (style.dark ? RGB(70, 70, 74) : RGB(225, 225, 230))
+                                        : ALPHA(style.dark ? RGB(40, 40, 44) : RGB(255, 255, 255), 210));
+            gfx_symbol(ui->c, x.x + 6, x.y + 6, SYM_CLOSE, 10, hot ? style.text : style.secondary);
+        }
+    }
+    if (ui->c) {
+        corners(ui->c, a, 10, chrome_back(), false);
+        corners(ui->c, b, 10, chrome_back(), false);
+        gfx_round_frame(ui->c, cur, 10, ALPHA(style.accent, 200));
+        if (br->split_drag || ui_hover(ui, grip))
+            gfx_round(ui->c, (struct rect){gap.x + gap.w / 2 - 1, v.y + v.h / 2 - 20, 3, 40}, 1, style.accent);
+    }
+}
+
+static void frame(struct ui *ui, void *data)
+{
+    UNUSED(data);
+    struct window *w = ui->win;
+    int W = w->surface.w, H = w->surface.h;
+    struct rect p = panel_rect(w), v = view_rect(w), pr = page_rect(w);
+    struct gui_event *e = ui->e;
+    bool peek = br->focus_mode && br->peek;
+    if (ui->c) {
+        gfx_clear(ui->c, (struct rect){0, 0, W, H}, chrome_back());
+        gfx_round(ui->c, p, 10, panel_back());
+    }
+    if (br->cmd_open && e && e->type != EV_TIMER && e->type != EV_RESIZE)
+        ui->e = NULL;
+    if (peek && e && e->type != EV_TIMER && e->type != EV_RESIZE && rect_contains(peek_rect(w), e->x, e->y))
+        ui->e = NULL;
+    /* a tab dropped on the page goes next to it */
+    if (e && e->type == EV_MOUSE_UP && br->drag_tab == br->cur && tab_index(br->last_id) >= 0 &&
+        br->last_id != tab()->id && rect_contains(v, e->x, e->y)) {
+        bool right = e->x > v.x + v.w / 2;
+        br->drag_tab = -1;
+        br->split_a = right ? br->last_id : tab()->id;
+        br->split_b = right ? tab()->id : br->last_id;
+        if (!br->split_pct)
+            br->split_pct = 50;
+        if (br->link && tab()->url[0] && !internal(tab()->url))
+            push_shot();
+        ui->consumed = true;
+        return;
+    }
+    if (!br->focus_mode) {
+        if (br->sidebar) {
+            sidebar(ui, H);
+        } else {
+            strip(ui, W);
+            if (!br)
+                return;
+            window_controls(ui, W - 3 * 46, 5, 46);
+        }
+        if (!br)
+            return;
+    }
+    nav_row(ui, p);
+    if (!br)
+        return;
+    if (br->bar)
+        bookmarks_bar(ui, p);
+    if (!br)
+        return;
+    if (split_on())
+        split_view(ui, v);
+    else
+        content(ui, v);
+    if (!br)
+        return;
+    const char *url = tab()->url;
     if (br->find_open && url[0] && !internal(url))
-        find_bar(ui, v);
+        find_bar(ui, pr);
     if (ui->c) {
         const char *line = br->hover[0] ? br->hover : br->status;
         if (line[0])
-            bubble(ui->c, v, line);
-        corners(ui->c, v, 10, chrome_back(), false);
+            bubble(ui->c, pr, line);
+        if (!split_on())
+            corners(ui->c, v, 10, chrome_back(), false);
+    }
+    if (peek) {
+        ui->e = br->cmd_open ? NULL : e;
+        struct rect o = peek_rect(w);
+        if (ui->c) {
+            gfx_drop_shadow(ui->c, o, 0, 24, style.dark ? 140 : 60, 4);
+            gfx_fill(ui->c, o, chrome_back());
+        }
+        if (br->sidebar) {
+            sidebar(ui, H);
+        } else {
+            strip(ui, W);
+            if (br)
+                window_controls(ui, W - 3 * 46, 5, 46);
+        }
+        if (!br)
+            return;
     }
     ui->e = e;
     if (br->cmd_open)
         cmd_bar(ui, p);
-    if (ui->c)
+    if (br && br->switching)
+        switcher(ui, p);
+    if (br && ui->c)
         tooltip(ui->c, W);
 }
 
@@ -3630,10 +4513,25 @@ static void paint(struct window *w, struct canvas *c)
 
 static void page_event(struct window *w, struct gui_event *e)
 {
-    struct rect v = view_rect(w);
+    struct rect v = page_rect(w);
+    bool mouse = e->type == EV_MOUSE_DOWN || e->type == EV_MOUSE_MOVE || e->type == EV_WHEEL;
+    if (mouse && ((br->focus_mode && br->peek && rect_contains(peek_rect(w), e->x, e->y)) || br->split_drag))
+        return;
+    /* a click on the other side of a split brings that side's page */
+    if (e->type == EV_MOUSE_DOWN && split_on() && !br->cmd_open) {
+        int mine = br->tabs[br->cur].id == br->split_b ? 1 : 0;
+        struct rect o = pane_rect(w, !mine);
+        if (rect_contains(o, e->x, e->y) && !rect_contains((struct rect){o.x + o.w - 30, o.y + 8, 22, 22}, e->x, e->y)) {
+            select_tab(tab_index(mine ? br->split_a : br->split_b));
+            e->handled = true;
+            wm_invalidate(w);
+            return;
+        }
+    }
     if (!tab()->url[0] || internal(tab()->url) || !vfs_exists(ENGINE) || !br->link || br->cmd_open)
         return;
-    bool inside = rect_contains(v, e->x, e->y) && !(br->find_open && rect_contains(find_rect(v), e->x, e->y));
+    bool inside = rect_contains(v, e->x, e->y) && !(br->find_open && rect_contains(find_rect(v), e->x, e->y)) &&
+                  !(split_on() && rect_contains((struct rect){v.x + v.w - 30, v.y + 8, 22, 22}, e->x, e->y));
     if (e->type == EV_MOUSE_DOWN && inside && (e->button == BUTTON_LEFT || e->button == BUTTON_RIGHT ||
                                                e->button == BUTTON_MIDDLE)) {
         char js[1200];
@@ -3654,6 +4552,7 @@ static void page_event(struct window *w, struct gui_event *e)
         br->menu_x = e->x;
         br->menu_y = e->y;
         br->middle = e->button == BUTTON_MIDDLE;
+        br->alt_click = e->button == BUTTON_LEFT && (hal_key_modifiers() & KEY_MOD_ALT);
         br->focus = F_NONE;
         push_eval(menu ? R_CONTEXT : R_CLICK, js);
         e->handled = true;
@@ -3714,8 +4613,17 @@ static bool shortcut(int k)
         command(base == KEY_F5 ? CMD_RELOAD : CMD_FULLSCREEN);
         return true;
     }
-    if ((k & KEY_MOD_CTRL) && base == KEY_TAB) {
-        command(shift ? CMD_PREV_TAB : CMD_NEXT_TAB);
+    /* Ctrl+Tab goes through the tabs used last while Ctrl is held, and opens the one chosen when it is let go */
+    if (((k & KEY_MOD_CTRL) || (held & KEY_MOD_CTRL)) && base == KEY_TAB) {
+        int list[RECENT], n = recent_tabs(list, RECENT);
+        if (n < 2)
+            return true;
+        if (!br->switching) {
+            br->switching = true;
+            br->switch_sel = shift ? n - 1 : 1;
+        } else {
+            br->switch_sel = (br->switch_sel + (shift ? n - 1 : 1)) % n;
+        }
         return true;
     }
     if (!mod)
@@ -3728,20 +4636,29 @@ static bool shortcut(int k)
     }
     switch (base >= 'A' && base <= 'Z' ? base + 32 : base) {
     case 't': command(shift ? CMD_REOPEN : CMD_NEW_TAB); return true;
-    case 'n': command(CMD_NEW_TAB); return true;
+    case 'n': command(shift ? CMD_PRIVATE : CMD_NEW_TAB); return true;
+    case 'v':
+        if (!shift)
+            return false;
+        command(CMD_PASTE_GO);
+        return true;
     case 'w': command(CMD_CLOSE_TAB); return true;
     case 'l':
     case 'k': command(CMD_LOCATION); return true;
     case 'r': command(CMD_RELOAD); return true;
-    case 's': command(CMD_SAVE); return true;
+    case 's': command(shift ? CMD_SIDEBAR : CMD_SAVE); return true;
     case 'o': command(CMD_OPEN_FILE); return true;
     case 'd': command(CMD_BOOKMARK); return true;
     case 'b':
-        if (!shift)
+        if ((k & KEY_MOD_ALT) || (held & KEY_MOD_ALT))
+            command(CMD_BOOKMARKS);
+        else if (shift)
+            command(CMD_BAR);
+        else
             return false;
-        command(CMD_BOOKMARKS);
         return true;
-    case 'f': command(CMD_FIND); return true;
+    case 'f': command(shift ? CMD_FOCUS_MODE : CMD_FIND); return true;
+    case 'e': command(CMD_SPLIT); return true;
     case 'g': command(shift ? CMD_FIND_PREV : CMD_FIND_NEXT); return true;
     case 'u': command(CMD_SOURCE); return true;
     case 'h': command(CMD_HISTORY); return true;
@@ -3760,7 +4677,9 @@ static bool shortcut(int k)
 
 static bool escape_key(void)
 {
-    if (br->cmd_open) {
+    if (br->switching) {
+        br->switching = false;
+    } else if (br->cmd_open) {
         br->cmd_open = false;
         br->focus = F_NONE;
     } else if (br->find_open) {
@@ -3794,7 +4713,24 @@ static void event(struct window *w, struct gui_event *e)
         }
         if (br->tip_tab >= 0 && !br->tip_shown && hal_ticks_ms() - br->tip_since > 550)
             wm_invalidate(w);
+        if (br->switching && !(hal_key_modifiers() & KEY_MOD_CTRL)) {
+            int list[RECENT], n = recent_tabs(list, RECENT);
+            br->switching = false;
+            if (br->switch_sel < n)
+                select_tab(list[br->switch_sel]);
+            wm_invalidate(w);
+        }
         return;
+    }
+    if (br->focus_mode && (e->type == EV_MOUSE_MOVE || e->type == EV_LEAVE)) {
+        bool edge = e->type == EV_MOUSE_MOVE && (br->sidebar ? e->x < 8 : e->y < 8);
+        bool keep = e->type == EV_MOUSE_MOVE && rect_contains(peek_rect(w), e->x, e->y);
+        bool now = br->peek ? keep || edge : edge;
+        if (now != br->peek && !(e->buttons & BUTTON_LEFT)) {
+            br->peek = now;
+            br->tip_tab = -1;
+            wm_invalidate(w);
+        }
     }
     if (e->type == EV_LEAVE && br->tip_tab >= 0) {
         br->tip_tab = -1;
@@ -3823,7 +4759,13 @@ static void event(struct window *w, struct gui_event *e)
 
 static void destroy(struct window *w)
 {
-    UNUSED(w);
+    session_save();
+    if (!(w->flags & (WIN_MAXIMIZED | WIN_FULLSCREEN))) {
+        app_state_set_number("obscura", "x", w->frame.x);
+        app_state_set_number("obscura", "y", w->frame.y);
+        app_state_set_number("obscura", "w", w->surface.w);
+        app_state_set_number("obscura", "h", w->surface.h);
+    }
     engine_stop();
     for (int i = 0; i < br->ntabs; i++) {
         picture_free(&br->tabs[i].shot);
@@ -3831,6 +4773,7 @@ static void destroy(struct window *w)
     }
     for (int i = 0; i < 3; i++)
         canvas_free(&br->cards[i]);
+    picture_free(&br->tip_pic);
     kfree(br->files);
     kfree(br->rx);
     kfree(br);
@@ -3866,6 +4809,11 @@ static void launch(const char *arg)
         return;
     struct rect a = wm_screen_rect(0);
     int w = CLAMP(a.w - 100, 640, 1360), h = CLAMP(a.h - 90, 420, 860);
+    int sw = (int)app_state_number("obscura", "w", 0), sh = (int)app_state_number("obscura", "h", 0);
+    if (sw >= 560 && sh >= 360 && sw <= a.w && sh <= a.h) {
+        w = sw;
+        h = sh;
+    }
     br->win = wm_open("Obscura", ICON_BROWSER, w, h, &ops, NULL,
                       WIN_RESIZABLE | WIN_FULLSIZE | WIN_NOTITLE | WIN_OWNCONTROLS);
     if (!br->win) {
@@ -3873,19 +4821,33 @@ static void launch(const char *arg)
         br = NULL;
         return;
     }
-    br->win->toolbar_h = TAB_ROW;
+    br->sidebar = app_state_on("obscura", "sidebar", false);
+    br->win->toolbar_h = br->sidebar ? 1 : TAB_ROW;
+    br->bar = app_state_on("obscura", "bar", false);
+    int sx = (int)app_state_number("obscura", "x", -100000), sy = (int)app_state_number("obscura", "y", -100000);
+    if (sw && sx > -100000 && sx >= a.x - w / 2 && sx < a.x + a.w - 80 && sy >= a.y && sy < a.y + a.h - 60)
+        wm_move(br->win, sx, sy);
     br->win->min_w = 560;
     br->win->min_h = 360;
     wm_set_menus(br->win, menus, ARRAY_SIZE(menus));
     wm_set_timer(br->win, 30);
     br->ntabs = 1;
+    br->tabs[0].id = ++br->tab_ids;
+    session_load();
+    mru_touch(tab()->id);
     br->drag_tab = br->tip_tab = br->shown_cur = -1;
     br->focus = F_ASK;
     br->engine = CLAMP((int)app_state_number("obscura", "engine", 0), 0, (int)ARRAY_SIZE(engines) - 1);
     visits_load();
     br->nbookmarks = list_load("bookmarks", br->bookmarks, MAX_BOOKMARKS);
+    if (tab()->url[0]) {
+        br->focus = F_NONE;
+        wm_set_title(br->win, tab()->title[0] ? tab()->title : "Obscura");
+    }
     if (arg && *arg)
-        open_arg(arg, false);
+        open_arg(arg, true);
+    else if (tab()->url[0] && !internal(tab()->url) && vfs_exists(ENGINE))
+        navigate(tab()->url);
 }
 
 #endif
