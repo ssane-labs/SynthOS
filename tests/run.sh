@@ -761,6 +761,8 @@ modules load nothere
 modules: nothere: no such file or directory
 modules | grep -E "^(console|sysinfo|netutil|diskutil) " | grep -c shown
 4
+grep -c "Open Font License" /system/LICENSES.txt
+2
 winctl | grep safearray
 safearray dims=2 ub1=2 ub2=4 value=99
 winctl | grep imagelist

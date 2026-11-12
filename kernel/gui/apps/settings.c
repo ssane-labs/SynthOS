@@ -719,8 +719,12 @@ static void pane_about(struct page *p)
     info(p, "User", user_current()->full);
     end(p, NULL);
     section(p, NULL);
-    if (button(p, "Memory, disks, windows and the kernel log", NULL, "System Report..."))
-        gui_app_launch(gui_app_find("System Monitor"), NULL);
+    if (button(p, "Hardware, storage, network and software", NULL, "System Report...")) {
+        const struct gui_app *info = gui_app_find("System Information");
+        gui_app_launch(info ? info : gui_app_find("System Monitor"), NULL);
+    }
+    if (button(p, "Licenses", "The fonts and other parts SynthOS uses from other projects", "Show..."))
+        gui_app_launch(gui_app_find("Viewer"), "/system/LICENSES.txt");
     end(p, NULL);
 }
 
