@@ -870,7 +870,7 @@ dwrite3 factory2=1 factory3=1 collection=1 fallback=1 gray=1
 spawn64
 spawn64 held=ping child=7010 map=pong dll32=0/193 overlapped=1 3 678
 sock6
-sock6 ok=1 family=23 len=28 port=1 recv=hi6 peer=::1 afd=1
+sock6 ok=1 family=23 len=28 port=1 recv=hi6 peer=::1 afd=AFD
 cat '/mnt/hdb/Long Name Note.txt'
 hello from fat
 mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'
@@ -1169,8 +1169,11 @@ fi
 
 # KERNEL64=1: the 64-bit kernel; NO_WIN32=1 leaves out the Windows cases (a build without the Windows subsystem),
 # NO_WIN64=1 the cases of 64-bit Windows programs
+# AFD socket polling (tokio/mio programs) is in the 64-bit kernel's native calls only
 if [ "$KERNEL64" = 1 ]; then
-    sed -i 's/^Paging  PAE$/Paging  4-level/' "$work/cases"
+    sed -i -e 's/^Paging  PAE$/Paging  4-level/' -e 's/ afd=AFD$/ afd=1/' "$work/cases"
+else
+    sed -i 's/ afd=AFD$/ afd=0/' "$work/cases"
 fi
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
