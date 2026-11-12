@@ -495,7 +495,7 @@ COMMAND(install, "setup", "system",
     if (!plan.whole) {
         if (!free_index && plan.replace < 0)
             return sh_error(sh, "install", "say where: --whole, --free <n> or --replace <part>");
-        struct part space;
+        struct part space = {0};
         int err = find_free(plan.disk, plan.replace >= 0 ? -(plan.replace + 1) : free_index, &space);
         if (err)
             return sh_error(sh, "install", "%s: no such %s", name, plan.replace >= 0 ? "partition" : "free space");

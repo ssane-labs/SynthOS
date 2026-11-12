@@ -87,6 +87,7 @@ enum icon_id {
     ICON_SYSINFO,
     ICON_NETUTIL,
     ICON_DISKUTIL,
+    ICON_TIMELINE,
     ICON_COUNT,
 };
 

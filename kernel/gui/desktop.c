@@ -15,7 +15,9 @@
 #include <synth/store.h>
 #include <synth/recovery.h>
 #include <synth/shell.h>
+#include <synth/rules.h>
 #include <synth/string.h>
+#include <synth/timeline.h>
 #include <synth/theme.h>
 #include <synth/time.h>
 #include <synth/users.h>
@@ -1112,6 +1114,17 @@ void gui_app_launch(const struct gui_app *app, const char *arg)
 #endif
     if (!app || !app->launch)
         return;
+    if (focus_blocks(app->name)) {
+        char text[96];
+        ksnprintf(text, sizeof(text), "%s opens when the focus session ends (%d min).", app->name, focus_minutes_left());
+        gui_notify("Focus session", text);
+        return;
+    }
+    if (arg && arg[0] == '/' && !vfs_is_dir(arg))
+        timeline_add('f', path_basename(arg), arg);
+    else
+        timeline_add('a', app->name, app->name);
+    rules_event("open", app->name);
     wm_set_app(app);
     app->launch(arg);
     wm_set_app(NULL);
@@ -1444,6 +1457,7 @@ static void close_app_window(struct window *w, void *ctx)
 void gui_session_login(const char *name)
 {
     user_switch(session, name);
+    rules_event("login", name);
     look_user_changed();
     gui_look_changed();
     widgets_user_changed();
@@ -1878,6 +1892,15 @@ static void pump(int timeout_ms)
         last_minute = tick;
         chrome_changed();
         display_tick();
+        focus_tick();
+        static int rule_minute = -1;
+        if (t.minute != rule_minute) {
+            char hm[8];
+            ksnprintf(hm, sizeof(hm), "%02u:%02u", t.hour, t.minute);
+            if (rule_minute >= 0)
+                rules_event("at", hm);
+            rule_minute = t.minute;
+        }
     }
     if (now - last_scan > 2000) {
         last_scan = now;
@@ -1914,6 +1937,7 @@ static void pump(int timeout_ms)
         chrome_install_run();
         chromium_run();
         gui_module_tick();
+        rules_run_pending();
         in_jobs = false;
     }
     open_queued();

@@ -333,6 +333,23 @@ SynthOS 1.1 «Black Hole» — рабочая система:
   Manager» (Windows запускается штатно через `BootNext`, BitLocker не замечает разницы).
   Копия системы находится по 64-битному id в загрузочной записи, поэтому флешка и установленная
   система не путаются;
+* **пять возможностей, которых нет в других системах**:
+  * **Rewind** — перед каждой перезаписью файла в `/home` прежнее содержимое сохраняется
+    (`/home/.versions`, не чаще раза в минуту, последние 20, файлы до 4 МБ; программы и скрытые папки не
+    трогаются); «Файлы» → правой кнопкой → **Earlier Versions…**, команда `versions <файл> [show|restore <n>]`,
+    настройка `versions on|off`;
+  * **Timeline** — приложение-лента: какие приложения, файлы и сайты открывались и какие файлы сохранялись,
+    по дням, с поиском; щелчок открывает снова, у сохранённых файлов — кнопка **Versions** (`/home/.timeline`,
+    команда `timeline [today|<дней>] [слово]`, настройка `timeline on|off`);
+  * **отмена изменений настроек** — каждое изменение запоминается со старым значением: `config history`,
+    `config undo [n]`, в Spotlight — «Undo Last Setting Change»;
+  * **Focus** — сеанс сосредоточения: уведомления молчат, Dock прячется, в строке меню обратный отсчёт,
+    выбранные приложения не открываются до конца сеанса; `focus 25 block Paint,Music`, `focus stop`,
+    в Spotlight — «Focus for 25 Minutes»;
+  * **правила** — «когда … — сделай …» без программирования: `rules add at 22:00 -- config nightshift on`,
+    `rules add open Paint -- config dockmode autohide`, `rules add save /home/Downloads -- …`, `login`,
+    `start`; список `rules`, удаление `rules remove <n>`, проверка `rules run <когда>` (`/home/.rules`,
+    вывод команд — в журнал `dmesg`);
 * **мастер первого запуска** (9 шагов): языки ввода и их порядок, часовой пояс и формат часов,
   учётная запись с паролем и автовходом, оформление (стиль, светлое/тёмное, акцент, прозрачность),
   обои и виджеты, Dock и строка меню, сочетания клавиш/Night Shift/блокировка/анимации и др., сводка;
@@ -599,6 +616,11 @@ config look night         образ рабочего стола: mono, dune, mi
 music, install, autostart музыка, установка (рядом с Windows / вместо раздела / на весь диск), программы при входе
 start file.msi            открыть файл или ссылку программой, назначенной в реестре (как start в Windows)
 part [диск]               таблица разделов; init gpt|mbr, add <МБ> [тип] [имя], del <n> (с --yes)
+versions plan.txt         прежние версии файла (Rewind); restore <n> возвращает одну
+timeline today            что сегодня открывалось и сохранялось
+focus 25 block Paint      сеанс сосредоточения на 25 минут
+rules add at 22:00 -- config nightshift on   правило: в 22:00 включить Night Shift
+config undo               отменить последнее изменение настройки
 bootmenu                  меню загрузки UEFI: когда показывается, ожидание, система по умолчанию, список
 welcome                   мастер первого запуска (языки, регион, учётная запись, оформление, рабочий стол, Dock)
 launch                    список приложений;  launch paint, launch files /home, launch файл.bmp
@@ -705,6 +727,9 @@ kernel/core/install.c     установка: весь диск, свободн�
 kernel/core/parttab.c     таблицы разделов MBR и GPT: карта диска, добавить/удалить раздел (команда part)
 kernel/core/keymap.c      раскладки клавиатуры (config keyboard, Win+Space)
 kernel/gui/setup.c        мастер первого запуска и экран «Try / Install» при загрузке с флешки
+kernel/gui/focus.c        сеансы Focus; kernel/gui/optional/timeline.c — приложение Timeline (модуль)
+kernel/fs/versions.c      Rewind: версии файлов перед перезаписью (вызов из vfs_open, событие из vfs_close)
+kernel/core/timeline.c    журнал /home/.timeline; kernel/core/rules.c — правила «когда — сделай»
 kernel/exec/              exec.c (поиск/запуск), script.c (формат .sh)
 kernel/vm/                vm.c (интерпретатор SX), asm.c, opcodes.c, commands.c (asm/dis)
 kernel/dos/               cpu.c (8086/186), dos.c (память/загрузчик/процессы), int21.c, bios.c

@@ -327,8 +327,10 @@ $(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
 # desktop code that runs on clicks, not per frame: small rather than fast (the 32-bit kernel must stay below 3.5 MiB)
 GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.o screenshot.o mission.o notify.o \
              dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o \
-             sysupdate.o progress.o)
-$(OUT)/obj/kernel/gui/apps/%.o $(GUI_SMALL): CFLAGS += -Os
+             sysupdate.o progress.o focus.o)
+CORE_SMALL := $(addprefix $(OUT)/obj/kernel/,core/install.o core/update.o core/recovery.o core/store.o core/rules.o \
+              core/timeline.o fs/versions.o)
+$(OUT)/obj/kernel/gui/apps/%.o $(GUI_SMALL) $(CORE_SMALL): CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
 

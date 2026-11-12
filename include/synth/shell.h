@@ -107,6 +107,11 @@ int history_save(const struct history *h, const char *path);
 
 const struct setting *setting_find(const char *name);
 int setting_apply(struct shell *sh, const char *name, const char *value);
+int setting_change(struct shell *sh, const struct setting *st, const char *value);
+/* the changes made since the start, newest first; undo puts change n (0 = the latest) back */
+int setting_history(int n, const char **name, const char **was, const char **now, uint32_t *time);
+int setting_undo(int n);
+extern int settings_quiet;
 int settings_save(const char *path);
 int setting_flag(const char *value, bool *out);
 void setting_flag_get(bool value, char *buf, size_t cap);

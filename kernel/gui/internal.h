@@ -374,6 +374,10 @@ bool dock_animate(void);
 struct rect dock_window_rect(struct window *w);
 void dock_bounce(const struct gui_app *app);
 
+int focus_minutes_left(void);
+void focus_start(int minutes, const char *block);
+void focus_tick(void);
+bool focus_blocks(const char *app);
 void wallpaper_paint(struct canvas *c, const char *kind, bool dark);
 
 struct window *terminal_open(bool hidden);

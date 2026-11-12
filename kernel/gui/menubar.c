@@ -59,7 +59,9 @@ static bool started;
 
 static void clock_text(char *buf, size_t cap)
 {
-    gui_clock_text(buf, cap, true);
+    int left = focus_minutes_left();
+    int n = left ? ksnprintf(buf, cap, "Focus %d min  ", left) : 0;
+    gui_clock_text(buf + n, cap - (size_t)n, true);
 }
 
 static struct rect islands[3];

@@ -10,6 +10,8 @@
 #include <synth/recovery.h>
 #include <synth/shell.h>
 #include <synth/users.h>
+#include <synth/rules.h>
+#include <synth/versions.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 #include <synth/vmm.h>
@@ -212,6 +214,9 @@ void kmain(const struct boot_info *bi)
     boot_step(true, "Shell ready");
     users_init();
     run_startup(sh);
+    versions_ready = true;
+    rules_event("start", NULL);
+    rules_run_pending();
 
     char command[CONFIG_LINE_MAX];
     if (cmdline_value(bi->cmdline, "run", command, sizeof(command))) {

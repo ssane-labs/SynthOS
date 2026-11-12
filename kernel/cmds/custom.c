@@ -4,6 +4,7 @@
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/string.h>
+#include <synth/time.h>
 #include <synth/vfs.h>
 
 #define SETTINGS_FILE "/home/.synth.conf"
@@ -123,6 +124,33 @@ COMMAND(theme, NULL, "custom", "theme [list | <name> | current | show [name] | s
         if (argc > 2 && theme_find(argv[2], &t) != 0)
             return sh_error(sh, "theme", "unknown theme '%s'", argv[2]);
         return theme_show(sh, &t);
+    }
+    if (!strcmp(argv[1], "history")) {
+        const char *name, *was, *now;
+        uint32_t t;
+        int n = 0;
+        for (; setting_history(n, &name, &was, &now, &t) == 0; n++) {
+            char when[24];
+            time_format(t + (uint32_t)(time_zone() * 60), when, sizeof(when));
+            sh_printf(sh, "%2d  %s  %s: %s -> %s\n", n + 1, when + 11, name, was, now);
+        }
+        if (!n)
+            sh_puts(sh, "no settings changed since the start\n");
+        return 0;
+    }
+    if (!strcmp(argv[1], "undo")) {
+        int n = argc > 2 ? (int)str_to_long(argv[2], NULL, 10) - 1 : 0;
+        const char *name, *was, *now;
+        uint32_t t;
+        if (setting_history(n, &name, &was, &now, &t))
+            return sh_error(sh, "config", "nothing to undo");
+        char what[128];
+        ksnprintf(what, sizeof(what), "%s is %s again", name, was);
+        int err = setting_undo(n);
+        if (err)
+            return sh_error(sh, "config", "%s", err_str(err));
+        sh_printf(sh, "%s\n", what);
+        return 0;
     }
     if (strcmp(argv[1], "reset") == 0) {
         theme_apply(theme_builtin(0));
@@ -246,7 +274,8 @@ COMMAND(prompt, NULL, "custom", "prompt [preset | \"format\" | tokens]", "choose
     return 0;
 }
 
-COMMAND(config, "setup", "custom", "config [name [value] | save | reset]", "view and change system settings")
+COMMAND(config, "setup", "custom", "config [name [value] | save | reset | history | undo [n]]",
+        "view and change system settings; history lists the changes made, undo takes one back")
 {
     if (argc == 1) {
         SYNTH_TABLE_FOREACH(synth_settings, struct setting, st) {
@@ -276,6 +305,33 @@ COMMAND(config, "setup", "custom", "config [name [value] | save | reset]", "view
         sh_reset(sh);
         return 0;
     }
+    if (!strcmp(argv[1], "history")) {
+        const char *name, *was, *now;
+        uint32_t t;
+        int n = 0;
+        for (; setting_history(n, &name, &was, &now, &t) == 0; n++) {
+            char when[24];
+            time_format(t + (uint32_t)(time_zone() * 60), when, sizeof(when));
+            sh_printf(sh, "%2d  %s  %s: %s -> %s\n", n + 1, when + 11, name, was, now);
+        }
+        if (!n)
+            sh_puts(sh, "no settings changed since the start\n");
+        return 0;
+    }
+    if (!strcmp(argv[1], "undo")) {
+        int n = argc > 2 ? (int)str_to_long(argv[2], NULL, 10) - 1 : 0;
+        const char *name, *was, *now;
+        uint32_t t;
+        if (setting_history(n, &name, &was, &now, &t))
+            return sh_error(sh, "config", "nothing to undo");
+        char what[128];
+        ksnprintf(what, sizeof(what), "%s is %s again", name, was);
+        int err = setting_undo(n);
+        if (err)
+            return sh_error(sh, "config", "%s", err_str(err));
+        sh_printf(sh, "%s\n", what);
+        return 0;
+    }
     if (strcmp(argv[1], "reset") == 0) {
         vfs_unlink(SETTINGS_FILE);
         theme_apply(theme_builtin(0));
@@ -294,7 +350,7 @@ COMMAND(config, "setup", "custom", "config [name [value] | save | reset]", "view
         sh_reset(sh);
         return 0;
     }
-    int err = st->set(sh, argv[2]);
+    int err = setting_change(sh, st, argv[2]);
     if (err)
         return sh_error(sh, "config", "%s: invalid value '%s' (expected %s)", st->name, argv[2], st->values);
     return 0;

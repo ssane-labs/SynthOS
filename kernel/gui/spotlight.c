@@ -233,6 +233,10 @@ static const struct {
     {"Empty Trash", "empty trash bin", ICON_TRASH},
     {"Take Screenshot", "screenshot screen capture", ICON_SCREENSHOT},
     {"Open Downloads", "downloads", ICON_FOLDER_DOWNLOADS},
+    {"Focus for 25 Minutes", "focus concentrate pomodoro work", ICON_CLOCK},
+    {"End Focus Session", "focus stop end", ICON_CLOCK},
+    {"Undo Last Setting Change", "undo setting revert change", ICON_SETTINGS},
+    {"Open Timeline", "timeline history recent activity rewind versions", ICON_TIMELINE},
 };
 
 static void match_actions(struct spot *s)
@@ -264,6 +268,23 @@ static void run_action(int i)
         gui_app_launch(gui_app_find("Files"), path);
         break;
     }
+    case 8: focus_start(25, NULL); break;
+    case 9: shell_exec(shell_current(), "focus stop"); break;
+    case 10: {
+        const char *name, *was, *now;
+        uint32_t t;
+        if (setting_history(0, &name, &was, &now, &t) == 0) {
+            char text[128];
+            ksnprintf(text, sizeof(text), "%s is %s again.", name, was);
+            if (setting_undo(0) == 0)
+                gui_notify("Setting undone", text);
+        } else {
+            gui_notify("Nothing to undo", "No setting was changed since the start.");
+        }
+        chrome_changed();
+        break;
+    }
+    case 11: gui_app_launch(gui_app_find("Timeline"), NULL); break;
     }
 }
 

@@ -3,6 +3,7 @@
 #include <synth/input.h>
 #include <synth/log.h>
 #include <synth/string.h>
+#include <synth/versions.h>
 #include <synth/vfs.h>
 #include <synth/vmm.h>
 
@@ -229,6 +230,7 @@ int vfs_open(const char *path, unsigned flags, struct file **out)
     }
     /* a file just made is empty already: cutting it again would cost a disk write */
     if ((flags & VFS_TRUNC) && (flags & VFS_WRITE) && vn->type == VN_FILE && !made) {
+        versions_keep(path, vn);
         err = vn->ops->truncate ? vn->ops->truncate(vn, 0) : E_PERM;
         if (err) {
             vnode_put(vn);
@@ -242,6 +244,8 @@ int vfs_open(const char *path, unsigned flags, struct file **out)
     }
     f->vn = vn;
     f->flags = flags;
+    if ((flags & VFS_WRITE) && vn->type == VN_FILE && versions_tracked(path))
+        f->written = kstrdup(path);
     *out = f;
     return 0;
 }
@@ -320,6 +324,10 @@ void vfs_close(struct file *f)
     if (!f)
         return;
     vnode_put(f->vn);
+    if (f->written) {
+        versions_saved(f->written);
+        kfree(f->written);
+    }
     kfree(f);
 }
 

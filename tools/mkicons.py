@@ -1217,6 +1217,25 @@ def diskutil_art():
     art.put(ellipse4((182, 158, 194, 170)), hexc("37d06a"))
     return art.done()
 
+
+def timeline_art():
+    """A rewind arrow around a column of moments on violet: going back in time."""
+    art = Art(hexc("9b6bff"), hexc("4a1fb8"))
+    cx = cy = 128
+
+    def ring(d):
+        d.arc([44, 44, 212, 212], 200, 520, fill=255, width=18)
+    art.put(ring, (hexc("ffffff"), hexc("e3d9ff")), 50, 3)
+    a = math.radians(200)
+    tip = (cx + 84 * math.cos(a), cy + 84 * math.sin(a))
+    art.put(poly4([(tip[0] - 28, tip[1] - 2), (tip[0] + 18, tip[1] - 6), (tip[0] - 2, tip[1] + 34)]),
+            (hexc("ffffff"), hexc("e3d9ff")), 50, 3)
+    art.put(rr4((cx - 4, 84, cx + 4, 172), 4), (255, 255, 255, 120))
+    for i, (y, c) in enumerate(((92, "ffd36b"), (128, "ffffff"), (164, "7ef0c4"))):
+        art.put(ellipse4((cx - 13, y - 13, cx + 13, y + 13)), hexc(c))
+        art.put(rr4((cx + 22, y - 5, cx + 22 + (46 if i != 1 else 34), y + 5), 5), (255, 255, 255, 170))
+    return art.done()
+
 ICONS = [
     ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_art),
     ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_art),
@@ -1233,7 +1252,7 @@ ICONS = [
     ("ICON_SCREENSHOT", screenshot_art), ("ICON_STORE", store_art), ("ICON_CODE", code_art),
     ("ICON_GAMES", games_art), ("ICON_CLOCK", clock_art), ("ICON_WEATHER", weather_art), ("ICON_NOTES", notes_art),
     ("ICON_CONSOLE", console_art), ("ICON_SYSINFO", sysinfo_art), ("ICON_NETUTIL", netutil_art),
-    ("ICON_DISKUTIL", diskutil_art),
+    ("ICON_DISKUTIL", diskutil_art), ("ICON_TIMELINE", timeline_art),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)

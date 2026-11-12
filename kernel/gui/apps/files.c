@@ -557,10 +557,11 @@ enum {
     M_CUT,
     M_RENAME,
     M_TRASH,
+    M_VERSIONS,
 };
 
 static const char *const item_menu[] = {"Open", "Open with Notepad", "Run in Terminal", "", "Copy", "Cut",
-                                        "Rename…", "Move to Trash"};
+                                        "Rename…", "Move to Trash", "Earlier Versions…"};
 static const char *const space_menu[] = {"New Folder", "Paste", "", "Open in Terminal", "View as Icons",
                                          "View as List"};
 
@@ -588,6 +589,7 @@ static void pick_item(struct window *w, int index)
         break;
     case M_RENAME: ui_prompt(w, "Rename", "Enter a new name:", e->name, do_rename); break;
     case M_TRASH: trash(w, f); break;
+    case M_VERSIONS: gui_app_launch(gui_app_find("Timeline"), p); break;
     }
     wm_invalidate(w);
 }

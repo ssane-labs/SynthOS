@@ -47,6 +47,24 @@ echo hello world
 hello world
 help welcome
 languages, region, account, look, desktop, Dock, behaviour
+echo one > /home/rw.txt; echo two > /home/rw.txt; versions /home/rw.txt show 1
+one
+versions /home/rw.txt restore 1; cat /home/rw.txt
+/home/rw.txt is back to version 1
+timeline today rw.txt | head -n 1
+saved   rw.txt  (/home/rw.txt)
+config dnd on; config history | head -n 1
+dnd: off -> on
+config undo; config dnd | head -n 1
+dnd = off
+rules add open Notepad -- echo rule-fired; rules run open notepad
+rule-fired
+rules remove 1; rules
+no rules; e.g. rules add at 22:00 -- config nightshift on
+focus 25 block Paint; focus
+Focus: 25 min left, blocked: Paint
+focus stop; focus
+no focus session; start one with focus 25
 imginfo /system/wallpapers/Dunes.jpg
 1280x800, 1 frame, average #8e6262
 imginfo /system/wallpapers/Glacier.jpg

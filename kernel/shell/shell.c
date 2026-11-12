@@ -7,6 +7,7 @@
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/lineedit.h>
+#include <synth/rules.h>
 #include <synth/string.h>
 #include <synth/time.h>
 #include <synth/vfs.h>
@@ -287,7 +288,9 @@ int shell_source(struct shell *sh, const char *path, int argc, char **argv)
     int err = vfs_read_all(path, &text, NULL);
     if (err)
         return err;
+    settings_quiet++;
     int rc = shell_exec_script(sh, text, argc, argv);
+    settings_quiet--;
     kfree(text);
     return rc;
 }
@@ -464,6 +467,7 @@ void shell_repl(struct shell *sh)
         }
         if (sh->ctl == CTL_EXIT)
             break;
+        rules_run_pending();
     }
     history_save(&sh->history, HISTORY_FILE);
     kfree(line);

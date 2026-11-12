@@ -12,6 +12,7 @@
 #include <synth/string.h>
 #include <synth/users.h>
 #include <synth/vfs.h>
+#include <synth/timeline.h>
 
 #include "../internal.h"
 
@@ -595,6 +596,7 @@ static void visits_add(const char *url, const char *title)
     str_copy(br->history[0].url, url, URL_MAX);
     str_copy(br->history[0].title, title, sizeof(br->history[0].title));
     visits_save();
+    timeline_add('w', title, url);
 }
 
 /* ---- site icons ---- */

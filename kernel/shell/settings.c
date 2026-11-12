@@ -5,6 +5,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/string.h>
+#include <synth/time.h>
 #include <synth/vfs.h>
 
 #include "internal.h"
@@ -19,12 +20,78 @@ const struct setting *setting_find(const char *name)
     return NULL;
 }
 
+/* Every change made by hand (not by a startup script) is remembered with the value it replaced, so that it can be
+   undone: config history, config undo, "Undo Last Setting Change" in Spotlight. */
+#define HISTORY 32
+
+struct change {
+    char name[24], was[96], now[96];
+    uint32_t time;
+};
+
+static struct change *changes;
+static int change_count;
+int settings_quiet;
+
+int setting_change(struct shell *sh, const struct setting *st, const char *value)
+{
+    char was[96];
+    st->get(was, sizeof(was));
+    int err = st->set(sh, value);
+    if (err || settings_quiet)
+        return err;
+    char now[96];
+    st->get(now, sizeof(now));
+    if (!strcmp(was, now) || (!changes && !(changes = kzalloc(sizeof(*changes) * HISTORY))))
+        return 0;
+    if (change_count == HISTORY)
+        memmove(changes, changes + 1, sizeof(*changes) * (HISTORY - 1));
+    else
+        change_count++;
+    struct change *c = &changes[change_count - 1];
+    str_copy(c->name, st->name, sizeof(c->name));
+    str_copy(c->was, was, sizeof(c->was));
+    str_copy(c->now, now, sizeof(c->now));
+    c->time = time_now();
+    return 0;
+}
+
 int setting_apply(struct shell *sh, const char *name, const char *value)
 {
     const struct setting *st = setting_find(name);
     if (!st)
         return E_NOENT;
-    return st->set(sh, value);
+    return setting_change(sh, st, value);
+}
+
+int setting_history(int n, const char **name, const char **was, const char **now, uint32_t *time)
+{
+    if (n < 0 || n >= change_count)
+        return E_NOENT;
+    const struct change *c = &changes[change_count - 1 - n];
+    *name = c->name;
+    *was = c->was;
+    *now = c->now;
+    *time = c->time;
+    return 0;
+}
+
+int setting_undo(int n)
+{
+    if (n < 0 || n >= change_count)
+        return E_NOENT;
+    struct change c = changes[change_count - 1 - n];
+    const struct setting *st = setting_find(c.name);
+    if (!st)
+        return E_NOENT;
+    settings_quiet++;
+    int err = st->set(shell_current(), c.was);
+    settings_quiet--;
+    if (err)
+        return err;
+    memmove(&changes[change_count - 1 - n], &changes[change_count - n], sizeof(*changes) * (size_t)n);
+    change_count--;
+    return 0;
 }
 
 int settings_save(const char *path)

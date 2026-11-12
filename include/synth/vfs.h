@@ -86,6 +86,7 @@ struct file {
     K64(struct vnode *vn);
     uint32_t pos;
     unsigned flags;
+    K64(char *written); /* a file of the user's opened for writing: its path, for Rewind and Timeline */
 };
 
 struct vdir {
