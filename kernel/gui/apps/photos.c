@@ -13,6 +13,8 @@
 
 #define MAX_SIDE 2400
 #define MAX_FILES 256
+#define SIDE 200
+#define ROW 28
 
 enum {
     CMD_OPEN,
@@ -70,7 +72,49 @@ struct photos {
     bool slideshow;
     uint64_t slide_due;
     char error[96];
+    struct ui_state st;
+    int list_scroll;
 };
+
+static const struct {
+    enum symbol_id sym;
+    const char *label, *dir;
+} places[] = {
+    {SYM_PHOTO, "Pictures", "Pictures"},
+    {SYM_DESKTOP, "Desktop", "Desktop"},
+    {SYM_DOWNLOAD, "Downloads", "Downloads"},
+    {SYM_DISPLAY, "Wallpapers", "/system/wallpapers"},
+};
+
+static void place_dir(int i, char *out, size_t size)
+{
+    if (places[i].dir[0] == '/')
+        str_copy(out, places[i].dir, size);
+    else
+        path_join(user_home(), places[i].dir, out, size);
+}
+
+static int side_width(int W)
+{
+    return W >= 560 ? SIDE : 0;
+}
+
+/* where the picture goes: right of the sidebar, below the toolbar */
+static struct rect view_rect(int W, int H)
+{
+    int x = side_width(W);
+    return (struct rect){x, TOOLBAR_HEIGHT, W - x, MAX(H - TOOLBAR_HEIGHT, 1)};
+}
+
+static struct canvas sub_canvas(struct canvas *c, struct rect r)
+{
+    r = rect_intersect(r, (struct rect){0, 0, c->w, c->h});
+    struct canvas s = {c->px + (size_t)r.y * (size_t)c->stride + (size_t)r.x, r.w, r.h, c->stride, {0, 0, 0, 0}};
+    struct rect cl = rect_intersect(c->clip, r);
+    if (!rect_empty(cl))
+        s.clip = (struct rect){cl.x - r.x, cl.y - r.y, cl.w, cl.h};
+    return s;
+}
 
 static void shrink(struct picture *p)
 {
@@ -112,6 +156,7 @@ static void rotate(struct photos *ph)
 static void scan_dir(struct photos *ph)
 {
     ph->count = 0;
+    ph->list_scroll = 0;
     struct vdir d;
     if (vfs_opendir(ph->dir, &d) != 0)
         return;
@@ -171,10 +216,16 @@ static void open_path(struct window *w, struct photos *ph, const char *path)
     if (vfs_is_dir(path)) {
         str_copy(ph->dir, path, sizeof(ph->dir));
         scan_dir(ph);
-        if (ph->count)
+        if (ph->count) {
             open_index(w, ph, 0, 0);
-        else
+        } else {
+            picture_free(&ph->pic);
+            canvas_free(&ph->fitted);
+            ph->error[0] = 0;
+            ph->path[0] = 0;
+            wm_set_title(w, "Photos");
             wm_invalidate(w);
+        }
         return;
     }
     path_dirname(path, ph->dir, sizeof(ph->dir));
@@ -234,11 +285,17 @@ static void paint_bar(struct photos *ph, struct canvas *c)
 }
 
 static void paint_picture(struct window *w, struct canvas *c);
+static void frame(struct ui *ui, void *data);
 
 static void paint(struct window *w, struct canvas *c)
 {
-    paint_picture(w, c);
-    paint_bar(w->data, c);
+    struct photos *ph = w->data;
+    struct canvas view = sub_canvas(c, view_rect(c->w, c->h));
+    if (view.w > 0 && view.h > 0) {
+        paint_picture(w, &view);
+        paint_bar(ph, &view);
+    }
+    ui_run(w, &ph->st, c, NULL, frame, ph);
 }
 
 static void paint_picture(struct window *w, struct canvas *c)
@@ -250,7 +307,7 @@ static void paint_picture(struct window *w, struct canvas *c)
         const char *msg = ph->error[0] ? ph->error : "No pictures here";
         gfx_symbol(c, W / 2 - 16, H / 2 - 40, SYM_PHOTO, 32, ALPHA(0xffffffffu, 120));
         gfx_text_box(c, (struct rect){0, H / 2, W, 22}, &font_bold, msg, ALPHA(0xffffffffu, 200), ALIGN_CENTER);
-        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Click to open a PNG, JPEG, GIF or BMP file",
+        gfx_text_box(c, (struct rect){0, H / 2 + 24, W, 18}, &font_small, "Click to open a PNG, JPEG, GIF or BMP picture",
                      ALPHA(0xffffffffu, 120), ALIGN_CENTER);
         return;
     }
@@ -282,8 +339,74 @@ static void paint_picture(struct window *w, struct canvas *c)
 
 static void command(struct window *w, struct photos *ph, int cmd);
 
-static void picked(struct window *owner, const char *value)
+static void sidebar(struct ui *ui, struct photos *ph, int side, int H)
 {
+    ui_sidebar_panel(ui, side, H, style.window);
+    int y = 46;
+    ui_sidebar_header(ui, (struct rect){22, y, side - 32, 20}, "Library");
+    y += 22;
+    for (int i = 0; i < (int)ARRAY_SIZE(places); i++) {
+        char dir[PATH_MAX_LEN];
+        place_dir(i, dir, sizeof(dir));
+        bool sel = !strcmp(dir, ph->dir);
+        if (ui_sidebar_item(ui, (struct rect){14, y, side - 26, ROW}, places[i].sym, places[i].label, sel) && !sel)
+            open_path(ui->win, ph, dir);
+        y += ROW + 2;
+    }
+    char head[32];
+    ksnprintf(head, sizeof(head), "%d Picture%s", ph->count, ph->count == 1 ? "" : "s");
+    ui_sidebar_header(ui, (struct rect){22, y + 8, side - 32, 20}, head);
+    y += 34;
+    struct rect list = {8, y, side - 8, H - 12 - y};
+    int rows = MAX(list.h / ROW, 1);
+    if (ui->e && ui->e->type == EV_WHEEL && rect_contains(list, ui->e->x, ui->e->y)) {
+        ph->list_scroll = CLAMP(ph->list_scroll + ui->e->wheel * 3, 0, MAX(ph->count - rows, 0));
+        ui->consumed = true;
+        ui->changed = true;
+    }
+    ph->list_scroll = CLAMP(ph->list_scroll, 0, MAX(ph->count - rows, 0));
+    for (int i = ph->list_scroll; i < ph->count && i < ph->list_scroll + rows; i++) {
+        bool sel = ph->pic.px && i == ph->index;
+        if (ui_sidebar_item(ui, (struct rect){14, y, side - 26, ROW - 2}, SYM_PHOTO, ph->names[i], sel) && !sel)
+            open_index(ui->win, ph, i, i > ph->index ? 1 : -1);
+        y += ROW;
+    }
+}
+
+static void frame(struct ui *ui, void *data)
+{
+    struct photos *ph = data;
+    int W = ui->win->surface.w, H = ui->win->surface.h, side = side_width(W);
+    if (side)
+        sidebar(ui, ph, side, H);
+    int x = side ? side + 18 : 84;
+    if (ui->c) {
+        gfx_clear(ui->c, (struct rect){side, 0, W - side, TOOLBAR_HEIGHT - 1}, style.content);
+        gfx_fill(ui->c, (struct rect){side, TOOLBAR_HEIGHT - 1, W - side, 1}, style.separator);
+    }
+    const char *title = ph->pic.px || ph->error[0] ? path_basename(ph->path) : "Photos";
+    int tw = MIN(gfx_text_width(&font_bold, title), MAX(W - x - 220, 40));
+    ui_label(ui, (struct rect){x, 0, tw + 4, TOOLBAR_HEIGHT}, title, &font_bold, style.text, ALIGN_LEFT);
+    if (ph->pic.px) {
+        char sub[64];
+        ksnprintf(sub, sizeof(sub), "%d of %d  -  %d x %d", ph->index + 1, ph->count, ph->pic.w, ph->pic.h);
+        ui_label(ui, (struct rect){x + tw + 14, 2, 200, TOOLBAR_HEIGHT}, sub, &font_small, style.tertiary, ALIGN_LEFT);
+    }
+    int bx = W - 46 - 30;
+    if (ui_symbol_button(ui, (struct rect){bx, 12, 28, 28}, SYM_FOLDER, false))
+        command(ui->win, ph, CMD_OPEN);
+    bx -= 32;
+    if (ph->count > 1 &&
+        ui_symbol_button(ui, (struct rect){bx, 12, 28, 28}, ph->slideshow ? SYM_PAUSE : SYM_PLAY, ph->slideshow))
+        command(ui->win, ph, CMD_SLIDESHOW);
+    bx -= 32;
+    if (ph->pic.px && ui_symbol_button(ui, (struct rect){bx, 12, 28, 28}, SYM_RESTART, false))
+        command(ui->win, ph, CMD_ROTATE);
+}
+
+static void picked(void *ctx, const char *value)
+{
+    struct window *owner = ctx;
     if (wm_window_alive(owner) && value && value[0])
         open_path(owner, owner->data, value);
 }
@@ -299,7 +422,12 @@ static void zoom_to(struct photos *ph, int z)
 static void command(struct window *w, struct photos *ph, int cmd)
 {
     switch (cmd) {
-    case CMD_OPEN: ui_prompt(w, "Open picture", "Path to a picture or a folder:", ph->dir, picked); break;
+    case CMD_OPEN: {
+        struct gui_picker o = {.title = "Open Picture", .dir = ph->dir, .exts = ".png;.jpg;.jpeg;.gif;.bmp",
+                               .button = "Open"};
+        gui_file_picker(w, &o, picked, w);
+        break;
+    }
     case CMD_PREV: open_index(w, ph, ph->index - 1, -1); break;
     case CMD_NEXT: open_index(w, ph, ph->index + 1, 1); break;
     case CMD_ZOOM_IN: zoom_to(ph, ph->zoom.target * 3 / 2); break;
@@ -307,7 +435,8 @@ static void command(struct window *w, struct photos *ph, int cmd)
     case CMD_FIT: zoom_to(ph, 1024); break;
     case CMD_ACTUAL: {
         int scale;
-        image_rect(ph, w->surface.w, w->surface.h, &scale);
+        struct rect v = view_rect(w->surface.w, w->surface.h);
+        image_rect(ph, v.w, v.h, &scale);
         int fit = scale * 1024 / MAX(ph->zoom.pos, 1);
         zoom_to(ph, fit ? 1024 * 1024 / fit : 1024);
         break;
@@ -336,6 +465,15 @@ static void command(struct window *w, struct photos *ph, int cmd)
 static void event(struct window *w, struct gui_event *e)
 {
     struct photos *ph = w->data;
+    if (e->type == EV_MOUSE_MOVE || e->type == EV_MOUSE_DOWN || e->type == EV_MOUSE_UP || e->type == EV_WHEEL ||
+        e->type == EV_LEAVE) {
+        ui_run(w, &ph->st, NULL, e, frame, ph);
+        if (e->handled)
+            return;
+    }
+    struct rect v = view_rect(w->surface.w, w->surface.h);
+    int ex = e->x - v.x, ey = e->y - v.y;
+    bool inside = rect_contains(v, e->x, e->y);
     switch (e->type) {
     case EV_KEY: {
         int k = e->key;
@@ -366,23 +504,27 @@ static void event(struct window *w, struct gui_event *e)
             ph->slideshow = false;
         break;
     }
-    case EV_WHEEL: command(w, ph, e->wheel < 0 ? CMD_ZOOM_IN : CMD_ZOOM_OUT); break;
+    case EV_WHEEL:
+        if (inside)
+            command(w, ph, e->wheel < 0 ? CMD_ZOOM_IN : CMD_ZOOM_OUT);
+        break;
     case EV_MOUSE_DOWN:
         ph->last_move = hal_ticks_ms();
-        if (e->button == BUTTON_LEFT && !ph->pic.px) {
+        if (e->button == BUTTON_LEFT && !inside) {
+            break;
+        } else if (e->button == BUTTON_LEFT && !ph->pic.px) {
             command(w, ph, CMD_OPEN);
-        } else if (e->button == BUTTON_LEFT && ph->bar.pos > 512 &&
-                   rect_contains(bar_rect(w->surface.w, w->surface.h, 1024), e->x, e->y)) {
-            struct rect b = bar_rect(w->surface.w, w->surface.h, 1024);
+        } else if (e->button == BUTTON_LEFT && ph->bar.pos > 512 && rect_contains(bar_rect(v.w, v.h, 1024), ex, ey)) {
+            struct rect b = bar_rect(v.w, v.h, 1024);
             for (int i = 0; i < BAR_BUTTONS; i++)
-                if (rect_contains(bar_button(b, i), e->x, e->y))
+                if (rect_contains(bar_button(b, i), ex, ey))
                     command(w, ph, bar_cmds[i]);
         } else if (e->button == BUTTON_LEFT && e->clicks >= 2) {
             command(w, ph, ph->zoom.target == 1024 ? CMD_ACTUAL : CMD_FIT);
         } else if (e->button == BUTTON_LEFT) {
             ph->panning = true;
-            ph->drag_x = e->x;
-            ph->drag_y = e->y;
+            ph->drag_x = ex;
+            ph->drag_y = ey;
         } else if (e->button == BUTTON_RIGHT) {
             struct rect cr = wm_client_rect(w);
             wm_window_menu(w, cr.x + e->x, cr.y + e->y);
@@ -392,12 +534,12 @@ static void event(struct window *w, struct gui_event *e)
     case EV_MOUSE_MOVE:
         ph->last_move = hal_ticks_ms();
         if (ph->panning && ph->zoom.target > 1024) {
-            ph->pan_x += e->x - ph->drag_x;
-            ph->pan_y += e->y - ph->drag_y;
+            ph->pan_x += ex - ph->drag_x;
+            ph->pan_y += ey - ph->drag_y;
             wm_invalidate(w);
         }
-        ph->drag_x = e->x;
-        ph->drag_y = e->y;
+        ph->drag_x = ex;
+        ph->drag_y = ey;
         break;
     case EV_MOUSE_UP: ph->panning = false; break;
     case EV_TIMER: {
@@ -407,7 +549,7 @@ static void event(struct window *w, struct gui_event *e)
         bool busy = spring_step(&ph->zoom, 360, 34, dt);
         busy |= spring_step(&ph->slide, 260, 30, dt);
         busy |= spring_step(&ph->fade, 300, 40, dt);
-        bool over = rect_contains(bar_rect(w->surface.w, w->surface.h, 1024), ph->drag_x, ph->drag_y);
+        bool over = rect_contains(bar_rect(v.w, v.h, 1024), ph->drag_x, ph->drag_y);
         ph->bar.target = now - ph->last_move < 2500 || over ? 1024 : 0;
         busy |= spring_step(&ph->bar, 320, 32, dt);
         if (ph->pic.frames > 1 && now >= ph->frame_due) {
@@ -446,13 +588,15 @@ static void launch(const char *arg)
     ph->tick = ph->last_move = hal_ticks_ms();
     spring_set(&ph->zoom, 1024);
     spring_set(&ph->fade, 1024);
-    struct window *w = wm_open("Photos", ICON_PHOTOS, 760, 520, &ops, ph, WIN_RESIZABLE);
+    struct window *w =
+        wm_open("Photos", ICON_PHOTOS, 900, 580, &ops, ph, WIN_RESIZABLE | WIN_FULLSIZE | WIN_GLASS | WIN_NOTITLE);
     if (!w) {
         kfree(ph);
         return;
     }
-    w->min_w = 300;
-    w->min_h = 220;
+    w->toolbar_h = TOOLBAR_HEIGHT;
+    w->min_w = 360;
+    w->min_h = 260;
     wm_set_menus(w, menus, ARRAY_SIZE(menus));
     wm_set_timer(w, 16);
     char pictures[PATH_MAX_LEN];
