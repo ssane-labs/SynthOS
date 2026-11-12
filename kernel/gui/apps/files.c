@@ -1,3 +1,4 @@
+#include <synth/trash.h>
 #include <synth/error.h>
 #include <synth/exec.h>
 #include <synth/fmt.h>
@@ -20,7 +21,7 @@
 #define CELL_W 104
 #define CELL_H 104
 #define HISTORY 16
-#define TRASH "/home/.Trash"
+#define TRASH TRASH_DIR
 
 enum {
     CMD_NEW_WINDOW,
@@ -389,39 +390,6 @@ static void open_entry(struct window *w, struct files *f, struct entry *e)
         gui_open_file(path);
 }
 
-static int copy_tree(const char *from, const char *to)
-{
-    if (!vfs_is_dir(from))
-        return vfs_copy(from, to);
-    int err = vfs_mkdir(to);
-    if (err && err != E_EXIST)
-        return err;
-    struct vdir d;
-    if (vfs_opendir(from, &d) != 0)
-        return E_IO;
-    struct vfs_dirent ent;
-    err = 0;
-    while (vfs_readdir(&d, &ent) == 0) {
-        if (!strcmp(ent.name, ".") || !strcmp(ent.name, ".."))
-            continue;
-        char a[PATH_MAX_LEN], b[PATH_MAX_LEN];
-        path_join(from, ent.name, a, sizeof(a));
-        path_join(to, ent.name, b, sizeof(b));
-        if ((err = copy_tree(a, b)) != 0)
-            break;
-    }
-    vfs_closedir(&d);
-    return err;
-}
-
-static int move_tree(const char *from, const char *to)
-{
-    int err = vfs_rename(from, to);
-    if (err == E_XDEV && (err = copy_tree(from, to)) == 0)
-        err = vfs_remove_tree(from);
-    return err;
-}
-
 static void report(int err, const char *what)
 {
     if (err) {
@@ -495,16 +463,9 @@ static void trash(struct window *w, struct files *f)
         ui_confirm(w, "Delete immediately?", msg, do_delete);
         return;
     }
-    char from[PATH_MAX_LEN], to[PATH_MAX_LEN];
+    char from[PATH_MAX_LEN];
     child_path(f, e->name, from);
-    vfs_mkdirs(TRASH);
-    path_join(TRASH, e->name, to, sizeof(to));
-    for (int i = 2; vfs_exists(to) && i < 100; i++) {
-        char name[NAME_MAX_LEN + 8];
-        ksnprintf(name, sizeof(name), "%s %d", e->name, i);
-        path_join(TRASH, name, to, sizeof(to));
-    }
-    report(move_tree(from, to), "moved to the Trash");
+    report(trash_put(from, NULL, 0), "moved to the Trash");
     refresh(w, f);
     chrome_changed();
 }
@@ -527,7 +488,7 @@ static void paste(struct window *w, struct files *f)
     child_path(f, path_basename(file_clip), target);
     if (strcmp(target, file_clip) == 0)
         return;
-    int err = file_clip_cut ? move_tree(file_clip, target) : copy_tree(file_clip, target);
+    int err = file_clip_cut ? vfs_move(file_clip, target) : vfs_copy(file_clip, target);
     report(err, file_clip_cut ? "moved" : "copied");
     if (file_clip_cut && !err)
         file_clip[0] = 0;
@@ -558,10 +519,11 @@ enum {
     M_RENAME,
     M_TRASH,
     M_VERSIONS,
+    M_PUT_BACK,
 };
 
 static const char *const item_menu[] = {"Open", "Open with Notepad", "Run in Terminal", "", "Copy", "Cut",
-                                        "Rename…", "Move to Trash", "Earlier Versions…"};
+                                        "Rename…", "Move to Trash", "Earlier Versions…", "Put Back"};
 static const char *const space_menu[] = {"New Folder", "Paste", "", "Open in Terminal", "View as Icons",
                                          "View as List"};
 
@@ -590,6 +552,7 @@ static void pick_item(struct window *w, int index)
     case M_RENAME: ui_prompt(w, "Rename", "Enter a new name:", e->name, do_rename); break;
     case M_TRASH: trash(w, f); break;
     case M_VERSIONS: gui_app_launch(gui_app_find("Timeline"), p); break;
+    case M_PUT_BACK: report(trash_restore(e->name, NULL, 0), "put back"); refresh(w, f); chrome_changed(); break;
     }
     wm_invalidate(w);
 }
@@ -970,7 +933,7 @@ static void frame(struct ui *ui, void *data)
     }
     if (result == LIST_CONTEXT && ui->e) {
         if (selected(f))
-            ui_menu(w, ui->e->x, ui->e->y, item_menu, (int)ARRAY_SIZE(item_menu), pick_item);
+            ui_menu(w, ui->e->x, ui->e->y, item_menu, (int)ARRAY_SIZE(item_menu) - !str_starts(f->path, TRASH), pick_item);
         else
             ui_menu(w, ui->e->x, ui->e->y, space_menu, (int)ARRAY_SIZE(space_menu), pick_space);
         return;

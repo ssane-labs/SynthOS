@@ -1,3 +1,4 @@
+#include <synth/module.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
@@ -55,7 +56,7 @@ static void scan(struct music *m)
     struct vfs_dirent ent;
     while (m->file_count < MAX_FILES && vfs_readdir(&d, &ent) == 0) {
         const char *ext = path_ext(ent.name);
-        if (ent.type != VN_DIR && !str_casecmp(ext, ".wav"))
+        if (ent.type != VN_DIR && (!str_casecmp(ext, ".wav") || module_handles(ent.name, true)))
             str_copy(m->files[m->file_count++], ent.name, NAME_MAX_LEN);
     }
     vfs_closedir(&d);

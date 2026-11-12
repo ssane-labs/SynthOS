@@ -4,6 +4,7 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/module.h>
 #include <synth/path.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
@@ -458,8 +459,18 @@ int media_open(const char *path)
         return err;
     const uint8_t *p = (const uint8_t *)data;
     if (size < 44 || memcmp(p, "RIFF", 4) || memcmp(p + 8, "WAVE", 4)) {
+        int16_t *frames;
+        uint32_t count, rate;
+        err = module_audio_decode ? module_audio_decode(p, size, &frames, &count, &rate) : E_INVAL;
         kfree(data);
-        return E_INVAL;
+        if (err)
+            return err;
+        char name[NAME_MAX_LEN];
+        str_copy(name, path_basename(path), sizeof(name));
+        char *dot = strrchr(name, '.');
+        if (dot)
+            *dot = 0;
+        return media_play_pcm(frames, count, rate, name, "Music");
     }
     int channels = 0, bits = 0;
     uint32_t rate = 0;

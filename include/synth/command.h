@@ -14,7 +14,13 @@ struct command {
     command_fn run;
 };
 
-#ifdef SYNTH_X32
+#if defined(SYNTH_MODULE)
+/* in a module: the command goes into its struct module_ext (as &cmddef_<id>) */
+#define COMMAND(id, ...)                                                           \
+    static int cmd_##id(struct shell *sh, int argc, char **argv);                  \
+    static const struct command cmddef_##id = {#id, __VA_ARGS__, cmd_##id};        \
+    static int cmd_##id(struct shell *sh, int argc, char **argv)
+#elif defined(SYNTH_X32)
 /* x32 commands get the shell's 8-byte argv entries as an array of their own */
 #define COMMAND(id, ...)                                                           \
     static int cmd_##id(struct shell *sh, int argc, char **argv);                  \

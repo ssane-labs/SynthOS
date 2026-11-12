@@ -1,4 +1,5 @@
 #include <synth/versions.h>
+#include <synth/module.h>
 #include <synth/log.h>
 #include <synth/config.h>
 #include <synth/command.h>
@@ -1422,6 +1423,12 @@ bool gui_open_file(const char *path)
             gui_app_launch(app, path);
             return true;
         }
+    for (int audio = 0; audio < 2; audio++)
+        if (ext && module_handles(path, audio)) {
+            const struct gui_app *app = picked_app(audio ? ".wav" : ".png");
+            gui_app_launch(app ? app : gui_app_find(audio ? "Music" : "Photos"), path);
+            return true;
+        }
 #if CONFIG_WIN32
     if (ext && !str_casecmp(ext, ".lnk"))
         return open_shortcut(path);
@@ -1998,6 +2005,9 @@ static void prepare_home(void)
         vfs_mkdirs(path);
         if (!strcmp(dirs[i], "Pictures"))
             copy_samples(path, ".jpg");
+        else if (!strcmp(dirs[i], "Documents"))
+            for (int k = 0; k < 4; k++)
+                copy_samples(path, (const char *const[]){".pdf", ".docx", ".xlsx", ".pptx"}[k]);
         else if (!strcmp(dirs[i], "Videos"))
             copy_samples(path, ".avi");
     }

@@ -1,4 +1,5 @@
 #include <synth/command.h>
+#include <synth/module.h>
 #include <synth/string.h>
 
 SYNTH_TABLE_DECLARE(synth_commands, struct command);
@@ -11,13 +12,15 @@ const struct command *command_find(const char *name)
     SYNTH_TABLE_FOREACH(synth_commands, struct command, cmd)
         if (cmd->aliases && str_in_list(name, cmd->aliases))
             return cmd;
-    return NULL;
+    return module_command_find ? module_command_find(name) : NULL;
 }
 
 void command_foreach(void (*fn)(const struct command *cmd, void *ctx), void *ctx)
 {
     SYNTH_TABLE_FOREACH(synth_commands, struct command, cmd)
         fn(cmd, ctx);
+    if (module_command_foreach)
+        module_command_foreach(fn, ctx);
 }
 
 int command_usage(struct shell *sh, const struct command *cmd)

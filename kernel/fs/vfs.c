@@ -595,6 +595,14 @@ int vfs_copy(const char *from, const char *to)
     return err;
 }
 
+int vfs_move(const char *from, const char *to)
+{
+    int err = vfs_rename(from, to);
+    if (err == E_XDEV && (err = vfs_copy(from, to)) == 0)
+        err = vfs_remove_tree(from);
+    return err;
+}
+
 int vfs_remove_tree(const char *path)
 {
     struct vstat st;

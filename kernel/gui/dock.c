@@ -1,3 +1,4 @@
+#include <synth/trash.h>
 #include <synth/config.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
@@ -17,7 +18,6 @@
 #define BOTTOM 6
 #define TOOLTIP_H 30
 #define SEPARATOR_W 13
-#define TRASH_DIR "/home/.Trash"
 #define RAIL_X 10
 #define RAIL_W0 64
 #define RAIL_W1 212

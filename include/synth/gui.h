@@ -88,6 +88,7 @@ enum icon_id {
     ICON_NETUTIL,
     ICON_DISKUTIL,
     ICON_TIMELINE,
+    ICON_READER,
     ICON_COUNT,
 };
 
@@ -589,13 +590,15 @@ struct gui_app {
 
 /* an app built as a module (/system/apps/<name>.sxm): the entry point names it */
 struct gui_module_entry {
-    const struct gui_app *app;
-    void (*tick)(void); /* called by the desktop while the module is installed, window or not */
+    const struct gui_app *app; /* NULL: the module only extends the system (struct module_ext) */
+    void (*tick)(void);        /* called by the desktop while the module is installed, window or not */
+    const struct module_ext *ext;
 };
 
 #ifdef SYNTH_MODULE
-#define GUI_APP_TICK(object, fn)                                                                                       \
-    const struct gui_module_entry synth_module_app __attribute__((used)) = {&object, fn}
+#define GUI_APP_FULL(object, fn, ext)                                                                                  \
+    const struct gui_module_entry synth_module_app __attribute__((used)) = {object, fn, ext}
+#define GUI_APP_TICK(object, fn) GUI_APP_FULL(&object, fn, NULL)
 #define GUI_APP(object) GUI_APP_TICK(object, NULL)
 #else
 #define GUI_APP(object) SYNTH_REGISTER(synth_gui_apps, struct gui_app, object)
@@ -613,6 +616,7 @@ bool gui_module_exists(const char *name);
 const struct gui_app *gui_module_app(int index);
 bool gui_module_owns(const struct gui_app *app);
 void gui_module_tick(void);
+void gui_module_load_all(void);
 
 const struct gui_app *gui_app_find(const char *name);
 const struct gui_app *gui_app_for_program(const char *path);

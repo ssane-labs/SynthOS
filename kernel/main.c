@@ -1,3 +1,4 @@
+#include <synth/trash.h>
 #include <synth/block.h>
 #include <synth/config.h>
 #include <synth/console.h>
@@ -215,6 +216,7 @@ void kmain(const struct boot_info *bi)
     users_init();
     run_startup(sh);
     versions_ready = true;
+    trash_clean();
     rules_event("start", NULL);
     rules_run_pending();
 

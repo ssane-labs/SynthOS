@@ -1236,6 +1236,19 @@ def timeline_art():
         art.put(rr4((cx + 22, y - 5, cx + 22 + (46 if i != 1 else 34), y + 5), 5), (255, 255, 255, 170))
     return art.done()
 
+def reader_art():
+    """A page of text with a red band across its corner and a lens over the lines: reading documents."""
+    art = Art(hexc("f3f4f7"), hexc("c6cad3"))
+    art.put(rr4((62, 30, 194, 214), 14), (hexc("ffffff"), hexc("eef0f4")), 50, 4)
+    for i in range(6):
+        y = 92 + i * 18
+        art.put(rr4((84, y, 172 - (40 if i in (2, 5) else 0), y + 7), 3), (150, 156, 168, 255))
+    art.put(rr4((84, 54, 150, 72), 6), (hexc("ff5a4f"), hexc("d92d22")))
+    art.put(ellipse4((132, 132, 212, 212)), (hexc("3a7bff"), hexc("1f55d6")), 40, 3)
+    art.put(ellipse4((144, 144, 200, 200)), (255, 255, 255, 210))
+    art.put(poly4([(198, 192), (210, 180), (236, 206), (224, 218)]), (hexc("3a7bff"), hexc("1f55d6")))
+    return art.done()
+
 ICONS = [
     ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_art),
     ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_art),
@@ -1252,7 +1265,7 @@ ICONS = [
     ("ICON_SCREENSHOT", screenshot_art), ("ICON_STORE", store_art), ("ICON_CODE", code_art),
     ("ICON_GAMES", games_art), ("ICON_CLOCK", clock_art), ("ICON_WEATHER", weather_art), ("ICON_NOTES", notes_art),
     ("ICON_CONSOLE", console_art), ("ICON_SYSINFO", sysinfo_art), ("ICON_NETUTIL", netutil_art),
-    ("ICON_DISKUTIL", diskutil_art), ("ICON_TIMELINE", timeline_art),
+    ("ICON_DISKUTIL", diskutil_art), ("ICON_TIMELINE", timeline_art), ("ICON_READER", reader_art),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)

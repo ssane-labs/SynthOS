@@ -5,6 +5,7 @@
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/log.h>
+#include <synth/module.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -19,7 +20,7 @@
    shown or hidden: the App Store turns them on and off, and code that may still run in a window is never freed. */
 
 #define MODULE_DIR "/system/apps"
-#define MAX_MODULES 32
+#define MAX_MODULES 48
 
 #if defined(__x86_64__)
 #define ELF_CLASS 2
@@ -75,6 +76,7 @@ struct module {
     char name[32];
     const struct gui_app *app;
     void (*tick)(void);
+    const struct module_ext *ext;
     bool shown;
 };
 
@@ -174,10 +176,10 @@ static struct module *find(const char *name)
     return NULL;
 }
 
-int gui_module_show(const char *name, bool shown)
+static int open_module(const char *name, struct module **out)
 {
     struct module *m = find(name);
-    if (!m && shown) {
+    if (!m) {
         if (module_count == MAX_MODULES)
             return E_NOSPC;
         char key[32], path[PATH_MAX_LEN];
@@ -193,10 +195,104 @@ int gui_module_show(const char *name, bool shown)
         str_copy(m->name, key, sizeof(m->name));
         m->app = entry.app;
         m->tick = entry.tick;
+        m->ext = entry.ext;
     }
+    *out = m;
+    return 0;
+}
+
+int gui_module_show(const char *name, bool shown)
+{
+    struct module *m = find(name);
+    int err = shown ? open_module(name, &m) : 0;
+    if (err)
+        return err;
     if (m)
         m->shown = shown;
     return 0;
+}
+
+/* every module, so their commands and decoders are known (apps stay as the App Store left them) */
+void gui_module_load_all(void)
+{
+    static bool done;
+    if (done)
+        return;
+    done = true;
+    struct vdir dir;
+    if (vfs_opendir(MODULE_DIR, &dir))
+        return;
+    struct vfs_dirent e;
+    while (vfs_readdir(&dir, &e) == 0) {
+        const char *dot = strrchr(e.name, '.');
+        struct module *m;
+        if (dot && !strcmp(dot, ".sxm"))
+            open_module(e.name, &m);
+    }
+    vfs_closedir(&dir);
+}
+
+const struct command *module_command_find(const char *name)
+{
+    gui_module_load_all();
+    for (int i = 0; i < module_count; i++)
+        for (int k = 0; modules[i].ext && k < modules[i].ext->command_count; k++) {
+            const struct command *c = modules[i].ext->commands[k];
+            if (!strcmp(c->name, name) || (c->aliases && str_in_list(name, c->aliases)))
+                return c;
+        }
+    return NULL;
+}
+
+void module_command_foreach(void (*fn)(const struct command *cmd, void *ctx), void *ctx)
+{
+    gui_module_load_all();
+    for (int i = 0; i < module_count; i++)
+        for (int k = 0; modules[i].ext && k < modules[i].ext->command_count; k++)
+            fn(modules[i].ext->commands[k], ctx);
+}
+
+static bool has_ext(const char *list, const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    size_t n = dot ? strlen(dot) : 0;
+    for (const char *p = list; p && n && *p; p++)
+        if ((p == list || p[-1] == ' ') && !str_ncasecmp(p, dot, n) && (!p[n] || p[n] == ' '))
+            return true;
+    return false;
+}
+
+bool module_handles(const char *name, bool audio)
+{
+    gui_module_load_all();
+    for (int i = 0; i < module_count; i++)
+        if (modules[i].ext && has_ext(audio ? modules[i].ext->audio_exts : modules[i].ext->picture_exts, name))
+            return true;
+    return false;
+}
+
+int module_picture_decode(const uint8_t *data, size_t size, struct picture *out)
+{
+    gui_module_load_all();
+    for (int i = 0; i < module_count; i++)
+        if (modules[i].ext && modules[i].ext->picture_decode) {
+            int err = modules[i].ext->picture_decode(data, size, out);
+            if (err != E_INVAL)
+                return err;
+        }
+    return E_INVAL;
+}
+
+int module_audio_decode(const uint8_t *data, size_t size, int16_t **frames, uint32_t *count, uint32_t *rate)
+{
+    gui_module_load_all();
+    for (int i = 0; i < module_count; i++)
+        if (modules[i].ext && modules[i].ext->audio_decode) {
+            int err = modules[i].ext->audio_decode(data, size, frames, count, rate);
+            if (err != E_INVAL)
+                return err;
+        }
+    return E_INVAL;
 }
 
 bool gui_module_shown(const char *name)
@@ -217,7 +313,7 @@ bool gui_module_exists(const char *name)
 const struct gui_app *gui_module_app(int index)
 {
     for (int i = 0; i < module_count; i++)
-        if (modules[i].shown && !index--)
+        if (modules[i].shown && modules[i].app && !index--)
             return modules[i].app;
     return NULL;
 }
@@ -225,7 +321,7 @@ const struct gui_app *gui_module_app(int index)
 bool gui_module_owns(const struct gui_app *app)
 {
     for (int i = 0; i < module_count; i++)
-        if (modules[i].app == app)
+        if (app && modules[i].app == app)
             return true;
     return false;
 }
@@ -246,7 +342,8 @@ COMMAND(modules, NULL, "system", "modules [load|hide <name>]", "list the app mod
     if (argc != 1)
         return sh_error(sh, "modules", "usage: modules [load|hide <name>]");
     for (int i = 0; i < module_count; i++)
-        sh_printf(sh, "%-12s %-20s %s\n", modules[i].name, modules[i].app->name, modules[i].shown ? "shown" : "hidden");
+        sh_printf(sh, "%-12s %-20s %s\n", modules[i].name, modules[i].app ? modules[i].app->name : "-",
+                  !modules[i].app ? "extension" : modules[i].shown ? "shown" : "hidden");
     return 0;
 }
 

@@ -1,5 +1,6 @@
 #include <synth/error.h>
 #include <synth/heap.h>
+#include <synth/module.h>
 #include <synth/path.h>
 #include <synth/picture.h>
 #include <synth/string.h>
@@ -82,7 +83,7 @@ int picture_decode(const uint8_t *data, size_t size, struct picture *out)
         return gif_decode(data, size, out);
     if (size >= 2 && data[0] == 'B' && data[1] == 'M')
         return bmp_decode(data, size, out);
-    return E_INVAL;
+    return module_picture_decode ? module_picture_decode(data, size, out) : E_INVAL;
 }
 
 /* min_w x min_h: the size the picture is shown at, so a big JPEG can be decoded smaller */
@@ -120,5 +121,5 @@ bool picture_is_image(const char *name)
     for (size_t i = 0; ext && i < ARRAY_SIZE(exts); i++)
         if (!str_casecmp(ext, exts[i]))
             return true;
-    return false;
+    return ext && module_handles && module_handles(name, false);
 }

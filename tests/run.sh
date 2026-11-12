@@ -65,6 +65,40 @@ focus 25 block Paint; focus
 Focus: 25 min left, blocked: Paint
 focus stop; focus
 no focus session; start one with focus 25
+echo t > /home/tr.txt; trash /home/tr.txt; ls /home/tr.txt; trash list | grep tr.txt
+tr.txt
+trash restore tr.txt; cat /home/tr.txt
+put back: /home/tr.txt
+config trashdays 0; trash clean; config trashdays 30
+removed 0 old item(s)
+doctext /system/samples/Welcome.pdf | head -n 1
+Welcome to SynthOS
+doctext -i /system/samples/Presentation.pptx
+PowerPoint presentation, 4 pages, 0 pictures
+doctext /system/samples/Budget.xlsx | grep Memory
+Memory 16 GB 79 2 158
+doctext /system/samples/Welcome.docx | grep Obscura
+Browse the web with Obscura
+cp /system/samples/Presentation.pdf /home/p.pdf; pdfpage /home/p.pdf delete 1; doctext -i /home/p.pdf
+PDF document, 3 pages, 0 pictures
+doctext /home/p.pdf | head -n 1
+Everything is its own
+clip image /system/samples/Formats/Gradient.tif; clip info
+image 48x32
+clip image /system/samples/Formats/Deflate.tif; clip info
+image 48x32
+clip image /system/samples/Formats/Gradient.tga; clip info
+image 48x32
+clip image /system/samples/Formats/Gradient.qoi; clip info
+image 48x32
+clip image /system/samples/Formats/Gradient.pgm; clip info
+image 48x32
+clip image /system/samples/Formats/Icon.ico; clip info
+image 32x21
+music /system/samples/Formats/Tone.flac
+Tone - Music, playing 0:00 of 0:01
+music /system/samples/Formats/Tone.aiff
+Tone - Music, playing 0:00 of 0:00
 imginfo /system/wallpapers/Dunes.jpg
 1280x800, 1 frame, average #8e6262
 imginfo /system/wallpapers/Glacier.jpg
