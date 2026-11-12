@@ -1861,24 +1861,22 @@ static void draw_more(struct canvas *c, struct window *w)
    lights up, coral for close and the accent for the others. */
 static int light_at_point(struct window *w);
 
-static void draw_lights(struct canvas *c, struct window *w)
+/* the capsule at x (its left edge), centred on cy; hot: the light under the pointer, grow: how lit it is (0..1024) */
+static void paint_lights(struct canvas *c, const struct window *w, int x, int cy, int hot, int grow, bool active,
+                         bool hover)
 {
-    bool active = w == focus;
-    bool hover = traffic_win == w;
-    int cy = traffic_cy(w);
-    int grow = hover ? CLAMP(lights_grow.pos, 0, 1024) : 0;
-    struct rect cap = capsule_rect(w);
+    int n = show_minimize ? 3 : 2;
+    struct rect cap = {x, cy - CAPSULE_H / 2, n * CAPSULE_CELL, CAPSULE_H};
     gfx_round(c, cap, CAPSULE_H / 2, ALPHA(style.text, hover ? 26 : active ? 16 : 9));
-    int hot = hover ? light_at_point(w) : -1;
     for (int i = 0; i < 3; i++) {
         if (!light_shown(i))
             continue;
-        int cx = traffic_cx(w, i);
+        int cx = x + CAPSULE_CELL / 2 + light_slot(i) * CAPSULE_CELL;
         bool on = light_enabled(w, i);
         uint32_t g = ALPHA(style.text, !on ? 40 : active || hover ? 170 : 80);
         if (i == hot && on && grow > 0) {
             uint32_t fill = i == 0 ? RGB(255, 94, 98) : style.accent;
-            if (pressed_light == i)
+            if (pressed_light == i && drag_win == w)
                 fill = color_shade(fill, -40);
             struct rect cell = {cx - CAPSULE_CELL / 2 + 1, cap.y + 1, CAPSULE_CELL - 2, CAPSULE_H - 2};
             gfx_round(c, cell, cell.h / 2, ALPHA(fill, grow * 255 / 1024));
@@ -1897,6 +1895,36 @@ static void draw_lights(struct canvas *c, struct window *w)
             gfx_thick_line(c, cx - 2, cy + 2, cx + 2, cy - 2, 1, g);
         }
     }
+}
+
+static void draw_lights(struct canvas *c, struct window *w)
+{
+    bool hover = traffic_win == w;
+    int grow = hover ? CLAMP(lights_grow.pos, 0, 1024) : 0;
+    paint_lights(c, w, w->frame.x + CAPSULE_X, traffic_cy(w), hover ? light_at_point(w) : -1, grow, w == focus,
+                 hover);
+}
+
+/* For windows that draw their own top bar (WIN_OWNCONTROLS): the same controls, painted by the program. */
+int wm_controls_width(void)
+{
+    return (show_minimize ? 3 : 2) * CAPSULE_CELL;
+}
+
+void wm_controls_paint(struct canvas *c, const struct window *w, int x, int cy, int hot)
+{
+    paint_lights(c, w, x, cy, hot, hot >= 0 ? 1024 : 0, w == focus, hot >= 0);
+}
+
+/* which control is at dx from the capsule's left edge: 0 close, 1 minimize, 2 zoom, -1 none */
+int wm_controls_at(const struct window *w, int dx)
+{
+    if (dx < 0 || dx >= wm_controls_width())
+        return -1;
+    for (int i = 0; i < 3; i++)
+        if (light_shown(i) && light_slot(i) == dx / CAPSULE_CELL)
+            return light_enabled(w, i) ? i : -1;
+    return -1;
 }
 
 /* The halo line along the top of the focused window: the SynthOS colors, faded at the corners. */

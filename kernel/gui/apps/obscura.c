@@ -21,11 +21,13 @@
    standard input and output with the Model Context Protocol: navigate, evaluate and screenshot. The engine is
    64-bit only, so the 32-bit system keeps Chromium.
 
-   The window: a dark strip of tabs that are only site icons (pinned and renamed ones carry a label, groups sit in a
-   box of their own), the open tab cut like a folder tab into the page panel under it. The panel has small back,
-   forward and reload buttons, the site and title in the middle and downloads on the right. A new tab is the start
-   page: the eclipse logo, one "Ask anything..." box, two cards (default browser, search engine) and the pages read
-   last as tilted cards at the bottom. Ctrl+L opens the command bar, Ctrl+F finds in the page. */
+   The window: the system's close/minimize/zoom capsule on the left, then a dark strip of tabs that are only site
+   icons (pinned and renamed ones carry a label, groups sit in a box of their own), the open tab cut like a folder
+   tab into the page panel under it, and on the right the three dots of the one browser menu. The panel has small
+   back, forward and reload buttons, the site and title in the middle and downloads on the right. A new tab is the
+   start page: the SynthOS mark, large and half see-through, with soft light slowly turning round it; one search box
+   (the engine and "Search in a site" under it); two cards (default browser, search engine) and the pages read last
+   as tilted cards at the bottom. Ctrl+L opens the command bar, Ctrl+F finds in the page. */
 
 #if CONFIG_WIN32 && defined(__x86_64__)
 
@@ -165,7 +167,7 @@ static struct browser {
     size_t rx_len, rx_cap;
     int next_id, wait_id;
     enum req wait_kind;
-    uint64_t sent_at, moved_at, find_due;
+    uint64_t sent_at, moved_at, find_due, anim_at;
     bool ready, page_input, dead, hover_due, new_download;
     struct action queue[16];
     int queued;
@@ -199,6 +201,7 @@ static struct browser {
     struct canvas cards[3];
     char card_url[3][URL_MAX];
     uint32_t cards_key;
+    int set_page; /* the section shown on obscura://settings */
 } *br;
 
 static void launch(const char *arg);
@@ -2004,55 +2007,30 @@ static void context_menu(void)
     ui_menu_items(br->win, br->menu_x, br->menu_y, link_menu + skip, (int)ARRAY_SIZE(link_menu) - skip, context_pick);
 }
 
-static const struct menu_item logo_menu[] = {
-    {"New Tab", 0, "Ctrl+T"},     {"Reopen Closed Tab", 0, "Ctrl+Shift+T"}, {"", 0, NULL},
-    {"History", 0, "Ctrl+H"},     {"Bookmarks", 0, "Ctrl+Alt+B"},         {"Downloads", 0, "Ctrl+J"},
-    {"Settings", 0, "Ctrl+,"},    {"", 0, NULL},                            {"Import Bookmarks...", 0, NULL},
-    {"Export Bookmarks...", 0, NULL}, {"", 0, NULL},                         {"Profiles...", 0, NULL},
-    {"Private Browsing", 0, "Ctrl+Shift+N"}, {"", 0, NULL},                   {"About Obscura", 0, NULL},
+/* the one browser menu, behind the three dots at the end of the tab row */
+static const struct menu_item more_menu[] = {
+    {"New Tab", 0, "Ctrl+T"},          {"New Private Window", 0, "Ctrl+Shift+N"}, {"Reopen Closed Tab", 0, "Ctrl+Shift+T"},
+    {"", 0, NULL},                     {"History", 0, "Ctrl+H"},                  {"Bookmarks", 0, "Ctrl+Alt+B"},
+    {"Downloads", 0, "Ctrl+J"},        {"", 0, NULL},                             {"Find in Page...", 0, "Ctrl+F"},
+    {"Zoom In", 0, "Ctrl+="},          {"Zoom Out", 0, "Ctrl+-"},                 {"Actual Size", 0, "Ctrl+0"},
+    {"Full Screen", 0, "F11"},         {"", 0, NULL},                             {"Tabs on the Side", 0, NULL},
+    {"Bookmarks Bar", 0, NULL},        {"Focus Mode", 0, NULL},                   {"", 0, NULL},
+    {"Profiles...", 0, NULL},          {"Import Bookmarks...", 0, NULL},          {"Export Bookmarks...", 0, NULL},
+    {"", 0, NULL},                     {"Settings", 0, "Ctrl+,"},                 {"About Obscura", 0, NULL},
 };
 
-static void logo_pick(struct window *owner, int index)
+static void more_pick(struct window *owner, int index)
 {
     UNUSED(owner);
-    static const int cmds[] = {CMD_NEW_TAB, CMD_REOPEN,   -1,         CMD_HISTORY, CMD_BOOKMARKS, CMD_DOWNLOADS,
-                               CMD_SETTINGS, -1,          CMD_IMPORT, CMD_EXPORT,  -1,            CMD_PROFILES,
-                               CMD_PRIVATE,  -1,          CMD_ABOUT};
+    static const int cmds[] = {CMD_NEW_TAB,   CMD_PRIVATE,  CMD_REOPEN,    -1,          CMD_HISTORY,   CMD_BOOKMARKS,
+                               CMD_DOWNLOADS, -1,           CMD_FIND,      CMD_ZOOM_IN, CMD_ZOOM_OUT,  CMD_ZOOM_RESET,
+                               CMD_FULLSCREEN, -1,          CMD_SIDEBAR,   CMD_BAR,     CMD_FOCUS_MODE, -1,
+                               CMD_PROFILES,  CMD_IMPORT,   CMD_EXPORT,    -1,          CMD_SETTINGS,  CMD_ABOUT};
     if (index >= 0 && index < (int)ARRAY_SIZE(cmds) && cmds[index] >= 0)
         command(cmds[index]);
 }
 
 static char tab_names[MAX_TABS][64];
-
-static void tabs_pick(struct window *owner, int index)
-{
-    UNUSED(owner);
-    if (index < br->ntabs)
-        select_tab(index);
-    else if (index == br->ntabs + 1)
-        command(CMD_REOPEN);
-    else if (index == br->ntabs + 2)
-        command(CMD_CLOSE_OTHERS);
-    wm_invalidate(br->win);
-}
-
-static void show_tabs(int x, int y)
-{
-    static struct menu_item items[MAX_TABS + 3];
-    int n = 0;
-    for (int i = 0; i < br->ntabs; i++) {
-        const struct tab *t = &br->tabs[i];
-        char host[64];
-        host_of(t->url, host, sizeof(host));
-        ksnprintf(tab_names[i], sizeof(tab_names[i]), "%s%.56s", i == br->cur ? "> " : "   ",
-                  t->label[0] ? t->label : t->title[0] ? t->title : host[0] ? host : "New Tab");
-        items[n++] = (struct menu_item){tab_names[i], 0, NULL};
-    }
-    items[n++] = (struct menu_item){"", 0, NULL};
-    items[n++] = (struct menu_item){"Reopen Closed Tab", 0, "Ctrl+Shift+T"};
-    items[n++] = (struct menu_item){"Close Other Tabs", 0, NULL};
-    ui_menu_items(br->win, x, y, items, n, tabs_pick);
-}
 
 static void rename_done(struct window *owner, const char *value)
 {
@@ -2235,22 +2213,20 @@ static void show_engines(int x, int y)
     ui_menu_items(br->win, x, y, items, (int)ARRAY_SIZE(engines), engine_pick);
 }
 
-/* the start page's "+": open tabs become chips that narrow the search to their sites, or a file opens */
+/* the search box's "Search in a site": the sites open in tabs become chips, and the next search only looks there */
 static int add_tab_ids[MAX_TABS];
 
 static void add_pick(struct window *owner, int index)
 {
     UNUSED(owner);
-    if (index == 0) {
-        pick_file(true);
+    index -= 1;
+    if (index < 0 || br->nchips >= MAX_CHIPS || !add_tab_ids[index])
         return;
-    }
-    index -= 2;
-    if (index < 0 || br->nchips >= MAX_CHIPS)
-        return;
-    const struct tab *t = &br->tabs[add_tab_ids[index]];
+    const struct tab *t = &br->tabs[add_tab_ids[index] - 1];
+    char host[128];
+    host_of(t->url, host, sizeof(host));
     str_copy(br->chips[br->nchips].url, t->url, URL_MAX);
-    str_copy(br->chips[br->nchips].title, t->title[0] ? t->title : t->url, sizeof(br->chips[0].title));
+    str_copy(br->chips[br->nchips].title, host, sizeof(br->chips[0].title));
     br->nchips++;
     br->focus = F_ASK;
     wm_invalidate(br->win);
@@ -2259,21 +2235,25 @@ static void add_pick(struct window *owner, int index)
 static void show_add(int x, int y)
 {
     static struct menu_item items[MAX_TABS + 2];
-    int n = 0, k = 0;
-    items[n++] = (struct menu_item){"Open a File...", 0, "Ctrl+O"};
-    items[n++] = (struct menu_item){"", 0, NULL};
-    for (int i = 0; i < br->ntabs; i++) {
+    int n = 0;
+    items[n++] = (struct menu_item){"Search only in", MENU_HEADER, NULL};
+    for (int i = 0; i < br->ntabs && n < MAX_TABS + 1; i++) {
         const struct tab *t = &br->tabs[i];
-        if (!t->url[0] || internal(t->url))
-            continue;
         char host[64];
         host_of(t->url, host, sizeof(host));
-        ksnprintf(tab_names[i], sizeof(tab_names[i]), "%.56s", t->title[0] ? t->title : host);
-        add_tab_ids[k++] = i;
+        if (!t->url[0] || internal(t->url) || !host[0])
+            continue;
+        bool twice = false;
+        for (int k = 1; k < n; k++)
+            twice |= !strcmp(tab_names[add_tab_ids[k - 1] - 1], host);
+        if (twice)
+            continue;
+        str_copy(tab_names[i], host, sizeof(tab_names[i]));
+        add_tab_ids[n - 1] = i + 1;
         items[n++] = (struct menu_item){tab_names[i], 0, NULL};
     }
-    if (!k)
-        n--;
+    if (n == 1)
+        items[n++] = (struct menu_item){"Open a site in a tab first", MENU_HEADER, NULL};
     ui_menu_items(br->win, x, y, items, n, add_pick);
 }
 
@@ -2889,7 +2869,12 @@ static void blit_turned(struct canvas *c, const struct canvas *s, int cx, int cy
                 edge = MIN(edge, ((rr >> 4) - gfx_dist16(qx >> 4, qy >> 4)) * 16);
             if (edge <= 0)
                 continue;
-            blend_px(c, x, y, s->px[(size_t)(v >> 8) * (size_t)s->stride + (size_t)(u >> 8)], MIN(edge, 255));
+            /* bilinear, so the turned card's title stays smooth */
+            int u0 = MAX(u - 128, 0), v0 = MAX(v - 128, 0), x0 = MIN(u0 >> 8, s->w - 1), y0 = MIN(v0 >> 8, s->h - 1);
+            int x1 = MIN(x0 + 1, s->w - 1), y1 = MIN(y0 + 1, s->h - 1), fx = u0 & 255, fy = v0 & 255;
+            const uint32_t *r0 = s->px + (size_t)y0 * (size_t)s->stride, *r1 = s->px + (size_t)y1 * (size_t)s->stride;
+            uint32_t top = color_mix(r0[x0], r0[x1], fx), bottom = color_mix(r1[x0], r1[x1], fx);
+            blend_px(c, x, y, color_mix(top, bottom, fy), MIN(edge, 255));
         }
 }
 
@@ -3030,72 +3015,57 @@ static void tooltip(struct canvas *c, int W)
     br->tip_shown = true;
 }
 
-static void window_controls(struct ui *ui, int x0, int y, int bw)
+static bool more_button(struct ui *ui, struct rect r)
 {
-    for (int k = 0; k < 3; k++) {
-        struct rect r = {x0 + k * bw + 1, y, bw - 2, 28};
-        bool hot, hit = area(ui, r, &hot);
-        if (hit) {
-            if (k == 0)
-                wm_minimize(br->win);
-            else if (k == 1)
-                wm_toggle_maximize(br->win);
-            else
-                wm_close(br->win);
+    bool hot, hit = area(ui, r, &hot);
+    if (ui->c) {
+        if (hot)
+            gfx_round(ui->c, r, r.h / 2, hover_back());
+        gfx_symbol(ui->c, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, SYM_MORE, 16, hot ? style.text : dim());
+    }
+    if (hit)
+        ui_menu_items(br->win, r.x + r.w - 240, r.y + r.h + 4, more_menu, (int)ARRAY_SIZE(more_menu), more_pick);
+    return hit;
+}
+
+/* the window's close, minimize and zoom controls, the same capsule the system draws on other windows (its cells are
+   24 pixels wide); x is its left edge, cy its middle */
+static void window_controls(struct ui *ui, int x, int cy)
+{
+    if (!br->win) /* the first paint comes from inside wm_open */
+        return;
+    int hot = -1;
+    for (int dx = 0; dx < wm_controls_width(); dx += 24) {
+        int light = wm_controls_at(br->win, dx);
+        bool h, hit = area(ui, (struct rect){x + dx, cy - 11, 24, 22}, &h);
+        if (hit && light == 0) {
+            wm_close(br->win);
             return;
         }
-        if (!ui->c)
-            continue;
-        uint32_t fg = style.dark ? RGB(214, 214, 218) : RGB(40, 40, 44);
-        if (hot) {
-            gfx_round(ui->c, r, 7, k == 2 ? RGB(210, 46, 38) : hover_back());
-            if (k == 2)
-                fg = RGB(255, 255, 255);
+        if (hit && light == 1) {
+            wm_minimize(br->win);
+            return;
         }
-        int cx = r.x + r.w / 2, cy = r.y + r.h / 2;
-        if (k == 0) {
-            gfx_fill(ui->c, (struct rect){cx - 5, cy, 11, 1}, fg);
-        } else if (k == 1) {
-            if (br->win->flags & WIN_MAXIMIZED) {
-                gfx_round_frame(ui->c, (struct rect){cx - 5, cy - 3, 9, 9}, 2, fg);
-                gfx_fill(ui->c, (struct rect){cx - 2, cy - 6, 8, 1}, fg);
-                gfx_fill(ui->c, (struct rect){cx + 6, cy - 6, 1, 8}, fg);
-            } else {
-                gfx_round_frame(ui->c, (struct rect){cx - 5, cy - 5, 11, 11}, 2, fg);
-            }
-        } else {
-            gfx_line(ui->c, cx - 5, cy - 5, cx + 5, cy + 5, fg);
-            gfx_line(ui->c, cx - 5, cy + 5, cx + 5, cy - 5, fg);
+        if (hit && light == 2) {
+            wm_toggle_maximize(br->win);
+            return;
         }
+        if (h)
+            hot = light;
     }
+    if (ui->c)
+        wm_controls_paint(ui->c, br->win, x, cy, hot);
 }
 
 static void strip(struct ui *ui, int W)
 {
-    int left = 70, right = MAX(W - 3 * 46 - 40, left + 40);
+    int left = 14 + wm_controls_width() + 12, right = MAX(W - 52, left + 40);
     struct gui_event *e = ui->e;
-    bool hot;
-    struct rect lr = {8, 6, 30, 26};
-    if (area(ui, lr, &hot)) {
-        ui_menu_items(br->win, lr.x, TAB_ROW - 2, logo_menu, (int)ARRAY_SIZE(logo_menu), logo_pick);
+    window_controls(ui, 14, TAB_ROW / 2 + 1);
+    if (!br)
         return;
-    }
-    if (ui->c) {
-        if (hot)
-            gfx_round(ui->c, lr, 7, hover_back());
-        orb(ui->c, lr.x + 15, lr.y + 13, 8, false);
-    }
-    struct rect cr = {40, 6, 24, 26};
-    if (area(ui, cr, &hot)) {
-        show_tabs(cr.x, TAB_ROW - 2);
+    if (more_button(ui, (struct rect){W - 44, 8, 32, 24}))
         return;
-    }
-    if (ui->c) {
-        if (hot)
-            gfx_round(ui->c, cr, 7, hover_back());
-        gfx_symbol(ui->c, cr.x + 6, cr.y + 7, SYM_DOWN, 12, dim());
-    }
-
     layout(left);
     if (br->shown_cur != br->cur) {
         br->shown_cur = br->cur;
@@ -3260,20 +3230,11 @@ static void sidebar(struct ui *ui, int H)
 {
     struct gui_event *e = ui->e;
     int W = SIDE_W;
-    window_controls(ui, 6, 6, 30);
+    window_controls(ui, 12, 20);
     if (!br)
         return;
-    bool hot;
-    struct rect lr = {W - 64, 7, 28, 26};
-    if (area(ui, lr, &hot)) {
-        ui_menu_items(br->win, lr.x, lr.y + lr.h, logo_menu, (int)ARRAY_SIZE(logo_menu), logo_pick);
+    if (more_button(ui, (struct rect){W - 66, 8, 30, 24}))
         return;
-    }
-    if (ui->c) {
-        if (hot)
-            gfx_round(ui->c, lr, 7, hover_back());
-        orb(ui->c, lr.x + 14, lr.y + 13, 8, false);
-    }
     if (icon_button(ui, (struct rect){W - 34, 7, 26, 26}, SYM_SIDEBAR, 14, dim())) {
         command(CMD_SIDEBAR);
         return;
@@ -3599,6 +3560,7 @@ static void cards_refresh(void)
     }
 }
 
+/* the start page's search: an address opens, words are searched for, only in the sites chosen when there are some */
 static void submit_ask(void)
 {
     char text[sizeof(br->ask.buf)];
@@ -3606,63 +3568,73 @@ static void submit_ask(void)
     char *s = text;
     while (*s == ' ')
         s++;
-    char urls[MAX_CHIPS][URL_MAX];
-    int nurls = 0;
-    char site[160] = "";
+    char sites[320] = "";
     for (int i = 0; i < br->nchips; i++) {
-        if (*s && !strncmp(br->chips[i].url, "http", 4) && !site[0]) {
-            char host[128];
-            host_of(br->chips[i].url, host, sizeof(host));
-            ksnprintf(site, sizeof(site), " site:%s", host);
-        } else if (!*s || strncmp(br->chips[i].url, "http", 4)) {
-            str_copy(urls[nurls++], br->chips[i].url, URL_MAX);
-        }
+        char host[128];
+        host_of(br->chips[i].url, host, sizeof(host));
+        str_append(sites, i ? " OR site:" : " site:", sizeof(sites));
+        str_append(sites, host, sizeof(sites));
     }
     br->nchips = 0;
     ui_text_set(&br->ask, "");
     br->focus = F_NONE;
-    if (*s) {
-        char q[sizeof(text) + 160];
-        ksnprintf(q, sizeof(q), "%s%s", s, site);
-        go(q);
+    if (!*s)
+        return;
+    if (!sites[0]) {
+        go(s);
+        return;
     }
-    for (int i = 0; i < nurls; i++) {
-        if (i == 0 && !*s)
-            navigate(urls[i]);
-        else
-            new_tab(urls[i]);
-    }
+    char q[sizeof(text) + sizeof(sites)];
+    ksnprintf(q, sizeof(q), "%s%s", s, sites);
+    go_as(q, true);
 }
 
 static void ask_box(struct ui *ui, struct rect b)
 {
     if (ui->c) {
         if (!style.dark)
-            gfx_drop_shadow(ui->c, b, 12, 14, 24, 3);
-        gfx_round(ui->c, b, 12, style.dark ? RGB(44, 44, 45) : RGB(255, 255, 255));
-        if (!style.dark)
-            gfx_round_frame(ui->c, b, 12, ALPHA(0, 26));
+            gfx_drop_shadow(ui->c, b, 14, 14, 24, 3);
+        gfx_round(ui->c, b, 14, style.dark ? ALPHA(RGB(44, 44, 46), 236) : RGB(255, 255, 255));
+        gfx_round_frame(ui->c, b, 14, style.dark ? ALPHA(0xffffffffu, 16) : ALPHA(0, 26));
         gfx_symbol(ui->c, b.x + 16, b.y + 18, SYM_SEARCH, 14, dim());
     }
-    if (field(ui, (struct rect){b.x + 40, b.y + 12, b.w - 56, 26}, &br->ask, "Ask anything...", F_ASK, &font_sans)) {
+    if (field(ui, (struct rect){b.x + 40, b.y + 12, b.w - 56, 26}, &br->ask, "Search the web or type an address", F_ASK,
+              &font_sans)) {
         submit_ask();
         return;
     }
-    /* the second row: "+ Add tabs or files", the chips added, and the send button */
+    /* the second row: the search engine, "Search in a site" with the sites chosen, and Go */
     int ry = b.y + b.h - 36;
-    int aw = br->nchips ? 30 : 40 + gfx_text_width(&font_sans, "Add tabs or files");
-    struct rect add = {b.x + 8, ry + 2, aw, 28};
+    const char *en_name = engines[br->engine].name;
+    uint32_t en_color = engines[br->engine].color;
+    struct rect eng = {b.x + 8, ry + 2, 44 + gfx_text_width(&font_small, en_name), 28};
     bool hot;
+    if (area(ui, eng, &hot)) {
+        show_engines(eng.x, eng.y + eng.h + 4);
+        return;
+    }
+    if (ui->c) {
+        if (hot)
+            gfx_round(ui->c, eng, 8, hover_back());
+        gfx_round(ui->c, (struct rect){eng.x + 8, eng.y + 7, 14, 14}, 7, en_color);
+        gfx_text(ui->c, eng.x + 28, eng.y + (eng.h - font_small.height) / 2, &font_small, en_name,
+                 hot ? style.text : style.secondary);
+        gfx_symbol(ui->c, eng.x + eng.w - 14, eng.y + 10, SYM_DOWN, 8, dim());
+    }
+    const char *in_site = "Search in a site";
+    int aw = br->nchips ? 28 : 34 + gfx_text_width(&font_small, in_site);
+    struct rect add = {eng.x + eng.w + 6, ry + 2, aw, 28};
     if (area(ui, add, &hot)) {
         show_add(add.x, add.y + add.h + 4);
         return;
     }
     if (ui->c) {
         if (hot)
-            gfx_round(ui->c, add, 7, hover_back());
-        gfx_symbol(ui->c, add.x + 8, add.y + 7, SYM_PLUS, 14, hot ? style.text : dim());
+            gfx_round(ui->c, add, 8, hover_back());
+        gfx_symbol(ui->c, add.x + 8, add.y + 8, SYM_PLUS, 12, hot ? style.text : dim());
         if (!br->nchips)
-            gfx_text(ui->c, add.x + 32, add.y + (add.h - font_sans.height) / 2, &font_sans, "Add tabs or files", dim());
+            gfx_text(ui->c, add.x + 26, add.y + (add.h - font_small.height) / 2, &font_small, in_site,
+                     hot ? style.text : style.secondary);
     }
     int cx = add.x + add.w + 6;
     for (int i = 0; i < br->nchips && cx < b.x + b.w - 120; i++) {
@@ -3686,22 +3658,17 @@ static void ask_box(struct ui *ui, struct rect b)
         }
         cx += chip.w + 6;
     }
-    bool ready = br->ask.len || br->nchips;
+    bool ready = br->ask.len > 0;
     struct rect send = {b.x + b.w - 36, ry + 3, 26, 26};
     bool sh, hit = area(ui, send, &sh);
     if (ui->c) {
-        uint32_t back = ready ? style.dark ? RGB(236, 236, 238) : RGB(30, 30, 32)
-                              : style.dark ? RGB(58, 58, 60) : RGB(232, 232, 236);
-        gfx_round(ui->c, send, 7, sh ? color_shade(back, style.dark ? -20 : 30) : back);
-        gfx_symbol(ui->c, send.x + 6, send.y + 6, SYM_UP, 14,
-                   ready ? style.dark ? RGB(20, 20, 22) : RGB(255, 255, 255) : dim());
+        uint32_t back = ready ? style.accent : style.dark ? RGB(58, 58, 60) : RGB(232, 232, 236);
+        gfx_round(ui->c, send, 13, sh && ready ? color_shade(back, 30) : back);
+        gfx_symbol(ui->c, send.x + 7, send.y + 7, SYM_UP, 12, ready ? RGB(255, 255, 255) : dim());
     }
     if (hit && ready)
         submit_ask();
 }
-
-static const char *const headline[2] = {"Search the web. Find in pages. Keep bookmarks.",
-                                        "Group tabs and download files, all in SynthOS."};
 
 static void link_text(struct ui *ui, int *x, int y, const char *text, bool link, int *hit)
 {
@@ -3722,14 +3689,12 @@ static void intro(struct ui *ui, struct rect v, int y, int bw)
 {
     int cx = v.x + v.w / 2;
     if (ui->c) {
-        for (int i = 0; i < 2; i++)
-            gfx_text_box(ui->c, (struct rect){v.x, y + i * 30, v.w, 30}, &font_title, headline[i], style.text,
-                         ALIGN_CENTER);
-        gfx_text_box(ui->c, (struct rect){v.x, y + 70, v.w, 18}, &font_small,
-                     "Make Obscura your browser and pick a search engine to get started.", style.secondary,
+        gfx_text_box(ui->c, (struct rect){v.x, y, v.w, 22}, &font_bold, "Make Obscura yours", style.text, ALIGN_CENTER);
+        gfx_text_box(ui->c, (struct rect){v.x, y + 24, v.w, 18}, &font_small,
+                     "Choose it as the browser for links and pick the search engine it uses.", style.secondary,
                      ALIGN_CENTER);
     }
-    int cw = (bw + 40 - 12) / 2, x0 = cx - cw - 6, cy = y + 104;
+    int cw = (bw - 12) / 2, x0 = cx - cw - 6, cy = y + 54;
     uint32_t card = style.dark ? RGB(12, 12, 13) : RGB(236, 236, 239);
     for (int k = 0; k < 2; k++) {
         struct rect r = {x0 + k * (cw + 12), cy, cw, 48};
@@ -3812,19 +3777,80 @@ static void tilted_cards(struct ui *ui, struct rect v)
     }
 }
 
+/* sine of a (65536 to a turn), times 1024; Bhaskara's approximation, close enough to draw with */
+static int isin(int a)
+{
+    a &= 0xffff;
+    int t = a & 0x7fff, q = (t * (32768 - t)) >> 15;
+    int v = 16 * q * 1024 / (5 * 32768 - 4 * q);
+    return a & 0x8000 ? -v : v;
+}
+
+/* The SynthOS mark (the one in the menu bar), drawn to scale: a disc cut by two waves. */
+static void sys_logo(struct canvas *c, int cx, int cy, int r, uint32_t color)
+{
+    static const int bands[2][4] = {{102, 205, 87, 0}, {512, 154, 72, 32768}}; /* base, amplitude, half thick, phase */
+    struct rect box = rect_intersect(c->clip, (struct rect){cx - r - 1, cy - r - 1, 2 * r + 3, 2 * r + 3});
+    int r16 = r * 16;
+    for (int x = box.x; x < box.x + box.w; x++) {
+        int dx16 = (x - cx) * 16 + 8, mid[2];
+        for (int k = 0; k < 2; k++) /* the wave's middle at this column, in sixteenths of a pixel */
+            mid[k] = (bands[k][0] * r16 + bands[k][1] * r * isin(dx16 * 29491 / MAX(r16, 1) + bands[k][3]) / 64) / 1024;
+        for (int y = box.y; y < box.y + box.h; y++) {
+            int dy16 = (y - cy) * 16 + 8;
+            int cov = gfx_cover(r16 - gfx_dist16(dx16, dy16));
+            for (int k = 0; k < 2 && cov > 0; k++)
+                cov = MIN(cov, gfx_cover(ABS(dy16 - mid[k]) - bands[k][2] * r16 / 1024));
+            if (cov > 0)
+                blend_px(c, x, y, color, (int)(color >> 24) * cov / 256);
+        }
+    }
+}
+
+/* behind the mark, slowly: soft lights of the SynthOS colors turning round it and faint rings leaving it */
+static void aura(struct canvas *c, int cx, int cy, int r)
+{
+    uint32_t t = (uint32_t)hal_ticks_ms();
+    bool still = !app_state_on("obscura", "motion", true);
+    if (still)
+        t = 0;
+    static const int period[3] = {17000, 23000, 29000};
+    for (int k = 0; k < 3; k++) {
+        int a = (int)((t % (uint32_t)period[k]) * 65536u / (uint32_t)period[k]) * (k == 1 ? -1 : 1) + k * 21845;
+        int ox = cx + isin(a + 16384) * r * 3 / 4 / 1024, oy = cy + isin(a) * r / 2 / 1024;
+        int u = (k * 341 + (int)(t / 40)) % 1024;
+        int g = r * 2 / 3;
+        gfx_glow(c, (struct rect){ox - g / 2, oy - g / 2, g, g}, g / 2, r, style.dark ? 46 : 30,
+                 gfx_halo_tone(u < 512 ? u * 2 : (1023 - u) * 2));
+    }
+    if (still)
+        return;
+    for (int k = 0; k < 2; k++) {
+        int phase = (int)((t + (uint32_t)k * 4500u) % 9000u); /* 0..9000 ms */
+        int rr = r + 6 + phase * r * 3 / 2 / 9000, alpha = (9000 - phase) * (style.dark ? 34 : 26) / 9000;
+        gfx_ring(c, cx, cy, rr, ALPHA(style.text, alpha));
+    }
+}
+
 static void start_page(struct ui *ui, struct rect v)
 {
     if (ui->c)
         gfx_clear(ui->c, v, panel_back());
     bool show_intro = !app_state_on("obscura", "dismissed", false);
     bool cards = v.h >= 560 && v.w >= 640;
-    int bw = MIN(v.w - 64, 560), bh = 96;
-    int stack = 48 + 28 + bh + (show_intro ? 36 + 186 : 0);
-    int top = v.y + MAX((v.h - (cards ? 130 : 0) - stack) / 2 - 8, 16);
-    int cx = v.x + v.w / 2;
-    if (ui->c)
-        orb(ui->c, cx, top + 24, 23, true);
-    struct rect box = {cx - bw / 2, top + 48 + 28, bw, bh};
+    int bw = MIN(v.w - 64, 580), bh = 96;
+    int rest = 32 + bh + (show_intro ? 36 + 150 : 0), room = v.h - (cards ? 130 : 0) - rest - 40;
+    int r = CLAMP(room / 2 - 10, 26, 76);
+    int stack = 2 * r + rest;
+    int top = v.y + MAX((v.h - (cards ? 130 : 0) - stack) / 2, 16);
+    int cx = v.x + v.w / 2, cy = top + r;
+    if (ui->c) {
+        struct canvas inner = *ui->c;
+        inner.clip = rect_intersect(ui->c->clip, v);
+        aura(&inner, cx, cy, r);
+        sys_logo(&inner, cx, cy, r, ALPHA(style.text, 128));
+    }
+    struct rect box = {cx - bw / 2, top + 2 * r + 32, bw, bh};
     ask_box(ui, box);
     if (show_intro)
         intro(ui, v, box.y + bh + 36, bw);
@@ -4018,89 +4044,174 @@ static void list_page(struct ui *ui, struct rect v, int kind)
     }
 }
 
+/* obscura://settings: the sections on the left, each one's rows in rounded groups on the right */
+#define SET_ROW 56
+
+static void set_label(struct ui *ui, struct rect r, const char *title, const char *caption, int right, bool last)
+{
+    if (!ui->c)
+        return;
+    struct canvas inner = *ui->c;
+    inner.clip = rect_intersect(ui->c->clip, (struct rect){r.x, r.y, r.w - right, r.h});
+    if (caption) {
+        gfx_text(&inner, r.x + 16, r.y + 10, &font_sans, title, style.text);
+        gfx_text(&inner, r.x + 16, r.y + 30, &font_small, caption, style.secondary);
+    } else {
+        gfx_text(&inner, r.x + 16, r.y + (r.h - font_sans.height) / 2, &font_sans, title, style.text);
+    }
+    if (!last)
+        gfx_fill(ui->c, (struct rect){r.x + 16, r.y + r.h - 1, r.w - 32, 1}, style.separator);
+}
+
+/* a row with a switch; true when it was flipped */
+static bool set_switch(struct ui *ui, struct rect r, const char *title, const char *caption, bool *on, bool last)
+{
+    set_label(ui, r, title, caption, 74, last);
+    return ui_switch(ui, (struct rect){r.x + r.w - 60, r.y + (r.h - 22) / 2, 44, 22}, on);
+}
+
+static bool set_button(struct ui *ui, struct rect r, int dx, const char *label)
+{
+    return ui_button(ui, (struct rect){r.x + r.w - 16 - dx - 112, r.y + (r.h - 30) / 2, 112, 30}, label);
+}
+
 static void settings_page(struct ui *ui, struct rect v)
 {
+    static const char *const names[] = {"General", "Appearance", "Search", "Privacy", "Your Data", "About"};
+    static const enum symbol_id syms[] = {SYM_GEAR, SYM_APPEARANCE, SYM_SEARCH, SYM_LOCK, SYM_FOLDER, SYM_INFO};
     if (ui->c)
         gfx_clear(ui->c, v, panel_back());
-    int cw = MIN(v.w - 64, 640), x0 = v.x + (v.w - cw) / 2, y = v.y + 24 - br->list_scroll;
+    int nav_w = v.w >= 720 ? 196 : 0;
+    int cw = MIN(v.w - nav_w - 64, 600), x0 = v.x + nav_w + MAX((v.w - nav_w - cw) / 2, 24);
+    if (nav_w) {
+        x0 = MIN(x0, v.x + nav_w + 40);
+        int y = v.y + 24;
+        if (ui->c)
+            gfx_text(ui->c, v.x + 24, y, &font_large, "Settings", style.text);
+        y += 52;
+        for (int i = 0; i < (int)ARRAY_SIZE(names); i++)
+            if (ui_sidebar_item(ui, (struct rect){v.x + 16, y + i * 34, nav_w - 24, 30}, syms[i], names[i],
+                                i == br->set_page)) {
+                br->set_page = i;
+                br->list_scroll = 0;
+            }
+        if (ui->c)
+            gfx_fill(ui->c, (struct rect){v.x + nav_w, v.y + 20, 1, v.h - 40}, style.separator);
+    } else if (ui_segmented(ui, (struct rect){v.x + 16, v.y + 14, v.w - 32, 28}, names, (int)ARRAY_SIZE(names),
+                            &br->set_page)) {
+        br->list_scroll = 0;
+    }
     struct gui_event *e = ui->e;
     if (e && e->type == EV_WHEEL && rect_contains(v, e->x, e->y)) {
-        br->list_scroll = CLAMP(br->list_scroll + e->wheel * 60, 0, MAX(860 - v.h, 0));
+        br->list_scroll = CLAMP(br->list_scroll + e->wheel * 60, 0, MAX(560 - v.h, 0));
         ui->consumed = true;
     }
     struct canvas inner;
     struct canvas *saved = ui->c;
+    int y = v.y + (nav_w ? 28 : 60) - br->list_scroll;
     if (ui->c) {
         inner = *ui->c;
-        inner.clip = rect_intersect(ui->c->clip, v);
+        inner.clip = rect_intersect(ui->c->clip, (struct rect){v.x + nav_w + 1, v.y, v.w - nav_w - 1, v.h});
         ui->c = &inner;
-        gfx_text(ui->c, x0, y, &font_large, "Settings", style.text);
+        gfx_text(ui->c, x0 + 4, y, &font_title, names[br->set_page], style.text);
     }
-    y += 52;
-#define HEAD(text)                                                                                                     \
-    do {                                                                                                               \
-        if (ui->c)                                                                                                     \
-            gfx_text(ui->c, x0 + 4, y, &font_bold, text, style.secondary);                                             \
-        y += 24;                                                                                                       \
-    } while (0)
-    HEAD("General");
-    struct rect g = ui_group(ui, x0, y, cw, 4, 46);
-    bool is_default = gui_default_browser() == &obscura_app;
-    ui_group_label(ui, (struct rect){g.x, g.y, g.w, 46}, "Default browser",
-                   is_default ? "Obscura opens links" : NULL, false);
-    if (!is_default && ui_button(ui, (struct rect){g.x + g.w - 136, g.y + 8, 122, 30}, "Make Default"))
-        gui_setting("browser", "obscura");
-    bool intro_on = !app_state_on("obscura", "dismissed", false);
-    ui_group_label(ui, (struct rect){g.x, g.y + 46, g.w, 46}, "Show the welcome cards on new tabs", NULL, true);
-    if (ui_switch(ui, (struct rect){g.x + g.w - 58, g.y + 46 + 12, 44, 22}, &intro_on))
-        app_state_set_on("obscura", "dismissed", !intro_on);
-    bool restore = app_state_on("obscura", "restore", true);
-    ui_group_label(ui, (struct rect){g.x, g.y + 92, g.w, 46}, "Open the tabs of last time on start",
-                   "Pinned tabs always come back", true);
-    if (ui_switch(ui, (struct rect){g.x + g.w - 58, g.y + 92 + 12, 44, 22}, &restore))
-        app_state_set_on("obscura", "restore", restore);
-    ui_group_label(ui, (struct rect){g.x, g.y + 138, g.w, 46}, "Show the bookmarks bar", NULL, true);
-    bool bar = br->bar;
-    if (ui_switch(ui, (struct rect){g.x + g.w - 58, g.y + 138 + 12, 44, 22}, &bar))
-        command(CMD_BAR);
-    y += g.h + 22;
-    HEAD("Search engine");
-    g = ui_group(ui, x0, y, cw, (int)ARRAY_SIZE(engines), 40);
-    for (int i = 0; i < (int)ARRAY_SIZE(engines); i++) {
-        struct rect r = {g.x, g.y + i * 40, g.w, 40};
-        if (ui_radio(ui, (struct rect){r.x + 14, r.y, r.w - 28, r.h}, engines[i].name, i == br->engine))
-            set_engine(i);
-        if (ui->c && i + 1 < (int)ARRAY_SIZE(engines))
-            gfx_fill(ui->c, (struct rect){r.x + 14, r.y + r.h - 1, r.w - 28, 1}, style.separator);
+    y += 44;
+    struct rect g;
+#define ROW(i) ((struct rect){g.x, g.y + (i) * SET_ROW, g.w, SET_ROW})
+    char line[96];
+    bool on;
+    switch (br->set_page) {
+    case 0: {
+        g = ui_group(ui, x0, y, cw, 3, SET_ROW);
+        bool is_default = gui_default_browser() == &obscura_app;
+        set_label(ui, ROW(0), "Default browser",
+                  is_default ? "Links from other apps open in Obscura" : "Links from other apps open elsewhere", 140,
+                  false);
+        if (!is_default && set_button(ui, ROW(0), 0, "Make Default"))
+            gui_setting("browser", "obscura");
+        on = app_state_on("obscura", "restore", true);
+        if (set_switch(ui, ROW(1), "Open the tabs of last time", "Pinned tabs always come back", &on, false))
+            app_state_set_on("obscura", "restore", on);
+        ksnprintf(line, sizeof(line), "Now %s", engines[br->engine].name);
+        set_label(ui, ROW(2), "Search engine", line, 140, true);
+        if (set_button(ui, ROW(2), 0, "Change..."))
+            br->set_page = 2;
+        break;
     }
-    y += g.h + 22;
-    HEAD("Data");
-    g = ui_group(ui, x0, y, cw, 3, 46);
-    char line[64];
-    ksnprintf(line, sizeof(line), "%d page%s", br->nhistory, br->nhistory == 1 ? "" : "s");
-    ui_group_label(ui, (struct rect){g.x, g.y, g.w - 150, 46}, "History", line, false);
-    if (ui_button(ui, (struct rect){g.x + g.w - 136, g.y + 8, 122, 30}, "Clear..."))
-        ui_confirm(br->win, "Clear History", "Forget every page visited and the pictures of them?",
-                   clear_history_done);
-    ksnprintf(line, sizeof(line), "%d saved", br->nbookmarks);
-    ui_group_label(ui, (struct rect){g.x, g.y + 46, g.w - 150, 46}, "Bookmarks", line, false);
-    if (ui_button(ui, (struct rect){g.x + g.w - 270, g.y + 46 + 8, 122, 30}, "Import..."))
-        command(CMD_IMPORT);
-    if (ui_button(ui, (struct rect){g.x + g.w - 136, g.y + 46 + 8, 122, 30}, "Export..."))
-        command(CMD_EXPORT);
-    ui_group_label(ui, (struct rect){g.x, g.y + 92, g.w - 150, 46}, "Site cookies kept by SynthOS", NULL, true);
-    if (ui_button(ui, (struct rect){g.x + g.w - 136, g.y + 92 + 8, 122, 30}, "Clear"))
-        http_cookies_clear();
-    y += g.h + 22;
-    HEAD("Engine");
-    g = ui_group(ui, x0, y, cw, 2, 46);
-    ui_group_label(ui, (struct rect){g.x, g.y, g.w, 46}, "Obscura engine",
-                   br->link ? (br->ready ? "Running" : "Starting") : vfs_exists(ENGINE) ? "Stopped" : "Not installed",
-                   false);
-    ui_group_label(ui, (struct rect){g.x, g.y + 46, g.w - 150, 46}, "Restart the engine", NULL, true);
-    if (ui_button(ui, (struct rect){g.x + g.w - 136, g.y + 46 + 8, 122, 30}, "Restart"))
-        engine_stop();
-#undef HEAD
+    case 1:
+        g = ui_group(ui, x0, y, cw, 4, SET_ROW);
+        on = br->sidebar;
+        if (set_switch(ui, ROW(0), "Tabs on the side", "A column of tabs instead of the row on top", &on, false))
+            command(CMD_SIDEBAR);
+        on = br->bar;
+        if (set_switch(ui, ROW(1), "Bookmarks bar", "Your bookmarks under the address", &on, false))
+            command(CMD_BAR);
+        on = !app_state_on("obscura", "dismissed", false);
+        if (set_switch(ui, ROW(2), "Welcome cards on new tabs", "Default browser and search engine", &on, false))
+            app_state_set_on("obscura", "dismissed", !on);
+        on = app_state_on("obscura", "motion", true);
+        if (set_switch(ui, ROW(3), "Moving background on new tabs", "Soft light turning round the logo", &on, true))
+            app_state_set_on("obscura", "motion", on);
+        break;
+    case 2:
+        g = ui_group(ui, x0, y, cw, (int)ARRAY_SIZE(engines), 44);
+        for (int i = 0; i < (int)ARRAY_SIZE(engines); i++) {
+            struct rect r = {g.x, g.y + i * 44, g.w, 44};
+            if (ui->c)
+                gfx_round(ui->c, (struct rect){r.x + 16, r.y + 13, 18, 18}, 9, engines[i].color);
+            if (ui_radio(ui, (struct rect){r.x + 44, r.y, r.w - 60, r.h}, engines[i].name, i == br->engine))
+                set_engine(i);
+            if (ui->c && i + 1 < (int)ARRAY_SIZE(engines))
+                gfx_fill(ui->c, (struct rect){r.x + 16, r.y + r.h - 1, r.w - 32, 1}, style.separator);
+        }
+        if (ui->c)
+            gfx_text(ui->c, x0 + 4, g.y + g.h + 12, &font_small,
+                     "Words typed in the address or on a new tab are searched for here.", style.secondary);
+        break;
+    case 3:
+        g = ui_group(ui, x0, y, cw, 3, SET_ROW);
+        ksnprintf(line, sizeof(line), "%d page%s remembered", br->nhistory, br->nhistory == 1 ? "" : "s");
+        set_label(ui, ROW(0), "History", line, 140, false);
+        if (set_button(ui, ROW(0), 0, "Clear..."))
+            ui_confirm(br->win, "Clear History", "Forget every page visited and the pictures of them?",
+                       clear_history_done);
+        set_label(ui, ROW(1), "Cookies", "Kept by SynthOS for the sites you sign in to", 140, false);
+        if (set_button(ui, ROW(1), 0, "Clear"))
+            http_cookies_clear();
+        set_label(ui, ROW(2), "Private window", "Keeps no history, cookies or pictures of pages", 140, true);
+        if (set_button(ui, ROW(2), 0, "Open"))
+            command(CMD_PRIVATE);
+        break;
+    case 4:
+        g = ui_group(ui, x0, y, cw, 3, SET_ROW);
+        ksnprintf(line, sizeof(line), "%d saved", br->nbookmarks);
+        set_label(ui, ROW(0), "Bookmarks", line, 260, false);
+        if (set_button(ui, ROW(0), 120, "Import..."))
+            command(CMD_IMPORT);
+        if (set_button(ui, ROW(0), 0, "Export..."))
+            command(CMD_EXPORT);
+        ksnprintf(line, sizeof(line), "Using %s", br->profile[0] ? br->profile : "Default");
+        set_label(ui, ROW(1), "Profile", line, 140, false);
+        if (set_button(ui, ROW(1), 0, "Profiles..."))
+            command(CMD_PROFILES);
+        set_label(ui, ROW(2), "Downloads", "Saved to the Downloads folder", 140, true);
+        if (set_button(ui, ROW(2), 0, "Show"))
+            command(CMD_DOWNLOADS);
+        break;
+    default:
+        g = ui_group(ui, x0, y, cw, 3, SET_ROW);
+        if (ui->c)
+            orb(ui->c, g.x + g.w - 36, g.y + SET_ROW / 2, 14, false);
+        set_label(ui, ROW(0), "Obscura", "The SynthOS browser, on the Obscura page engine", 60, false);
+        set_label(ui, ROW(1), "Page engine",
+                  br->link ? (br->ready ? "Running" : "Starting") : vfs_exists(ENGINE) ? "Stopped" : "Not installed",
+                  140, false);
+        if (set_button(ui, ROW(1), 0, "Restart"))
+            engine_stop();
+        set_label(ui, ROW(2), "Keyboard shortcuts", "Ctrl+T new tab, Ctrl+L address, Ctrl+K commands", 0, true);
+        break;
+    }
+#undef ROW
     ui->c = saved;
 }
 
@@ -4641,9 +4752,6 @@ static void frame(struct ui *ui, void *data)
             sidebar(ui, H);
         } else {
             strip(ui, W);
-            if (!br)
-                return;
-            window_controls(ui, W - 3 * 46, 5, 46);
         }
         if (!br)
             return;
@@ -4682,8 +4790,6 @@ static void frame(struct ui *ui, void *data)
             sidebar(ui, H);
         } else {
             strip(ui, W);
-            if (br)
-                window_controls(ui, W - 3 * 46, 5, 46);
         }
         if (!br)
             return;
@@ -4916,6 +5022,14 @@ static void event(struct window *w, struct gui_event *e)
         }
         if (br->tip_tab >= 0 && !br->tip_shown && hal_ticks_ms() - br->tip_since > 550)
             wm_invalidate(w);
+        /* the start page's background moves, a few times a second and only while the window is in front */
+        uint64_t now = hal_ticks_ms();
+        if (!tab()->url[0] && !split_on() && vfs_exists(ENGINE) && wm_focused() == w &&
+            !(w->flags & (WIN_MINIMIZED | WIN_HIDDEN)) && now - br->anim_at >= 80 &&
+            app_state_on("obscura", "motion", true)) {
+            br->anim_at = now;
+            wm_invalidate(w);
+        }
         if (br->switching && !(hal_key_modifiers() & KEY_MOD_CTRL)) {
             int list[RECENT], n = recent_tabs(list, RECENT);
             br->switching = false;

@@ -444,6 +444,9 @@ void wm_hide(struct window *w);
 void wm_focus(struct window *w);
 struct window *wm_focused(void);
 void wm_invalidate(struct window *w);
+int wm_controls_width(void);
+void wm_controls_paint(struct canvas *c, const struct window *w, int x, int cy, int hot);
+int wm_controls_at(const struct window *w, int dx);
 void wm_set_pinned(struct window *w, bool on);
 void wm_peek_desktop(bool on);
 enum snap_zone {
