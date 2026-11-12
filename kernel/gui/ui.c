@@ -1,4 +1,6 @@
 #include <synth/codepage.h>
+#include <synth/fmt.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
 #include <synth/string.h>
@@ -977,6 +979,9 @@ struct dialog {
     char buttons[3][16];
     int button_count;
     ui_pick_fn pick;
+    uint64_t deadline; /* ui_alert_timed: when timeout_pick is chosen by itself */
+    int timeout_pick, shown_secs;
+    char *lead;
 };
 
 #define DIALOG_W 300
@@ -985,6 +990,17 @@ static void dialog_frame(struct ui *ui, void *data)
 {
     struct dialog *d = data;
     struct rect area = {0, 0, ui->win->surface.w, ui->win->surface.h};
+    bool expired = false;
+    if (d->deadline) {
+        uint64_t now = hal_ticks_ms();
+        int secs = now >= d->deadline ? 0 : (int)((d->deadline - now + 999) / 1000);
+        if (secs != d->shown_secs) {
+            d->shown_secs = secs;
+            ksnprintf(d->text, sizeof(d->text), "%s\n\nGoing back in %d second%s.", d->lead, secs, secs == 1 ? "" : "s");
+            wm_invalidate(ui->win);
+        }
+        expired = !secs && ui->e && ui->e->type == EV_TIMER;
+    }
     if (ui->c)
         gfx_clear(ui->c, area, ALPHA(style.window, style.glass == GLASS_SOLID ? 255 : 200));
     int y = 22;
@@ -1011,6 +1027,8 @@ static void dialog_frame(struct ui *ui, void *data)
             chosen = n - 1;
         else if (key == KEY_ESC)
             chosen = n > 1 ? 0 : n - 1;
+        if (expired)
+            chosen = d->timeout_pick;
         if (chosen >= 0) {
             struct window *w = ui->win;
             ui_pick_fn pick = d->pick;
@@ -1061,7 +1079,9 @@ static void dialog_event(struct window *w, struct gui_event *e)
 
 static void dialog_destroy(struct window *w)
 {
-    kfree(w->data);
+    struct dialog *d = w->data;
+    kfree(d->lead);
+    kfree(d);
 }
 
 static const struct window_ops dialog_ops = {dialog_paint, dialog_event, NULL, dialog_destroy};
@@ -1111,6 +1131,31 @@ bool ui_alert(struct window *owner, const char *title, const char *text, enum ic
     for (int i = 0; i < d->button_count; i++)
         str_copy(d->buttons[i], buttons[i], sizeof(d->buttons[i]));
     d->pick = pick;
+    return true;
+}
+
+/* an alert that picks timeout_pick by itself after the given seconds, counting down under its text */
+bool ui_alert_timed(struct window *owner, const char *title, const char *text, enum icon_id icon,
+                    const char *const *buttons, int count, ui_pick_fn pick, int seconds, int timeout_pick)
+{
+    char full[512];
+    ksnprintf(full, sizeof(full), "%s\n\nGoing back in %d seconds.", text, seconds);
+    char *lead = kstrdup(text);
+    if (!lead || !ui_alert(owner, title, full, icon, buttons, count, pick)) {
+        kfree(lead);
+        return false;
+    }
+    struct window *w = wm_focused();
+    struct dialog *d = w && w->ops == &dialog_ops ? w->data : NULL;
+    if (!d) {
+        kfree(lead);
+        return true;
+    }
+    d->lead = lead;
+    d->deadline = hal_ticks_ms() + (uint64_t)seconds * 1000;
+    d->shown_secs = seconds;
+    d->timeout_pick = timeout_pick;
+    wm_set_timer(w, 250);
     return true;
 }
 

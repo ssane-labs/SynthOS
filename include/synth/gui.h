@@ -576,6 +576,8 @@ void ui_menu(struct window *owner, int x, int y, const char *const *items, int c
 struct window *ui_menu_items(struct window *owner, int x, int y, const struct menu_item *items, int count,
                              ui_pick_fn pick);
 void ui_confirm(struct window *owner, const char *title, const char *text, ui_prompt_fn done);
+bool ui_alert_timed(struct window *owner, const char *title, const char *text, enum icon_id icon,
+                    const char *const *buttons, int count, ui_pick_fn pick, int seconds, int timeout_pick);
 bool ui_alert(struct window *owner, const char *title, const char *text, enum icon_id icon,
               const char *const *buttons, int count, ui_pick_fn pick);
 void ui_prompt(struct window *owner, const char *title, const char *label, const char *initial, ui_prompt_fn done);

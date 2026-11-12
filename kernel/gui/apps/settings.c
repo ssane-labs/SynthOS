@@ -1187,12 +1187,31 @@ static struct display_mode menu_modes[24];
 static char menu_labels[24][24];
 static struct menu_item menu_items[24];
 
+/* a new resolution stays only when confirmed: after 20 seconds without an answer the old one comes back, so a mode
+   the screen cannot show undoes itself */
+static char kept_key[16], kept_value[24];
+
+static void keep_pick(struct window *owner, int index)
+{
+    UNUSED(owner);
+    if (index == 0)
+        apply(kept_key, kept_value);
+}
+
 static void pick_mode(struct window *owner, int index)
 {
     UNUSED(owner);
     char value[24];
     ksnprintf(value, sizeof(value), "%ux%u", menu_modes[index].width, menu_modes[index].height);
-    apply(menu_display ? "resolution2" : "resolution", value);
+    str_copy(kept_key, menu_display ? "resolution2" : "resolution", sizeof(kept_key));
+    current(kept_key, kept_value, sizeof(kept_value));
+    if (!strcmp(kept_value, value))
+        return;
+    apply(kept_key, value);
+    static const char *const buttons[] = {"Revert", "Confirm"};
+    char text[96];
+    ksnprintf(text, sizeof(text), "The display now shows %s. Keep it?", value);
+    ui_alert_timed(NULL, "Keep this resolution?", text, ICON_WARNING, buttons, 2, keep_pick, 20, 0);
 }
 
 static void pane_displays(struct page *p)
