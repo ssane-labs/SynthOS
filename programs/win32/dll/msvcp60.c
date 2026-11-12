@@ -189,6 +189,11 @@ THIS unsigned str_find(const struct str *s, const char *p, unsigned pos, unsigne
     return NPOS;
 }
 
+THIS unsigned str_find_text(const struct str *s, const char *p, unsigned pos)
+{
+    return str_find(s, p, pos, (unsigned)strlen(p));
+}
+
 THIS void *lockit_new(void *self)
 {
     return self;

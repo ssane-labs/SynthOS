@@ -545,8 +545,8 @@ ls C:/Windows/System32 | grep -c dll
 kernel32.dll
 cd 'C:\Program Files'; pwd; cd
 /apps
-launch | grep Mine
-Clear the field without hitting a mine
+launch | grep Monitor
+Memory, storage, windows and kernel log
 appbench Photos
 appbench: the desktop is not running
 launch paint
