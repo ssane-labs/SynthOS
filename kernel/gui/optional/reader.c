@@ -17,7 +17,7 @@
 
 /* Reader: PDF, Word, Excel, PowerPoint and OpenDocument files as pages (the readers in doc/ fill one model), with
    zoom, find, copying the text, and the documents of the home folder when nothing is open. doctext prints the
-   text of a document in the terminal. */
+   text of a document in the terminal. The module also keeps the word index of /home (doc/index.h). */
 
 #include "doc/model.h"
 
@@ -542,8 +542,10 @@ COMMAND(pdfpage, NULL, "files", "pdfpage <file.pdf> delete <page>", "delete a pa
     return 0;
 }
 
-static const struct command *const commands[] = {&cmddef_doctext, &cmddef_pdfpage};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL};
+#include "doc/index.h"
+
+static const struct command *const commands[] = {&cmddef_doctext, &cmddef_pdfpage, &cmddef_mdfind, &cmddef_index};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, ix_search};
 static const struct gui_app reader_app = {.name = "Reader",
                                           .description = "PDF, Word, Excel, PowerPoint and OpenDocument files",
                                           .icon = ICON_READER,

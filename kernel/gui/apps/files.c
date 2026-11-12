@@ -519,16 +519,65 @@ enum {
     M_RENAME,
     M_TRASH,
     M_VERSIONS,
+    M_COMPRESS,
+    M_EXTRACT,
     M_PUT_BACK,
 };
 
 static const char *const item_menu[] = {"Open", "Open with Notepad", "Run in Terminal", "", "Copy", "Cut",
-                                        "Rename…", "Move to Trash", "Earlier Versions…", "Put Back"};
+                                        "Rename…", "Move to Trash", "Earlier Versions…", "Compress",
+                                        "Extract Here", "Put Back"};
+static int menu_map[ARRAY_SIZE(item_menu)];
+
+static bool is_archive(const char *name)
+{
+    static const char *const exts[] = {".zip", ".7z", ".tar", ".gz", ".tgz", ".xz", ".txz", ".lzma"};
+    const char *ext = path_ext(name);
+    for (size_t i = 0; ext && i < ARRAY_SIZE(exts); i++)
+        if (!str_casecmp(ext, exts[i]))
+            return true;
+    return false;
+}
+
+/* Compress and Extract Here: the zip, unzip, un7z and tar commands, quietly; a message only when they fail */
+static void archive_run(struct window *w, struct files *f, const char *name)
+{
+    char src[PATH_MAX_LEN], line[3 * PATH_MAX_LEN];
+    child_path(f, name, src);
+    const char *ext = path_ext(name);
+    if (!is_archive(name)) {
+        char out[PATH_MAX_LEN], base[NAME_MAX_LEN];
+        str_copy(base, name, sizeof(base));
+        char *dot = strrchr(base, '.');
+        if (dot && dot != base && !vfs_is_dir(src))
+            *dot = 0;
+        child_path(f, base, out);
+        str_append(out, ".zip", sizeof(out));
+        for (int n = 2; vfs_exists(out) && n < 100; n++) {
+            child_path(f, base, out);
+            ksnprintf(out + strlen(out), sizeof(out) - strlen(out), " %d.zip", n);
+        }
+        ksnprintf(line, sizeof(line), "zip '%s' '%s'", out, src);
+    } else if (!str_casecmp(ext, ".zip")) {
+        ksnprintf(line, sizeof(line), "unzip -q -d '%s' '%s'", f->path, src);
+    } else if (!str_casecmp(ext, ".7z")) {
+        ksnprintf(line, sizeof(line), "un7z '%s' '%s'", src, f->path);
+    } else {
+        ksnprintf(line, sizeof(line), "tar -C '%s' '%s'", f->path, src);
+    }
+    char *out = NULL;
+    if (shell_capture(shell_current(), line, &out) != 0)
+        gui_message(is_archive(name) ? "The archive could not be extracted" : "The archive could not be made",
+                    out && *out ? out : "Something went wrong while working on the archive.");
+    kfree(out);
+    refresh(w, f);
+}
 static const char *const space_menu[] = {"New Folder", "Paste", "", "Open in Terminal", "View as Icons",
                                          "View as List"};
 
 static void pick_item(struct window *w, int index)
 {
+    index = menu_map[index];
     struct files *f = w->data;
     struct entry *e = selected(f);
     if (!e)
@@ -552,6 +601,8 @@ static void pick_item(struct window *w, int index)
     case M_RENAME: ui_prompt(w, "Rename", "Enter a new name:", e->name, do_rename); break;
     case M_TRASH: trash(w, f); break;
     case M_VERSIONS: gui_app_launch(gui_app_find("Timeline"), p); break;
+    case M_COMPRESS:
+    case M_EXTRACT: archive_run(w, f, e->name); break;
     case M_PUT_BACK: report(trash_restore(e->name, NULL, 0), "put back"); refresh(w, f); chrome_changed(); break;
     }
     wm_invalidate(w);
@@ -932,8 +983,17 @@ static void frame(struct ui *ui, void *data)
         return;
     }
     if (result == LIST_CONTEXT && ui->e) {
-        if (selected(f))
-            ui_menu(w, ui->e->x, ui->e->y, item_menu, (int)ARRAY_SIZE(item_menu) - !str_starts(f->path, TRASH), pick_item);
+        if (selected(f)) {
+            static const char *labels[ARRAY_SIZE(item_menu)];
+            int n = 0;
+            bool in_trash = str_starts(f->path, TRASH), archive = is_archive(selected(f)->name);
+            for (int i = 0; i < (int)ARRAY_SIZE(item_menu); i++)
+                if ((i != M_PUT_BACK || in_trash) && (i != M_EXTRACT || archive) && (i != M_COMPRESS || !in_trash)) {
+                    menu_map[n] = i;
+                    labels[n++] = item_menu[i];
+                }
+            ui_menu(w, ui->e->x, ui->e->y, labels, n, pick_item);
+        }
         else
             ui_menu(w, ui->e->x, ui->e->y, space_menu, (int)ARRAY_SIZE(space_menu), pick_space);
         return;

@@ -1,8 +1,10 @@
+#include <synth/command.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
+#include <synth/module.h>
 #include <synth/path.h>
 #include <synth/picture.h>
 #include <synth/string.h>
@@ -11,8 +13,8 @@
 
 #include "../internal.h"
 
-/* Video: AVI files with Motion JPEG pictures and PCM sound. The sound goes through the media engine, the
-   picture follows its clock. */
+/* Video: AVI files with Motion JPEG (or uncompressed) pictures and PCM sound. The sound goes through the media
+   engine, the picture follows its clock. */
 
 #define MAX_FRAMES 20000
 #define BAR_H 46
@@ -23,6 +25,15 @@ enum {
     CMD_RESTART,
     CMD_LOOP,
     CMD_SHOW,
+    CMD_SAVE,
+    CMD_FULL,
+    CMD_BACK,
+    CMD_AHEAD,
+    CMD_PREV_FRAME,
+    CMD_NEXT_FRAME,
+    CMD_LOUDER,
+    CMD_QUIETER,
+    CMD_MUTE,
 };
 
 static const struct menu_item video_items[] = {
@@ -31,7 +42,21 @@ static const struct menu_item video_items[] = {
     {"Play from Start", KEY_COMMAND(CMD_RESTART), NULL}, {"Loop", KEY_COMMAND(CMD_LOOP), NULL},
 };
 
-static const struct app_menu menus[] = {{"Video", video_items, ARRAY_SIZE(video_items)}};
+static const struct menu_item frame_items[] = {
+    {"Back 10 Seconds", KEY_COMMAND(CMD_BACK), "J"},       {"Forward 10 Seconds", KEY_COMMAND(CMD_AHEAD), "L"},
+    {"Previous Frame", KEY_COMMAND(CMD_PREV_FRAME), ","},  {"Next Frame", KEY_COMMAND(CMD_NEXT_FRAME), "."},
+    {"", 0, NULL},                                         {"Save Frame as Picture", KEY_COMMAND(CMD_SAVE), "⌘S"},
+};
+
+static const struct menu_item view_items[] = {
+    {"Enter Full Screen", KEY_COMMAND(CMD_FULL), "F"}, {"", 0, NULL},
+    {"Volume Up", KEY_COMMAND(CMD_LOUDER), "↑"},       {"Volume Down", KEY_COMMAND(CMD_QUIETER), "↓"},
+    {"Mute", KEY_COMMAND(CMD_MUTE), "M"},
+};
+
+static const struct app_menu menus[] = {{"Video", video_items, ARRAY_SIZE(video_items)},
+                                        {"Playback", frame_items, ARRAY_SIZE(frame_items)},
+                                        {"View", view_items, ARRAY_SIZE(view_items)}};
 
 struct video {
     char path[PATH_MAX_LEN];
@@ -46,7 +71,10 @@ struct video {
     uint64_t start, paused_at, tick, last_move;
     struct spring bar;
     char error[96];
+    char note[48]; /* a short message over the picture: volume, saved frame */
+    uint64_t note_until;
     bool dragging;
+    int raw_bits; /* uncompressed frames: 24 or 32 bits, bottom-up */
 };
 
 static uint32_t rd32(const uint8_t *p)
@@ -106,6 +134,9 @@ static void walk(struct video *v, struct sound *snd, const uint8_t *p, const uin
             (*stream)++;
             if (!memcmp(body, "vids", 4) && *video_stream < 0)
                 *video_stream = *stream;
+        } else if (!memcmp(p, "strf", 4) && *stream >= 0 && *stream == *video_stream && len >= 20) {
+            if (rd32(body + 16) == 0 && (rd16(body + 14) == 24 || rd16(body + 14) == 32))
+                v->raw_bits = rd16(body + 14);
         } else if (!memcmp(p, "strf", 4) && *stream >= 0 && *stream != *video_stream && len >= 16) {
             if (rd16(body) == 1) {
                 snd->channels = rd16(body + 2);
@@ -138,6 +169,7 @@ static void unload(struct video *v)
     v->file = NULL;
     v->offsets = v->lengths = NULL;
     v->frames = 0;
+    v->raw_bits = 0;
     v->sound = false;
 }
 
@@ -236,7 +268,27 @@ static void show_frame(struct video *v, int i)
     if (i == v->shown || i < 0 || i >= v->frames)
         return;
     struct picture p;
-    if (picture_decode(v->file + v->offsets[i], v->lengths[i], &p) == 0) {
+    int err = E_INVAL;
+    if (v->raw_bits && v->w > 0 && v->h > 0 && v->w <= 4096 && v->h <= 4096) {
+        int bytes = v->raw_bits / 8;
+        size_t row = ((size_t)v->w * (size_t)bytes + 3) & ~(size_t)3;
+        memset(&p, 0, sizeof(p));
+        p.px = v->lengths[i] >= row * (size_t)v->h ? kmalloc((size_t)v->w * (size_t)v->h * 4) : NULL;
+        if (p.px) {
+            p.w = v->w;
+            p.h = v->h;
+            p.frames = 1;
+            for (int y = 0; y < v->h; y++) {
+                const uint8_t *r = v->file + v->offsets[i] + row * (size_t)(v->h - 1 - y);
+                for (int x = 0; x < v->w; x++, r += bytes)
+                    p.px[y * v->w + x] = RGB(r[2], r[1], r[0]);
+            }
+            err = 0;
+        }
+    } else {
+        err = picture_decode(v->file + v->offsets[i], v->lengths[i], &p);
+    }
+    if (err == 0) {
         picture_free(&v->pic);
         v->pic = p;
     }
@@ -269,6 +321,11 @@ static void paint(struct window *w, struct canvas *c)
         struct canvas src = canvas_make(v->pic.px, pw, ph);
         gfx_scale_fast(c, (struct rect){(W - dw) / 2, (H - dh) / 2, dw, dh}, &src, 255);
     }
+    if (v->note[0] && hal_ticks_ms() < v->note_until) {
+        struct rect n = {W / 2 - 110, 24, 220, 34};
+        gfx_round(c, n, 12, RGBA(24, 24, 30, 210));
+        gfx_text_box(c, n, &font_bold, v->note, RGB(255, 255, 255), ALIGN_CENTER);
+    }
     int show = CLAMP(v->bar.pos, 0, 1024);
     if (show < 16)
         return;
@@ -298,8 +355,67 @@ static void picked(struct window *owner, const char *value)
     }
 }
 
+static void note(struct video *v, const char *text)
+{
+    str_copy(v->note, text, sizeof(v->note));
+    v->note_until = hal_ticks_ms() + 1500;
+}
+
+static void save_frame(struct video *v)
+{
+    if (!v->pic.px)
+        return;
+    char dir[PATH_MAX_LEN], name[PATH_MAX_LEN], path[PATH_MAX_LEN];
+    path_join(user_home(), "Pictures", dir, sizeof(dir));
+    vfs_mkdir(dir);
+    str_copy(name, path_basename(v->path), sizeof(name));
+    char *dot = strrchr(name, '.');
+    if (dot)
+        *dot = 0;
+    ksnprintf(name + strlen(name), sizeof(name) - strlen(name), " frame %d.png", v->shown + 1);
+    path_join(dir, name, path, sizeof(path));
+    uint8_t *png;
+    size_t len;
+    int err = png_encode(v->pic.px, v->pic.w, v->pic.h, v->pic.w, &png, &len);
+    if (!err) {
+        err = vfs_write_all(path, png, len);
+        kfree(png);
+    }
+    note(v, err ? "Could not save the frame" : "Frame saved to Pictures");
+}
+
+static void volume(struct video *v, int step)
+{
+    char buf[12];
+    int now = media_volume();
+    if (step) {
+        now = CLAMP(now + step, 0, 100);
+        ksnprintf(buf, sizeof(buf), "%d", now);
+        gui_setting("volume", buf);
+        gui_setting("mute", "off");
+    } else {
+        bool mute = !gui_setting_on("mute");
+        gui_setting("mute", mute ? "on" : "off");
+        now = media_volume();
+    }
+    char t[32];
+    ksnprintf(t, sizeof(t), now ? "Volume %d%%" : "Muted", now);
+    note(v, t);
+}
+
+static void step_frame(struct video *v, int by)
+{
+    play(v, false);
+    int i = CLAMP(v->shown + by, 0, v->frames - 1);
+    seek(v, (int)((int64_t)i * v->us_per_frame / 1000) + 1);
+    if (!v->sound)
+        v->paused_at = v->start + (uint64_t)((int64_t)i * v->us_per_frame / 1000) + 1;
+}
+
 static void command(struct window *w, struct video *v, int cmd)
 {
+    if (!v->file && cmd != CMD_OPEN && cmd != CMD_FULL && cmd != CMD_LOUDER && cmd != CMD_QUIETER && cmd != CMD_MUTE)
+        return;
     switch (cmd) {
     case CMD_OPEN: {
         char dir[PATH_MAX_LEN];
@@ -322,6 +438,15 @@ static void command(struct window *w, struct video *v, int cmd)
         gui_app_launch(gui_app_find("Files"), dir);
         break;
     }
+    case CMD_SAVE: save_frame(v); break;
+    case CMD_FULL: wm_toggle_fullscreen(w); break;
+    case CMD_BACK:
+    case CMD_AHEAD: seek(v, now_ms(v) + (cmd == CMD_BACK ? -10000 : 10000)); break;
+    case CMD_PREV_FRAME:
+    case CMD_NEXT_FRAME: step_frame(v, cmd == CMD_PREV_FRAME ? -1 : 1); break;
+    case CMD_LOUDER:
+    case CMD_QUIETER: volume(v, cmd == CMD_LOUDER ? 10 : -10); break;
+    case CMD_MUTE: volume(v, 0); break;
     }
     v->last_move = hal_ticks_ms();
     wm_invalidate(w);
@@ -342,15 +467,27 @@ static void event(struct window *w, struct gui_event *e)
     struct video *v = w->data;
     switch (e->type) {
     case EV_KEY:
-        if (e->key >= KEY_COMMAND(0) && e->key <= KEY_COMMAND(CMD_SHOW))
+    {
+        static const struct {
+            int key, cmd;
+        } keys[] = {{' ', CMD_PLAY},         {'k', CMD_PLAY},      {'j', CMD_BACK},     {'l', CMD_AHEAD},
+                    {',', CMD_PREV_FRAME},   {'.', CMD_NEXT_FRAME}, {'f', CMD_FULL},     {'m', CMD_MUTE},
+                    {KEY_UP, CMD_LOUDER},    {KEY_DOWN, CMD_QUIETER}, {KEY_CTRL('o'), CMD_OPEN},
+                    {KEY_CTRL('s'), CMD_SAVE}};
+        if (e->key >= KEY_COMMAND(0) && e->key <= KEY_COMMAND(CMD_MUTE))
             command(w, v, e->key - KEY_COMMAND(0));
-        else if (e->key == ' ')
-            command(w, v, CMD_PLAY);
         else if (e->key == KEY_LEFT || e->key == KEY_RIGHT)
             seek(v, now_ms(v) + (e->key == KEY_LEFT ? -5000 : 5000));
-        else if (e->key == KEY_CTRL('o'))
-            command(w, v, CMD_OPEN);
+        else if (e->key == KEY_HOME || e->key == KEY_END)
+            seek(v, e->key == KEY_HOME ? 0 : length_ms(v));
+        else if (e->key == KEY_ESC && (w->flags & WIN_FULLSCREEN))
+            wm_toggle_fullscreen(w);
+        else
+            for (size_t i = 0; i < ARRAY_SIZE(keys); i++)
+                if (e->key == keys[i].key)
+                    command(w, v, keys[i].cmd);
         break;
+    }
     case EV_MOUSE_MOVE:
         v->last_move = hal_ticks_ms();
         if (v->dragging) {
@@ -375,7 +512,7 @@ static void event(struct window *w, struct gui_event *e)
             seek(v, ms);
             v->dragging = true;
         } else if (e->button == BUTTON_LEFT && e->clicks >= 2)
-            wm_toggle_maximize(w);
+            wm_toggle_fullscreen(w);
         else if (e->button == BUTTON_LEFT)
             command(w, v, CMD_PLAY);
         break;
@@ -448,6 +585,49 @@ static void launch(const char *arg)
         open_file(w, v, arg);
 }
 
-static const struct gui_app video_app = {"Video", "Watch AVI videos (Motion JPEG with PCM sound)", ICON_VIDEO, launch,
+static const struct gui_app video_app = {"Video", "Watch AVI videos (Motion JPEG or uncompressed, PCM sound)", ICON_VIDEO, launch,
                                          ".avi", NULL};
-GUI_APP(video_app);
+
+COMMAND(avi, NULL, "system", "avi <file>", "show what an AVI video holds")
+{
+    if (argc != 2)
+        return command_usage(sh, command_find("avi"));
+    char path[PATH_MAX_LEN];
+    if (sh_resolve(sh, argv[1], path, sizeof(path)) != 0)
+        return sh_error(sh, "avi", "bad path: %s", argv[1]);
+    struct video *v = kzalloc(sizeof(*v));
+    char *data = NULL;
+    size_t size;
+    int err = v ? vfs_read_all(path, &data, &size) : E_NOMEM;
+    if (!err) {
+        v->file = (uint8_t *)data;
+        v->offsets = kmalloc(MAX_FRAMES * 4);
+        v->lengths = kmalloc(MAX_FRAMES * 4);
+        err = !v->offsets || !v->lengths ? E_NOMEM : size < 12 || memcmp(data, "RIFF", 4) || memcmp(data + 8, "AVI ", 4) ? E_INVAL : 0;
+    }
+    if (!err) {
+        struct sound snd = {0};
+        int video_stream = -1, stream = -1;
+        walk(v, &snd, v->file + 12, v->file + size, &video_stream, &stream);
+        uint32_t us = v->us_per_frame ? v->us_per_frame : 40000;
+        int ms = (int)((uint64_t)v->frames * us / 1000);
+        sh_printf(sh, "%dx%d, %d frames, %u.%02u fps, %d:%02d, %s, ", v->w, v->h, v->frames, 1000000 / us,
+                  100000000 / us % 100, ms / 60000, ms / 1000 % 60, v->raw_bits ? "uncompressed" : "Motion JPEG");
+        if (snd.count)
+            sh_printf(sh, "sound %u Hz %d-bit %s\n", snd.rate, snd.bits, snd.channels > 1 ? "stereo" : "mono");
+        else
+            sh_puts(sh, "no sound\n");
+        kfree(snd.pcm);
+    }
+    if (v) {
+        kfree(v->offsets);
+        kfree(v->lengths);
+    }
+    kfree(data);
+    kfree(v);
+    return err ? sh_error(sh, "avi", "%s: %s", argv[1], err == E_INVAL ? "not an AVI video" : err_str(err)) : 0;
+}
+
+static const struct command *const commands[] = {&cmddef_avi};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL};
+GUI_APP_FULL(&video_app, NULL, &ext);

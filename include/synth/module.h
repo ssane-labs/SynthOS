@@ -16,6 +16,8 @@ struct module_ext {
     const char *audio_exts;
     /* interleaved 16-bit stereo, kmalloc'd */
     int (*audio_decode)(const uint8_t *data, size_t size, int16_t **frames, uint32_t *count, uint32_t *rate);
+    /* files whose text holds every word of the query; returns how many were reported */
+    int (*content_search)(const char *query, void (*hit)(const char *path, void *ctx), void *ctx);
 };
 
 /* weak: absent from builds without modules */
@@ -25,5 +27,6 @@ __attribute__((weak)) int module_picture_decode(const uint8_t *data, size_t size
 __attribute__((weak)) int module_audio_decode(const uint8_t *data, size_t size, int16_t **frames, uint32_t *count,
                                               uint32_t *rate);
 __attribute__((weak)) bool module_handles(const char *name, bool audio);
+__attribute__((weak)) int module_content_search(const char *query, void (*hit)(const char *path, void *ctx), void *ctx);
 
 #endif

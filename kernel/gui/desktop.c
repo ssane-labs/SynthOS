@@ -52,7 +52,7 @@ static char glass_setting[10] = "liquid";
 static bool autostart = true;
 static int last_minute = -1;
 static uint64_t last_scan;
-static bool autostart_pending;
+static bool autostart_pending, restore_pending;
 
 struct desktop_icon {
     char label[64];
@@ -1130,6 +1130,7 @@ void gui_app_launch(const struct gui_app *app, const char *arg)
     wm_set_app(app);
     app->launch(arg);
     wm_set_app(NULL);
+    session_launched(app, arg);
 }
 
 static bool extension_listed(const char *list, const char *ext)
@@ -1477,7 +1478,7 @@ void gui_session_login(const char *name)
     if (session && session->idle)
         gui_terminal_run("clear");
     store_restore_modules();
-    autostart_pending = true;
+    autostart_pending = restore_pending = true;
     chrome_auto_arm();
     chromium_auto_arm();
 }
@@ -1936,6 +1937,10 @@ static void pump(int timeout_ms)
         autostart_pending = false;
         autostart_run();
     }
+    if (restore_pending && !gui_locked()) {
+        restore_pending = false;
+        session_restore();
+    }
     static bool in_jobs;
     if (!in_jobs) {
         in_jobs = true;
@@ -1946,6 +1951,7 @@ static void pump(int timeout_ms)
         chromium_run();
         gui_module_tick();
         rules_run_pending();
+        session_tick();
         in_jobs = false;
     }
     open_queued();
@@ -2063,7 +2069,7 @@ int gui_run(struct shell *sh)
         gui_login();
     } else {
         store_restore_modules();
-        autostart_pending = true;
+        autostart_pending = restore_pending = true;
         chrome_auto_arm();
         chromium_auto_arm();
     }

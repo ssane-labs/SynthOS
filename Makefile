@@ -262,7 +262,7 @@ $(OUT)/kernel.bin: $(OUT)/kernel.elf $(BUILD)/ramdisk.bin $(OUT)/modules.bin $(B
 	@$(OBJCOPY) -O binary $< $(OUT)/image.bin
 	@$(BUILD)/tools/mkrd --kernel $(OUT)/image.bin $@ $(BUILD)/ramdisk.bin $(OUT)/modules.bin
 
-MODCFLAGS := $(filter-out -fno-pic -fno-pie -fpie -O2,$(CFLAGS)) -Os -fPIC -fno-plt -fvisibility=hidden -DSYNTH_MODULE
+MODCFLAGS := $(filter-out -fno-pic -fno-pie -fpie -O2,$(CFLAGS)) -Os -fPIC -fno-plt -fvisibility=hidden -DSYNTH_MODULE -Wa,-mrelax-relocations=no
 MODLDFLAGS := $(if $(CROSS),,$(if $(X64),-m elf_x86_64,-m elf_i386)) $(if $(X64),--no-relax) -nostdlib -shared -Bsymbolic -z max-page-size=4096 \
               -z norelro -z noseparate-code -s --version-script=tools/module.ver --hash-style=sysv $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx && echo --no-warn-rwx-segments)
 
@@ -327,7 +327,7 @@ $(OUT)/obj/kernel/win32/%.o: CFLAGS += -Os
 # desktop code that runs on clicks, not per frame: small rather than fast (the 32-bit kernel must stay below 3.5 MiB)
 GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.o screenshot.o mission.o notify.o \
              dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o \
-             sysupdate.o progress.o focus.o)
+             sysupdate.o progress.o focus.o session.o)
 CORE_SMALL := $(addprefix $(OUT)/obj/kernel/,core/install.o core/update.o core/recovery.o core/store.o core/rules.o \
               core/timeline.o core/trash.o fs/versions.o)
 $(OUT)/obj/kernel/gui/apps/%.o $(GUI_SMALL) $(CORE_SMALL): CFLAGS += -Os

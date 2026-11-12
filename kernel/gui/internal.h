@@ -257,6 +257,10 @@ int media_play_pcm(int16_t *frames, uint32_t count, uint32_t rate, const char *t
 int media_levels(int *out, int n);
 bool media_tick(void);
 
+void session_launched(const struct gui_app *app, const char *arg);
+void session_tick(void);
+int session_restore(void);
+
 void widgets_paint(struct canvas *c, struct rect area);
 bool widgets_mouse(int x, int y, unsigned button, bool down, int clicks);
 void widgets_hover(int x, int y);

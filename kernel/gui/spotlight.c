@@ -1,6 +1,7 @@
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
+#include <synth/module.h>
 #include <synth/path.h>
 #include <synth/picture.h>
 #include <synth/shell.h>
@@ -119,6 +120,22 @@ static void search_dir(struct spot *s, const char *dir, int depth)
         path_join(dir, subdirs[i], sub, sizeof(sub));
         search_dir(s, sub, depth + 1);
     }
+}
+
+/* files whose text holds the words, from the search index the Reader module keeps */
+static void content_hit(const char *path, void *ctx)
+{
+    struct spot *s = ctx;
+    for (int i = 0; i < s->count; i++)
+        if (s->res[i].kind == R_FILE && !strcmp(s->res[i].path, path))
+            return;
+    if (s->count >= MAX_RESULTS - 1)
+        return;
+    struct result *r = &s->res[s->count++];
+    *r = (struct result){.kind = R_FILE, .icon = file_icon(path, false)};
+    str_copy(r->path, path, sizeof(r->path));
+    str_copy(r->label, path_basename(path), sizeof(r->label));
+    ksnprintf(r->detail, sizeof(r->detail), "Contains \"%s\"", s->query.buf);
 }
 
 /* "12*(3+4)" and the like: the answer is the first result, Enter copies it. */
@@ -310,6 +327,8 @@ static void update(struct spot *s)
     search_dir(s, "/home", 0);
     search_dir(s, "/apps", 0);
     search_dir(s, "/docs", 0);
+    if (s->query.len >= 3 && !url && module_content_search)
+        module_content_search(s->query.buf, content_hit, s);
     if (!url && s->count >= MAX_RESULTS - 1)
         s->count = MAX_RESULTS - 2;
     if (!url)

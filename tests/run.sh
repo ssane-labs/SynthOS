@@ -37,6 +37,17 @@ if command -v 7z >/dev/null; then
     for a in lz copy bcj2; do mcopy -i "$work/fat.img" "$work/$a.7z" ::/$a.7z; done
 fi
 
+# tar, gzip, xz and lzma archives (the archive module); random data makes xz store chunks uncompressed
+if command -v xz >/dev/null; then
+    mkdir -p "$work/tar/proj/docs"
+    seq -f 'line %g of the notes' 1 400 > "$work/tar/proj/notes.txt"
+    echo "hello from tar" > "$work/tar/proj/docs/readme.md"
+    head -c 30000 /dev/urandom > "$work/tar/proj/data.bin"
+    (cd "$work/tar" && tar --format=gnu -cf ../t.tar proj && tar -czf ../t.tgz proj && tar -cJf ../t.tar.xz proj &&
+        xz -k -c proj/notes.txt > ../notes.txt.xz && xz --format=lzma -k -c proj/notes.txt > ../notes.txt.lzma)
+    for a in t.tar t.tgz t.tar.xz notes.txt.xz notes.txt.lzma; do mcopy -i "$work/fat.img" "$work/$a" ::/$a; done
+fi
+
 # each case: a command line, then the text expected somewhere in the output
 cat > "$work/cases" <<'EOF'
 ping -c 1 10.0.2.2 | grep from
@@ -99,6 +110,26 @@ music /system/samples/Formats/Tone.flac
 Tone - Music, playing 0:00 of 0:01
 music /system/samples/Formats/Tone.aiff
 Tone - Music, playing 0:00 of 0:00
+avi /system/samples/Sunset.avi
+256x160, 60 frames, 10.00 fps, 0:06, Motion JPEG, sound 11025 Hz 8-bit mono
+avi /system/samples/Formats/Bars.avi
+64x48, 10 frames, 10.00 fps, 0:01, uncompressed, no sound
+avi /system/samples/Formats/Tone.flac
+not an AVI video
+echo the quick marmalade fox > /home/m.txt; mdfind marmal QUICK
+/home/m.txt
+cp /system/samples/Welcome.docx /home/w.docx; mdfind obscura browse
+/home/w.docx
+mdfind zzqx marmalade
+no file holds zzqx marmalade
+rm /home/m.txt; index update
+0 read, 1 removed
+discover 1
+No devices answered in 1 s
+session forget; session show
+no saved session
+config reopen
+reopen = on
 imginfo /system/wallpapers/Dunes.jpg
 1280x800, 1 frame, average #8e6262
 imginfo /system/wallpapers/Glacier.jpg
@@ -1045,6 +1076,31 @@ un7z /mnt/hdb/bcj2.7z /tmp/7c; sha256sum /tmp/7c/pkg/sub/numbers.txt
 $(sha256sum "$work/7z/pkg/sub/numbers.txt" | cut -c1-64)
 un7z /mnt/hdb/page.html
 not a 7z archive
+EOF
+fi
+
+if command -v xz >/dev/null; then
+    cat >> "$work/cases" <<EOF
+tar -t /mnt/hdb/t.tar | grep readme
+proj/docs/readme.md
+tar -C /tmp/ta /mnt/hdb/t.tar; cat /tmp/ta/proj/docs/readme.md
+hello from tar
+tar -C /tmp/tb /mnt/hdb/t.tgz; sha256sum /tmp/tb/proj/data.bin
+$(sha256sum "$work/tar/proj/data.bin" | cut -c1-64)
+tar -C /tmp/tc /mnt/hdb/t.tar.xz; sha256sum /tmp/tc/proj/data.bin /tmp/tc/proj/notes.txt | tail -n 1
+$(sha256sum "$work/tar/proj/notes.txt" | cut -c1-64)
+tar -C /tmp/tc /mnt/hdb/t.tar.xz
+Extracted 3 files
+unxz -C /tmp /mnt/hdb/notes.txt.xz; tail -n 1 /tmp/notes.txt
+line 400 of the notes
+rm /tmp/notes.txt; tar -C /tmp /mnt/hdb/notes.txt.lzma; sha256sum /tmp/notes.txt
+$(sha256sum "$work/tar/proj/notes.txt" | cut -c1-64)
+tar /mnt/hdb/page.html
+not an archive
+zip /tmp/z.zip /tmp/tc/proj; unzip -l /tmp/z.zip | grep notes
+proj/notes.txt
+unzip -q -d /tmp/zx /tmp/z.zip; sha256sum /tmp/zx/proj/data.bin
+$(sha256sum "$work/tar/proj/data.bin" | cut -c1-64)
 EOF
 fi
 

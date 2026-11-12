@@ -757,5 +757,5 @@ static int audio_any(const uint8_t *d, size_t size, int16_t **frames, uint32_t *
 }
 
 static const struct module_ext ext = {NULL, 0, ".tif .tiff .tga .ppm .pgm .pbm .pnm .qoi .ico .cur", picture_any,
-                                      ".flac .aif .aiff .aifc", audio_any};
+                                      ".flac .aif .aiff .aifc", audio_any, NULL};
 GUI_APP_FULL(NULL, NULL, &ext);

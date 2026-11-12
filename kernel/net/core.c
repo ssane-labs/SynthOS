@@ -335,6 +335,9 @@ int ip_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, size
     bool broadcast = dst == 0xffffffffu || (ifc->configured && (dst | ifc->mask) == 0xffffffffu);
     if (broadcast)
         return net_eth_send(ifc, (const uint8_t[6]){0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0x0800, packet, total);
+    if ((dst >> 28) == 0xe) /* multicast (mDNS, SSDP): 01:00:5e and the low 23 bits */
+        return net_eth_send(ifc, (const uint8_t[6]){0x01, 0x00, 0x5e, (uint8_t)(dst >> 16 & 0x7f), (uint8_t)(dst >> 8), (uint8_t)dst},
+                            0x0800, packet, total);
     if (!ifc->configured)
         return E_UNREACH;
     uint32_t hop = (dst & ifc->mask) == (ifc->ip & ifc->mask) || !ifc->gateway ? dst : ifc->gateway;
