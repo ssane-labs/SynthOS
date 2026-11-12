@@ -1,3 +1,4 @@
+#include <synth/log.h>
 #include <synth/config.h>
 #include <synth/error.h>
 #include <synth/exec.h>
@@ -35,6 +36,7 @@
 #define MAX_HISTORY 48
 #define MAX_DOWNLOADS 8
 #define URL_MAX 1024
+#define SHOT_MAX 3072
 #define SEARCH "https://html.duckduckgo.com/html/?q="
 
 enum req {
@@ -46,7 +48,6 @@ enum req {
     R_INFO,
     R_CLICK,
     R_INPUT,
-    R_SCROLL,
     R_SAVE,
     R_HOVER,
     R_CONTEXT,
@@ -70,6 +71,7 @@ enum cmd {
 struct tab {
     char url[URL_MAX], title[96], icon_host[128], error[160];
     struct picture shot, icon;
+    int scroll, page_h;
 };
 
 struct action {
@@ -100,7 +102,6 @@ static struct browser {
     int queued;
     char typed[512];
     int typed_len;
-    int scroll_dy;
     int mouse_x, mouse_y, menu_x, menu_y;
     char status[160], hover[URL_MAX], menu_link[URL_MAX];
     struct visit history[MAX_HISTORY];
@@ -478,14 +479,40 @@ static void push_eval(enum req kind, const char *js)
     kfree(args);
 }
 
+/* the link at a point: the engine finds only the block an inline link sits in, and gives inline boxes no height,
+   so the nearest link in that block within a few pixels counts */
+#define FIND_LINK                                                                                                   \
+    "function L(e,x,y){if(!e)return null;var a=e.closest?e.closest('a[href]'):null;if(a)return a;"                  \
+    "var l=e.querySelectorAll?e.querySelectorAll('a[href]'):[],laid=false,best=null,bd=17;"                        \
+    "for(var i=0;i<l.length;i++){var r=l[i].getBoundingClientRect();if(r.width>0)laid=true;"                       \
+    "var d=Math.max(r.left-x,0,x-r.right)+Math.max(r.top-y,0,y-r.bottom);if(d<bd){bd=d;best=l[i];}}"               \
+    "return best||(!laid&&l.length==1?l[0]:null);}"
+
 static void push_shot(void)
+{
+    push_eval(R_INFO, "location.href+'\\n'+document.title+'\\n'+"
+                      "((document.querySelector('link[rel~=\"icon\"]')||{}).href||'')+'\\n'+"
+                      "Math.max(document.documentElement.scrollHeight||0,document.body?document.body.scrollHeight:0)");
+}
+
+/* the engine draws pages from the top whatever the scroll position, so the whole page (up to SHOT_MAX rows) comes
+   in one picture and scrolls here */
+static void push_picture(void)
 {
     char args[64];
     struct rect v = view_rect(br->win);
-    ksnprintf(args, sizeof(args), "{\"width\":%d,\"height\":%d}", v.w, v.h);
-    push_eval(R_INFO, "location.href+'\\n'+document.title+'\\n'+"
-                      "((document.querySelector('link[rel~=\"icon\"]')||{}).href||'')");
+    ksnprintf(args, sizeof(args), "{\"width\":%d,\"height\":%d}", v.w, CLAMP(tab()->page_h, v.h, SHOT_MAX));
     push(R_SHOT, "browser_screenshot", args);
+}
+
+static void scroll_by(int dy)
+{
+    struct rect v = view_rect(br->win);
+    int top = MAX(tab()->shot.h - v.h, 0), at = CLAMP(tab()->scroll + dy, 0, top);
+    if (at != tab()->scroll) {
+        tab()->scroll = at;
+        wm_invalidate(br->win);
+    }
 }
 
 static void send_next(void)
@@ -525,6 +552,7 @@ static void navigate(const char *url)
     ui_text_set(&br->addr, url);
     br->hover[0] = 0;
     tab()->error[0] = 0;
+    tab()->scroll = 0;
     if (!engine_start())
         return;
     drop_queue();
@@ -628,6 +656,11 @@ static void got_info(char *text)
         if (nl2) {
             *nl2 = 0;
             icon = nl2 + 1;
+            char *nl3 = strchr(icon, '\n');
+            if (nl3) {
+                *nl3 = 0;
+                tab()->page_h = (int)str_to_long(nl3 + 1, NULL, 10);
+            }
         }
         str_copy(tab()->title, nl + 1, sizeof(tab()->title));
     }
@@ -658,8 +691,16 @@ static void answered(const char *line)
         br->ready = true;
         br->status[0] = 0;
         break;
-    case R_NAV:
     case R_HISTORY:
+        if (failed) {
+            /* no page to go to: the current one stays */
+            drop_queue();
+            break;
+        }
+        tab()->scroll = 0;
+        br->status[0] = 0;
+        break;
+    case R_NAV:
         br->status[0] = 0;
         if (failed) {
             /* nothing to show: the reason goes on the page */
@@ -672,6 +713,7 @@ static void answered(const char *line)
     case R_INFO:
         if (text && !failed)
             got_info(text);
+        push_picture();
         break;
     case R_CLICK:
         if (text && !strncmp(text, "nav:", 4)) {
@@ -687,7 +729,6 @@ static void answered(const char *line)
         else
             push_shot();
         break;
-    case R_SCROLL: push_shot(); break;
     case R_SAVE:
         if (text && !failed)
             save_page(text);
@@ -742,20 +783,14 @@ static void flush_input(void)
                   lit);
         push_eval(R_INPUT, js);
         kfree(js);
-    } else if (br->scroll_dy) {
-        char js[48];
-        ksnprintf(js, sizeof(js), "window.scrollBy(0,%d)", br->scroll_dy);
-        br->scroll_dy = 0;
-        push_eval(R_SCROLL, js);
     } else if (br->hover_due && hal_ticks_ms() - br->moved_at > 180) {
         /* the link under the pointer, for the status line */
         br->hover_due = false;
         struct rect v = view_rect(br->win);
-        char js[220];
-        ksnprintf(js, sizeof(js),
-                  "(function(e){e=e&&e.closest?e.closest('a[href]'):null;return e?e.href:'';})"
-                  "(document.elementFromPoint(%d,%d))",
-                  br->mouse_x - v.x, br->mouse_y - v.y);
+        char js[900];
+        ksnprintf(js, sizeof(js), "(function(x,y){" FIND_LINK "var a=L(document.elementFromPoint(x,y),x,y);"
+                  "return a?a.href:'';})(%d,%d)",
+                  br->mouse_x - v.x, br->mouse_y - v.y + tab()->scroll);
         push_eval(R_HOVER, js);
     }
 }
@@ -842,6 +877,8 @@ static void select_tab(int i)
 {
     if (i < 0 || i >= br->ntabs)
         return;
+    if (br->cur >= 0 && br->cur < br->ntabs && br->cur != i)
+        picture_free(&tab()->shot);
     br->cur = i;
     br->st.focus = 0;
     ui_text_set(&br->addr, tab()->url);
@@ -1199,8 +1236,9 @@ static void page_view(struct ui *ui, struct rect v)
     gfx_clear(ui->c, v, RGB(255, 255, 255));
     if (p->px) {
         struct canvas src = canvas_make(p->px, p->w, p->h);
-        if (p->w == v.w && p->h == v.h) {
-            gfx_blit(ui->c, v.x, v.y, &src, (struct rect){0, 0, p->w, p->h});
+        if (p->w == v.w) {
+            int at = CLAMP(tab()->scroll, 0, MAX(p->h - v.h, 0));
+            gfx_blit(ui->c, v.x, v.y, &src, (struct rect){0, at, p->w, MIN(v.h, p->h - at)});
         } else {
             int w = MIN(v.w, p->w);
             gfx_scale_fast(ui->c, (struct rect){v.x, v.y, w, p->h * w / MAX(p->w, 1)}, &src, 255);
@@ -1301,21 +1339,20 @@ static void page_event(struct window *w, struct gui_event *e)
         return;
     bool inside = rect_contains(v, e->x, e->y);
     if (e->type == EV_MOUSE_DOWN && inside && (e->button == BUTTON_LEFT || e->button == BUTTON_RIGHT)) {
-        char js[600];
+        char js[1200];
         bool menu = e->button == BUTTON_RIGHT;
         if (menu)
-            ksnprintf(js, sizeof(js),
-                      "(function(e){e=e&&e.closest?e.closest('a[href]'):null;return e?e.href:'';})"
-                      "(document.elementFromPoint(%d,%d))",
-                      e->x - v.x, e->y - v.y);
+            ksnprintf(js, sizeof(js), "(function(x,y){" FIND_LINK "var a=L(document.elementFromPoint(x,y),x,y);"
+                      "return a?a.href:'';})(%d,%d)",
+                      e->x - v.x, e->y - v.y + tab()->scroll);
         else
             ksnprintf(js, sizeof(js),
-                      "(function(x,y){var e=document.elementFromPoint(x,y);if(!e)return '';"
-                      "var a=e.closest?e.closest('a[href]'):null;"
+                      "(function(x,y){" FIND_LINK "var e=document.elementFromPoint(x,y);if(!e)return '';"
+                      "var a=L(e,x,y);"
                       "if(a&&a.href&&a.href.indexOf('javascript:')!=0)return 'nav:'+a.href;"
                       "if(e.focus)e.focus();if(e.click)e.click();"
                       "return e.tagName+((/INPUT|TEXTAREA/.test(e.tagName))?':input':'');})(%d,%d)",
-                      e->x - v.x, e->y - v.y);
+                      e->x - v.x, e->y - v.y + tab()->scroll);
         br->menu_x = e->x;
         br->menu_y = e->y;
         br->st.focus = 0;
@@ -1327,7 +1364,7 @@ static void page_event(struct window *w, struct gui_event *e)
         br->moved_at = hal_ticks_ms();
         br->hover_due = true;
     } else if (e->type == EV_WHEEL && inside) {
-        br->scroll_dy += e->wheel * 80;
+        scroll_by(e->wheel * 80);
         e->handled = true;
     } else if (e->type == EV_KEY && br->page_input && br->st.focus == 0) {
         int k = e->key;
@@ -1344,12 +1381,12 @@ static void page_event(struct window *w, struct gui_event *e)
                (e->key == ' ' || e->key == KEY_PGDN || e->key == KEY_PGUP || e->key == KEY_DOWN || e->key == KEY_UP ||
                 e->key == KEY_HOME || e->key == KEY_END)) {
         int k = e->key;
-        br->scroll_dy += k == KEY_DOWN   ? 60
+        scroll_by(k == KEY_DOWN   ? 60
                          : k == KEY_UP   ? -60
                          : k == KEY_PGUP ? -v.h + 40
                          : k == KEY_HOME ? -1000000
                          : k == KEY_END  ? 1000000
-                                         : v.h - 40;
+                                         : v.h - 40);
         e->handled = true;
     }
 }
