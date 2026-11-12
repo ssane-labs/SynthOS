@@ -11,7 +11,8 @@
 #include "../internal.h"
 
 /* The installer walks through: welcome, disk, where on the disk (free space, a partition to replace or the whole
-   disk), how much space, a summary, the copy and the restart. Nothing is written before the summary's button. */
+   disk), how much space, the boot menu, a summary, the copy and the restart. Nothing is written before the
+   summary's button. */
 
 #define MAX_CHOICES 12
 #define NAV_H 76
@@ -21,6 +22,7 @@ enum page {
     PAGE_DISK,
     PAGE_WHERE,
     PAGE_SIZE,
+    PAGE_STARTUP,
     PAGE_CONFIRM,
     PAGE_INSTALL,
     PAGE_DONE,
@@ -48,6 +50,8 @@ struct installer {
     bool shrink_hint;
     int size_mb, min_mb, max_mb;
     bool copy_home;
+    bool has_windows;
+    int boot_menu, boot_wait, boot_default;
     struct install_job job;
 };
 
@@ -101,6 +105,7 @@ static void build_choices(struct installer *in)
     in->choice_count = 0;
     in->choice = -1;
     in->shrink_hint = false;
+    in->has_windows = false;
     bool readable = disk_map_read(d, &in->map) == 0;
     bool editable = readable && in->map.scheme != SCHEME_NONE && !in->map.read_only;
     char size[16];
@@ -108,6 +113,7 @@ static void build_choices(struct installer *in)
     for (int i = 0; editable && i < in->map.count; i++) {
         const struct part *p = &in->map.parts[i];
         has_windows |= p->kind == PART_WINDOWS;
+        in->has_windows |= p->kind == PART_WINDOWS;
         if (p->kind != PART_FREE)
             continue;
         uint32_t start = (p->start + PART_ALIGN - 1) / PART_ALIGN * PART_ALIGN;
@@ -429,7 +435,7 @@ static void where_page(struct ui *ui, struct installer *in)
         in->min_mb = (int)((min_sectors() + 2047) / 2048);
         in->max_mb = (int)(c->count / 2048);
         in->size_mb = c->whole ? in->max_mb : MIN(in->max_mb, MAX(in->min_mb, in->max_mb / 2 < 32768 ? in->max_mb : 32768));
-        go(in, c->whole || in->max_mb <= in->min_mb ? PAGE_CONFIRM : PAGE_SIZE);
+        go(in, c->whole || in->max_mb <= in->min_mb ? PAGE_STARTUP : PAGE_SIZE);
     }
     if (back)
         go(in, PAGE_DISK);
@@ -464,15 +470,65 @@ static void size_page(struct ui *ui, struct installer *in)
     }
     bool back;
     if (nav(ui, "Back", "Continue", true, &back))
-        go(in, PAGE_CONFIRM);
+        go(in, PAGE_STARTUP);
     if (back)
         go(in, PAGE_WHERE);
+}
+
+static const char *const menu_labels[] = {"When needed", "Every time", "Never"};
+static const char *const menu_values[] = {"auto", "always", "never"};
+static const char *const wait_labels[] = {"1 s", "3 s", "5 s", "10 s", "30 s"};
+static const int wait_values[] = {1, 3, 5, 10, 30};
+static const char *const default_labels[] = {"SynthOS", "Windows", "Other system"};
+static const char *const default_values[] = {"synthos", "windows", "other"};
+
+static void startup_page(struct ui *ui, struct installer *in)
+{
+    struct rect r = content(ui, in);
+    const struct choice *c = &in->choices[in->choice];
+    ui_label(ui, (struct rect){r.x, r.y, r.w, 26}, "Starting up", &font_title, style.text, ALIGN_LEFT);
+    ui_label(ui, (struct rect){r.x, r.y + 30, r.w, 18}, "With several systems on this computer, a menu lets you pick one.",
+             &font_sans, style.secondary, ALIGN_LEFT);
+    int y = r.y + 70, lw = 170;
+    ui_label(ui, (struct rect){r.x, y + 6, lw, 20}, "Show the boot menu", &font_sans, style.text, ALIGN_LEFT);
+    ui_segmented(ui, (struct rect){r.x + lw, y, r.w - lw, 30}, menu_labels, 3, &in->boot_menu);
+    static const char *const menu_help[] = {
+        "Only when other systems are found on the disks, or when the last starts failed.",
+        "At every start, also to reach safe mode quickly.",
+        "SynthOS starts straight away; the menu comes back only after failed starts."};
+    ui_label(ui, (struct rect){r.x + lw, y + 34, r.w - lw, 16}, menu_help[in->boot_menu], &font_small, style.tertiary,
+             ALIGN_LEFT);
+    y += 66;
+    bool menu = in->boot_menu != 2;
+    if (menu) {
+        ui_label(ui, (struct rect){r.x, y + 6, lw, 20}, "Wait before starting", &font_sans, style.text, ALIGN_LEFT);
+        ui_segmented(ui, (struct rect){r.x + lw, y, r.w - lw, 30}, wait_labels, 5, &in->boot_wait);
+        y += 46;
+        ui_label(ui, (struct rect){r.x, y + 6, lw, 20}, "Start by itself", &font_sans, style.text, ALIGN_LEFT);
+        ui_segmented(ui, (struct rect){r.x + lw, y, r.w - lw, 30}, default_labels, 3, &in->boot_default);
+        y += 46;
+    }
+    ui_wrap_text(ui->c, (struct rect){r.x, y + 4, r.w, 60}, &font_small,
+                 "Arrows choose in the menu, Enter starts. Everything here, and which systems the menu lists, can be "
+                 "changed later in System Settings > General > Startup.",
+                 style.secondary);
+    if (!hal_uefi())
+        ui_wrap_text(ui->c, (struct rect){r.x, y + 44, r.w, 40}, &font_small,
+                     "The boot menu is part of UEFI starts; in legacy BIOS mode the firmware's own boot menu is used.",
+                     style.warning);
+    bool back;
+    if (nav(ui, "Back", "Continue", true, &back))
+        go(in, PAGE_CONFIRM);
+    if (back)
+        go(in, c->whole || in->max_mb <= in->min_mb ? PAGE_WHERE : PAGE_SIZE);
 }
 
 static void plan_of(struct installer *in, struct install_plan *plan)
 {
     const struct choice *c = &in->choices[in->choice];
-    *plan = (struct install_plan){in->disks[in->chosen], c->whole, c->replace, c->start, c->count, in->copy_home};
+    *plan = (struct install_plan){in->disks[in->chosen], c->whole, c->replace, c->start, c->count, in->copy_home,
+                                  menu_values[in->boot_menu], default_values[in->boot_default],
+                                  wait_values[in->boot_wait]};
     if (!c->whole)
         plan->count = MIN(c->count, (uint32_t)in->size_mb * 2048);
 }
@@ -490,15 +546,22 @@ static void confirm_page(struct ui *ui, struct installer *in)
     size_text(d->sectors, size, sizeof(size));
     ksnprintf(disk, sizeof(disk), "%s, %s (%s)", d->model[0] ? d->model : "Disk", size, d->name);
     size_text(c->whole ? d->sectors : plan.count, size, sizeof(size));
-    int row = r.h < 330 ? 36 : 44;
-    struct rect g = ui_group(ui, r.x, r.y + 40, r.w, 4, row);
+    int row = r.h < 380 ? 34 : 42;
+    char start[80];
+    if (in->boot_menu == 2)
+        str_copy(start, "SynthOS, no menu", sizeof(start));
+    else
+        ksnprintf(start, sizeof(start), "Menu %s, %s, then %s", in->boot_menu ? "every time" : "when needed",
+                  wait_labels[in->boot_wait], default_labels[in->boot_default]);
+    struct rect g = ui_group(ui, r.x, r.y + 40, r.w, 5, row);
     ui_group_label(ui, (struct rect){g.x, g.y, g.w, row}, "Disk", disk, false);
     ui_group_label(ui, (struct rect){g.x, g.y + row, g.w, row}, "Where", c->brief, false);
     ui_group_label(ui, (struct rect){g.x, g.y + 2 * row, g.w, row}, "SynthOS gets", size, false);
-    ui_group_label(ui, (struct rect){g.x, g.y + 3 * row, g.w, row}, "Bring my files and settings", "", true);
-    ui_switch(ui, (struct rect){g.x + g.w - 50, g.y + 3 * row + (row - 22) / 2, 36, 22}, &in->copy_home);
+    ui_group_label(ui, (struct rect){g.x, g.y + 3 * row, g.w, row}, "Start-up", start, false);
+    ui_group_label(ui, (struct rect){g.x, g.y + 4 * row, g.w, row}, "Bring my files and settings", "", true);
+    ui_switch(ui, (struct rect){g.x + g.w - 50, g.y + 4 * row + (row - 22) / 2, 36, 22}, &in->copy_home);
     ksnprintf(where, sizeof(where), "%s.", c->detail);
-    int y = r.y + 40 + 4 * row + 12;
+    int y = r.y + 40 + 5 * row + 12;
     y += ui_wrap_text(ui->c, (struct rect){r.x, y, r.w, 40}, &font_small, where, c->danger ? style.error : style.secondary);
     if (!hal_uefi() && !c->whole)
         ui_wrap_text(ui->c, (struct rect){r.x, y + 6, r.w, 40}, &font_small,
@@ -514,7 +577,7 @@ static void confirm_page(struct ui *ui, struct installer *in)
             go(in, PAGE_ERROR);
     }
     if (back)
-        go(in, c->whole || in->max_mb <= in->min_mb ? PAGE_WHERE : PAGE_SIZE);
+        go(in, PAGE_STARTUP);
 }
 
 static void install_page(struct ui *ui, struct installer *in)
@@ -582,6 +645,7 @@ static void frame(struct ui *ui, void *data)
     case PAGE_DISK: disk_page(ui, in); break;
     case PAGE_WHERE: where_page(ui, in); break;
     case PAGE_SIZE: size_page(ui, in); break;
+    case PAGE_STARTUP: startup_page(ui, in); break;
     case PAGE_CONFIRM: confirm_page(ui, in); break;
     case PAGE_INSTALL: install_page(ui, in); break;
     case PAGE_DONE: done_page(ui, in, true); break;
@@ -643,6 +707,7 @@ static void launch(const char *arg)
     if (!in)
         return;
     in->chosen = -1;
+    in->boot_wait = 1;
     in->copy_home = !hal_installed();
     in->tick = hal_ticks_ms();
     struct window *w = wm_open("Install SynthOS", ICON_INSTALLER, 680, 560, &ops, in, 0);

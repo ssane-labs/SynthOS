@@ -133,7 +133,7 @@ if [ -n "$ovmf_vars" ]; then
     truncate -s 300M "$work/target.img"
     EXTRA="-drive format=raw,file=$work/target.img"
     out=$(boot uefi ide any "part hdb init gpt --yes" "part hdb add 100 data Windows --yes" \
-        "install hdb --free 1 --size 120 --yes")
+        "install hdb --free 1 --size 120 --menu always --timeout 1 --yes")
     check "install next to Windows" "$out" "SynthOS is installed on hdb"
     check "install keeps Windows" "$(python3 -I tools/gptcheck.py "$work/target.img")" "1 2048 206847 Windows"
     out=$(boot uefi ide any "dmesg | grep disk:")
@@ -141,9 +141,12 @@ if [ -n "$ovmf_vars" ]; then
     check "install starts from the disk" "$out" "system on hdb at sector 231424 (installed)"
     mv "$work/target.img" "$work/disk.img"
     EXTRA=""
-    out=$(boot uefi ide any "dmesg | grep disk:")
+    out=$(boot uefi ide any "dmesg | grep disk:" "bootmenu")
     check "install boots without the stick" "$out" "starting Boot"
     check "install boots without the stick" "$out" "(installed)"
+    check "install: boot menu every time" "$out" "SynthOS boot menu"
+    check "install: boot menu settings" "$out" "Shows: always, waits 1 s, starts synthos by itself"
+    check "install: boot menu lists the systems" "$out" "  2  SynthOS (safe mode)"
     # Installing from Windows (tools/windows/install.ps1): the loader sits in the Windows EFI partition behind shim,
     # the system in a partition cut from C:. The first start comes from the boot entry bcdedit adds (here the
     # UEFI Shell's startup.nsh), after that from the entry the loader adds itself.

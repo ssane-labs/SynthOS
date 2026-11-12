@@ -155,16 +155,17 @@ void recovery_boot_ok(void)
         klog("recovery: cannot reset the start counter: %s", err_str(err));
 }
 
-/* default= in SYSTEM.CFG: which system the UEFI boot menu starts when nobody picks one */
-struct boot_default {
-    const char *set;
+/* Keys of SYSTEM.CFG the UEFI boot menu reads: default= (the system it starts by itself), menu= (auto, always,
+   never), timeout= (seconds) and hide= (words of systems it leaves out). A value equal to the fallback is removed. */
+struct boot_key {
+    const char *key, *fallback, *set;
     char *out;
     size_t cap;
 };
 
-static int boot_default_visit(const char *root, void *ctx)
+static int boot_key_visit(const char *root, void *ctx)
 {
-    struct boot_default *b = ctx;
+    struct boot_key *b = ctx;
     char path[PATH_MAX_LEN];
     ksnprintf(path, sizeof(path), "%s/SYNTHOS/SYSTEM.CFG", root);
     struct file *f;
@@ -177,16 +178,16 @@ static int boot_default_visit(const char *root, void *ctx)
     if (n < 0)
         return (int)n;
     text[n] = 0;
-    size_t len = 0;
+    size_t len = 0, klen = strlen(b->key);
     if (b->out)
-        str_copy(b->out, "synthos", b->cap);
+        str_copy(b->out, b->fallback, b->cap);
     for (char *line = text; *line;) {
         char *end = strchr(line, '\n');
         size_t l = end ? (size_t)(end - line) + 1 : strlen(line);
-        if (!strncmp(line, "default=", 8)) {
+        if (!strncmp(line, b->key, klen) && line[klen] == '=') {
             if (b->out) {
                 size_t k = 0;
-                for (const char *v = line + 8; k + 1 < b->cap && *v && *v != '\n' && *v != '\r'; v++)
+                for (const char *v = line + klen + 1; k + 1 < b->cap && *v && *v != '\n' && *v != '\r'; v++)
                     b->out[k++] = *v;
                 b->out[k] = 0;
             }
@@ -200,8 +201,8 @@ static int boot_default_visit(const char *root, void *ctx)
         return 0;
     if (len && next[len - 1] != '\n')
         next[len++] = '\n';
-    if (strcmp(b->set, "synthos"))
-        len += (size_t)ksnprintf(next + len, sizeof(next) - len, "default=%s\n", b->set);
+    if (strcmp(b->set, b->fallback))
+        len += (size_t)ksnprintf(next + len, sizeof(next) - len, "%s=%s\n", b->key, b->set);
     if ((err = vfs_open(path, VFS_WRITE | VFS_TRUNC, &f)))
         return err;
     n = vfs_write(f, next, len);
@@ -209,35 +210,183 @@ static int boot_default_visit(const char *root, void *ctx)
     return n == (long)len ? 0 : n < 0 ? (int)n : E_IO;
 }
 
+static void boot_key_get(const char *key, const char *fallback, char *buf, size_t cap)
+{
+    struct boot_key b = {key, fallback, NULL, buf, cap};
+    if (own_esp(-1, NULL, boot_key_visit, &b))
+        str_copy(buf, fallback, cap);
+}
+
+/* Small letters and digits; with `list`, words separated by commas. */
+static int boot_key_set(const char *key, const char *fallback, const char *value, bool list)
+{
+    char v[96];
+    size_t k = 0;
+    for (; value[k] && k + 1 < sizeof(v); k++) {
+        char c = value[k];
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c + 32);
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (list && c == ',' && k && value[k + 1])))
+            return E_INVAL;
+        v[k] = c;
+    }
+    v[k] = 0;
+    if (!k || value[k])
+        return E_INVAL;
+    struct boot_key b = {key, fallback, v, NULL, 0};
+    return own_esp(-1, NULL, boot_key_visit, &b);
+}
+
 static void get_bootdefault(char *buf, size_t cap)
 {
-    struct boot_default b = {NULL, buf, cap};
-    if (own_esp(-1, NULL, boot_default_visit, &b))
-        str_copy(buf, "synthos", cap);
+    boot_key_get("default", "synthos", buf, cap);
 }
 
 static int set_bootdefault(struct shell *sh, const char *value)
 {
     UNUSED(sh);
-    char v[32];
-    size_t k = 0;
-    for (; value[k] && k + 1 < sizeof(v); k++) {
-        char c = value[k];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')))
-            return E_INVAL;
-        v[k] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
-    }
-    v[k] = 0;
-    if (!k)
-        return E_INVAL;
-    struct boot_default b = {v, NULL, 0};
-    return own_esp(-1, NULL, boot_default_visit, &b);
+    return boot_key_set("default", "synthos", value, false);
 }
 
 static const struct setting s_bootdefault = {"bootdefault", "synthos|windows|other|<word of a name>",
                                              "the system the boot menu starts by itself (UEFI starts)",
                                              get_bootdefault, set_bootdefault};
 SETTING(s_bootdefault);
+
+static void get_bootmenu(char *buf, size_t cap)
+{
+    boot_key_get("menu", "auto", buf, cap);
+}
+
+static int set_bootmenu(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    if (strcmp(value, "auto") && strcmp(value, "always") && strcmp(value, "never"))
+        return E_INVAL;
+    return boot_key_set("menu", "auto", value, false);
+}
+
+static const struct setting s_bootmenu = {"bootmenu", "auto|always|never",
+                                          "when the boot menu shows (auto: when other systems are found)",
+                                          get_bootmenu, set_bootmenu};
+SETTING(s_bootmenu);
+
+static void get_boottimeout(char *buf, size_t cap)
+{
+    boot_key_get("timeout", "3", buf, cap);
+}
+
+static int set_boottimeout(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    const char *end;
+    long v = str_to_long(value, &end, 10);
+    if (!*value || *end || v < 0 || v > 60)
+        return E_INVAL;
+    return boot_key_set("timeout", "3", value, false);
+}
+
+static const struct setting s_boottimeout = {"boottimeout", "<seconds 0-60>",
+                                             "how long the boot menu waits before it starts the default system",
+                                             get_boottimeout, set_boottimeout};
+SETTING(s_boottimeout);
+
+static void get_boothide(char *buf, size_t cap)
+{
+    boot_key_get("hide", "none", buf, cap);
+}
+
+static int set_boothide(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return boot_key_set("hide", "none", value, true);
+}
+
+static const struct setting s_boothide = {"boothide", "none|<word>,<word>,...",
+                                          "systems the boot menu leaves out (a word of their name)", get_boothide,
+                                          set_boothide};
+SETTING(s_boothide);
+
+struct systems_read {
+    char (*names)[BOOT_NAME_MAX];
+    int max, n;
+};
+
+static int systems_visit(const char *root, void *ctx)
+{
+    struct systems_read *r = ctx;
+    char path[PATH_MAX_LEN], text[1024];
+    ksnprintf(path, sizeof(path), "%s/SYNTHOS/SYSTEMS.TXT", root);
+    struct file *f;
+    int err = vfs_open(path, VFS_READ, &f);
+    if (err)
+        return err;
+    long n = vfs_read(f, text, sizeof(text) - 1);
+    vfs_close(f);
+    if (n < 0)
+        return (int)n;
+    text[n] = 0;
+    for (char *line = text; *line && r->n < r->max;) {
+        char *end = strchr(line, '\n');
+        size_t l = end ? (size_t)(end - line) : strlen(line);
+        if (l) {
+            str_copy(r->names[r->n], line, MIN(l + 1, (size_t)BOOT_NAME_MAX));
+            r->n++;
+        }
+        line += l + (end ? 1 : 0);
+    }
+    return 0;
+}
+
+int boot_systems(char (*names)[BOOT_NAME_MAX], int max)
+{
+    struct systems_read r = {names, max, 0};
+    own_esp(-1, NULL, systems_visit, &r);
+    return r.n;
+}
+
+/* Whether a word of hide= (or default=) is part of the name, in any case. */
+bool boot_name_has(const char *name, const char *words)
+{
+    for (const char *p = words; *p;) {
+        const char *e = strchr(p, ',');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        for (const char *q = name; len && *q; q++) {
+            size_t k = 0;
+            while (k < len && to_lower(q[k]) == p[k])
+                k++;
+            if (k == len)
+                return true;
+        }
+        p += len + (e ? 1 : 0);
+    }
+    return false;
+}
+
+COMMAND(bootmenu, NULL, "system", "bootmenu", "the UEFI boot menu: when it shows, what it starts and its systems")
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    char menu[16], timeout[8], def[32], hide[96];
+    get_bootmenu(menu, sizeof(menu));
+    get_boottimeout(timeout, sizeof(timeout));
+    get_bootdefault(def, sizeof(def));
+    get_boothide(hide, sizeof(hide));
+    sh_printf(sh, "Shows: %s, waits %s s, starts %s by itself\n",
+              !strcmp(menu, "auto") ? "when other systems are found" : menu, timeout, def);
+    if (!hal_boot_nonce()) {
+        sh_puts(sh, "This start did not come from the SynthOS UEFI loader: the menu settings cannot be read here.\n");
+        return 0;
+    }
+    char names[8][BOOT_NAME_MAX];
+    int n = boot_systems(names, 8);
+    sh_printf(sh, "  1  SynthOS\n  2  SynthOS (safe mode)\n");
+    for (int i = 0; i < n; i++)
+        sh_printf(sh, "  %d  %s%s\n", i + 3, names[i],
+                  strcmp(hide, "none") && boot_name_has(names[i], hide) ? "  (hidden)" : "");
+    sh_puts(sh, "Change with: config bootmenu|boottimeout|bootdefault|boothide <value>\n");
+    return 0;
+}
 
 COMMAND(recovery, "safemode", "system", "recovery [safe|normal]",
         "safe mode state; 'safe' makes the next start use safe mode, 'normal' a normal one")

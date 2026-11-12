@@ -27,6 +27,8 @@ struct install_plan {
     int replace;
     uint32_t start, count;
     bool copy_home;
+    const char *boot_menu, *boot_default;
+    int boot_timeout;
 };
 
 struct install_range {

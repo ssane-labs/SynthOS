@@ -9,6 +9,7 @@
 #include <synth/http.h>
 #include <synth/net.h>
 #include <synth/path.h>
+#include <synth/recovery.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/theme.h>
@@ -638,6 +639,103 @@ static void pane_sound(struct page *p)
     end(p, NULL);
 }
 
+/* The UEFI boot menu: read once, since every value lives in SYSTEM.CFG on the EFI partition. */
+static struct {
+    bool loaded;
+    int menu, wait, start, n;
+    char hide[96], words[6][24], names[6][BOOT_NAME_MAX];
+} boot;
+
+static void first_word(const char *name, char *out, size_t cap)
+{
+    size_t k = 0;
+    for (const char *c = name; *c && k + 1 < cap; c++) {
+        char ch = (char)to_lower(*c);
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) {
+            if (k)
+                break;
+            continue;
+        }
+        out[k++] = ch;
+    }
+    out[k] = 0;
+}
+
+static const char *const boot_menu_labels[] = {"When needed", "Every time", "Never"};
+static const char *const boot_menu_values[] = {"auto", "always", "never"};
+static const char *const boot_wait_labels[] = {"1 s", "3 s", "5 s", "10 s", "30 s"};
+static const int boot_wait_values[] = {1, 3, 5, 10, 30};
+
+static void boot_load(void)
+{
+    char v[32];
+    current("bootmenu", v, sizeof(v));
+    boot.menu = !strcmp(v, "always") ? 1 : !strcmp(v, "never") ? 2 : 0;
+    current("boottimeout", v, sizeof(v));
+    long t = str_to_long(v, NULL, 10);
+    boot.wait = 1;
+    for (int i = 0; i < 5; i++)
+        if (t >= boot_wait_values[i])
+            boot.wait = i;
+    current("boothide", boot.hide, sizeof(boot.hide));
+    if (!strcmp(boot.hide, "none"))
+        boot.hide[0] = 0;
+    boot.n = boot_systems(boot.names, 6);
+    for (int i = 0; i < boot.n; i++)
+        first_word(boot.names[i], boot.words[i], sizeof(boot.words[i]));
+    current("bootdefault", v, sizeof(v));
+    boot.start = 0;
+    for (int i = boot.n - 1; i >= 0; i--)
+        if (strcmp(v, "synthos") && (boot_name_has(boot.names[i], v) || (!strcmp(v, "other") && !i)))
+            boot.start = i + 1;
+    boot.loaded = true;
+}
+
+static void startup_section(struct page *p)
+{
+    if (!boot.loaded)
+        boot_load();
+    section(p, "Startup");
+    struct rect r = row(p, "Boot menu", "When the menu to pick a system shows at start", 0, 300);
+    if (!p->measure && ui_segmented(p->ui, ctl(r, 300, 24), boot_menu_labels, 3, &boot.menu))
+        apply("bootmenu", boot_menu_values[boot.menu]);
+    r = row(p, "Wait", "How long the menu waits before it starts by itself", 0, 300);
+    if (!p->measure && ui_segmented(p->ui, ctl(r, 300, 24), boot_wait_labels, 5, &boot.wait)) {
+        char v[8];
+        ksnprintf(v, sizeof(v), "%d", boot_wait_values[boot.wait]);
+        apply("boottimeout", v);
+    }
+    const char *labels[4] = {"SynthOS"};
+    int n = 1;
+    for (int i = 0; i < boot.n && n < 4; i++)
+        labels[n++] = boot.names[i];
+    if (n == 1)
+        labels[n++] = "Windows";
+    r = row(p, "Start up with", "What the menu starts when no other system is picked", 0, 300);
+    if (!p->measure && ui_segmented(p->ui, ctl(r, 300, 24), labels, n, &boot.start))
+        apply("bootdefault", !boot.start ? "synthos" : boot.n ? boot.words[boot.start - 1] : "windows");
+    for (int i = 0; i < boot.n; i++) {
+        char label[64];
+        ksnprintf(label, sizeof(label), "Show %s", boot.names[i]);
+        bool on = !boot.hide[0] || !boot_name_has(boot.names[i], boot.hide);
+        if (toggle(p, label, NULL, &on)) {
+            char list[96] = "";
+            for (int k = 0; k < boot.n; k++) {
+                bool shown = k == i ? on : !boot.hide[0] || !boot_name_has(boot.names[k], boot.hide);
+                if (!shown && boot.words[k][0]) {
+                    if (list[0])
+                        str_append(list, ",", sizeof(list));
+                    str_append(list, boot.words[k], sizeof(list));
+                }
+            }
+            str_copy(boot.hide, list, sizeof(boot.hide));
+            apply("boothide", list[0] ? list : "none");
+        }
+    }
+    end(p, boot.n ? "Systems the firmware knows are listed after the next start from SynthOS's menu."
+                  : "Other systems appear here once the boot menu has found them.");
+}
+
 /* ---- General and its pages */
 
 static void pane_general(struct page *p)
@@ -661,19 +759,9 @@ static void pane_general(struct page *p)
         s->computer.len)
         apply("hostname", s->computer.buf);
     toggle_setting(p, "Start the desktop when SynthOS starts", NULL, "desktop");
-    if (hal_boot_nonce()) {
-        static char boot_default[32];
-        if (!boot_default[0])
-            current("bootdefault", boot_default, sizeof(boot_default));
-        static const char *const systems[] = {"SynthOS", "Windows"};
-        struct rect r = row(p, "Start up with", "What the boot menu starts when no other system is picked", 0, 170);
-        int sel = strcmp(boot_default, "synthos") ? 1 : 0;
-        if (!p->measure && ui_segmented(p->ui, ctl(r, 170, 24), systems, 2, &sel)) {
-            str_copy(boot_default, sel ? "windows" : "synthos", sizeof(boot_default));
-            apply("bootdefault", boot_default);
-        }
-    }
     end(p, NULL);
+    if (hal_boot_nonce())
+        startup_section(p);
     section(p, NULL);
     if (button(p, "Install SynthOS", "Copy SynthOS onto another disk of this computer", "Install..."))
         gui_app_launch(gui_app_find("Install SynthOS"), NULL);

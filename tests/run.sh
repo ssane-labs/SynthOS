@@ -135,6 +135,14 @@ recovery
 Start counter: none (BIOS start)
 config bootdefault | grep =
 bootdefault = synthos
+config bootmenu | grep =
+bootmenu = auto
+config boottimeout 99
+invalid value
+bootmenu | head -n 1
+Shows: when other systems are found, waits 3 s, starts synthos by itself
+install hdb --menu sometimes --yes
+--menu takes auto, always or never
 secureboot
 device key: none (release keys are used)
 recovery safe

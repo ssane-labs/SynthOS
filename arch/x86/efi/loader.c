@@ -534,9 +534,11 @@ static u8 *load_kernel(struct file *root, uintn *size)
 
 /* \SYNTHOS\SYSTEM.CFG exists on the EFI partition of an installed system: where the system area starts, its id,
    whether the loader still has to add itself to the firmware boot menu, and how long the boot menu waits. */
+enum { MENU_AUTO, MENU_ALWAYS, MENU_NEVER };
+
 struct config {
-    int present, reg, timeout;
-    char def[32];
+    int present, reg, timeout, menu;
+    char def[32], hide[96];
     u64 system, sectors;
     u8 id[8];
     uintn reg_offset;
@@ -594,7 +596,14 @@ static int read_config(struct file *root, struct config *cfg)
                 cfg->def[k] = v[k] >= 'A' && v[k] <= 'Z' ? (char)(v[k] + 32) : v[k];
             cfg->def[k] = 0;
         }
-        else if (key_is(line, "register")) {
+        else if (key_is(line, "menu"))
+            cfg->menu = v[0] == 'a' && v[1] == 'l' ? MENU_ALWAYS : v[0] == 'n' ? MENU_NEVER : MENU_AUTO;
+        else if (key_is(line, "hide")) {
+            uintn k = 0;
+            for (; k + 1 < sizeof(cfg->hide) && v[k] && v[k] != '\n' && v[k] != '\r'; k++)
+                cfg->hide[k] = v[k] >= 'A' && v[k] <= 'Z' ? (char)(v[k] + 32) : v[k];
+            cfg->hide[k] = 0;
+        } else if (key_is(line, "register")) {
             cfg->reg = n != 0;
             cfg->reg_offset = (uintn)(v - text);
         } else if (key_is(line, "id"))
@@ -918,35 +927,97 @@ static void draw_menu(struct entry *list, int n, int chosen, int seconds, int fa
     say("\n");
 }
 
+/* A word ("windows") matches a system whose name has it anywhere, in any case. */
+static int name_has(const char16 *name, const char *word, uintn len)
+{
+    for (const char16 *p = name; *p; p++) {
+        uintn k = 0;
+        while (k < len && lower16(p[k]) == (char16)word[k])
+            k++;
+        if (k == len)
+            return 1;
+    }
+    return 0;
+}
+
+/* hide= in SYSTEM.CFG: words, separated by commas, of systems the menu leaves out. */
+static int hidden(const char *hide, const char16 *name)
+{
+    for (const char *p = hide; *p;) {
+        uintn len = 0;
+        while (p[len] && p[len] != ',')
+            len++;
+        if (len && name_has(name, p, len))
+            return 1;
+        p += len + (p[len] ? 1 : 0);
+    }
+    return 0;
+}
+
 /* The entry SYSTEM.CFG's default= names: "synthos", or a word of another system's name ("windows"); "other" is
    the first other system. */
 static int default_entry(const char *def, const struct entry *list, int n)
 {
-    if (!def[0] || !n || key_is(def, "synthos"))
+    uintn len = 0;
+    while (def[len])
+        len++;
+    if (!len || !n || (len == 7 && same(def, "synthos", 7)))
         return 0;
-    if (key_is(def, "other"))
+    if (len == 5 && same(def, "other", 5))
         return 2;
     for (int i = 0; i < n; i++)
-        for (const char16 *p = list[i].name; *p; p++) {
-            int k = 0;
-            while (def[k] && lower16(p[k]) == (char16)def[k])
-                k++;
-            if (!def[k])
-                return i + 2;
-        }
+        if (name_has(list[i].name, def, len))
+            return i + 2;
     return 2;
 }
 
-/* Returns 1 for safe mode. Shown when other systems are on the disks or the last starts failed. */
-static int boot_menu(int timeout, int failed, const char *def)
+/* \SYNTHOS\SYSTEMS.TXT lists the other systems the firmware knows, so that SynthOS can show them in its settings.
+   Written only when the list changes; a shorter list is padded with empty lines. */
+static void write_systems(struct file *root, const struct entry *list, int n)
 {
-    struct entry list[8];
-    int n = other_systems(list, 8);
+    static char text[1024], old[1024];
+    uintn len = 0;
+    for (int i = 0; i < n; i++) {
+        for (const char16 *p = list[i].name; *p && len < sizeof(text) - 2; p++)
+            text[len++] = *p >= 32 && *p < 127 ? (char)*p : '?';
+        text[len++] = '\n';
+    }
+    struct file *file;
+    if (!root || ERROR(root->open(root, &file, u"\\SYNTHOS\\SYSTEMS.TXT", FILE_READ | FILE_WRITE | FILE_CREATE, 0)))
+        return;
+    uintn have = sizeof(old);
+    if (ERROR(file->read(file, &have, old)))
+        have = 0;
+    int differs = have < len;
+    for (uintn i = 0; i < have && !differs; i++)
+        differs = old[i] != (i < len ? text[i] : '\n');
+    if (differs) {
+        while (len < have)
+            text[len++] = '\n';
+        file->set_position(file, 0);
+        file->write(file, &len, text);
+        file->flush(file);
+    }
+    file->close(file);
+}
+
+/* Returns 1 for safe mode. menu=auto shows it when other systems are on the disks or the last starts failed,
+   menu=always every time, menu=never only after failed starts. */
+static int boot_menu(struct file *root, const struct config *cfg, int failed)
+{
+    struct entry all[8], list[8];
+    int found = other_systems(all, 8), n = 0, timeout = cfg->timeout;
+    write_systems(root, all, found);
+    for (int i = 0; i < found; i++)
+        if (!hidden(cfg->hide, all[i].name))
+            list[n++] = all[i];
     if (failed && timeout < 5)
         timeout = 5;
-    if ((!n && !failed) || timeout <= 0 || !st->con_in)
+    if (!failed && (cfg->menu == MENU_NEVER || (cfg->menu == MENU_AUTO && !n)))
+        return 0;
+    if (timeout <= 0 || !st->con_in)
         return failed;
-    int chosen = failed ? 1 : default_entry(def, list, n), ticks = timeout * 10;
+    int chosen = failed ? 1 : default_entry(cfg->def, list, n), ticks = timeout * 10;
     draw_menu(list, n, chosen, timeout, failed);
     for (;;) {
         struct input_key key;
@@ -1106,7 +1177,7 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     if (read_config(root, &cfg)) {
         if (cfg.reg && register_self(image, root))
             clear_register(root, &cfg);
-        safe = boot_menu(cfg.timeout, safe, cfg.def);
+        safe = boot_menu(root, &cfg, safe);
     } else {
         start_new_installation(image, li->device);
         if (safe)

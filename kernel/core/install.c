@@ -291,12 +291,17 @@ static int write_boot_config(struct install_job *job)
         root = ESP_MOUNT;
         own = true;
     }
-    char path[PATH_MAX_LEN], text[256];
-    ksnprintf(text, sizeof(text),
-              "# SynthOS installation: the loader reads this file\nsystem=%u\nsectors=%u\n"
-              "id=%02x%02x%02x%02x%02x%02x%02x%02x\nregister=1\ntimeout=3\n",
-              (unsigned)job->system_lba, (unsigned)(job->plan.whole ? 0 : job->system_sectors), job->id[0], job->id[1],
-              job->id[2], job->id[3], job->id[4], job->id[5], job->id[6], job->id[7]);
+    char path[PATH_MAX_LEN], text[320];
+    const struct install_plan *p = &job->plan;
+    size_t n = (size_t)ksnprintf(
+        text, sizeof(text),
+        "# SynthOS installation: the loader reads this file\nsystem=%u\nsectors=%u\n"
+        "id=%02x%02x%02x%02x%02x%02x%02x%02x\nregister=1\ntimeout=%d\nmenu=%s\n",
+        (unsigned)job->system_lba, (unsigned)(p->whole ? 0 : job->system_sectors), job->id[0], job->id[1], job->id[2],
+        job->id[3], job->id[4], job->id[5], job->id[6], job->id[7], p->boot_timeout > 0 ? p->boot_timeout : 3,
+        p->boot_menu ? p->boot_menu : "auto");
+    if (p->boot_default && strcmp(p->boot_default, "synthos"))
+        ksnprintf(text + n, sizeof(text) - n, "default=%s\n", p->boot_default);
     ksnprintf(path, sizeof(path), "%s/SYNTHOS/SYSTEM.CFG", root);
     int err = vfs_write_all(path, text, strlen(text));
     if (own) {
@@ -432,7 +437,8 @@ static int run_job(struct shell *sh, struct install_job *job)
 }
 
 COMMAND(install, "setup", "system",
-        "install [<disk> --whole | --free <n> [--size <MB>] | --replace <part> [--size <MB>]] [--copy-home] --yes",
+        "install [<disk> --whole | --free <n> [--size <MB>] | --replace <part> [--size <MB>]] [--copy-home] "
+        "[--menu auto|always|never] [--timeout <s>] [--default synthos|windows|other] --yes",
         "install SynthOS on a disk, next to other systems or over the whole disk")
 {
     const char *name = NULL;
@@ -453,7 +459,20 @@ COMMAND(install, "setup", "system",
             plan.replace = (int)(uint32_t)str_to_long(argv[++i], NULL, 10) - 1;
         else if (!strcmp(argv[i], "--size") && i + 1 < argc)
             size_mb = (uint32_t)str_to_long(argv[++i], NULL, 10);
-        else
+        else if (!strcmp(argv[i], "--menu") && i + 1 < argc) {
+            plan.boot_menu = argv[++i];
+            if (strcmp(plan.boot_menu, "auto") && strcmp(plan.boot_menu, "always") && strcmp(plan.boot_menu, "never"))
+                return sh_error(sh, "install", "--menu takes auto, always or never");
+        } else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) {
+            plan.boot_timeout = (int)str_to_long(argv[++i], NULL, 10);
+            if (plan.boot_timeout < 1 || plan.boot_timeout > 60)
+                return sh_error(sh, "install", "--timeout takes 1 to 60 seconds");
+        } else if (!strcmp(argv[i], "--default") && i + 1 < argc) {
+            plan.boot_default = argv[++i];
+            for (const char *c = plan.boot_default; *c; c++)
+                if (!(*c >= 'a' && *c <= 'z') && !(*c >= '0' && *c <= '9'))
+                    return sh_error(sh, "install", "--default takes one word in small letters, like windows");
+        } else
             name = argv[i];
     }
     if (!hal_system_area())
