@@ -1148,6 +1148,63 @@ def notes_art():
         art.put(rr4((86, y, 170 - (34 if i == 2 else 0), y + 6), 3), (120, 90, 20, 170))
     return art.done()
 
+
+def console_art():
+    """A log window: dark page with grey lines, one yellow warning and one red error line."""
+    art = Art(hexc("eceef2"), hexc("a9adb6"))
+    art.put(rr4((36, 44, 220, 212), 20), (hexc("3a3d44"), hexc("1d1f24")), 60, 3)
+    art.put(rr4((44, 62, 212, 204), 12), (hexc("17191d"), hexc("0a0b0d")))
+    rows = [("8a8f98", 150), ("8a8f98", 120), ("ffc845", 136), ("8a8f98", 96), ("ff6a5f", 128), ("8a8f98", 110)]
+    for i, (c, w) in enumerate(rows):
+        y = 76 + i * 20
+        art.put(rr4((58, y, 58 + 22, y + 9), 4), (90, 94, 102, 255))
+        art.put(rr4((88, y, 88 + w - 30, y + 9), 4), hexc(c))
+    art.put(rr4((50, 66, 206, 110), 10), ((255, 255, 255, 22), (255, 255, 255, 0)))
+    return art.done()
+
+
+def sysinfo_art():
+    """A processor chip with gold pins and an i on it."""
+    art = Art(hexc("5a8dff"), hexc("1f4fc4"))
+    for i in range(5):
+        p = 76 + i * 26
+        for box in ((p - 5, 40, p + 5, 64), (p - 5, 192, p + 5, 216), (40, p - 5, 64, p + 5), (192, p - 5, 216, p + 5)):
+            art.put(rr4(box, 4), (hexc("ffe08a"), hexc("d39b25")))
+    art.put(rr4((58, 58, 198, 198), 22), (hexc("3a3f4a"), hexc("15171c")), 60, 3)
+    art.put(rr4((74, 74, 182, 182), 14), (hexc("4b5160"), hexc("2a2e36")))
+    art.put(ellipse4((120, 88, 136, 104)), hexc("ffffff"))
+    art.put(rr4((119, 114, 137, 168), 6), (hexc("ffffff"), hexc("d6dbe4")))
+    return art.done()
+
+
+def netutil_art():
+    """A globe-like radar with a pulse line across it."""
+    art = Art(hexc("2fd2a0"), hexc("0b8a6b"))
+    for r in (88, 62, 36):
+        art.put(ellipse4((128 - r, 128 - r, 128 + r, 128 + r), True, 6), (255, 255, 255, 90))
+    art.put(rr4((38, 125, 218, 131), 3), (255, 255, 255, 70))
+    art.put(rr4((125, 38, 131, 218), 3), (255, 255, 255, 70))
+    pts = [(40, 140), (82, 140), (100, 96), (124, 180), (148, 70), (168, 140), (216, 140)]
+    art.put(line4(pts, 22), (255, 255, 255, 70), blur=6)
+    art.put(line4(pts, 10), (hexc("ffffff"), hexc("d8fff0")))
+    return art.done()
+
+
+def diskutil_art():
+    """A drive with a usage gauge on its face."""
+    art = Art(hexc("e9ecf1"), hexc("9aa1ad"))
+    art.put(rr4((40, 70, 216, 196), 24), (hexc("c8ced8"), hexc("6e7682")), 60, 3)
+    art.put(rr4((50, 80, 206, 186), 18), (hexc("eef1f5"), hexc("b2b9c4")))
+    art.put(ellipse4((76, 98, 150, 172), True, 14), (hexc("cfd5de"), hexc("cfd5de")))
+
+    def arc(d):
+        d.arc([76, 98, 150, 172], 140, 400, fill=255, width=14)
+    art.put(arc, (hexc("4c9bff"), hexc("1e5fd6")))
+    art.put(rr4((166, 112, 194, 120), 4), (hexc("6e7682"), hexc("4e5560")))
+    art.put(rr4((166, 132, 186, 140), 4), (hexc("6e7682"), hexc("4e5560")))
+    art.put(ellipse4((182, 158, 194, 170)), hexc("37d06a"))
+    return art.done()
+
 ICONS = [
     ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_art),
     ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_art),
@@ -1163,6 +1220,8 @@ ICONS = [
     ("ICON_VIDEO", video_art), ("ICON_VIEWER", viewer_art), ("ICON_INSTALLER", installer_art),
     ("ICON_SCREENSHOT", screenshot_art), ("ICON_STORE", store_art), ("ICON_CODE", code_art),
     ("ICON_GAMES", games_art), ("ICON_CLOCK", clock_art), ("ICON_WEATHER", weather_art), ("ICON_NOTES", notes_art),
+    ("ICON_CONSOLE", console_art), ("ICON_SYSINFO", sysinfo_art), ("ICON_NETUTIL", netutil_art),
+    ("ICON_DISKUTIL", diskutil_art),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)

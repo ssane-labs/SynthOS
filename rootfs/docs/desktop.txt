@@ -168,6 +168,11 @@ Apps
                   General with About, Storage, Date & Time and Login Items
   Screenshot      the screenshot bar; opens a picture to crop and mark up
   System Monitor  memory graph, disks, open windows (End task), kernel log
+  Console         kernel log, errors only, Windows programs, connections;
+                  filter, pause, Ctrl+S saves the report to the Desktop
+  System Information  overview and the hardware/storage/network reports
+  Network Utility addresses, ping, name lookup, connections, download test
+  Disk Utility    volumes and their use, eject, disks and partitions
 
 From the App Store (GET adds them to Launchpad, they come with SynthOS):
   Clock           world clock, alarms (they ring with the window closed),

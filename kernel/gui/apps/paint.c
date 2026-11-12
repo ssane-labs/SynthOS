@@ -4,6 +4,7 @@
 #include <synth/keys.h>
 #include <synth/path.h>
 #include <synth/string.h>
+#include <synth/users.h>
 #include <synth/vfs.h>
 
 #include "../image.h"
@@ -55,9 +56,6 @@ struct paint {
     int cx, cy;
     char path[PATH_MAX_LEN];
     bool modified;
-    struct spring open;
-    bool pill_hot;
-    uint64_t tick;
 };
 
 static int isqrt(int v)
@@ -322,12 +320,37 @@ static void on_save_as(struct window *w, const char *value)
     save(w, p);
 }
 
+static void picked_open(void *ctx, const char *path)
+{
+    on_open(ctx, path);
+}
+
+static void picked_save(void *ctx, const char *path)
+{
+    on_save_as(ctx, path);
+}
+
+static void ask_open(struct window *w)
+{
+    struct gui_picker o = {.title = "Open Picture", .exts = ".bmp;.png;.jpg;.jpeg;.gif"};
+    gui_file_picker(w, &o, picked_open, w);
+}
+
+static void ask_save(struct window *w, struct paint *p)
+{
+    char dir[PATH_MAX_LEN];
+    path_join(user_home(), "Pictures", dir, sizeof(dir));
+    struct gui_picker o = {.save = true, .title = "Save Picture", .dir = dir,
+                           .name = p->path[0] ? path_basename(p->path) : "Untitled.bmp"};
+    gui_file_picker(w, &o, picked_save, w);
+}
+
 static void save_or_prompt(struct window *w, struct paint *p)
 {
     if (p->path[0])
         save(w, p);
     else
-        ui_prompt(w, "Save picture", "Save as BMP file:", "/home/picture.bmp", on_save_as);
+        ask_save(w, p);
 }
 
 static void hscroll(struct ui *ui, struct rect r, int *pos, int content, int view)
@@ -482,39 +505,25 @@ static void select_tool(struct paint *p, int tool)
     p->tool = tool;
 }
 
-/* All the tools live in one small pill at the bottom: the current tool and color, and under the pointer it springs
-   open into tools, size, fill and colors. */
-#define PILL_W0 108
-#define PILL_H0 44
+/* All the tools live in one bar at the bottom: tools, size, fill, the two colors and the palette. */
 #define PILL_W1 600
 #define PILL_H1 136
 
 static struct rect pill_rect(struct paint *p, int W, int H)
 {
-    int o = CLAMP(p->open.pos, -100, 1100);
-    int w = MIN(lerp_i(PILL_W0, PILL_W1, o), W - 24), h = lerp_i(PILL_H0, PILL_H1, o);
-    return (struct rect){(W - w) / 2, H - h - 14, w, h};
+    UNUSED(p);
+    int w = MIN(PILL_W1, W - 24);
+    return (struct rect){(W - w) / 2, H - PILL_H1 - 10, w, PILL_H1};
 }
 
 static void pill(struct ui *ui, struct paint *p, int W, int H)
 {
     struct rect r = pill_rect(p, W, H);
-    int o = CLAMP(p->open.pos, 0, 1024);
     if (ui->c) {
         gfx_drop_shadow(ui->c, r, 22, 8, style.dark ? 90 : 40, 2);
         gfx_round(ui->c, r, 22, ALPHA(style.window, 240));
         gfx_round_frame(ui->c, r, 22, style.dark ? ALPHA(0xffffffffu, 30) : ALPHA(0, 22));
     }
-    int fade = CLAMP((o - 640) * 255 / 384, 0, 255);
-    if (fade < 255 && ui->c) {
-        int a = 255 - fade;
-        gfx_symbol(ui->c, r.x + 18, r.y + (r.h - 18) / 2, tool_symbols[p->tool], 18, ALPHA(style.text, a));
-        gfx_circle(ui->c, r.x + 62, r.y + r.h / 2, 11, ALPHA(p->fg, a));
-        gfx_ring(ui->c, r.x + 62, r.y + r.h / 2, 11, ALPHA(0, a / 4));
-        gfx_circle(ui->c, r.x + 88, r.y + r.h / 2, MAX(2, MIN(p->size, 22) / 2), ALPHA(style.secondary, a));
-    }
-    if (fade < 160)
-        return;
     struct canvas clip = ui->c ? *ui->c : (struct canvas){0};
     if (ui->c)
         clip.clip = rect_intersect(ui->c->clip, rect_inset(r, 2));
@@ -582,10 +591,9 @@ static void keys(struct ui *ui, struct paint *p)
     else if (k == KEY_CTRL('s') || k == KEY_COMMAND(CMD_SAVE))
         save_or_prompt(ui->win, p);
     else if (k == (KEY_CTRL('s') | KEY_MOD_SHIFT) || k == KEY_COMMAND(CMD_SAVE_AS))
-        ui_prompt(ui->win, "Save As", "Save the picture as a BMP file:",
-                  p->path[0] ? p->path : "/home/Pictures/Untitled.bmp", on_save_as);
+        ask_save(ui->win, p);
     else if (k == KEY_CTRL('o') || k == KEY_COMMAND(CMD_OPEN))
-        ui_prompt(ui->win, "Open", "Enter the path of a BMP image:", p->path[0] ? p->path : "/home/Pictures/", on_open);
+        ask_open(ui->win);
     else if (k == KEY_CTRL('n') || k == KEY_COMMAND(CMD_NEW))
         gui_app_launch(ui->win->app, NULL);
     else if (k == '[')
@@ -598,30 +606,14 @@ static void frame(struct ui *ui, void *data)
 {
     struct paint *p = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
-    struct rect view = {0, 0, W - BAR, H - BAR};
+    int reserve = PILL_H1 + 20;
+    struct rect view = {0, 0, W - BAR, H - BAR - reserve};
     int content_w = p->img.w + 2 * MARGIN, content_h = p->img.h + 2 * MARGIN;
     p->view_x = CLAMP(p->view_x, 0, MAX(0, content_w - view.w));
-    p->view_y = CLAMP(p->view_y, 0, MAX(0, content_h - view.h - PILL_H0 - 20));
+    p->view_y = CLAMP(p->view_y, 0, MAX(0, content_h - view.h));
     int ox = view.x + MAX(MARGIN, (view.w - p->img.w) / 2) - p->view_x;
-    int oy = view.y + MAX(MARGIN, (view.h - PILL_H0 - 20 - p->img.h) / 2) - p->view_y;
+    int oy = view.y + MAX(MARGIN, (view.h - p->img.h) / 2) - p->view_y;
     struct gui_event *e = ui->e;
-    if (e && (e->type == EV_MOUSE_MOVE || e->type == EV_LEAVE)) {
-        bool hot = e->type == EV_MOUSE_MOVE && !p->drawing && rect_contains(rect_inset(pill_rect(p, W, H), -16), e->x, e->y);
-        if (hot != p->pill_hot) {
-            p->pill_hot = hot;
-            p->open.target = hot ? 1024 : 0;
-            p->tick = hal_ticks_ms();
-            wm_set_timer(ui->win, 16);
-        }
-    }
-    if (e && e->type == EV_TIMER) {
-        uint64_t now = hal_ticks_ms();
-        if (spring_step(&p->open, 380, 26, (int)MIN(now - p->tick, 64u)))
-            ui->changed = true;
-        else
-            wm_set_timer(ui->win, 0);
-        p->tick = now;
-    }
     bool in_pill = e && rect_contains(pill_rect(p, W, H), e->x, e->y);
     if (!in_pill || p->drawing)
         canvas_input(ui, p, view, ox, oy);
@@ -633,7 +625,7 @@ static void frame(struct ui *ui, void *data)
         gfx_drop_shadow(&vc, (struct rect){ox, oy, p->img.w, p->img.h}, 0, 6, 50, 2);
         gfx_blit(&vc, ox, oy, &p->img, (struct rect){0, 0, p->img.w, p->img.h});
     }
-    ui_scrollbar(ui, (struct rect){view.x + view.w, view.y, BAR, view.h}, &p->view_y, content_h + PILL_H0 + 20, view.h);
+    ui_scrollbar(ui, (struct rect){view.x + view.w, view.y, BAR, view.h}, &p->view_y, content_h, view.h);
     hscroll(ui, (struct rect){view.x, view.y + view.h, view.w, BAR}, &p->view_x, content_w, view.w);
     pill(ui, p, W, H);
     keys(ui, p);
@@ -698,7 +690,7 @@ static void launch(const char *arg)
     int sw, sh;
     wm_screen_size(&sw, &sh);
     int cw = MIN(MAX(700, IMG_W + 2 * MARGIN + BAR), sw - 40);
-    int ch = MIN(TITLE_HEIGHT + IMG_H + 2 * MARGIN + BAR + PILL_H0 + 20, wm_work_area(0).h - 16);
+    int ch = MIN(TITLE_HEIGHT + IMG_H + 2 * MARGIN + BAR + PILL_H1 + 20, wm_work_area(0).h - 16);
     struct window *w = wm_open("Untitled", ICON_PAINT, cw, ch, &ops, p, WIN_RESIZABLE);
     if (!w) {
         canvas_free(&p->img);
@@ -707,7 +699,7 @@ static void launch(const char *arg)
     }
     wm_set_menus(w, menus, ARRAY_SIZE(menus));
     w->min_w = 640;
-    w->min_h = 360;
+    w->min_h = 420;
     if (arg && *arg)
         load(w, p, arg);
 }

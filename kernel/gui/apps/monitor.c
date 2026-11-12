@@ -185,26 +185,51 @@ static const struct menu_item view_items[] = {
 
 static const struct app_menu menus[] = {{"View", view_items, ARRAY_SIZE(view_items)}};
 
+#define SIDE 200
+
+static void open_tool(const char *name)
+{
+    const struct gui_app *app = gui_app_find(name);
+    if (app)
+        gui_app_launch(app, NULL);
+}
+
 static void frame(struct ui *ui, void *data)
 {
     struct monitor *m = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
-    if (ui->e && ui->e->type == EV_KEY) {
-        int k = ui->e->key, tab = -1;
+    int tab = -1;
+    if (ui->e && ui->e->type == EV_KEY)
         for (int i = 0; i < TAB_COUNT; i++)
-            if (k == KEY_COMMAND(i))
+            if (ui->e->key == KEY_COMMAND(i)) {
                 tab = i;
-        if (tab >= 0 && tab != m->tab) {
-            m->tab = tab;
-            app_state_set_number("monitor", "tab", tab);
-            char title[48];
-            ksnprintf(title, sizeof(title), tab ? "System Monitor \xc2\xb7 %s" : "System Monitor", tab_names[tab]);
-            wm_set_title(ui->win, title);
-            ui->consumed = true;
-        }
+                ui->consumed = true;
+            }
+    if (ui->c) {
+        gfx_clear(ui->c, (struct rect){SIDE, 0, W - SIDE, H}, style.content);
+        gfx_fill(ui->c, (struct rect){SIDE, TOOLBAR_HEIGHT - 1, W - SIDE, 1}, style.separator);
     }
-    ui_panel(ui, (struct rect){0, 0, W, H}, style.content);
-    struct rect area = {0, 0, W, H};
+    ui_sidebar_panel(ui, SIDE, H, style.window);
+    static const enum symbol_id syms[TAB_COUNT] = {SYM_CHIP, SYM_WINDOW, SYM_DOC};
+    ui_sidebar_header(ui, (struct rect){22, 46, SIDE - 32, 20}, "Monitor");
+    for (int i = 0; i < TAB_COUNT; i++)
+        if (ui_sidebar_item(ui, (struct rect){14, 68 + i * 30, SIDE - 26, 28}, syms[i], tab_names[i], m->tab == i))
+            tab = i;
+    static const char *const tools[] = {"Console", "System Information", "Disk Utility", "Network Utility"};
+    static const enum symbol_id tool_syms[] = {SYM_TERMINAL, SYM_INFO, SYM_DISK, SYM_NETWORK};
+    int y = 68 + TAB_COUNT * 30 + 10;
+    ui_sidebar_header(ui, (struct rect){22, y, SIDE - 32, 20}, "More Tools");
+    for (int i = 0; i < (int)ARRAY_SIZE(tools); i++)
+        if (gui_app_find(tools[i]) &&
+            ui_sidebar_item(ui, (struct rect){14, y + 22 + i * 30, SIDE - 26, 28}, tool_syms[i], tools[i], false))
+            open_tool(tools[i]);
+    if (tab >= 0 && tab != m->tab) {
+        m->tab = tab;
+        app_state_set_number("monitor", "tab", tab);
+    }
+    ui_label(ui, (struct rect){SIDE + 18, 0, W - SIDE - 80, TOOLBAR_HEIGHT}, tab_names[m->tab], &font_bold, style.text,
+             ALIGN_LEFT);
+    struct rect area = {SIDE + 1, TOOLBAR_HEIGHT, W - SIDE - 1, H - TOOLBAR_HEIGHT};
     if (m->tab == 0)
         performance(ui, m, area);
     else if (m->tab == 1)
@@ -244,12 +269,15 @@ static void launch(const char *arg)
     m->tab = (int)CLAMP(app_state_number("monitor", "tab", 0), 0, TAB_COUNT - 1);
     if (arg && !strcmp(arg, "windows"))
         m->tab = 1;
-    struct window *w = wm_open(m->tab ? "System Monitor \xc2\xb7 Windows" : "System Monitor", ICON_MONITOR, 600, 500,
-                               &ops, m, WIN_RESIZABLE);
+    struct window *w = wm_open("System Monitor", ICON_MONITOR, 820, 560, &ops, m,
+                               WIN_RESIZABLE | WIN_FULLSIZE | WIN_GLASS | WIN_NOTITLE);
     if (!w) {
         kfree(m);
         return;
     }
+    w->toolbar_h = TOOLBAR_HEIGHT;
+    w->min_w = 640;
+    w->min_h = 420;
     wm_set_menus(w, menus, ARRAY_SIZE(menus));
     wm_set_timer(w, 1000);
 }

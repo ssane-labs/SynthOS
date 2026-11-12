@@ -408,10 +408,10 @@ static void frame(struct ui *ui, void *data)
         s->pending = true;
         wm_set_timer(ui->win, 30);
     }
-    ui_sidebar_panel(ui, side, H, style.sidebar);
-    ui_sidebar_header(ui, (struct rect){12, 12, side - 24, 20}, "Places");
+    ui_sidebar_panel(ui, side, H, style.window);
+    ui_sidebar_header(ui, (struct rect){22, 46, side - 32, 20}, "Places");
     for (int i = 0; i < s->count; i++)
-        if (ui_sidebar_item(ui, (struct rect){8, 38 + i * 30, side - 16, 28}, SYM_PIN, s->places[i].name,
+        if (ui_sidebar_item(ui, (struct rect){14, 70 + i * 30, side - 26, 28}, SYM_PIN, s->places[i].name,
                             i == s->current) &&
             i != s->current) {
             s->current = i;
@@ -420,9 +420,9 @@ static void frame(struct ui *ui, void *data)
             save(s);
             wm_set_timer(ui->win, 30);
         }
-    if (ui_button(ui, (struct rect){12, H - 40, 84, 28}, "Add Place") && s->count < MAX_PLACES)
+    if (ui_button(ui, (struct rect){18, H - 48, 82, 28}, "Add Place") && s->count < MAX_PLACES)
         search(ui->win);
-    if (ui_button(ui, (struct rect){104, H - 40, 84, 28}, "Remove") && s->count > 1) {
+    if (ui_button(ui, (struct rect){106, H - 48, 80, 28}, "Remove") && s->count > 1) {
         memmove(&s->places[s->current], &s->places[s->current + 1],
                 sizeof(s->places[0]) * (size_t)(s->count - s->current - 1));
         s->count--;
@@ -432,7 +432,7 @@ static void frame(struct ui *ui, void *data)
         save(s);
         wm_set_timer(ui->win, 30);
     }
-    struct rect main = {side, 0, W - side, H};
+    struct rect main = {side + 1, 0, W - side - 1, H};
     uint32_t top = s->f.ok && !s->f.day ? RGB(24, 32, 60) : RGB(70, 130, 200),
              bottom = s->f.ok && !s->f.day ? RGB(50, 44, 90) : RGB(120, 170, 220);
     if (s->f.ok && s->f.code >= 3)
@@ -443,11 +443,11 @@ static void frame(struct ui *ui, void *data)
     int x = main.x + 24, w = main.w - 48;
     const char *units[] = {"\xf8" "C", "\xf8" "F"};
     int unit = s->fahrenheit;
-    if (ui_segmented(ui, (struct rect){main.x + main.w - 104, 12, 88, 24}, units, 2, &unit)) {
+    if (ui_segmented(ui, (struct rect){main.x + main.w - 136, 14, 88, 24}, units, 2, &unit)) {
         s->fahrenheit = unit != 0;
         save(s);
     }
-    if (ui_button(ui, (struct rect){main.x + main.w - 190, 12, 76, 24}, "Refresh")) {
+    if (ui_button(ui, (struct rect){main.x + main.w - 222, 14, 76, 24}, "Refresh")) {
         s->pending = true;
         wm_set_timer(ui->win, 30);
     }
@@ -558,11 +558,12 @@ static void launch(const char *arg)
         return;
     load(s);
     s->pending = true;
-    open_win = wm_open("Weather", ICON_WEATHER, 760, 560, &ops, s, WIN_RESIZABLE);
+    open_win = wm_open("Weather", ICON_WEATHER, 780, 580, &ops, s, WIN_RESIZABLE | WIN_FULLSIZE | WIN_GLASS | WIN_NOTITLE);
     if (!open_win) {
         kfree(s);
         return;
     }
+    open_win->toolbar_h = TOOLBAR_HEIGHT;
     wm_set_timer(open_win, 300);
 }
 

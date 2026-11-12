@@ -283,8 +283,11 @@ static struct rect ctl(struct rect r, int w, int h)
 /* A row of the current group; cw is how wide its control is, so the label stops before it. */
 static struct rect row(struct page *p, const char *label, const char *desc, int h, int cw)
 {
-    if (!h)
-        h = desc ? ROW_DESC : ROW;
+    int tw = p->w - 28 - (cw ? cw + 14 : 0);
+    if (!h) /* a description that wraps to more lines makes the row taller */
+        h = desc ? MAX(ROW_DESC, 36 + wrap(NULL, (struct rect){0, 0, tw, 0}, &font_small, desc, 0, ALIGN_LEFT) *
+                                          (font_small.height + 3))
+                 : ROW;
     struct rect r = {p->x, p->y, p->w, h};
     bool last = p->sec < SECTIONS && p->rows + 1 >= p->sec_rows[p->sec];
     p->rows++;
@@ -299,7 +302,6 @@ static struct rect row(struct page *p, const char *label, const char *desc, int 
         return r;
     if (hit)
         gfx_round(c, rect_inset(r, 3), 8, ALPHA(style.accent, style.dark ? 70 : 46));
-    int tw = r.w - 28 - (cw ? cw + 14 : 0);
     if (label && desc) {
         gfx_text_box(c, (struct rect){r.x + 14, r.y + 9, tw, 18}, &font_sans, label, style.text, ALIGN_LEFT);
         wrap(c, (struct rect){r.x + 14, r.y + 28, tw, 0}, &font_small, desc, style.secondary, ALIGN_LEFT);

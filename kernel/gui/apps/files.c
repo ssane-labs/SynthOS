@@ -13,8 +13,8 @@
 
 #include "../internal.h"
 
-#define SIDEBAR_W 190
-#define NAV_H 38
+#define SIDEBAR_W 200
+#define NAV_H TOOLBAR_HEIGHT
 #define HEADER_H 26
 #define ROW_H 24
 #define CELL_W 104
@@ -870,10 +870,11 @@ static void frame(struct ui *ui, void *data)
     int mx = f->sidebar ? SIDEBAR_W : 0;
     if (ui->c) {
         gfx_clear(ui->c, (struct rect){mx, 0, W - mx, H}, style.content);
+        gfx_fill(ui->c, (struct rect){mx, NAV_H - 1, W - mx, 1}, style.separator);
         if (f->sidebar)
             ui_sidebar_panel(ui, mx, H, style.content);
     }
-    int y = 12;
+    int y = 46;
     update_favorites();
     f->windows = files_windows;
     if (f->sidebar && f->windows) {
@@ -914,25 +915,33 @@ static void frame(struct ui *ui, void *data)
         filter(f);
     }
 
-    int nx = mx + (mx ? 1 : 0);
-    if (ui_symbol_button(ui, (struct rect){nx + 8, 6, 28, 26}, SYM_LEFT, false))
+    int nx = mx + (mx ? 1 : 0), bx = mx ? nx + 10 : 84, by = (NAV_H - 28) / 2;
+    if (ui_symbol_button(ui, (struct rect){bx, by, 28, 28}, SYM_LEFT, false))
         go_back(w, f);
-    if (ui_symbol_button(ui, (struct rect){nx + 38, 6, 28, 26}, SYM_RIGHT, false))
+    if (ui_symbol_button(ui, (struct rect){bx + 30, by, 28, 28}, SYM_RIGHT, false))
         go_forward(w, f);
-    if (ui_symbol_button(ui, (struct rect){nx + 68, 6, 28, 26}, SYM_UP, false))
-        navigate(w, f, "..", true);
     if (ui->c) {
         if (!f->back_len)
-            gfx_round(ui->c, (struct rect){nx + 8, 6, 28, 26}, 6, ALPHA(style.content, 150));
+            gfx_round(ui->c, (struct rect){bx, by, 28, 28}, 6, ALPHA(style.content, 150));
         if (!f->forward_len)
-            gfx_round(ui->c, (struct rect){nx + 38, 6, 28, 26}, 6, ALPHA(style.content, 150));
+            gfx_round(ui->c, (struct rect){bx + 30, by, 28, 28}, 6, ALPHA(style.content, 150));
         char shown[PATH_MAX_LEN];
         if (f->windows)
             winpath_from_vfs(f->path, shown, sizeof(shown));
         else
             str_copy(shown, f->path, sizeof(shown));
-        gfx_text_box(ui->c, (struct rect){nx + 106, 6, W - nx - 118, 26}, &font_sans, shown, style.secondary,
-                     ALIGN_LEFT);
+        const char *name = !strcmp(f->path, "/") ? "Computer" : !strcmp(f->path, user_home()) ? "Home"
+                         : !strcmp(f->path, TRASH) ? "Trash" : path_basename(f->path);
+        int tw = gfx_text_width(&font_bold, name);
+        gfx_text_box(ui->c, (struct rect){bx + 70, 0, tw + 4, NAV_H}, &font_bold, name, style.text, ALIGN_LEFT);
+        gfx_text_box(ui->c, (struct rect){bx + 84 + tw, 0, W - bx - 140 - tw, NAV_H}, &font_small, shown,
+                     style.tertiary, ALIGN_LEFT);
+    }
+    if (ui_symbol_button(ui, (struct rect){W - 76, by, 28, 28}, SYM_UP, false))
+        navigate(w, f, "..", true);
+    if (ui_symbol_button(ui, (struct rect){W - 44, by, 28, 28}, f->icons ? SYM_LIST : SYM_GRID, false)) {
+        f->icons = !f->icons;
+        app_state_set_on("files", "icons", f->icons);
     }
     struct rect area = {nx, NAV_H, W - nx, H - NAV_H};
     int result;
@@ -1066,14 +1075,16 @@ static void launch(const char *arg)
     if (!f)
         return;
     f->icons = app_state_on("files", "icons", true);
-    f->sidebar = app_state_on("files", "sidebar", false);
+    f->sidebar = app_state_on("files", "sidebar", true);
     f->hidden = app_state_on("files", "hidden", false);
     f->list.selected = -1;
-    struct window *w = wm_open("Files", ICON_FILES, 760, 480, &ops, f, WIN_RESIZABLE);
+    struct window *w =
+        wm_open("Files", ICON_FILES, 820, 500, &ops, f, WIN_RESIZABLE | WIN_FULLSIZE | WIN_GLASS | WIN_NOTITLE);
     if (!w) {
         kfree(f);
         return;
     }
+    w->toolbar_h = NAV_H;
     w->min_w = 560;
     w->min_h = 320;
     wm_set_menus(w, menus, ARRAY_SIZE(menus));

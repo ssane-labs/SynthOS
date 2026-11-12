@@ -768,6 +768,22 @@ void store_restore_modules(void)
                 gui_module_show(apps[i].id, on);
         }
     }
+    /* the modules the store does not offer are system apps: always there */
+    struct vdir dir;
+    if (vfs_opendir("/system/apps", &dir) == 0) {
+        struct vfs_dirent e;
+        while (vfs_readdir(&dir, &e) == 0) {
+            char id[24];
+            str_copy(id, e.name, sizeof(id));
+            char *dot = strrchr(id, '.');
+            if (!dot || strcmp(dot, ".sxm"))
+                continue;
+            *dot = 0;
+            if (!store_find(id) && !gui_module_shown(id))
+                gui_module_show(id, true);
+        }
+        vfs_closedir(&dir);
+    }
 #endif
 }
 

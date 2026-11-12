@@ -83,6 +83,10 @@ enum icon_id {
     ICON_CLOCK,
     ICON_WEATHER,
     ICON_NOTES,
+    ICON_CONSOLE,
+    ICON_SYSINFO,
+    ICON_NETUTIL,
+    ICON_DISKUTIL,
     ICON_COUNT,
 };
 

@@ -356,24 +356,24 @@ static void frame(struct ui *ui, void *data)
         new_note(s);
         ui->consumed = true;
     }
-    ui_sidebar_panel(ui, SIDE, H, style.sidebar);
-    if (ui_search(ui, (struct rect){10, 10, SIDE - 52, 26}, &s->find, "Search"))
+    ui_sidebar_panel(ui, SIDE, H, style.window);
+    if (ui_search(ui, (struct rect){16, 44, SIDE - 60, 28}, &s->find, "Search"))
         s->list_scroll = 0;
-    if (ui_symbol_button(ui, (struct rect){SIDE - 38, 10, 28, 26}, SYM_PENCIL, false))
+    if (ui_symbol_button(ui, (struct rect){SIDE - 40, 44, 28, 28}, SYM_PENCIL, false))
         new_note(s);
-    int y = 46 - s->list_scroll, shown = 0;
+    int y = 84 - s->list_scroll, shown = 0;
     for (int i = 0; i < s->count; i++) {
         const struct note *n = &s->list[i];
         if (!matches(n, s->find.buf))
             continue;
         shown++;
-        struct rect row = {8, y, SIDE - 16, 54};
+        struct rect row = {14, y, SIDE - 26, 54};
         y += 58;
-        if (row.y + row.h < 40 || row.y > H)
+        if (row.y + row.h < 80 || row.y > H - 12)
             continue;
         if (ui->c && i == s->current)
             gfx_round(ui->c, row, 8, ALPHA(style.accent, 110));
-        if (ui->e && ui->e->type == EV_MOUSE_DOWN && rect_contains(row, ui->e->x, ui->e->y) && ui->e->y > 40 &&
+        if (ui->e && ui->e->type == EV_MOUSE_DOWN && rect_contains(row, ui->e->x, ui->e->y) && ui->e->y > 80 &&
             i != s->current) {
             open_note(s, i);
             ui->consumed = true;
@@ -390,26 +390,26 @@ static void frame(struct ui *ui, void *data)
                  style.secondary, ALIGN_LEFT);
     }
     if (ui->e && ui->e->type == EV_WHEEL && ui->e->x < SIDE) {
-        s->list_scroll = CLAMP(s->list_scroll - ui->e->wheel * 40, 0, MAX(0, shown * 58 - (H - 50)));
+        s->list_scroll = CLAMP(s->list_scroll - ui->e->wheel * 40, 0, MAX(0, shown * 58 - (H - 96)));
         ui->consumed = true;
     }
     if (!shown)
-        ui_label(ui, (struct rect){10, 60, SIDE - 20, 20}, s->count ? "No matches" : "No notes", &font_sans,
+        ui_label(ui, (struct rect){10, 100, SIDE - 20, 20}, s->count ? "No matches" : "No notes", &font_sans,
                  style.secondary, ALIGN_CENTER);
-    struct rect page = {SIDE, 0, W - SIDE, H};
+    struct rect page = {SIDE + 1, 0, W - SIDE - 1, H};
     ui_panel(ui, page, style.content);
     if (s->current < 0) {
         ui_label(ui, page, "Press the pencil to write a note", &font_sans, style.secondary, ALIGN_CENTER);
         return;
     }
-    if (ui_button(ui, (struct rect){W - 90, 10, 76, 26}, "Delete"))
+    if (ui_button(ui, (struct rect){W - 128, 12, 76, 28}, "Delete"))
         ui_confirm(ui->win, "Delete this note?", s->list[s->current].title, delete_note);
     struct rtc_time t;
     time_to_rtc(s->list[s->current].mtime + (uint32_t)(time_zone() * 60), &t);
     char text[48];
     ksnprintf(text, sizeof(text), "%d %s %d at %02d:%02d", t.day, time_month_name(t.month), t.year, t.hour, t.minute);
-    ui_label(ui, (struct rect){SIDE, 14, W - SIDE, 18}, text, &font_small, style.tertiary, ALIGN_CENTER);
-    struct rect area = {SIDE + PAD, 46, W - SIDE - 2 * PAD, H - 56};
+    ui_label(ui, (struct rect){SIDE, 0, W - SIDE, TOOLBAR_HEIGHT}, text, &font_small, style.tertiary, ALIGN_CENTER);
+    struct rect area = {SIDE + PAD, TOOLBAR_HEIGHT + 12, W - SIDE - 2 * PAD, H - TOOLBAR_HEIGHT - 22};
     int lh = f->height + 4, before = s->cursor;
     if (key != KEY_NONE && !ui->consumed && !(key & (KEY_MOD_SUPER | KEY_MOD_ALT))) {
         layout(s, f, area.w);
@@ -505,7 +505,9 @@ static void launch(const char *arg)
     } else {
         open_note(s, 0);
     }
-    open_win = wm_open("Notes", ICON_NOTES, 820, 560, &ops, s, WIN_RESIZABLE);
+    open_win = wm_open("Notes", ICON_NOTES, 840, 560, &ops, s, WIN_RESIZABLE | WIN_FULLSIZE | WIN_GLASS | WIN_NOTITLE);
+    if (open_win)
+        open_win->toolbar_h = TOOLBAR_HEIGHT;
     if (!open_win) {
         kfree(s->lines);
         kfree(s->text);

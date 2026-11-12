@@ -210,10 +210,22 @@ static void destroy(struct window *w)
 
 static const struct window_ops ops = {paint, event, NULL, destroy};
 
+static void launch(const char *arg);
+
+static void picked(void *ctx, const char *path)
+{
+    UNUSED(ctx);
+    if (path && *path)
+        launch(path);
+}
+
 static void launch(const char *arg)
 {
-    if (!arg || !*arg)
+    if (!arg || !*arg) { /* opened from Launchpad: ask which file */
+        struct gui_picker o = {.title = "Open in Viewer"};
+        gui_file_picker(NULL, &o, picked, NULL);
         return;
+    }
     struct viewer *v = kzalloc(sizeof(*v));
     if (!v)
         return;
