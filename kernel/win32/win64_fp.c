@@ -48,6 +48,8 @@ uint64_t w64_math(void *target, int kind, const uint64_t *a, const uint64_t *f)
         return RF(((float (*)(float, float))target)(F(f[0]), F(f[1])));
     case M_I_D:
         return w64_sx((uint32_t)((int (*)(double))target)(D(f[0])));
+    case M_F_FP:
+        return RF(((float (*)(float, void *))target)(F(f[0]), w64_ptr(a[1])));
     case M_D_LL:
         return RD(((double (*)(int64_t, int64_t))target)((int64_t)a[0], (int64_t)a[1]));
     default:
@@ -72,3 +74,21 @@ uint64_t w64_atof(void *target, uint64_t s)
 {
     return RD(((double (*)(const char *))target)(w64_ptr(s)));
 }
+
+static uint64_t h_modff(uint64_t *a, const uint64_t *f, void *t)
+{
+    float x = F(f[0]), whole = x, frac;
+    if (x == x && x < 8388608.0f && x > -8388608.0f)
+        whole = (float)(int32_t)x;
+    frac = whole == x ? (x < 0 ? -0.0f : 0.0f) : x - whole;
+    if (a[1]) {
+        uint32_t v = (uint32_t)RF(whole);
+        memcpy(w64_ptr(a[1]), &v, 4);
+    }
+    return RF(frac);
+}
+
+static const struct w64_export fp_exports[] = {
+    W64_FN("modff", h_modff),
+};
+W64_EXPORTS(fp_module, "msvcrt.dll", fp_exports);

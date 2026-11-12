@@ -866,7 +866,7 @@ dwrite3 factory2=1 factory3=1 collection=1 fallback=1 gray=1
 spawn64
 spawn64 held=ping child=7010 map=pong dll32=0/193 overlapped=1 3 678
 sock6
-sock6 ok=1 family=23 len=28 port=1 recv=hi6 peer=::1
+sock6 ok=1 family=23 len=28 port=1 recv=hi6 peer=::1 afd=1
 cat '/mnt/hdb/Long Name Note.txt'
 hello from fat
 mkdir '/mnt/hdb/My Folder'; echo saved > '/mnt/hdb/My Folder/Mixed Case.txt'; cat '/mnt/hdb/my folder/mixed case.txt'

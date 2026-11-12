@@ -131,6 +131,7 @@ enum w32_object_type {
     WH_DESKTOP,
     WH_SCM,
     WH_SNAPSHOT,
+    WH_AFD,
 };
 
 enum w32_engine {
@@ -476,6 +477,11 @@ void w32_io_complete(struct w32_object *o, uint32_t *ov, uint32_t status, uint32
 int w32_pipe_overlapped(HANDLE h, struct w32_object *o, void *buf, DWORD n, DWORD *done, uint32_t *ov, bool write);
 bool w32_io_cancel(HANDLE h, const uint32_t *ov);
 bool w32_winsock_cancel(UINT s, uint32_t *ov);
+/* \Device\Afd for 64-bit programs (tokio, mio): IOCTL_AFD_POLL on sockets, completed through the port */
+HANDLE w32_afd_open(void);
+uint32_t w32_afd_poll(HANDLE afd, uint64_t iosb, uint64_t context, uint64_t in, uint32_t in_len, uint64_t out,
+                      uint32_t out_len);
+bool w32_afd_cancel(HANDLE afd, uint64_t iosb);
 bool w32_socket_associate(uintptr_t s, HANDLE port, uint64_t key);
 void w32_tls_register(struct w32_image *img);
 void w32_tls_callbacks(uint32_t base, DWORD reason);

@@ -29,6 +29,7 @@ enum {
     M_F_FF,
     M_I_D,
     M_D_LL,
+    M_F_FP,
 };
 
 struct w64_export {
@@ -46,6 +47,8 @@ struct w64_module {
 };
 
 #define W64_FN(n, f) {n, f, 0, NULL, NULL}
+/* a handler that calls the 32-bit function t (the locale variants of the CRT) */
+#define W64_FNTO(n, f, t) {n, f, 0, NULL, t}
 #define W64_TO(n, t, fl) {n, NULL, fl, NULL, t}
 #define W64_FLAG(n, fl) {n, NULL, fl, NULL, NULL}
 #define W64_NATIVE(n, a) {n, NULL, W64F_NATIVE, (const void *)(a), NULL}

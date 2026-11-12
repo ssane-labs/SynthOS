@@ -1209,6 +1209,37 @@ static uint64_t h_strto64(uint64_t *a, const uint64_t *f, void *t)
     return r;
 }
 
+/* _locale_t for 64-bit code: {locinfo, mbcinfo}, locinfo starting with {pctype table, mb_cur_max, code page} as the
+   UCRT headers inline them (_isctype_l and friends read it directly) */
+static uint64_t h_create_locale(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint8_t *loc = w32_zalloc(16 + 0x200 + 0x200);
+    if (!loc)
+        return 0;
+    uint8_t *info = loc + 16, *mbc = info + 0x200;
+    put64(loc, U(info));
+    put64(loc + 8, U(mbc));
+    put64(info, (uint32_t)CALL("msvcrt.dll", "__pctype_func"));
+    put32(info + 8, 1);
+    put32(info + 12, 1252);
+    return U(loc);
+}
+
+static uint64_t h_wcrtomb_s(uint64_t *a, const uint64_t *f, void *t)
+{
+    char buf[8];
+    uint32_t n = (uint32_t)T32(t, U(buf), (uint32_t)(a[3] & 0xffff), 0);
+    if (n > sizeof(buf))
+        return 42; /* EILSEQ */
+    if (a[1]) {
+        if (n > a[2])
+            return 34; /* ERANGE */
+        memcpy(P(a[1]), buf, n);
+    }
+    out64(a[0], n);
+    return 0;
+}
+
 static uint64_t h_strtod(uint64_t *a, const uint64_t *f, void *t)
 {
     return w64_strtod(a, f, t, false, false);
@@ -1884,6 +1915,22 @@ static const struct w64_export msvcrt_exports[] = {
     W64_FN("_wcstoui64", h_strto64),
     W64_FN("strtod", h_strtod),
     W64_FN("strtof", h_strtof),
+    W64_FNTO("_strtod_l", h_strtod, "strtod"),
+    W64_FNTO("_strtold_l", h_strtod, "strtod"),
+    W64_FNTO("_strtof_l", h_strtof, "strtof"),
+    W64_FNTO("_strtoi64_l", h_strto64, "_strtoi64"),
+    W64_FNTO("_strtoui64_l", h_strto64, "_strtoui64"),
+    W64_FNTO("wcrtomb_s", h_wcrtomb_s, "wcrtomb"),
+    W64_TO("_mbtowc_l", "mbtowc", 0),
+    W64_FN("_create_locale", h_create_locale),
+    W64_FN("_wcreate_locale", h_create_locale),
+    W64_FN("_get_current_locale", h_create_locale),
+    W64_FN("_free_locale", h_zero),
+    W64_TO("_isctype_l", "_isctype", 0),
+    W64_TO("_iswlower_l", "iswlower", 0),
+    W64_TO("_strftime_l", "strftime", 0),
+    W64_TO("___mb_cur_max_l_func", "___mb_cur_max_func", 0),
+    W64_TO("__std_terminate", "abort", 0),
     W64_FN("wcstod", h_wcstod),
     W64_FN("atof", h_atof),
     W64_FN("_i64toa", h_i64to),

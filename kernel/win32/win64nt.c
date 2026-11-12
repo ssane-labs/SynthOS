@@ -70,13 +70,67 @@ static uint64_t done(uint64_t handle_at, uint32_t h, uint64_t iosb_at, const uin
     return w64_sx(r);
 }
 
+static uint64_t h_not_supported(uint64_t *a, const uint64_t *f, void *t)
+{
+    return 0xc00000bbu; /* STATUS_NOT_SUPPORTED */
+}
+
+/* the object name of OBJECT_ATTRIBUTES starts with prefix (ASCII) */
+static bool named(uint64_t attr, const char *prefix)
+{
+    if (!attr || !rd64((const uint8_t *)P(attr) + 16))
+        return false;
+    const uint8_t *s = P(rd64((const uint8_t *)P(attr) + 16));
+    uint16_t len = (uint16_t)(s[0] | s[1] << 8);
+    const uint16_t *w = P(rd64(s + 8));
+    size_t n = strlen(prefix);
+    if (!w || len / 2 < n)
+        return false;
+    for (size_t i = 0; i < n; i++)
+        if ((w[i] | 0x20) != ((uint8_t)prefix[i] | 0x20))
+            return false;
+    return true;
+}
+
 static uint64_t h_create_file(uint64_t *a, const uint64_t *f, void *t)
 {
+    if (named(a[2], "\\Device\\Afd")) {
+        uint32_t io[2] = {0, 1}; /* FILE_OPENED */
+        HANDLE h = w32_afd_open();
+        return h ? done(a[0], (uint32_t)(uintptr_t)h, a[3], io, 0) : 0xc000009au;
+    }
     struct attr32 at;
     uint32_t h = 0, io[2] = {0, 0};
     uint32_t r = (uint32_t)T32(t, U(&h), (uint32_t)a[1], attr_to32(a[2], &at), U(io), U(P(a[4])), (uint32_t)a[5],
                                (uint32_t)a[6], (uint32_t)a[7], (uint32_t)a[8], U(P(a[9])), (uint32_t)a[10]);
     return done(a[0], h, a[3], io, r);
+}
+
+static bool is_afd(uint64_t h)
+{
+    struct w32_object *o = w32_handle_get((HANDLE)(uintptr_t)(uint32_t)h);
+    return o && o->type == WH_AFD;
+}
+
+/* NtDeviceIoControlFile(file, event, apc, apc context, iosb, code, in, in length, out, out length) */
+static uint64_t h_device_io(uint64_t *a, const uint64_t *f, void *t)
+{
+    if (is_afd(a[0]) && (uint32_t)a[5] == 0x12024u) /* IOCTL_AFD_POLL */
+        return w32_afd_poll((HANDLE)(uintptr_t)(uint32_t)a[0], a[4], a[3], a[6], (uint32_t)a[7], a[8],
+                            (uint32_t)a[9]);
+    return 0xc0000010u; /* STATUS_INVALID_DEVICE_REQUEST */
+}
+
+/* NtCancelIoFileEx(file, iosb of the request, iosb) */
+static uint64_t h_cancel_io(uint64_t *a, const uint64_t *f, void *t)
+{
+    if (!is_afd(a[0]) || !w32_afd_cancel((HANDLE)(uintptr_t)(uint32_t)a[0], a[1]))
+        return 0xc0000225u; /* STATUS_NOT_FOUND */
+    if (a[2]) {
+        uint64_t v[2] = {0, 0};
+        memcpy(P(a[2]), v, 16);
+    }
+    return 0;
 }
 
 static uint64_t h_open_file(uint64_t *a, const uint64_t *f, void *t)
@@ -246,6 +300,12 @@ static const struct w64_export nt_exports[] = {
     W64_FN("ZwCreateEvent", h_create_event),
     W64_FN("NtSetInformationThread", h_set_thread_info),
     W64_FN("ZwSetInformationThread", h_set_thread_info),
+    W64_FN("NtCreateNamedPipeFile", h_not_supported),
+    W64_FN("NtDeviceIoControlFile", h_device_io),
+    W64_FN("ZwDeviceIoControlFile", h_device_io),
+    W64_FN("NtCancelIoFileEx", h_cancel_io),
+    W64_FN("ZwCancelIoFileEx", h_cancel_io),
+    W64_FN("ZwCreateNamedPipeFile", h_not_supported),
     W64_FN("LdrLoadDll", h_ldr_module),
     W64_FN("LdrGetDllHandle", h_ldr_module),
     W64_FN("LdrGetProcedureAddress", h_ldr_proc),

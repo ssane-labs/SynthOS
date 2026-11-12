@@ -1101,6 +1101,8 @@ static int overlapped_recv(UINT s, struct wsock *w, char *buf, ULONG len, DWORD 
     return fail(E_NOMEM);
 }
 
+static void afd_poll_all(void);
+
 void w32_winsock_poll(void)
 {
     net_poll();
@@ -1117,7 +1119,150 @@ void w32_winsock_poll(void)
         p->used = false;
         complete(p->s, p->ov, n > 0 ? (DWORD)n : 0, n >= 0 ? 0 : STATUS_CONNECTION_RESET);
     }
+    afd_poll_all();
 }
+
+#ifdef __x86_64__
+#include "win64.h"
+
+/* mio and tokio wait for sockets the way wepoll does: a handle to \Device\Afd joined to a completion port, one
+   IOCTL_AFD_POLL per socket that completes on that port when one of the asked events happens. AFD_POLL_INFO on x64:
+   timeout (8), number of handles (4), exclusive (4), then {socket (8), events (4), status (4)} per handle. */
+#define MAX_AFD 64
+#define AFD_HANDLES 4
+enum {
+    AFD_POLL_RECEIVE = 0x1,
+    AFD_POLL_SEND = 0x4,
+    AFD_POLL_DISCONNECT = 0x8,
+    AFD_POLL_ABORT = 0x10,
+    AFD_POLL_ACCEPT = 0x80,
+    AFD_POLL_CONNECT_FAIL = 0x100,
+};
+
+struct afd_poll {
+    bool used;
+    HANDLE afd;
+    uint64_t iosb, context, out;
+    uint32_t out_len, count;
+    uint64_t socket[AFD_HANDLES];
+    uint32_t events[AFD_HANDLES];
+};
+
+static W32_STATE struct afd_poll afd_polls[MAX_AFD];
+
+HANDLE w32_afd_open(void)
+{
+    return w32_handle_new(WH_AFD);
+}
+
+static uint32_t afd_events(uint64_t s)
+{
+    if (s < SOCKET_BASE || s >= SOCKET_BASE + NET_MAX_SOCKETS || !socks[s - SOCKET_BASE].used)
+        return AFD_POLL_ABORT;
+    int id = socks[s - SOCKET_BASE].id, err = net_error(id);
+    uint32_t ev = 0;
+    if (net_readable(id))
+        ev |= AFD_POLL_RECEIVE | AFD_POLL_ACCEPT;
+    if (write_ready(id))
+        ev |= AFD_POLL_SEND;
+    if (err == E_CONNREFUSED || err == E_TIMEDOUT || err == E_UNREACH)
+        ev |= AFD_POLL_CONNECT_FAIL;
+    else if (err)
+        ev |= AFD_POLL_ABORT | AFD_POLL_DISCONNECT;
+    return ev;
+}
+
+static void afd_finish(struct afd_poll *p, uint32_t status, uint32_t bytes)
+{
+    p->used = false;
+    if (p->iosb) {
+        uint64_t v[2] = {status, bytes};
+        memcpy(w64_ptr(p->iosb), v, 16);
+    }
+    struct w32_object *o = w32_handle_get(p->afd);
+    if (o && o->type == WH_AFD && o->io_port)
+        w32_iocp_post(o->io_port, bytes, o->io_key, p->context);
+}
+
+static bool afd_check(struct afd_poll *p)
+{
+    uint8_t out[16 + 16 * AFD_HANDLES];
+    uint32_t n = 0;
+    memset(out, 0, sizeof(out));
+    for (uint32_t i = 0; i < p->count; i++) {
+        uint32_t ev = afd_events(p->socket[i]) & (p->events[i] | AFD_POLL_ABORT | AFD_POLL_CONNECT_FAIL);
+        if (!ev)
+            continue;
+        memcpy(out + 16 + 16 * n, &p->socket[i], 8);
+        memcpy(out + 24 + 16 * n, &ev, 4);
+        n++;
+    }
+    if (!n)
+        return false;
+    memcpy(out + 8, &n, 4);
+    uint32_t size = MIN(16 + 16 * n, p->out_len);
+    if (p->out)
+        memcpy(w64_ptr(p->out), out, size);
+    afd_finish(p, 0, size);
+    return true;
+}
+
+static void afd_poll_all(void)
+{
+    for (int i = 0; i < MAX_AFD; i++)
+        if (afd_polls[i].used) {
+            struct w32_object *o = w32_handle_get(afd_polls[i].afd);
+            if (!o || o->type != WH_AFD)
+                afd_polls[i].used = false;
+            else
+                afd_check(&afd_polls[i]);
+        }
+}
+
+uint32_t w32_afd_poll(HANDLE afd, uint64_t iosb, uint64_t context, uint64_t in, uint32_t in_len, uint64_t out,
+                      uint32_t out_len)
+{
+    if (!in || in_len < 32)
+        return 0xc000000du; /* STATUS_INVALID_PARAMETER */
+    struct afd_poll *p = NULL;
+    for (int i = 0; i < MAX_AFD && !p; i++)
+        if (!afd_polls[i].used)
+            p = &afd_polls[i];
+    if (!p)
+        return 0xc000009au; /* STATUS_INSUFFICIENT_RESOURCES */
+    const uint8_t *info = w64_ptr(in);
+    uint32_t count;
+    memcpy(&count, info + 8, 4);
+    count = MIN(MIN(count, (in_len - 16) / 16), (uint32_t)AFD_HANDLES);
+    *p = (struct afd_poll){true, afd, iosb, context, out, out_len, count, {0}, {0}};
+    for (uint32_t i = 0; i < count; i++) {
+        memcpy(&p->socket[i], info + 16 + 16 * i, 8);
+        memcpy(&p->events[i], info + 24 + 16 * i, 4);
+    }
+    if (iosb) {
+        uint64_t v[2] = {STATUS_PENDING, 0};
+        memcpy(w64_ptr(iosb), v, 16);
+    }
+    net_poll();
+    afd_check(p);
+    return STATUS_PENDING;
+}
+
+bool w32_afd_cancel(HANDLE afd, uint64_t iosb)
+{
+    bool found = false;
+    for (int i = 0; i < MAX_AFD; i++)
+        if (afd_polls[i].used && afd_polls[i].afd == afd && (!iosb || afd_polls[i].iosb == iosb)) {
+            afd_finish(&afd_polls[i], STATUS_CANCELLED, 0);
+            found = true;
+        }
+    return found;
+}
+#else
+static void afd_poll_all(void)
+{
+}
+#endif
 
 bool w32_winsock_cancel(UINT s, uint32_t *ov)
 {
