@@ -3,6 +3,9 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/log.h>
+#include <synth/config.h>
+#include <synth/time.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -68,13 +71,58 @@ static void session_file(char *out, size_t cap)
     path_join(user_home(), ".session", out, cap);
 }
 
+/* The kernel log keeps only its last lines; the new ones are added to /home/.logs/current.log, and at the start
+   the logs of the three starts before move to start-1.log … start-3.log (Console shows them). */
+static void keep_log(void)
+{
+    static char last[64];
+    static bool begun;
+    char a[40], b[40];
+    if (!begun) {
+        begun = true;
+        vfs_mkdirs("/home/.logs");
+        vfs_unlink("/home/.logs/start-3.log");
+        for (int i = 2; i >= 0; i--) {
+            ksnprintf(a, sizeof(a), i ? "/home/.logs/start-%d.log" : "/home/.logs/current.log", i);
+            ksnprintf(b, sizeof(b), "/home/.logs/start-%d.log", i + 1);
+            vfs_rename(a, b);
+        }
+    }
+    char *log = kmalloc(CONFIG_LOG_SIZE + 64);
+    if (!log)
+        return;
+    size_t n = log_snapshot(log, CONFIG_LOG_SIZE + 1);
+    char *from = log, *at = last[0] ? strstr(log, last) : NULL;
+    if (at)
+        from = strchr(at, '\n') ? strchr(at, '\n') + 1 : log + n;
+    struct file *f;
+    struct vstat st;
+    if (vfs_stat("/home/.logs/current.log", &st) == 0 && st.size > (2u << 20))
+        vfs_truncate("/home/.logs/current.log", 0); /* a long session starts the file again */
+    if (*from && vfs_open("/home/.logs/current.log", VFS_WRITE | VFS_CREATE | VFS_APPEND, &f) == 0) {
+        vfs_write(f, from, strlen(from));
+        vfs_close(f);
+        char *line = log + n - 1;
+        while (line > log && line[-1] != '\n')
+            line--;
+        str_copy(last, line, sizeof(last));
+        char *nl = strchr(last, '\n');
+        if (nl)
+            *nl = 0;
+    }
+    kfree(log);
+}
+
 /* from the desktop loop: writes the file when the windows changed */
 void session_tick(void)
 {
     uint64_t now = hal_ticks_ms();
-    if (!ready || restoring || now - last_check < SAVE_EVERY_MS)
+    if (now - last_check < SAVE_EVERY_MS)
         return;
     last_check = now;
+    keep_log();
+    if (!ready || restoring)
+        return;
     struct collect c = {kmalloc(8192), 0, 8192};
     if (!c.text)
         return;

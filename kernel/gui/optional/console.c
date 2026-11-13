@@ -7,20 +7,53 @@
 #include "systool.h"
 
 /* Console: the kernel log and other live reports (Windows programs, connections, scheduler), followed as they
-   grow, filtered by text or to errors only, and saved to a file. */
+   grow, filtered by text or to errors only, and saved to a file; the logs of the three starts before this one too. */
 
-enum { SRC_LOG, SRC_ERRORS, SRC_W32, SRC_NET, SRC_WINDOWS, SRC_MODULES, SRC_COUNT };
+enum { SRC_LOG, SRC_ERRORS, SRC_EARLIER, SRC_W32, SRC_NET, SRC_WINDOWS, SRC_MODULES, SRC_COUNT };
 
 static const struct tool_item items[SRC_COUNT] = {
     {SYM_DOC, "Kernel Log", "Reports"},
     {SYM_INFO, "Errors & Warnings", NULL},
+    {SYM_CLOCK, "Earlier Starts", NULL},
     {SYM_WINDOW, "Windows Programs", "Live"},
     {SYM_NETWORK, "Connections", NULL},
     {SYM_DESKTOP, "Desktop Windows", NULL},
     {SYM_APPS, "App Modules", NULL},
 };
 
-static const char *const commands[SRC_COUNT] = {NULL, NULL, "w32ps", "netstat", "windows", "modules"};
+static const char *const commands[SRC_COUNT] = {NULL, NULL, NULL, "w32ps", "netstat", "windows", "modules"};
+
+/* the logs of the starts before this one (saved by the desktop in /home/.logs), the latest first */
+static char *earlier(void)
+{
+    size_t cap = 4096, len = 0;
+    char *out = kmalloc(cap);
+    for (int i = 1; out && i <= 3; i++) {
+        char path[40], *data;
+        size_t n;
+        ksnprintf(path, sizeof(path), "/home/.logs/start-%d.log", i);
+        if (vfs_read_all(path, &data, &n) != 0)
+            continue;
+        if (len + n + 64 > cap) {
+            char *grown = krealloc(out, cap = len + n + 64);
+            if (!grown) {
+                kfree(data);
+                break;
+            }
+            out = grown;
+        }
+        len += (size_t)ksnprintf(out + len, cap - len, "%s---- %d start%s ago ----\n", len ? "\n" : "", i,
+                                 i > 1 ? "s" : "");
+        memcpy(out + len, data, n);
+        len += n;
+        kfree(data);
+    }
+    if (out && !len)
+        len = (size_t)ksnprintf(out, cap, "No logs of earlier starts yet: the desktop keeps them from now on.\n");
+    if (out)
+        out[len] = 0;
+    return out;
+}
 
 struct console {
     struct ui_state st;
@@ -62,6 +95,8 @@ static void reload(struct console *c)
             copy[k] = 0;
         }
         tool_text_set(&c->view, copy);
+    } else if (c->source == SRC_EARLIER) {
+        tool_text_set(&c->view, earlier());
     } else {
         tool_text_set(&c->view, tool_run(commands[c->source]));
     }
