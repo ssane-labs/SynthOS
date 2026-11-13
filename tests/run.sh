@@ -360,6 +360,10 @@ topng /mnt/hdb/flat.bmp /tmp/flat.png | grep -v bytes; imginfo /tmp/flat.png; rm
 12x1, 1 frame, average #ffffff
 screenshot
 screenshot: the desktop is not running
+screenrec start
+screenrec: the desktop is not running
+screenrec
+not recording
 clip set hello clipboard; clip; clip info
 text 15 bytes
 clip; clip set two; clip
