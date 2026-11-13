@@ -27,6 +27,8 @@ wgport=$((20000 + $$ % 9000))
 python3 -I tests/wgpeer.py --config "$wgport" > "$work/test-vpn.conf" && mcopy -i "$work/fat.img" "$work/test-vpn.conf" ::/test-vpn.conf
 python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.writestr('pkg/readme.txt','zipped hello '*20); z.writestr('pkg/sub/a.txt','A'); z.close()" "$work/t.zip" &&
     mcopy -i "$work/fat.img" "$work/t.zip" ::/t.zip
+python3 -I tests/msix.py "$work" &&
+    for f in tool.msix uwp.msix tool.msixbundle; do mcopy -i "$work/fat.img" "$work/$f" ::/$f; done
 
 if command -v 7z >/dev/null; then
     mkdir -p "$work/7z/pkg/sub"
@@ -1016,6 +1018,16 @@ browse /mnt/hdb/page.html | grep link
 A bold word and a link[1].
 unzip -l /mnt/hdb/t.zip
 pkg/sub/a.txt
+appx info /mnt/hdb/tool.msixbundle | grep app:
+app: Sample Tool (bin
+appx install /mnt/hdb/tool.msix; appx list
+Sample Tool                  1.2.3.0      Synth.SampleTool
+shortcut -l '/home/programdata/Microsoft/Windows/Start Menu/Programs/Sample Tool.lnk'
+My Tool.exe
+appx install /mnt/hdb/uwp.msix
+is a Universal Windows app
+appx remove Synth.SampleTool; appx list
+no MSIX packages installed
 unzip -q -d /tmp/z /mnt/hdb/t.zip; cat /tmp/z/pkg/sub/a.txt /tmp/z/pkg/readme.txt
 Azipped hello zipped
 pkg list
