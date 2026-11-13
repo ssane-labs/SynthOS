@@ -364,6 +364,8 @@ screenrec start
 screenrec: the desktop is not running
 screenrec
 not recording
+cp /apps/wintest.exe /tmp/vc_redist.x64.exe; /tmp/vc_redist.x64.exe
+the Visual C++ runtime is built into SynthOS, nothing to install
 rules add at 09:30 mon,fri -- echo weekly-fired; rules add every 15 -- echo interval-fired; rules run at 09:30 5; rules run at 09:45 2; rules remove 2; rules remove 1
 weekly-fired
 rules add at 09:30 mon -- echo not-today; rules run at 09:30 2; rules remove 1

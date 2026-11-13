@@ -1780,11 +1780,42 @@ COMMAND(talk, NULL, "dev", "talk [-t seconds] <input file> <program> [args...]",
     return rc;
 }
 
+/* .NET programs (a CLI header in data directory 14) need a runtime SynthOS does not have; the Visual C++ runtime
+   installers have nothing to do, the C runtime is built in */
+static int not_native(struct exec_ctx *ctx, const uint8_t *image, size_t size)
+{
+    const char *name = path_basename(ctx->path);
+    if (!str_ncasecmp(name, "vc_redist", 9) || !str_ncasecmp(name, "vcredist", 8)) {
+        sh_printf(ctx->sh, "%s: the Visual C++ runtime is built into SynthOS, nothing to install\n", name);
+        return 1;
+    }
+    uint32_t pe = size > 0x40 ? (uint32_t)image[0x3c] | (uint32_t)image[0x3d] << 8 : 0;
+    if (!pe || pe + 26 > size)
+        return 0;
+    uint32_t dir = pe + 24 + (image[pe + 24] == 0x0b && image[pe + 25] == 2 ? 112 : 96) + 14 * 8;
+    if (dir + 8 > size || !(image[dir] | image[dir + 1] | image[dir + 2] | image[dir + 3]))
+        return 0;
+    static const char text[] = "is a .NET program. SynthOS cannot run .NET programs yet.";
+    sh_error(ctx->sh, name, "%s", text);
+#if CONFIG_GUI
+    bool gui_active(void);
+    if (gui_active()) {
+        int w32_gui_message_box(const char *text, const char *caption, UINT type);
+        char msg[160];
+        ksnprintf(msg, sizeof(msg), "%s %s", name, text);
+        w32_gui_message_box(msg, name, 0x30);
+    }
+#endif
+    return E_NOEXEC;
+}
+
 static int pe_run(struct exec_ctx *ctx, uint8_t *image, size_t size)
 {
-    UNUSED(image);
     if (!vmm_available())
         return E_NOSYS;
+    int odd = not_native(ctx, image, size);
+    if (odd)
+        return odd > 0 ? 0 : odd;
     if (!pristine_state && !w32 && (pristine_state = kmalloc(state_size())))
         memcpy(pristine_state, __start_w32state, state_size());
     image_win64 = w32_is_pe64(image, size);
