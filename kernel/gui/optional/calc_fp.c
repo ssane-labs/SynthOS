@@ -1278,7 +1278,7 @@ static void unit_button(struct ui *ui, struct calc *c, struct rect r, const char
             for (int i = 0; i < categories[c->cat].count; i++)
                 items[n++] = categories[c->cat].units[i].name;
         c->picking = which;
-        ui_menu(c->win, c->win->frame.x + r.x, c->win->frame.y + r.y + r.h, items, n, pick_unit);
+        ui_menu(c->win, r.x, r.y + r.h, items, n, pick_unit);
     }
 }
 
@@ -1411,7 +1411,7 @@ static void frame(struct ui *ui, void *data)
     if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui->e->button == BUTTON_LEFT &&
         rect_contains(mode_btn, ui->e->x, ui->e->y)) {
         c->picking = 4;
-        ui_menu(c->win, c->win->frame.x + mode_btn.x, c->win->frame.y + mode_btn.y + mode_btn.h, names, 4, pick_unit);
+        ui_menu(c->win, mode_btn.x, mode_btn.y + mode_btn.h, names, 4, pick_unit);
         ui->consumed = true;
     }
     int top = DISPLAY_H + 14;
