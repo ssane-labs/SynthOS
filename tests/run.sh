@@ -364,6 +364,10 @@ screenrec start
 screenrec: the desktop is not running
 screenrec
 not recording
+format nosuch fat32 --yes
+format: no device nosuch
+format hda fat32
+everything on hda is lost; add --yes to go on
 config rotation 90,180; config uiscale auto,2; config rotation; config uiscale; config rotation 0; config uiscale auto
 auto,2
 config rotation 45
