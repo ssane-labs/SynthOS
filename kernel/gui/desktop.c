@@ -105,12 +105,13 @@ static int open_displays(struct framebuffer *fbs, struct rect *origins)
     for (int i = available; i < hal_screen_count(); i++)
         hal_screen_close(i);
     display_count = n;
-    int w0 = (int)fbs[0].width / (fbs[0].width >= 2400 ? 2 : 1);
-    int h0 = (int)fbs[0].height / (fbs[0].width >= 2400 ? 2 : 1);
+    int w0, h0;
+    wm_display_size(&fbs[0], 0, &w0, &h0, NULL, NULL);
     origins[0] = (struct rect){0, 0, w0, h0};
     int right = w0, bottom = h0;
     for (int i = 1; i < n; i++) {
-        int w = (int)fbs[i].width / (fbs[i].width >= 2400 ? 2 : 1), h = (int)fbs[i].height / (fbs[i].width >= 2400 ? 2 : 1);
+        int w, h;
+        wm_display_size(&fbs[i], i, &w, &h, NULL, NULL);
         if (!strcmp(arrange, "left"))
             origins[i] = (struct rect){-w * i, 0, w, h};
         else if (!strcmp(arrange, "above"))

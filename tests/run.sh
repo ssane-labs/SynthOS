@@ -364,6 +364,10 @@ screenrec start
 screenrec: the desktop is not running
 screenrec
 not recording
+config rotation 90,180; config uiscale auto,2; config rotation; config uiscale; config rotation 0; config uiscale auto
+auto,2
+config rotation 45
+config: rotation: invalid value '45'
 mkdir -p /home/apps/kept; restore point base; mkdir -p /home/apps/later; restore to 1; ls /home/apps
 back to "base": 1 apps removed, 0 to install again
 restore list

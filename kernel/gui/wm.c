@@ -23,7 +23,7 @@
 struct screen {
     struct framebuffer fb;
     struct rect area;
-    int scale;
+    int scale, turn; /* turn: quarter turns clockwise */
     uint32_t *mem;
     struct canvas back;
     struct rect dirty[MAX_DIRTY];
@@ -134,35 +134,126 @@ static void fb_row(struct screen *s, int x, int y, const uint32_t *src, int w)
     }
 }
 
+static void fb_dot(const struct framebuffer *fb, int x, int y, uint32_t p, uint32_t bytes)
+{
+    uint8_t *d = fb->base + (size_t)y * fb->pitch + (size_t)x * bytes;
+    if (bytes == 4)
+        *(uint32_t *)d = p;
+    else if (bytes == 3) {
+        d[0] = (uint8_t)p;
+        d[1] = (uint8_t)(p >> 8);
+        d[2] = (uint8_t)(p >> 16);
+    } else {
+        *(uint16_t *)d = (uint16_t)p;
+    }
+}
+
 static void fb_put(struct screen *s, int x, int y, const uint32_t *src, int w)
 {
     const struct framebuffer *fb = &s->fb;
     bool native = fb->bpp == 32 && fb->red_shift == 16 && fb->green_shift == 8 && fb->blue_shift == 0;
     uint32_t bytes = fb->bpp / 8;
     int lx = x - s->area.x, ly = y - s->area.y, scale = s->scale;
+    int pw = (int)fb->width - 1, ph = (int)fb->height - 1;
     for (int sy = 0; sy < scale; sy++) {
-        uint8_t *line = fb->base + (size_t)(ly * scale + sy) * fb->pitch + (size_t)lx * scale * bytes;
-        if (native && scale == 1) {
+        int Y = ly * scale + sy;
+        uint8_t *line = fb->base + (size_t)Y * fb->pitch + (size_t)lx * scale * bytes;
+        if (native && scale == 1 && !s->turn) {
             memcpy(line, src, (size_t)w * 4);
             continue;
         }
         for (int i = 0; i < w; i++) {
             uint32_t p = native ? src[i] : pack(fb, src[i]);
             for (int sx = 0; sx < scale; sx++) {
-                uint8_t *d = line + (size_t)(i * scale + sx) * bytes;
-                if (bytes == 4)
-                    *(uint32_t *)d = p;
-                else if (bytes == 3) {
-                    d[0] = (uint8_t)p;
-                    d[1] = (uint8_t)(p >> 8);
-                    d[2] = (uint8_t)(p >> 16);
-                } else {
-                    *(uint16_t *)d = (uint16_t)p;
+                int X = (lx + i) * scale + sx;
+                switch (s->turn) { /* a display turned on its stand shows the picture turned back */
+                case 1: fb_dot(fb, pw - Y, X, p, bytes); break;
+                case 2: fb_dot(fb, pw - X, ph - Y, p, bytes); break;
+                case 3: fb_dot(fb, Y, ph - X, p, bytes); break;
+                default: fb_dot(fb, X, Y, p, bytes);
                 }
             }
         }
     }
 }
+
+/* Each display's scale (0: 2 from 2400 pixels wide) and rotation in quarter turns, settings uiscale and rotation */
+static int want_scale[MAX_SCREENS], want_turn[MAX_SCREENS];
+
+void wm_display_size(const struct framebuffer *fb, int index, int *w, int *h, int *scale, int *turn)
+{
+    int sc = index < MAX_SCREENS && want_scale[index] ? want_scale[index] : fb->width >= 2400 ? 2 : 1;
+    int t = index < MAX_SCREENS ? want_turn[index] : 0;
+    *w = (int)(t & 1 ? fb->height : fb->width) / sc;
+    *h = (int)(t & 1 ? fb->width : fb->height) / sc;
+    if (scale)
+        *scale = sc;
+    if (turn)
+        *turn = t;
+}
+
+static void get_view(int *v, int mul, char *buf, size_t cap)
+{
+    buf[0] = 0;
+    for (int i = 0; i < MAX_SCREENS; i++) {
+        char one[12];
+        ksnprintf(one, sizeof(one), i ? ",%d" : "%d", v[i] * mul);
+        if (!mul && !v[i])
+            ksnprintf(one, sizeof(one), i ? ",auto" : "auto");
+        str_append(buf, one, cap);
+    }
+}
+
+static int set_view(int *v, const char *value, int div, int max)
+{
+    int got[MAX_SCREENS] = {0};
+    const char *p = value;
+    for (int i = 0; i < MAX_SCREENS && *p; i++) {
+        long n = 0;
+        const char *end = p;
+        if (!strncmp(p, "auto", 4))
+            end = p + 4;
+        else
+            n = str_to_long(p, &end, 10);
+        if (end == p || (*end && *end != ',') || n % (div ? div : 1) || n / (div ? div : 1) > max || n < 0)
+            return E_INVAL;
+        got[i] = (int)n / (div ? div : 1);
+        p = *end ? end + 1 : end;
+    }
+    memcpy(v, got, sizeof(got));
+    if (screen_count)
+        gui_displays_changed();
+    return 0;
+}
+
+static void get_turn(char *buf, size_t cap)
+{
+    get_view(want_turn, 90, buf, cap);
+}
+
+static int set_turn(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return set_view(want_turn, value, 90, 3);
+}
+
+static void get_uiscale(char *buf, size_t cap)
+{
+    get_view(want_scale, 0, buf, cap);
+}
+
+static int set_uiscale(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    return set_view(want_scale, value, 0, 3);
+}
+
+static const struct setting s_turn = {"rotation", "0|90|180|270[,…]", "turn each display (main first)", get_turn,
+                                      set_turn};
+SETTING(s_turn);
+static const struct setting s_uiscale = {"uiscale", "auto|1|2|3[,…]", "how big everything is on each display",
+                                         get_uiscale, set_uiscale};
+SETTING(s_uiscale);
 
 /* The pointer is not part of the composed picture: it is drawn on the screen itself, and the interrupt that brings
    a movement moves it at once, so it glides even while a program or a long job keeps the desktop loop away. What
@@ -2958,8 +3049,8 @@ static bool setup_screens(const struct framebuffer *fbs, const struct rect *orig
     for (int i = 0; i < count && i < MAX_SCREENS; i++) {
         struct screen *s = &screens[made];
         s->fb = fbs[i];
-        s->scale = fbs[i].width >= 2400 ? 2 : 1;
-        int w = (int)fbs[i].width / s->scale, h = (int)fbs[i].height / s->scale;
+        int w, h;
+        wm_display_size(&fbs[i], i, &w, &h, &s->scale, &s->turn);
         s->mem = kmalloc((size_t)w * (size_t)h * 4);
         if (!s->mem)
             break;

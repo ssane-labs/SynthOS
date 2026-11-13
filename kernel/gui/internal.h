@@ -132,6 +132,7 @@ int gfx_corner_coverage(struct rect r, int radius, int x, int y);
 bool wm_start(const struct framebuffer *fbs, const struct rect *origins, int count);
 bool wm_reconfigure(const struct framebuffer *fbs, const struct rect *origins, int count);
 void gui_displays_changed(void);
+void wm_display_size(const struct framebuffer *fb, int index, int *w, int *h, int *scale, int *turn);
 int gui_display_hal(int screen);
 void wm_stop(void);
 void wm_render(void);
