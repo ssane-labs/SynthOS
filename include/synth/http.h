@@ -39,6 +39,12 @@ struct http_response {
     char tls[96];
 };
 
+/* The system proxy, a module service ("http-proxy"): true when the request for u goes through a proxy; it gives the
+   proxy's host and port, and the Proxy-Authorization value or "" */
+struct http_proxy {
+    K64(bool (*route)(const struct http_url *u, char *host, size_t cap, uint16_t *port, char *auth, size_t auth_cap));
+};
+
 bool http_parse_url(const char *url, struct http_url *u);
 bool http_resolve_url(const char *base, const char *ref, char *out, size_t cap);
 int http_fetch(const struct http_request *req, struct http_response *resp);

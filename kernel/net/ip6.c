@@ -432,6 +432,10 @@ int ip6_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, siz
         return E_UNREACH;
     if (!src || !net_v6_addr(src, s))
         memcpy(s, chosen, 16);
+    else if (link_local(d) || d[0] == 0xff) /* a socket bound to one interface's address leaves through it */
+        for (int i = 0; i < net_interface_count(); i++)
+            if (v6[i].ll_ok && !memcmp(s, v6[i].ll, 16))
+                ifc = net_interface(i);
     if (proto == IP_ICMP)
         proto = ICMP6;
     return raw_send(ifc, s, d, proto, 64, payload, length);
@@ -460,6 +464,7 @@ static void router_advert(struct net_iface *ifc, struct net6 *v, const uint8_t *
     const uint8_t *o = option(p, length, 16, 1, &n);
     if (o && n >= 8)
         neighbor_learn(ifc, src, o + 2);
+    v->ra_flags = p[5];
     if (rd16(p + 6)) {
         memcpy(v->router, src, 16);
         v->router_ok = true;

@@ -1,6 +1,7 @@
 """An IPv6 neighbour for the tests, on the other end of a QEMU socket network card (Ethernet frames in UDP).
 
-It is the router of 2001:db8:1::/64 (router advertisements with the prefix and a DNS server), answers neighbour
+It is the router of 2001:db8:1::/64 (router advertisements with the prefix, a DNS server and the M and O flags), a
+DHCPv6 server (2001:db8:1::100 for whoever asks, the DNS server, the search domain test.lan), answers neighbour
 solicitations and pings, AAAA questions for six.test, and HTTP on port 80 of 2001:db8:1::1 with a tiny TCP.
 Usage: v6peer.py LISTEN_PORT QEMU_PORT
 """
@@ -46,7 +47,7 @@ def send(dst_mac, src, dst, proto, payload, hops=64):
 
 
 def advert(dst_mac, dst):
-    ra = struct.pack("!BBHBBHII", 134, 0, 0, 64, 0, 1800, 0, 0)
+    ra = struct.pack("!BBHBBHII", 134, 0, 0, 64, 0xC0, 1800, 0, 0)
     ra += struct.pack("!BB", 1, 1) + MAC
     ra += struct.pack("!BBBBIII", 3, 4, 64, 0xC0, 86400, 14400, 0) + PREFIX
     ra += struct.pack("!BBHI", 25, 3, 0, 3600) + DNS
@@ -68,6 +69,38 @@ def dns_answer(q):
         return struct.pack("!HHHHHH", ident, 0x8180, 1, 0, 0, 0) + question
     answer = b"\xc0\x0c" + struct.pack("!HHIH", 28, 1, 300, 16) + HOST
     return struct.pack("!HHHHHH", ident, 0x8180, 1, 1, 0, 0) + question + answer
+
+
+LEASE = PREFIX[:14] + b"\x01\x00"
+SERVER_ID = struct.pack("!HH", 3, 1) + MAC
+
+
+def dhcp6_options(msg):
+    out, at = {}, 4
+    while at + 4 <= len(msg):
+        code, n = struct.unpack("!HH", msg[at:at + 4])
+        out[code] = msg[at + 4:at + 4 + n]
+        at += 4 + n
+    return out
+
+
+def opt(code, data):
+    return struct.pack("!HH", code, len(data)) + data
+
+
+def dhcp6_answer(msg):
+    kind, opts = msg[0], dhcp6_options(msg)
+    if kind not in (1, 3, 11) or 1 not in opts:
+        return None
+    body = opt(1, opts[1]) + opt(2, SERVER_ID) + opt(23, DNS) + opt(24, b"\x04test\x03lan\x00")
+    if kind in (1, 3) and 3 in opts:
+        iaid = opts[3][:4]
+        body += opt(3, iaid + struct.pack("!II", 1800, 2880) + opt(5, LEASE + struct.pack("!II", 3600, 7200)))
+    if kind == 1 and 14 not in opts:
+        return bytes([2]) + msg[1:4] + body  # advertise, then a request follows
+    if kind == 1:
+        body += opt(14, b"")
+    return bytes([7]) + msg[1:4] + body
 
 
 conns = {}
@@ -128,5 +161,10 @@ while True:
         sport = struct.unpack("!H", payload[:2])[0]
         answer = dns_answer(payload[8:])
         send(mac, DNS, src, 17, struct.pack("!HHHH", 53, sport, 8 + len(answer), 0) + answer)
+    elif proto == 17 and dst[:2] == b"\xff\x02" and len(payload) > 12 and struct.unpack("!H", payload[2:4])[0] == 547:
+        answer = dhcp6_answer(payload[8:])
+        if answer:
+            sport = struct.unpack("!H", payload[:2])[0]
+            send(mac, LL, src, 17, struct.pack("!HHHH", 547, sport, 8 + len(answer), 0) + answer)
     elif proto == 6 and dst == HOST:
         tcp(mac, src, dst, payload)

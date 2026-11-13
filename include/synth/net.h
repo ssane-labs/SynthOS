@@ -31,6 +31,7 @@ struct net6 {
     uint32_t ll_h, global_h, dns_h;
     uint64_t rs_at;
     int rs_count;
+    uint8_t ra_flags; /* the router's M (0x80: addresses from DHCPv6) and O (0x40: other settings) flags */
 };
 
 enum net_type {

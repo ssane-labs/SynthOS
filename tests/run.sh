@@ -979,6 +979,14 @@ config dnsserver 2001:db8:1::53; nslookup six.test; config dnsserver auto
 six.test has IPv6 address 2001:db8:1::1
 config dnsserver 2001:db8:1::53; wget -O - http://six.test/x | tail -n 1; config dnsserver auto; config dnsserver
 dnsserver = auto
+dhcpv6 | grep "eth1: the router"
+eth1: the router hands out addresses by DHCPv6 (M)
+dhcpv6 ask | grep "address 2001"
+address 2001:db8:1::100, valid 7200 s
+dhcpv6 | grep -c "search domains test.lan"
+1
+dhcpv6 | grep "DNS server fec0"
+DNS server fec0::3
 config ipv6 off; ping -c 1 fec0::2 | grep -c from; config ipv6 on
 0
 vpn import /mnt/hdb/test-vpn.conf; vpn list
@@ -1297,6 +1305,8 @@ XEOF
     printf '{"leagues":[{"name":"Test League"}],"events":[{"id":"1","uid":"s:600~l:700~e:1","shortName":"AAA @ BBB","competitions":[{"id":"1","uid":"s:600~l:700~e:1~c:1","competitors":[{"id":"9","homeAway":"home","score":"2","team":{"id":"9","abbreviation":"BBB"}},{"id":"8","homeAway":"away","score":"1","team":{"id":"8","abbreviation":"AAA"}}]}],"status":{"type":{"shortDetail":"FT"}},"links":[{"href":"https://example.com/match/_/gameId/1"}]},{"id":"2","uid":"s:600~l:700~e:2","shortName":"CCC @ DDD","competitions":[{"id":"2","uid":"s:600~l:700~e:2~c:2","competitors":[{"id":"7","homeAway":"home","score":"0","team":{"id":"7","abbreviation":"DDD"}},{"id":"6","homeAway":"away","score":"0","team":{"id":"6","abbreviation":"CCC"}}]}],"status":{"type":{"shortDetail":"Sat 3:00 PM"}}}]}' > "$work/www/scores.json"
     mkdir -p "$work/www/cjk"
     python3 -I tests/cjk.py "$work/www/cjk"
+    python3 -I tests/proxy.py "$((port + 3))" >/dev/null 2>&1 &
+    server="$server $!"
     mkdir -p "$work/www/store"
     python3 -I -c 'import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
@@ -1395,6 +1405,18 @@ wget -O - https://10.0.2.2:$port/hello.txt
 certificate is not trusted
 mkdir /home/certs; cp /mnt/hdb/test-ca.pem /home/certs/; certs reload | grep -c trusted; wget -O - https://10.0.2.2:$port/hello.txt
 secret over tls
+proxy set http://10.0.2.2:$((port + 3)); wget -O - https://10.0.2.2:$port/hello.txt
+wget: 10.0.2.2: permission denied
+proxy set http://test:pw@10.0.2.2:$((port + 3)); wget -O - https://10.0.2.2:$port/hello.txt
+secret over tls
+wget -O - http://proxy.test/hi
+served by the proxy for http://proxy.test:80/hi
+proxy set http://test:wrong@10.0.2.2:$((port + 3)); proxy bypass 10.0.2.2 .example.com
+direct: 10.0.2.2,.example.com
+wget -O - https://10.0.2.2:$port/hello.txt
+secret over tls
+proxy off; wget -O - https://10.0.2.2:$port/hello.txt
+proxy: none, downloads go direct
 languages install https://10.0.2.2:$port/cjk/
 installed: 10 characters to show
 languages | grep pack

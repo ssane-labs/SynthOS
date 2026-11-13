@@ -4,6 +4,7 @@
 #include <synth/heap.h>
 #include <synth/http.h>
 #include <synth/input.h>
+#include <synth/module.h>
 #include <synth/inflate.h>
 #include <synth/net.h>
 #include <synth/string.h>
@@ -443,15 +444,46 @@ static int emit(const struct http_request *req, struct gunzip_stream *z, const v
     return z ? gunzip_stream_push(z, data, n) : req->sink(req->ctx, data, n);
 }
 
+/* An HTTPS tunnel through the proxy: CONNECT, then the answer read up to its blank line and no further */
+static int tunnel(struct conn *c, const char *target, const char *auth)
+{
+    char line[600];
+    int n = ksnprintf(line, sizeof(line), "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s%s%s\r\n", target, target,
+                      auth[0] ? "Proxy-Authorization: " : "", auth, auth[0] ? "\r\n" : "");
+    int err = conn_send(c, line, (size_t)n);
+    size_t got = 0;
+    uint64_t start = hal_ticks_ms();
+    while (!err && (got < 4 || memcmp(line + got - 4, "\r\n\r\n", 4))) {
+        long k = got + 1 < sizeof(line) ? net_recv(c->sock, line + got, 1) : E_IO;
+        if (k == E_AGAIN && hal_ticks_ms() - start < IDLE_TIMEOUT)
+            net_wait(1);
+        else if (k <= 0)
+            err = k ? (int)k : E_IO;
+        else
+            got++;
+    }
+    line[got] = 0;
+    return err ? err : strncmp(line, "HTTP/1.", 7) || strncmp(line + 8, " 200", 4) ? E_PERM : 0;
+}
+
 static int fetch_once(const struct http_request *req, const char *url, struct http_response *resp)
 {
     struct http_url u;
     if (!http_parse_url(url, &u))
         return E_INVAL;
+    static const struct http_proxy *px;
+    static bool looked;
+    if (!looked && module_service) {
+        looked = true;
+        px = module_service("http-proxy");
+    }
+    char via[256], auth[256] = "";
+    uint16_t via_port = 0;
+    bool proxied = px && px->route(&u, via, sizeof(via), &via_port, auth, sizeof(auth));
     uint32_t ip;
     if (req->progress)
         req->progress(req->ctx, "resolving", 0, 0);
-    int err = net_resolve(u.host, &ip, 5000);
+    int err = net_resolve(proxied ? via : u.host, &ip, 5000);
     if (err)
         return err;
     struct conn c = {net_socket(NET_TCP), NULL};
@@ -459,7 +491,14 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         return c.sock;
     if (req->progress)
         req->progress(req->ctx, "connecting", 0, 0);
-    if ((err = net_connect(c.sock, ip, u.port, 10000))) {
+    if ((err = net_connect(c.sock, ip, proxied ? via_port : u.port, 10000))) {
+        conn_close(&c);
+        return err;
+    }
+    bool literal6 = strchr(u.host, ':') != NULL;
+    char target[300];
+    ksnprintf(target, sizeof(target), literal6 ? "[%s]:%u" : "%s:%u", u.host, u.port);
+    if (proxied && u.https && (err = tunnel(&c, target, auth))) {
         conn_close(&c);
         return err;
     }
@@ -476,7 +515,6 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
     }
     const char *method = req->method ? req->method : req->flags & HTTP_HEAD ? "HEAD" : "GET";
     char host[300];
-    bool literal6 = strchr(u.host, ':') != NULL;
     if (u.port == (u.https ? 443 : 80))
         ksnprintf(host, sizeof(host), literal6 ? "[%s]" : "%s", u.host);
     else
@@ -487,9 +525,13 @@ static int fetch_once(const struct http_request *req, const char *url, struct ht
         return E_NOMEM;
     }
     int n = ksnprintf(head, HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX,
-                      "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (SynthOS) SynthOS-HTTP/1.0\r\n"
+                      "%s %s%s%s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (SynthOS) SynthOS-HTTP/1.0\r\n"
                       "Accept: */*\r\nAccept-Encoding: %s\r\nConnection: close\r\n",
-                      method, u.path, host, req->flags & HTTP_GZIP ? "gzip" : "identity");
+                      method, proxied && !u.https ? "http://" : "", proxied && !u.https ? target : "", u.path, host,
+                      req->flags & HTTP_GZIP ? "gzip" : "identity");
+    if (proxied && !u.https && auth[0])
+        n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX - n), "Proxy-Authorization: %s\r\n",
+                       auth);
     if (req->body)
         n += ksnprintf(head + n, (size_t)(HTTP_URL_MAX + 2048 + COOKIE_HEADER_MAX - n), "Content-Length: %u\r\n",
                        (unsigned)req->body_len);
