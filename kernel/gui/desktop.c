@@ -1725,6 +1725,7 @@ static bool win_key(int key)
     case 'i': gui_app_launch(gui_app_find("System Settings"), NULL); return true;
     case 'a': control_center_toggle(s.x + s.w - 8); return true;
     case 'n': notification_center_toggle(); return true;
+    case 'v': gui_clipboard_history_show(); return true;
     case 'm': desktop_show_toggle(); return true;
     case 's':
         if (key & KEY_MOD_SHIFT) {
@@ -1840,6 +1841,10 @@ static void cmd_key(int key)
     }
     if (base == 'l' || base == 'L') {
         gui_lock();
+        return;
+    }
+    if (base == 'V' || (base == 'v' && (mods & KEY_MOD_SHIFT))) {
+        gui_clipboard_history_show();
         return;
     }
     if ((base >= 'a' && base <= 'z') || (base >= 'A' && base <= 'Z')) {

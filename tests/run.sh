@@ -130,6 +130,10 @@ session forget; session show
 no saved session
 config reopen
 reopen = on
+clip forget; clip set alpha one; clip set beta two; clip set alpha one; clip history
+2  beta two
+clip forget; clip set first; clip set second; clip pick 2; clip
+first
 imginfo /system/wallpapers/Dunes.jpg
 1280x800, 1 frame, average #8e6262
 imginfo /system/wallpapers/Glacier.jpg

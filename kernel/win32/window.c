@@ -144,6 +144,7 @@ static const struct gui_app *app_of_process(void)
 }
 
 static const struct window_ops bridge_ops;
+static void bridge_drop(struct window *wm, int x, int y, const char *paths);
 
 /* Programs place their windows by Windows' rules; on SynthOS they stay out of the shell's panels and docks. */
 static void move_into_work(struct window *wm, int x, int y)
