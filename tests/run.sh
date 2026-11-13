@@ -56,7 +56,7 @@ fi
 # the assistant's engine: a tiny model with random weights in every quantisation, and what it must compute
 # (tests/aimodel.py works it out with numpy)
 if python3 -I -c "import numpy" 2>/dev/null && python3 -I tests/aimodel.py "$work" >/dev/null; then
-    for m in tiny tiny3 tinyl; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
+    for m in tiny tiny3 tinyl tinysc; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
     mcopy -i "$work/fat.img" "$work/whisper.bin" ::/whisper.bin && mcopy -i "$work/fat.img" "$work/speech.wav" ::/speech.wav
 fi
 
@@ -1617,6 +1617,12 @@ if [ -f "$work/cases.txt" ]; then
     [ "$KERNEL64" = 1 ] && printf 'ai ask -n 3 hi\n[3 tokens, 0 tool calls\n' >> "$work/cases"
     printf 'ai unload\nmodel unloaded\n' >> "$work/cases"
 fi
+# Tab completion without a model: real sites only (Obscura, 64-bit), the address book
+[ "$KERNEL64" = 1 ] && printf 'ai complete --url githu\ncompletion: [b.com]\nai complete --url huggingf\ncompletion: [ace.co]\nai complete --url qqzzxq\ncompletion: []\n' >> "$work/cases"
+cat >> "$work/cases" <<'EOF'
+echo "221B Baker Street, London" > /home/addresses.txt; ai complete --address 221b Bak
+completion: [er Street, London]
+EOF
 cat >> "$work/cases" <<'EOF'
 ai tool run_command '{"command": "echo ab    zq"}'
 result: ab zq

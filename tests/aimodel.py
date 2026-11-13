@@ -463,11 +463,12 @@ def build(arch, rng):
         (arch + ".attention.head_count", T_U32, heads),
         (arch + ".attention.head_count_kv", T_U32, kv_heads),
         (arch + ".rope.freq_base", T_F32, 1000000.0 if arch != "llama" else 500000.0),
-        (arch + ".attention.layer_norm_rms_epsilon", T_F32, 1e-6),
+        (arch + (".attention.layer_norm_epsilon" if arch == "starcoder2" else ".attention.layer_norm_rms_epsilon"),
+         T_F32, 1e-6),
         (arch + ".attention.key_length", T_U32, hd),
         (arch + ".attention.value_length", T_U32, hd),
         ("tokenizer.ggml.model", T_STR, "gpt2"),
-        ("tokenizer.ggml.pre", T_STR, "minicpm5" if arch == "llama" else "qwen2"),
+        ("tokenizer.ggml.pre", T_STR, {"llama": "minicpm5", "starcoder2": "starcoder"}.get(arch, "qwen2")),
         ("tokenizer.ggml.tokens", T_ARR, (T_STR, tokens)),
         ("tokenizer.ggml.token_type", T_ARR, (T_I32, ttype)),
         ("tokenizer.ggml.merges", T_ARR, (T_STR, [a + " " + b for a, b in merges])),
@@ -494,10 +495,12 @@ def build(arch, rng):
     for l in range(layers):
         p = "blk.%d." % l
         add(p + "attn_norm.weight", "F32", dim, 1, 1.0)
+        if arch == "starcoder2":
+            add(p + "attn_norm.bias", "F32", dim, 1, 0.2)
         add(p + "attn_q.weight", plan[l]["attn_q"], dim, heads * hd, 0.08)
         add(p + "attn_k.weight", plan[l]["attn_k"], dim, kv_heads * hd, 0.08)
         add(p + "attn_v.weight", plan[l]["attn_v"], dim, kv_heads * hd, 0.08)
-        if arch == "qwen2":
+        if arch in ("qwen2", "starcoder2"):
             add(p + "attn_q.bias", "F32", heads * hd, 1, 0.2)
             add(p + "attn_k.bias", "F32", kv_heads * hd, 1, 0.2)
             add(p + "attn_v.bias", "F32", kv_heads * hd, 1, 0.2)
@@ -505,11 +508,21 @@ def build(arch, rng):
             add(p + "attn_q_norm.weight", "F32", hd, 1, 1.0)
             add(p + "attn_k_norm.weight", "F32", hd, 1, 1.0)
         add(p + "attn_output.weight", plan[l]["attn_output"], heads * hd, dim, 0.08)
+        if arch == "starcoder2":
+            add(p + "attn_output.bias", "F32", dim, 1, 0.2)
         add(p + "ffn_norm.weight", "F32", dim, 1, 1.0)
-        add(p + "ffn_gate.weight", plan[l]["ffn_gate"], dim, ffn, 0.08)
+        if arch == "starcoder2":
+            add(p + "ffn_norm.bias", "F32", dim, 1, 0.2)
+        else:
+            add(p + "ffn_gate.weight", plan[l]["ffn_gate"], dim, ffn, 0.08)
         add(p + "ffn_up.weight", plan[l]["ffn_up"], dim, ffn, 0.08)
         add(p + "ffn_down.weight", plan[l]["ffn_down"], ffn, dim, 0.06)
+        if arch == "starcoder2":
+            add(p + "ffn_up.bias", "F32", ffn, 1, 0.2)
+            add(p + "ffn_down.bias", "F32", dim, 1, 0.2)
     add("output_norm.weight", "F32", dim, 1, 1.0)
+    if arch == "starcoder2":
+        add("output_norm.bias", "F32", dim, 1, 0.2)
     add("output.weight", "Q6_K", dim, nv, 0.08)
     cfg = dict(arch=arch, dim=dim, ffn=ffn, heads=heads, kv=kv_heads, hd=hd, layers=layers, eps=1e-6,
                base=1000000.0 if arch != "llama" else 500000.0)
@@ -531,6 +544,13 @@ def rope(v, pos, hd, base, neox):
     return out
 
 
+def norm(W, name, x, cfg):
+    if cfg["arch"] != "starcoder2":
+        return rmsnorm(x, W[name + ".weight"], cfg["eps"])
+    m = x.mean()
+    return (x - m) / np.sqrt(((x - m) ** 2).mean() + cfg["eps"]) * W[name + ".weight"] + W[name + ".bias"]
+
+
 def forward(W, cfg, tokens):
     """logits after every position"""
     hd, H, KV = cfg["hd"], cfg["heads"], cfg["kv"]
@@ -542,11 +562,11 @@ def forward(W, cfg, tokens):
         x = W["token_embd.weight"][t].copy()
         for l in range(cfg["layers"]):
             p = "blk.%d." % l
-            h = rmsnorm(x, W[p + "attn_norm.weight"], cfg["eps"])
+            h = norm(W, p + "attn_norm", x, cfg)
             q = W[p + "attn_q.weight"] @ h
             k = W[p + "attn_k.weight"] @ h
             v = W[p + "attn_v.weight"] @ h
-            if cfg["arch"] == "qwen2":
+            if cfg["arch"] in ("qwen2", "starcoder2"):
                 q += W[p + "attn_q.bias"]
                 k += W[p + "attn_k.bias"]
                 v += W[p + "attn_v.bias"]
@@ -567,11 +587,17 @@ def forward(W, cfg, tokens):
                 sc /= sc.sum()
                 att[hh * hd:(hh + 1) * hd] = sum(w * vv[g] for w, vv in zip(sc, vc[l]))
             x = x + W[p + "attn_output.weight"] @ att
-            h = rmsnorm(x, W[p + "ffn_norm.weight"], cfg["eps"])
-            gt = W[p + "ffn_gate.weight"] @ h
-            up = W[p + "ffn_up.weight"] @ h
-            x = x + W[p + "ffn_down.weight"] @ (gt / (1 + np.exp(-gt)) * up)
-        x = rmsnorm(x, W["output_norm.weight"], cfg["eps"])
+            if cfg["arch"] == "starcoder2":
+                x = x + W[p + "attn_output.bias"]
+            h = norm(W, p + "ffn_norm", x, cfg)
+            if cfg["arch"] == "starcoder2":
+                x = x + W[p + "ffn_down.weight"] @ gelu(W[p + "ffn_up.weight"] @ h + W[p + "ffn_up.bias"])
+                x = x + W[p + "ffn_down.bias"]
+            else:
+                gt = W[p + "ffn_gate.weight"] @ h
+                up = W[p + "ffn_up.weight"] @ h
+                x = x + W[p + "ffn_down.weight"] @ (gt / (1 + np.exp(-gt)) * up)
+        x = norm(W, "output_norm", x, cfg)
         res.append(W["output.weight"] @ x)
     return res
 
@@ -585,6 +611,59 @@ def greedy(W, cfg, prompt, n):
         margins.append(logits[order[0]] - logits[order[1]])
         ids.append(int(order[0]))
     return ids[len(prompt):], min(margins)
+
+
+def complete_text(W, cfg, vocab, tk, before):
+    """what ai complete prints for before (plain text): the last word is healed, greedy after that; with the
+    smallest gap between the best token and the next allowed one"""
+    inv = {i: t for t, i in vocab.items()}
+    u2b = {c: b for b, c in B2U.items()}
+
+    def piece(i):
+        t = inv[i]
+        return b"" if t.startswith("<|") else bytes(u2b[c] for c in t)
+
+    def word(c):
+        return chr(c).isalnum() or c == ord("_") or c >= 0x80
+
+    b = before.encode()
+    n = cut = len(b)
+    while cut > 0 and n - cut < 40 and word(b[cut - 1]):
+        cut -= 1
+    if cut > 0 and b[cut - 1] == ord(" ") and n - cut < 40:
+        cut -= 1
+    heal, text = b[cut:], b[max(0, cut - 400):cut].decode()
+    ids = tk(text if text else "\n")
+    out, made, gaps = b"", 0, []
+    while True:
+        logits = forward(W, cfg, ids)[-1]
+        allowed = []
+        for i in range(len(logits)):
+            p = piece(i)
+            if heal and (not p or p[:len(heal)] != heal[:len(p)]):
+                continue
+            allowed.append(i)
+        order = sorted(allowed, key=lambda i: -logits[i])
+        if not order:
+            return None, 0
+        best = order[0]
+        if len(order) > 1:
+            gaps.append(logits[best] - logits[order[1]])
+        p = piece(best)
+        if not p:
+            break
+        if heal:
+            used = min(len(p), len(heal))
+            heal, p = heal[used:], p[used:]
+        nl = b"\n" in p
+        p = p.split(b"\n")[0]
+        out += p
+        made += 1
+        sentence = out and not heal and out[-1:] in (b".", b"!", b"?")
+        if nl or sentence or made >= 12 or len(out) >= 96:
+            break
+        ids.append(best)
+    return (None if heal else out), (min(gaps) if gaps else 9)
 
 
 def make(out, arch, fname, with_tokens):
@@ -612,6 +691,15 @@ def make(out, arch, fname, with_tokens):
         text = "a quickly brownish fox 12345"
         cases += ['ai tokens "%s"' % text, "tokens: " + " ".join(map(str, tk(text)))]
     cases += ["ai next %s -n 6" % " ".join(map(str, prompt)), "next: " + " ".join(map(str, gen))]
+    if with_tokens:  # Tab completion with this model: the first prompt that completes to plain text, safely
+        for before in ["hello wor", "the quick bro", "it is do", "the brown fox ju", "x", "t", "a"]:
+            out, gap = complete_text(W, cfg, vocab, tk, before)
+            if out and gap > 0.02 and len(out.strip()) >= 2:
+                shown = "".join(chr(c) if 32 <= c < 127 and c != 92 else "\\x%02x" % c for c in out)
+                cases += ["ai complete --model %s %s" % (path, before), "completion: [%s]" % shown]
+                break
+        else:
+            raise SystemExit("no prompt completes cleanly")
     return cases
 
 
@@ -856,7 +944,8 @@ def make_whisper(out):
 
 def main():
     out = sys.argv[1]
-    cases = make(out, "qwen2", "tiny", True) + make(out, "qwen3", "tiny3", False) + make(out, "llama", "tinyl", False)
+    cases = make(out, "qwen2", "tiny", True) + make(out, "qwen3", "tiny3", False) + make(out, "llama", "tinyl", False) + \
+        make(out, "starcoder2", "tinysc", False)
     # a whole turn of the assistant (system prompt with the tools, the chat format) on the last model loaded
     cases += ["ai ask -n 5 --no-tools hello there", "[5 tokens, 0 tool calls"]
     cases += make_whisper(out)

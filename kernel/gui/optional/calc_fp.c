@@ -1579,6 +1579,7 @@ static void launch(const char *arg)
     c->cat = (int)CLAMP(app_state_number("Calculator", "category", 0), 0, (long)ARRAY_SIZE(categories) - 1);
     c->to = 1;
     ui_text_set(&c->value, "1");
+    c->value.complete = COMPLETE_OFF;
     clear(c);
     refresh(c);
     c->win = wm_open("Calculator", ICON_CALC, widths[c->mode], heights[c->mode], &ops, c, WIN_FULLSIZE | WIN_NOTITLE);

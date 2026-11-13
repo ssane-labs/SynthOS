@@ -6,7 +6,7 @@
 
 #define AI_BATCH 16
 
-enum { ARCH_LLAMA, ARCH_QWEN2, ARCH_QWEN3 };
+enum { ARCH_LLAMA, ARCH_QWEN2, ARCH_QWEN3, ARCH_STARCODER2 };
 
 struct ai_tensor {
     const uint8_t *data;
@@ -18,6 +18,7 @@ struct ai_tensor {
 struct ai_layer {
     struct ai_tensor q, k, v, o, gate, up, down;
     float *attn_norm, *ffn_norm, *bq, *bk, *bv, *q_norm, *k_norm;
+    float *attn_norm_b, *ffn_norm_b, *bo, *bup, *bdown; /* StarCoder2: layer norms and biases everywhere */
 };
 
 struct ai_model {
@@ -29,7 +30,7 @@ struct ai_model {
     int dim, ffn, heads, kv_heads, hd, layers, vocab, ctx;
     float eps;
     struct ai_tensor embd, out;
-    float *out_norm;
+    float *out_norm, *out_norm_b;
     struct ai_layer *L;
     float *inv_freq;
     float *kc, *vc; /* [layer][ctx][kv_heads * hd] */
@@ -52,9 +53,15 @@ static void model_free(struct ai_model *m)
             kfree(l->bv);
             kfree(l->q_norm);
             kfree(l->k_norm);
+            kfree(l->attn_norm_b);
+            kfree(l->ffn_norm_b);
+            kfree(l->bo);
+            kfree(l->bup);
+            kfree(l->bdown);
         }
     kfree(m->L);
     kfree(m->out_norm);
+    kfree(m->out_norm_b);
     kfree(m->inv_freq);
     big_free(m->kc);
     big_free(m->vc);
@@ -134,8 +141,11 @@ static int model_load(struct ai_model *m, uint8_t *file, size_t size, int ctx_wa
         m->arch = ARCH_QWEN2;
     else if (gs_eq(arch, "qwen3"))
         m->arch = ARCH_QWEN3;
+    else if (gs_eq(arch, "starcoder2"))
+        m->arch = ARCH_STARCODER2;
     else {
-        ksnprintf(why, cap, "models of type \"%s\" are not supported (llama, qwen2 and qwen3 are)", m->arch_name);
+        ksnprintf(why, cap, "models of type \"%s\" are not supported (llama, qwen2, qwen3 and starcoder2 are)",
+                  m->arch_name);
         m->file = NULL;
         model_free(m);
         return E_NOSYS;
@@ -151,7 +161,9 @@ static int model_load(struct ai_model *m, uint8_t *file, size_t size, int ctx_wa
     m->hd = m->heads ? (int)gv_uint(gguf_find_arch(&m->g, a, "attention.key_length"),
                                     (uint64_t)(m->dim / m->heads))
                      : 0;
-    m->eps = gv_float(gguf_find_arch(&m->g, a, "attention.layer_norm_rms_epsilon"), 1e-5f);
+    m->eps = gv_float(gguf_find_arch(&m->g, a, m->arch == ARCH_STARCODER2 ? "attention.layer_norm_epsilon"
+                                                                          : "attention.layer_norm_rms_epsilon"),
+                      1e-5f);
     float base = gv_float(gguf_find_arch(&m->g, a, "rope.freq_base"), 10000.0f);
     int train_ctx = (int)gv_uint(gguf_find_arch(&m->g, a, "context_length"), 2048);
     if (m->dim <= 0 || m->dim > 16384 || m->ffn <= 0 || m->ffn > 65536 || m->layers <= 0 || m->layers > 256 ||
@@ -177,19 +189,24 @@ static int model_load(struct ai_model *m, uint8_t *file, size_t size, int ctx_wa
     else
         m->out = m->embd; /* tied embeddings */
     m->L = kzalloc(sizeof(struct ai_layer) * (size_t)m->layers);
+    bool sc2 = m->arch == ARCH_STARCODER2;
     ok = ok && m->L && (m->out_norm = get_vector(m, "output_norm.weight", m->dim, false, why, cap));
+    if (ok && sc2)
+        ok = (m->out_norm_b = get_vector(m, "output_norm.bias", m->dim, false, why, cap)) != NULL;
     for (int i = 0; ok && i < m->layers; i++) {
         struct ai_layer *l = &m->L[i];
         char n[64];
 #define MAT(field, part, c, r) (ksnprintf(n, sizeof(n), "blk.%d." part ".weight", i), get_matrix(m, n, c, r, &l->field, why, cap))
 #define VEC(field, part, len, opt) (ksnprintf(n, sizeof(n), "blk.%d." part, i), (l->field = get_vector(m, n, len, opt, why, cap)) || opt)
         ok = MAT(q, "attn_q", m->dim, qd) && MAT(k, "attn_k", m->dim, kvd) && MAT(v, "attn_v", m->dim, kvd) &&
-             MAT(o, "attn_output", qd, m->dim) && MAT(gate, "ffn_gate", m->dim, m->ffn) &&
+             MAT(o, "attn_output", qd, m->dim) && (sc2 || MAT(gate, "ffn_gate", m->dim, m->ffn)) &&
              MAT(up, "ffn_up", m->dim, m->ffn) && MAT(down, "ffn_down", m->ffn, m->dim) &&
              VEC(attn_norm, "attn_norm.weight", m->dim, false) && VEC(ffn_norm, "ffn_norm.weight", m->dim, false) &&
              VEC(bq, "attn_q.bias", qd, true) && VEC(bk, "attn_k.bias", kvd, true) &&
              VEC(bv, "attn_v.bias", kvd, true) && VEC(q_norm, "attn_q_norm.weight", m->hd, true) &&
-             VEC(k_norm, "attn_k_norm.weight", m->hd, true);
+             VEC(k_norm, "attn_k_norm.weight", m->hd, true) && VEC(attn_norm_b, "attn_norm.bias", m->dim, !sc2) &&
+             VEC(ffn_norm_b, "ffn_norm.bias", m->dim, !sc2) && VEC(bo, "attn_output.bias", m->dim, true) &&
+             VEC(bup, "ffn_up.bias", m->ffn, true) && VEC(bdown, "ffn_down.bias", m->dim, true);
 #undef MAT
 #undef VEC
     }
@@ -245,6 +262,31 @@ static void rmsnorm(float *out, const float *x, const float *w, int n, float eps
     float s = 1.0f / ai_sqrtf(ss / (float)n + eps);
     for (int i = 0; i < n; i++)
         out[i] = x[i] * s * w[i];
+}
+
+/* the model's normalisation: RMS norm, or for StarCoder2 a layer norm with a bias */
+static void norm(const struct ai_model *m, float *out, const float *x, const float *w, const float *b, int n)
+{
+    if (!b) {
+        rmsnorm(out, x, w, n, m->eps);
+        return;
+    }
+    float mean = 0, var = 0;
+    for (int i = 0; i < n; i++)
+        mean += x[i];
+    mean /= (float)n;
+    for (int i = 0; i < n; i++)
+        var += (x[i] - mean) * (x[i] - mean);
+    float k = 1.0f / ai_sqrtf(var / (float)n + m->eps);
+    for (int i = 0; i < n; i++)
+        out[i] = (x[i] - mean) * k * w[i] + b[i];
+}
+
+static void add_bias(float *x, const float *b, int n, int batch, int stride)
+{
+    for (int t = 0; b && t < batch; t++)
+        for (int i = 0; i < n; i++)
+            x[(size_t)t * (size_t)stride + (size_t)i] += b[i];
 }
 
 struct mm_job {
@@ -409,7 +451,7 @@ static void forward(struct ai_model *m, const int *tokens, int batch, bool logit
     for (int li = 0; li < m->layers; li++) {
         struct ai_layer *l = &m->L[li];
         for (int t = 0; t < batch; t++)
-            rmsnorm(m->xb + (size_t)t * (size_t)dim, m->x + (size_t)t * (size_t)dim, l->attn_norm, dim, m->eps);
+            norm(m, m->xb + (size_t)t * (size_t)dim, m->x + (size_t)t * (size_t)dim, l->attn_norm, l->attn_norm_b, dim);
         matmul(&l->q, m->xb, dim, m->q, qd, batch);
         matmul(&l->k, m->xb, dim, m->k, kvd, batch);
         matmul(&l->v, m->xb, dim, m->v, kvd, batch);
@@ -440,23 +482,35 @@ static void forward(struct ai_model *m, const int *tokens, int batch, bool logit
         struct att_job aj = {m, li, pos0, batch};
         hal_parallel(att_part, &aj, batch * m->heads, 1);
         matmul(&l->o, m->att, qd, m->xb, dim, batch);
+        add_bias(m->xb, l->bo, dim, batch, dim);
         for (size_t i = 0; i < (size_t)batch * (size_t)dim; i++)
             m->x[i] += m->xb[i];
         for (int t = 0; t < batch; t++)
-            rmsnorm(m->xb + (size_t)t * (size_t)dim, m->x + (size_t)t * (size_t)dim, l->ffn_norm, dim, m->eps);
-        matmul(&l->gate, m->xb, dim, m->hb, m->ffn, batch);
-        matmul(&l->up, m->xb, dim, m->hb2, m->ffn, batch);
-        for (size_t i = 0; i < (size_t)batch * (size_t)m->ffn; i++) {
-            float g = m->hb[i];
-            m->hb[i] = g / (1.0f + ai_expf(-g)) * m->hb2[i];
+            norm(m, m->xb + (size_t)t * (size_t)dim, m->x + (size_t)t * (size_t)dim, l->ffn_norm, l->ffn_norm_b, dim);
+        if (!l->gate.data) { /* StarCoder2: up, GELU, down */
+            matmul(&l->up, m->xb, dim, m->hb, m->ffn, batch);
+            add_bias(m->hb, l->bup, m->ffn, batch, m->ffn);
+            for (size_t i = 0; i < (size_t)batch * (size_t)m->ffn; i++) {
+                float x = m->hb[i], u = 0.7978845608f * (x + 0.044715f * x * x * x);
+                float th = u > 10.0f ? 1.0f : u < -10.0f ? -1.0f : 1.0f - 2.0f / (ai_expf(2.0f * u) + 1.0f);
+                m->hb[i] = 0.5f * x * (1.0f + th);
+            }
+        } else {
+            matmul(&l->gate, m->xb, dim, m->hb, m->ffn, batch);
+            matmul(&l->up, m->xb, dim, m->hb2, m->ffn, batch);
+            for (size_t i = 0; i < (size_t)batch * (size_t)m->ffn; i++) {
+                float g = m->hb[i];
+                m->hb[i] = g / (1.0f + ai_expf(-g)) * m->hb2[i];
+            }
         }
         matmul(&l->down, m->hb, m->ffn, m->xb, dim, batch);
+        add_bias(m->xb, l->bdown, dim, batch, dim);
         for (size_t i = 0; i < (size_t)batch * (size_t)dim; i++)
             m->x[i] += m->xb[i];
     }
     m->n_past += batch;
     if (logits) {
-        rmsnorm(m->xb, m->x + (size_t)(batch - 1) * (size_t)dim, m->out_norm, dim, m->eps);
+        norm(m, m->xb, m->x + (size_t)(batch - 1) * (size_t)dim, m->out_norm, m->out_norm_b, dim);
         matmul(&m->out, m->xb, dim, m->logits, m->vocab, 1);
     }
 }

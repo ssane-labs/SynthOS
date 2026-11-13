@@ -1207,6 +1207,7 @@ static void inspector_frame(struct ui *ui, void *data)
     }
     case WK_WEATHER:
         ui_label(ui, (struct rect){18, y, 90, 26}, "City", &font_sans, style.text, ALIGN_LEFT);
+        in->city.complete = COMPLETE_ADDRESS;
         if (ui_textbox_hint(ui, (struct rect){100, y, W - 118, 26}, &in->city, "By address"))
             gui_setting("weathercity", in->city.len ? in->city.buf : "auto");
         break;

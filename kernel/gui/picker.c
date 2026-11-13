@@ -321,6 +321,7 @@ struct window *gui_file_picker(struct window *owner, const struct gui_picker *o,
     struct picker *p = kzalloc(sizeof(*p));
     if (!p)
         return NULL;
+    p->name.complete = COMPLETE_OFF;
     p->save = o->save;
     p->folders = o->folders;
     str_copy(p->title, o->title ? o->title : p->save ? "Save" : p->folders ? "Choose a Folder" : "Open",

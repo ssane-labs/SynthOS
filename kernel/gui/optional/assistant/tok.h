@@ -146,7 +146,10 @@ static int tok_load(struct ai_tok *t, const struct gguf *g, char *why, size_t ca
         return E_NOSYS;
     }
     struct gguf_str pre = gv_str(gguf_find(g, "tokenizer.ggml.pre"));
-    t->digits = gs_eq(pre, "qwen2") || gs_eq(pre, "deepseek-llm") ? 1 : 3;
+    t->digits = gs_eq(pre, "qwen2") || gs_eq(pre, "deepseek-llm") || gs_eq(pre, "smollm") ||
+                        gs_eq(pre, "starcoder") || gs_eq(pre, "refact")
+                    ? 1
+                    : 3;
     t->whole_words = gs_eq(pre, "minicpm5") || gs_eq(pre, "llama3") || gs_eq(pre, "llama-bpe");
     uint32_t ty;
     uint64_t n;

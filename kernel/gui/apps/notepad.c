@@ -469,7 +469,32 @@ static void frame(struct ui *ui, void *data)
     }
     int k = ui_key(ui);
     if (k != KEY_NONE && (ui->st->focus == -1 || ui->st->focus == 0)) {
-        key(w, n, k);
+        size_t len = n->len;
+        if (k == KEY_TAB && gui_hint.owner == n) { /* the grey completion */
+            erase(n, n->cursor - MIN((size_t)gui_hint.erase, n->cursor), n->cursor);
+            insert(n, gui_hint.text, strlen(gui_hint.text));
+            index_lines(n);
+            ensure_visible(w, n);
+            title(w, n);
+        } else {
+            key(w, n, k);
+        }
+        gui_hint.owner = NULL;
+        if (n->len != len && k != KEY_TAB && gui_complete_ask && !has_selection(n)) {
+            char before[1024], after[256];
+            size_t b = MIN(n->cursor, sizeof(before) - 1), a = MIN(n->len - n->cursor, sizeof(after) - 1);
+            memcpy(before, n->text + n->cursor - b, b);
+            before[b] = 0;
+            memcpy(after, n->text + n->cursor, a);
+            after[a] = 0;
+            static const char *const code[] = {".c", ".h", ".py", ".js", ".ts", ".sh", ".cpp", ".rs", ".go",
+                                               ".java", ".json", ".html", ".css", ".lua", ".cs"};
+            int kind = COMPLETE_TEXT;
+            for (size_t i = 0; i < ARRAY_SIZE(code); i++)
+                if (str_ends(n->path, code[i]))
+                    kind = COMPLETE_CODE;
+            gui_complete_ask(n, w, kind, before, after);
+        }
         ui->consumed = true;
     }
     ui_scrollbar(ui, (struct rect){W - 10, TOOLBAR_H, 10, area.h}, &n->scroll_y, content, area.h);
@@ -512,6 +537,10 @@ static void frame(struct ui *ui, void *data)
         if (line == cursor_line && w == wm_focused()) {
             int cx = text.x + x_of(n, n->cursor) - n->scroll_x;
             gfx_fill(&tc, (struct rect){cx, y + 1, 2, LINE_H - 2}, style.text);
+            if (gui_hint.owner == n && gui_hint.text[0] == '\n') /* code that goes on on the next line */
+                gfx_text(&tc, text.x - n->scroll_x, y + 1 + LINE_H, &font_mono, gui_hint.text + 1, style.secondary);
+            else if (gui_hint.owner == n)
+                gui_hint_draw(&tc, cx + 3, y + 1, &font_mono);
         }
     }
     UNUSED(H);

@@ -257,6 +257,7 @@ static void launch(const char *arg)
         return;
     s->selected = -1;
     ui_text_set(&s->time, "09:00");
+    s->time.complete = s->minutes.complete = COMPLETE_OFF;
     ui_text_set(&s->minutes, "15");
     s->days[1] = s->days[2] = s->days[3] = s->days[4] = s->days[5] = true;
     load(s);

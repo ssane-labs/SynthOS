@@ -84,6 +84,7 @@ static void frame(struct ui *ui, void *data)
     bool asks = n->page != P_INFO && n->page != P_CONNECTIONS && n->page != P_DEVICES;
     if (asks) {
         const char *hint = n->page == P_DOWNLOAD ? "Address, like example.com/page.html" : "Host name or address";
+        n->host.complete = COMPLETE_URL;
         bool enter = ui_textbox_hint(ui, (struct rect){x, y, area.w - (n->page == P_PING ? 286 : 140), 30}, &n->host, hint);
         if (n->page == P_PING) {
             static const char *const counts[] = {"3", "5", "10"};

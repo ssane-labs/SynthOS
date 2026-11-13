@@ -536,6 +536,8 @@ static void ask_about(const char *title, const char *context, const char *questi
 /* the desktop calls this while the module is installed */
 static void tick(void)
 {
+    gui_complete_ask = complete_ask; /* Tab completion in every text field */
+    complete_tick();
     voice_tick();
     if (want_speech_download) {
         want_speech_download = false;

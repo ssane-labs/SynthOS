@@ -66,7 +66,7 @@ struct desktop_icon {
 static struct volume known_volumes[8];
 static int known_count = -1;
 
-static struct desktop_icon icons[MAX_ICONS];
+static struct desktop_icon *icons; /* MAX_ICONS of them, from the heap: the 32-bit kernel image is full */
 static int icon_count;
 static int drag_icon = -1, drag_x, drag_y, hover_icon = -1;
 static bool banding;
@@ -397,6 +397,8 @@ static bool show_system_disk, show_drives;
 
 static void scan_desktop(void)
 {
+    if (!icons && !(icons = kzalloc(sizeof(*icons) * MAX_ICONS)))
+        return;
     struct desktop_icon fresh[MAX_ICONS];
     char dir[PATH_MAX_LEN];
     desktop_dir(dir, sizeof(dir));

@@ -426,6 +426,29 @@ bool ui_text_edit(struct ui_text *t, int key)
     return true;
 }
 
+struct gui_hint gui_hint;
+void (*gui_complete_ask)(const void *owner, struct window *win, int kind, const char *before, const char *after);
+
+/* puts the waiting completion into t */
+void gui_hint_take(struct ui_text *t)
+{
+    int back = MIN(gui_hint.erase, t->cursor);
+    memmove(t->buf + t->cursor - back, t->buf + t->cursor, (size_t)(t->len - t->cursor + 1));
+    t->len -= back;
+    t->cursor -= back;
+    text_insert(t, gui_hint.text, MIN((int)strlen(gui_hint.text), (int)sizeof(t->buf) - 1 - t->len));
+    gui_hint.owner = NULL;
+}
+
+/* the waiting completion in grey at x; a correction of the last word shows as "→ word" */
+void gui_hint_draw(struct canvas *c, int x, int y, const struct ui_font *f)
+{
+    char s[sizeof(gui_hint.text) + 8];
+    str_copy(s, gui_hint.erase ? "  → " : "", sizeof(s));
+    str_append(s, gui_hint.text, sizeof(s));
+    gfx_text(c, x, y, f, s, gui_hint.erase ? style.accent : style.secondary);
+}
+
 static void shown_text(const struct ui_text *t, char *out, size_t cap, int *caret_chars)
 {
     if (!t->password) {
@@ -468,14 +491,23 @@ static bool text_field(struct ui *ui, struct rect r, struct ui_text *t, const ch
         while (t->cursor < t->len && gfx_text_width_n(f, t->buf, (size_t)text_next(t->buf, t->cursor, t->len)) <= x)
             t->cursor = text_next(t->buf, t->cursor, t->len);
     }
+    bool hinted = gui_hint.owner == t;
     if (ui->st->focus == id) {
-        int key = ui_key(ui);
-        if (key == KEY_ENTER || key == '\r') {
+        int key = ui_key(ui), len = t->len;
+        if (key == KEY_TAB && hinted) {
+            gui_hint_take(t);
+            ui->consumed = ui->changed = true;
+        } else if (key == KEY_ENTER || key == '\r') {
             enter = true;
             ui->consumed = true;
         } else if (key != KEY_NONE && ui_text_edit(t, key)) {
             ui->consumed = true;
+            if (t->len != len && t->cursor == t->len && gui_complete_ask && !t->password && !search &&
+                t->complete != COMPLETE_OFF)
+                gui_complete_ask(t, ui->win, t->complete, t->buf, "");
         }
+        if (key != KEY_NONE && hinted)
+            gui_hint.owner = NULL;
         shown_text(t, shown, sizeof(shown), &caret_chars);
     }
     int caret = gfx_text_width_n(f, shown, (size_t)caret_chars);
@@ -504,6 +536,8 @@ static bool text_field(struct ui *ui, struct rect r, struct ui_text *t, const ch
             gfx_text(&inner, r.x + inset - t->scroll, ty, f, shown, style.text);
         if (focused)
             gfx_fill(&inner, (struct rect){r.x + inset - t->scroll + caret, ty + 2, 1, f->height - 3}, style.accent);
+        if (focused && gui_hint.owner == t)
+            gui_hint_draw(&inner, r.x + inset - t->scroll + caret + 1, ty, f);
     }
     return enter;
 }

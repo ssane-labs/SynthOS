@@ -529,6 +529,7 @@ static void vpn_section(struct page *p)
     }
     if (!n)
         info(p, "No VPN yet", "Add the .conf file your VPN service gives");
+    s->vpn_file.complete = COMPLETE_OFF;
     field(p, "Add a configuration", "The path of a WireGuard .conf file", &s->vpn_file, "/home/me/vpn.conf", 200);
     if (button(p, "Add it to the list", NULL, "Add VPN") && s->vpn_file.len) {
         char name[32], why[96];
@@ -755,6 +756,7 @@ static void pane_general(struct page *p)
         current("hostname", name, sizeof(name));
         ui_text_set(&s->computer, name);
     }
+    s->computer.complete = COMPLETE_OFF;
     if (field(p, "Computer name", "Shown in the Terminal prompt and in About", &s->computer, "synth", 180) &&
         s->computer.len)
         apply("hostname", s->computer.buf);
@@ -1378,6 +1380,8 @@ static void wallpaper_sections(struct page *p)
         wallpaper_fetch("bing");
     if (button(p, "Random photo", "A new photo from picsum.photos", "Download"))
         wallpaper_fetch("random");
+    s->wallpaper_url.complete = COMPLETE_URL;
+    s->wallpaper_file.complete = COMPLETE_OFF;
     bool fetch = field(p, "From a link", NULL, &s->wallpaper_url, "https://example.com/picture.jpg", 280);
     if (fetch && s->wallpaper_url.len)
         wallpaper_fetch(s->wallpaper_url.buf);

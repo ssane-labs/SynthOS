@@ -526,7 +526,24 @@ struct ui_text {
     int cursor;
     int scroll;
     bool password;
+    uint8_t complete; /* what Tab completes in it: COMPLETE_TEXT unless the field says otherwise */
 };
+
+/* Tab completion everywhere. A text field that is being typed into asks gui_complete_ask (set by the module that
+   answers: the assistant); the answer comes later in gui_hint for that field: take `erase` bytes back before the
+   caret and put `text` there. The field shows it in grey after the caret; Tab takes it, any other key drops it. */
+enum { COMPLETE_TEXT, COMPLETE_CODE, COMPLETE_URL, COMPLETE_ADDRESS, COMPLETE_OFF };
+struct gui_hint {
+    const void *owner;
+    struct window *win;
+    int erase;
+    char text[160];
+};
+extern struct gui_hint gui_hint;
+extern void (*gui_complete_ask)(const void *owner, struct window *win, int kind, const char *before, const char *after);
+void gui_hint_take(struct ui_text *t);
+bool site_complete(const char *typed, char *out, size_t cap); /* Obscura: a real site that starts so */
+void gui_hint_draw(struct canvas *c, int x, int y, const struct ui_font *f);
 
 struct ui_list {
     int count;

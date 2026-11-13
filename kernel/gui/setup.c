@@ -428,6 +428,7 @@ static void account_page(struct ui *ui, struct setup *s)
     int y = r.y + 132, lw = 150, fw = r.w - lw;
     static const char *const labels[4] = {"Full name", "Account name", "Password", "Repeat password"};
     struct ui_text *fields[4] = {&s->full, &s->name, &s->pass, &s->pass2};
+    s->full.complete = s->name.complete = COMPLETE_OFF; /* Tab moves between these */
     static const char *const hints[4] = {"Anna Smith", "anna", "optional", ""};
     int ids[4], tab = KEY_BASE(ui_key(ui)) == KEY_TAB;
     bool submit = false;

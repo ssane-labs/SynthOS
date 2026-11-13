@@ -328,6 +328,8 @@ int lineedit_read(char *buf, size_t cap, const struct lineedit_hooks *hooks)
             con_putc('\n');
             result = LE_CANCEL;
             break;
+        } else if (key == KEY_TAB && e.pos == e.len && e.suggestion) {
+            set_text(&e, e.suggestion); /* the grey suggestion from history first */
         } else if (key == KEY_TAB) {
             e.tabbed = was_tab;
             complete(&e);

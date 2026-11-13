@@ -51,6 +51,26 @@ static const struct download *chat_choice(void)
 static const struct download speech_model = {
     "ggml-base-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin", 81768585u};
 
+/* Tab completion (assistant/complete.h): a keyboard model for text and two for code, all Apache-2.0 or BigCode
+   OpenRAIL-M; they are never the assistant's own model */
+static const struct download keys_model = {
+    "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+    "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+    105454432u};
+static const struct download coder_model = {
+    "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    1117320768u};
+static const struct download coder_big_model = {
+    "starcoder2-3b-Q4_K_M.gguf",
+    "https://huggingface.co/second-state/StarCoder2-3B-GGUF/resolve/main/starcoder2-3b-Q4_K_M.gguf", 1848976448u};
+
+
+static bool helper_file(const char *name)
+{
+    return !strcmp(name, keys_model.name) || !strcmp(name, coder_model.name) || !strcmp(name, coder_big_model.name);
+}
+
 static struct ai_model model;
 static bool loaded;
 
@@ -82,7 +102,7 @@ static bool default_model(char *out, size_t cap)
     bool found = false;
     struct vfs_dirent e;
     for (uint32_t i = 0; !found && dir->ops->readdir && !dir->ops->readdir(dir, i, &e); i++)
-        if (str_iends(e.name, ".gguf")) {
+        if (str_iends(e.name, ".gguf") && !helper_file(e.name)) {
             ksnprintf(out, cap, MODELS_DIR "/%s", e.name);
             found = true;
         }
@@ -90,19 +110,14 @@ static bool default_model(char *out, size_t cap)
     return found;
 }
 
-static int load(struct shell *sh, const char *path, char *why, size_t cap)
+/* reads a model file into m with up to ctx tokens of context; sh shows the progress */
+static int read_model(struct ai_model *m, struct shell *sh, const char *path, int ctx, char *why, size_t cap)
 {
     struct vstat st;
     int err = vfs_stat(path, &st);
     if (err) {
         ksnprintf(why, cap, "%s: %s", path, err_str(err));
         return err;
-    }
-    if (loaded && !strcmp(model.path, path))
-        return 0;
-    if (loaded) {
-        model_free(&model);
-        loaded = false;
     }
     uint8_t *buf = big_alloc(st.size);
     if (!buf) {
@@ -134,14 +149,32 @@ static int load(struct shell *sh, const char *path, char *why, size_t cap)
         ksnprintf(why, cap, "%s: %s", path, err_str(err));
         return err;
     }
-    err = model_load_fit(&model, buf, st.size, CTX_DEFAULT, why, cap);
+    err = model_load_fit(m, buf, st.size, ctx, why, cap);
     if (err) {
         big_free(buf);
         return err;
     }
-    str_copy(model.path, path, sizeof(model.path));
-    loaded = true;
+    str_copy(m->path, path, sizeof(m->path));
     return 0;
+}
+
+static int load(struct shell *sh, const char *path, char *why, size_t cap)
+{
+    struct vstat st;
+    int err = vfs_stat(path, &st);
+    if (err) {
+        ksnprintf(why, cap, "%s: %s", path, err_str(err));
+        return err;
+    }
+    if (loaded && !strcmp(model.path, path))
+        return 0;
+    if (loaded) {
+        model_free(&model);
+        loaded = false;
+    }
+    err = read_model(&model, sh, path, CTX_DEFAULT, why, cap);
+    loaded = !err;
+    return err;
 }
 
 /* the loaded model, or the default one loaded now */
@@ -527,6 +560,7 @@ static int hear_command(struct shell *sh, int argc, char **argv)
 }
 
 #include "assistant/voice.h"
+#include "assistant/complete.h"
 #include "assistant/window.h"
 
 /* a conversation of one question in the terminal; tools that change something run only with --yes */
@@ -608,7 +642,7 @@ static int ask(struct shell *sh, int argc, char **argv)
 }
 
 COMMAND(ai, NULL, "system",
-        "ai [get [minicpm|small|speech]|load <file.gguf>|models|use <file>|unload|info|hear <sound file>|listen [seconds]|ask [--yes] [--no-tools] [-n count] <question>|tool <name> <json> [--yes]|reply <text>|tokens [-s] <text>|bench [n]|exact on|off|"
+        "ai [get [minicpm|small|speech|keys|coder|coder-big]|complete [on|off] [--code|--url|--address] [--model <file>] <text>|load <file.gguf>|models|use <file>|unload|info|hear <sound file>|listen [seconds]|ask [--yes] [--no-tools] [-n count] <question>|tool <name> <json> [--yes]|reply <text>|tokens [-s] <text>|bench [n]|exact on|off|"
         "next <ids…> [-n count]]",
         "the assistant's language model, on this computer")
 {
@@ -645,13 +679,19 @@ COMMAND(ai, NULL, "system",
         print_info(sh);
         return 0;
     }
+    if (!strcmp(sub, "complete"))
+        return complete_command(sh, argc, argv);
     if (!strcmp(sub, "get")) {
         const char *which = argc > 2 ? argv[2] : "";
-        const struct download *d = !strcmp(which, "speech")    ? &speech_model
-                                   : !strcmp(which, "small")   ? &small_model
-                                   : !strcmp(which, "minicpm") ? &big_model
-                                                               : chat_choice();
-        if (d != &speech_model && default_model(why, sizeof(why)))
+        const struct download *d = !strcmp(which, "speech")      ? &speech_model
+                                   : !strcmp(which, "small")     ? &small_model
+                                   : !strcmp(which, "minicpm")   ? &big_model
+                                   : !strcmp(which, "keys")      ? &keys_model
+                                   : !strcmp(which, "coder")     ? &coder_model
+                                   : !strcmp(which, "coder-big") ? &coder_big_model
+                                                                 : chat_choice();
+        bool chat = d == &big_model || d == &small_model;
+        if (chat && default_model(why, sizeof(why)))
             sh_printf(sh, "there is already a model: %s\n", why);
         sh_printf(sh, "downloading %s (%u MB) to " MODELS_DIR "\n", d->name, d->bytes >> 20);
         if (download_model(d, shell_progress, sh, why, sizeof(why))) {

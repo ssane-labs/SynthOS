@@ -2850,6 +2850,8 @@ static bool pill_button(struct ui *ui, struct rect r, const char *label, uint32_
     return hit;
 }
 
+static void site_hint(void);
+
 /* a borderless text field: the box around it is drawn by its owner */
 static bool field(struct ui *ui, struct rect r, struct ui_text *t, const char *hint, enum focus which,
                   const struct ui_font *f)
@@ -2880,8 +2882,17 @@ static bool field(struct ui *ui, struct rect r, struct ui_text *t, const char *h
                     return false;
                 }
             }
+            if (k == KEY_TAB && gui_hint.owner == t) {
+                gui_hint_take(t);
+                ui->consumed = true;
+                return false;
+            }
+            int len = t->len;
             if (ui_text_edit(t, k)) {
                 ui->consumed = true;
+                gui_hint.owner = NULL;
+                if (which == F_CMD && t->len > len)
+                    site_hint();
                 if (which == F_FIND)
                     br->find_due = hal_ticks_ms();
                 if (which == F_CMD)
@@ -2911,6 +2922,8 @@ static bool field(struct ui *ui, struct rect r, struct ui_text *t, const char *h
         gfx_text(&inner, r.x, ty, f, hint, style.dark ? RGB(138, 138, 142) : RGB(128, 128, 134));
     if (focused)
         gfx_fill(&inner, (struct rect){r.x + cw - t->scroll, ty + 1, 1, f->height - 2}, style.text);
+    if (focused && gui_hint.owner == t)
+        gui_hint_draw(&inner, r.x + cw - t->scroll + 1, ty, f);
     return false;
 }
 
@@ -4456,6 +4469,93 @@ static int suggestions(struct sugg *out, int max)
         if (find_nocase(pages[i][0], q))
             out[n++] = (struct sugg){S_URL, -1, SYM_GEAR, pages[i][0], "Obscura", pages[i][1]};
     return n;
+}
+
+/* ---- completing a site name: only sites that exist, never made up ----
+   What was typed is matched against the start of a site's name: first the sites in the history (more visits and
+   more recent ones first), then bookmarks, then a list of well-known real sites. A site that is in none of them is
+   never offered. */
+
+static const char *const known_sites[] = {
+    "google.com", "youtube.com", "github.com", "huggingface.co", "wikipedia.org", "reddit.com", "amazon.com",
+    "facebook.com", "instagram.com", "x.com", "twitter.com", "linkedin.com", "netflix.com", "twitch.tv",
+    "stackoverflow.com", "microsoft.com", "apple.com", "yandex.ru", "ya.ru", "vk.com", "mail.ru", "ok.ru",
+    "duckduckgo.com", "bing.com", "yahoo.com", "baidu.com", "openai.com", "chatgpt.com", "claude.ai",
+    "anthropic.com", "gitlab.com", "bitbucket.org", "npmjs.com", "pypi.org", "python.org", "rust-lang.org",
+    "go.dev", "kernel.org", "debian.org", "ubuntu.com", "archlinux.org", "mozilla.org", "kaggle.com",
+    "arxiv.org", "medium.com", "habr.com", "dev.to", "spotify.com", "soundcloud.com", "discord.com",
+    "telegram.org", "web.telegram.org", "whatsapp.com", "zoom.us", "slack.com", "notion.so", "figma.com",
+    "canva.com", "dropbox.com", "drive.google.com", "docs.google.com", "mail.google.com", "maps.google.com",
+    "translate.google.com", "news.ycombinator.com", "ebay.com", "aliexpress.com", "ozon.ru", "wildberries.ru",
+    "avito.ru", "gosuslugi.ru", "sberbank.ru", "tinkoff.ru", "kinopoisk.ru", "rutube.ru", "dzen.ru",
+    "imdb.com", "bbc.com", "cnn.com", "nytimes.com", "theguardian.com", "reuters.com", "weather.com",
+    "openstreetmap.org", "paypal.com", "steampowered.com", "store.steampowered.com", "epicgames.com",
+    "roblox.com", "minecraft.net", "office.com", "outlook.com", "live.com", "icloud.com", "adobe.com",
+    "w3schools.com", "developer.mozilla.org", "cppreference.com", "ollama.com", "lmstudio.ai", "pinterest.com",
+    "tiktok.com", "quora.com", "booking.com", "airbnb.com", "tripadvisor.com", "coursera.org", "udemy.com",
+    "khanacademy.org", "duolingo.com", "archive.org", "speedtest.net", "cloudflare.com", "aws.amazon.com",
+    "azure.microsoft.com", "digitalocean.com", "vercel.com", "netlify.com", "codepen.io", "replit.com",
+};
+
+/* the site in a link: no scheme, no "www." */
+static void site_name(const char *url, char *out, size_t cap)
+{
+    host_of(url, out, cap);
+}
+
+static int site_score(const char *site, const char *typed, int base)
+{
+    return str_ncasecmp(site, typed, strlen(typed)) ? -1 : base - (int)strlen(site);
+}
+
+/* the best real site that starts with typed, whole, in out; false when there is none */
+bool site_complete(const char *typed, char *out, size_t cap)
+{
+    if (!typed[0] || strchr(typed, ' ') || strstr(typed, "://"))
+        return false;
+    int best = -1;
+    char site[128];
+    out[0] = 0;
+    for (int i = 0; br && i < br->nhistory; i++) {
+        site_name(br->history[i].url, site, sizeof(site));
+        int visits = 0;
+        for (int j = 0; j < br->nhistory; j++) /* how often the site comes up */
+            visits += strstr(br->history[j].url, site) != NULL;
+        int score = site_score(site, typed, 30000 + visits * 100 - i);
+        if (score > best && strlen(site) > strlen(typed)) {
+            best = score;
+            str_copy(out, site, cap);
+        }
+    }
+    for (int i = 0; br && i < br->nbookmarks; i++) {
+        site_name(br->bookmarks[i].url, site, sizeof(site));
+        int score = site_score(site, typed, 20000);
+        if (score > best && strlen(site) > strlen(typed)) {
+            best = score;
+            str_copy(out, site, cap);
+        }
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(known_sites); i++) {
+        int score = site_score(known_sites[i], typed, 10000 - (int)i);
+        if (score > best && strlen(known_sites[i]) > strlen(typed)) {
+            best = score;
+            str_copy(out, known_sites[i], cap);
+        }
+    }
+    return best >= 0;
+}
+
+/* the grey rest of a site name after what was typed in the command bar */
+static void site_hint(void)
+{
+    char site[128];
+    gui_hint.owner = NULL;
+    if (!br->cmd_fresh && br->cmd.cursor == br->cmd.len && site_complete(br->cmd.buf, site, sizeof(site))) {
+        gui_hint.owner = &br->cmd;
+        gui_hint.win = br->win;
+        gui_hint.erase = 0;
+        str_copy(gui_hint.text, site + br->cmd.len, sizeof(gui_hint.text));
+    }
 }
 
 static void suggestion_open(const struct sugg *s)
