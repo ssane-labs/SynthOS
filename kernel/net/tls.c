@@ -47,8 +47,14 @@ struct cipher {
     bool tls12;
 };
 
+#define OWN_ROOTS 4
+
 struct tls {
     int sock;
+    const struct tls_io *io;
+    struct x509 roots[OWN_ROOTS];
+    uint8_t *roots_der[OWN_ROOTS];
+    int nroots;
     char host[256];
     bool verify;
     bool closed;
@@ -182,7 +188,7 @@ static int send_all(struct tls *t, const uint8_t *p, size_t n)
 {
     uint64_t start = hal_ticks_ms();
     while (n) {
-        long k = net_send(t->sock, p, n);
+        long k = t->io ? t->io->send(t->io->ctx, p, n) : net_send(t->sock, p, n);
         if (k == E_AGAIN) {
             if (hal_ticks_ms() - start > HANDSHAKE_TIMEOUT)
                 return E_TIMEDOUT;
@@ -273,7 +279,8 @@ static int fill(struct tls *t, size_t need, bool block)
 {
     uint64_t start = hal_ticks_ms();
     while (t->in_len < need) {
-        long k = net_recv(t->sock, t->in + t->in_len, IN_CAP - t->in_len);
+        long k = t->io ? t->io->recv(t->io->ctx, t->in + t->in_len, IN_CAP - t->in_len)
+                       : net_recv(t->sock, t->in + t->in_len, IN_CAP - t->in_len);
         if (k > 0) {
             t->in_len += (size_t)k;
             start = hal_ticks_ms();
@@ -589,7 +596,7 @@ static int verify_chain(struct tls *t)
     str_copy(t->peer, leaf->cn, sizeof(t->peer));
     if (!t->verify)
         return 0;
-    if (!x509_matches_host(leaf, t->host))
+    if ((!t->io || t->host[0]) && !x509_matches_host(leaf, t->host))
         return TLS_ERR_CERT_NAME;
     int64_t now = x509_now();
     bool check_time = now > 1600000000;
@@ -597,8 +604,15 @@ static int verify_chain(struct tls *t)
     for (int depth = 0; depth < MAX_CHAIN; depth++) {
         if (check_time && (now < cur->not_before || now > cur->not_after))
             return TLS_ERR_CERT_EXPIRED;
-        if (tls_root_contains(cur) || tls_find_root(cur->issuer, cur->issuer_len, cur))
+        if (t->nroots) { /* only the connection's own authorities */
+            for (int i = 0; i < t->nroots; i++)
+                if ((cur->raw_len == t->roots[i].raw_len && !memcmp(cur->raw, t->roots[i].raw, cur->raw_len)) ||
+                    (t->roots[i].subject_len == cur->issuer_len &&
+                     !memcmp(t->roots[i].subject, cur->issuer, cur->issuer_len) && x509_verify_signature(cur, &t->roots[i])))
+                    return 0;
+        } else if (tls_root_contains(cur) || tls_find_root(cur->issuer, cur->issuer_len, cur)) {
             return 0;
+        }
         const struct x509 *next = NULL;
         for (int i = 1; i < t->chain_len && !next; i++) {
             const struct x509 *c = &t->chain[i];
@@ -1086,6 +1100,47 @@ struct tls *tls_connect(int sock, const char *host, bool verify, int *error)
     return t;
 }
 
+static void own_root(const uint8_t *der, size_t len, void *ctx)
+{
+    struct tls *t = ctx;
+    if (t->nroots == OWN_ROOTS || !(t->roots_der[t->nroots] = kmalloc(len)))
+        return;
+    memcpy(t->roots_der[t->nroots], der, len);
+    if (x509_parse(t->roots_der[t->nroots], len, &t->roots[t->nroots]))
+        t->nroots++;
+    else
+        kfree(t->roots_der[t->nroots]);
+}
+
+struct tls *tls_connect_io(const struct tls_io *io, const char *host, bool verify, int *error)
+{
+    struct tls *t = kzalloc(sizeof(*t));
+    if (!t) {
+        *error = E_NOMEM;
+        return NULL;
+    }
+    t->sock = -1;
+    t->io = io;
+    if (io->ca_pem)
+        x509_load_pem(io->ca_pem, io->ca_len, own_root, t);
+    if (io->ca_pem && !t->nroots) {
+        kfree(t);
+        *error = TLS_ERR_CERT_UNTRUSTED;
+        return NULL;
+    }
+    t->verify = verify;
+    t->version = 0x0304;
+    str_copy(t->host, host ? host : "", sizeof(t->host));
+    int err = handshake(t);
+    if (err) {
+        *error = err;
+        tls_close(t);
+        return NULL;
+    }
+    *error = 0;
+    return t;
+}
+
 static void key_update(struct tls *t, uint8_t *secret, struct cipher *c)
 {
     uint8_t next[HASH_MAX];
@@ -1174,6 +1229,8 @@ void tls_close(struct tls *t)
     kfree(t->transcript);
     kfree(t->hs);
     kfree(t->chain_der);
+    for (int i = 0; i < t->nroots; i++)
+        kfree(t->roots_der[i]);
     memset(t, 0, sizeof(*t));
     kfree(t);
 }

@@ -1539,6 +1539,30 @@ if [ "$KERNEL64" = 1 ]; then
 else
     sed -i 's/ afd=AFD$/ afd=0/' "$work/cases"
 fi
+# an OpenVPN server on the host when the tests run as root with openvpn and a tun device (tests/ovpnserver.sh)
+ovpn=""
+if [ "$(id -u)" = 0 ] && [ -c /dev/net/tun ] && command -v openvpn >/dev/null && command -v ip >/dev/null &&
+    ! ip link show tunsy >/dev/null 2>&1; then
+    mkdir -p "$work/ovpn"
+    sh tests/ovpnserver.sh "$work/ovpn" "$((wgport + 9000))" >/dev/null 2>&1 &
+    ovpn=$!
+    for i in $(seq 40); do ip addr show tunsy 2>/dev/null | grep -q 10.88.0.1 && break; sleep 0.25; done
+    mcopy -i "$work/fat.img" "$work/ovpn/test.ovpn" ::/test.ovpn
+    cat >> "$work/cases" <<EOF
+openvpn up /mnt/hdb/test.ovpn test wrong
+the user name or password was not accepted
+openvpn up /mnt/hdb/test.ovpn test secret
+OpenVPN test: connected
+ping -c 1 10.88.0.1 | grep from
+64 bytes from 10.88.0.1
+wget -O - http://10.88.0.1:8088/hi.txt
+hello through openvpn
+openvpn status | grep tls-crypt
+AES-256-GCM, tls-crypt, routes pushed by the server
+openvpn down
+OpenVPN disconnected
+EOF
+fi
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
          cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
@@ -1566,6 +1590,7 @@ timeout 150 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,fi
 kill $v6peer 2>/dev/null
 
 [ -n "$server" ] && kill $server 2>/dev/null
+[ -n "$ovpn" ] && kill $ovpn 2>/dev/null
 
 pass=0
 fail=0

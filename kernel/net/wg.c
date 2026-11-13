@@ -76,6 +76,7 @@ struct wg {
 };
 
 static struct wg *wg;
+static const struct vpn_tunnel *ext; /* another VPN's tunnel, from a module */
 static char wanted[32];
 
 static const char construction[] = "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
@@ -406,6 +407,9 @@ static bool prefix_match(const uint8_t *a, const uint8_t *net, int bits)
 /* an IPv6 destination that goes through the tunnel (never link-local or multicast) */
 bool wg_routes6(const uint8_t *d)
 {
+    if (ext)
+        return ext->has6 && d[0] != 0xff && !(d[0] == 0xfe && (d[1] & 0xc0) == 0x80) && memcmp(d, ext->address6, 16) &&
+               ext->routes6(d);
     if (!wg || !wg->up || !wg->cfg.has6 || d[0] == 0xff || (d[0] == 0xfe && (d[1] & 0xc0) == 0x80) ||
         !memcmp(d, wg->cfg.addr6, 16))
         return false;
@@ -421,6 +425,10 @@ bool wg_routes6(const uint8_t *d)
 /* the tunnel's own IPv6 address, while it is up */
 bool wg_address6(uint8_t *out)
 {
+    if (ext) {
+        memcpy(out, ext->address6, 16);
+        return ext->has6;
+    }
     if (!wg || !wg->up || !wg->cfg.has6)
         return false;
     memcpy(out, wg->cfg.addr6, 16);
@@ -432,6 +440,16 @@ bool wg_routes(uint32_t dst)
     uint8_t d[16];
     if (net_is_v6(dst))
         return net_v6_addr(dst, d) && wg_routes6(d);
+    if (ext) {
+        if (!dst || dst >> 24 == 127 || dst == 0xffffffffu || dst == ext->address)
+            return false;
+        for (int i = 0; i < net_interface_count(); i++) {
+            struct net_iface *ifc = net_interface(i);
+            if (ifc->configured && (dst & ifc->mask) == (ifc->ip & ifc->mask))
+                return false;
+        }
+        return ext->routes(dst);
+    }
     if (!wg || !wg->up || !dst || dst == wg->endpoint || dst >> 24 == 127 || dst == 0xffffffffu ||
         dst == wg->cfg.addr)
         return false;
@@ -448,16 +466,22 @@ bool wg_routes(uint32_t dst)
 
 uint32_t wg_address(void)
 {
+    if (ext)
+        return ext->address;
     return wg && wg->up ? wg->cfg.addr : 0;
 }
 
 bool wg_blocks_v6(uint32_t dst)
 {
+    if (ext)
+        return ext->block6 && !ext->has6;
     return wg && wg->up && wg->cfg.v6_all && !wg->cfg.has6 && (!dst || dst != wg->endpoint);
 }
 
 uint16_t wg_mss(void)
 {
+    if (ext)
+        return (uint16_t)(ext->mtu - 40);
     return TUNNEL_MTU - 40;
 }
 
@@ -659,6 +683,8 @@ void wg_input(const uint8_t *m, size_t n)
 
 int wg_output(const uint8_t *packet, size_t n)
 {
+    if (ext)
+        return ext->output(packet, n);
     if (n > TUNNEL_MTU)
         return E_RANGE;
     if (wg->keys && net_now() - wg->session_at < REJECT_AFTER) {
@@ -688,7 +714,21 @@ int wg_output(const uint8_t *packet, size_t n)
 
 static void apply_dns(void)
 {
-    net_set_dns_override(wg && wg->up ? wg->cfg.dns : 0);
+    net_set_dns_override(ext ? ext->dns : wg && wg->up ? wg->cfg.dns : 0);
+}
+
+void vpn_tunnel_set(const struct vpn_tunnel *t)
+{
+    ext = t;
+    apply_dns();
+}
+
+void vpn_tunnel_input(const uint8_t *p, size_t n)
+{
+    if (n >= IP_HEADER && p[0] >> 4 == 4 && rd16(p + 2) <= n)
+        net_ip_input(p, rd16(p + 2));
+    else if (n >= 40 && p[0] >> 4 == 6 && 40u + rd16(p + 4) <= n)
+        ip6_tunnel_input(p, 40u + rd16(p + 4));
 }
 
 static void go_up(void)
@@ -702,6 +742,8 @@ static void go_up(void)
 
 void wg_tick(uint64_t now)
 {
+    if (ext && ext->tick)
+        ext->tick(now);
     if (!wg || !wg->want)
         return;
     if (!wg->endpoint) {

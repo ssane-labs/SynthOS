@@ -56,6 +56,16 @@ bool tls_root_contains(const struct x509 *c);
 const struct x509 *tls_find_root(const uint8_t *subject, size_t len, const struct x509 *child);
 
 struct tls *tls_connect(int sock, const char *host, bool verify, int *error);
+/* TLS over something other than a socket (OpenVPN's control channel). recv returns E_AGAIN when nothing has come
+   yet and 0 at the end. With ca_pem, only those certificates are trusted, and an empty host skips the name check. */
+struct tls_io {
+    K64(long (*send)(void *ctx, const void *p, size_t n));
+    K64(long (*recv)(void *ctx, void *p, size_t n));
+    K64(void *ctx);
+    K64(const char *ca_pem);
+    K64(size_t ca_len);
+};
+struct tls *tls_connect_io(const struct tls_io *io, const char *host, bool verify, int *error);
 long tls_read(struct tls *t, void *buf, size_t n);
 long tls_write(struct tls *t, const void *buf, size_t n);
 bool tls_pending(struct tls *t);
