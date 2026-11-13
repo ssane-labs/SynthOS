@@ -107,6 +107,14 @@ void vnode_put(struct vnode *vn);
 int vfs_lookup(const char *path, struct vnode **out);
 int vfs_lookup_parent(const char *path, struct vnode **dir, char *name);
 
+/* While a standard account's command runs, vfs_guard is that account and file operations go through the rules
+   of the access module's "file-access" service (refused ones fail with E_PERM). Elsewhere it is NULL. */
+struct user;
+struct file_access {
+    K64(bool (*allowed)(const char *user, const char *home, const char *path, bool write));
+};
+extern const struct user *vfs_guard;
+
 int vfs_open(const char *path, unsigned flags, struct file **out);
 long vfs_read(struct file *f, void *buf, size_t n);
 long vfs_write(struct file *f, const void *buf, size_t n);

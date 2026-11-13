@@ -2,7 +2,9 @@
 #include <synth/heap.h>
 #include <synth/input.h>
 #include <synth/log.h>
+#include <synth/module.h>
 #include <synth/string.h>
+#include <synth/users.h>
 #include <synth/versions.h>
 #include <synth/vfs.h>
 #include <synth/vmm.h>
@@ -203,8 +205,27 @@ static bool is_mount_point(const char *path)
     return false;
 }
 
+const struct user *vfs_guard;
+
+static int guard(const char *path, bool write)
+{
+    static const struct file_access *rules;
+    const struct user *u = vfs_guard;
+    if (!u || !module_service)
+        return 0;
+    vfs_guard = NULL; /* the rules read files of their own */
+    if (!rules)
+        rules = module_service("file-access");
+    bool ok = !rules || rules->allowed(u->name, u->home, path, write);
+    vfs_guard = u;
+    return ok ? 0 : E_PERM;
+}
+
 int vfs_open(const char *path, unsigned flags, struct file **out)
 {
+    int denied = guard(path, flags & (VFS_WRITE | VFS_CREATE | VFS_TRUNC));
+    if (denied)
+        return denied;
     struct vnode *vn = NULL;
     bool made = false;
     int err = vfs_lookup(path, &vn);
@@ -363,6 +384,8 @@ int vfs_mkdir(const char *path)
     char name[NAME_MAX_LEN];
     if (vfs_exists(path))
         return E_EXIST;
+    if (guard(path, true))
+        return E_PERM;
     int err = vfs_lookup_parent(path, &dir, name);
     if (err)
         return err;
@@ -399,6 +422,8 @@ int vfs_unlink(const char *path)
 {
     if (is_mount_point(path))
         return E_BUSY;
+    if (guard(path, true))
+        return E_PERM;
     struct vnode *dir;
     char name[NAME_MAX_LEN];
     int err = vfs_lookup_parent(path, &dir, name);
@@ -415,6 +440,8 @@ int vfs_rename(const char *from, const char *to)
         return E_BUSY;
     if (str_starts(to, from) && (to[strlen(from)] == '/'))
         return E_INVAL;
+    if (guard(from, true) || guard(to, true))
+        return E_PERM;
     struct vnode *odir, *ndir;
     char oname[NAME_MAX_LEN], nname[NAME_MAX_LEN];
     int err = vfs_lookup_parent(from, &odir, oname);
@@ -437,6 +464,8 @@ int vfs_rename(const char *from, const char *to)
 int vfs_truncate(const char *path, uint32_t size)
 {
     struct vnode *vn;
+    if (guard(path, true))
+        return E_PERM;
     int err = vfs_lookup(path, &vn);
     if (err)
         return err;
@@ -447,6 +476,8 @@ int vfs_truncate(const char *path, uint32_t size)
 
 int vfs_opendir(const char *path, struct vdir *dir)
 {
+    if (guard(path, false))
+        return E_PERM;
     struct vnode *vn;
     int err = vfs_lookup(path, &vn);
     if (err)

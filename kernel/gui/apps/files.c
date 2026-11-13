@@ -790,11 +790,14 @@ static const struct canvas *thumbnail(struct files *f, const struct entry *e)
 }
 
 /* Files dropped on this window move into its folder (or are copied when they cannot be moved, as from /system). */
+static void as_user(bool on);
+
 static void files_drop(struct window *w, int x, int y, const char *paths)
 {
     UNUSED(x);
     UNUSED(y);
     struct files *f = w->data;
+    as_user(true);
     char path[PATH_MAX_LEN], dir[PATH_MAX_LEN], target[PATH_MAX_LEN];
     int err = 0, done = 0;
     for (const char *p = paths; *p;) {
@@ -815,6 +818,7 @@ static void files_drop(struct window *w, int x, int y, const char *paths)
     if (done || err)
         report(err, "moved");
     refresh(w, f);
+    as_user(false);
 }
 
 /* A file pressed and pulled away: its ghost follows the pointer, and let go over another window (or the desktop)
@@ -1159,10 +1163,19 @@ static void paint(struct window *w, struct canvas *c)
     ui_run(w, &f->st, c, NULL, frame, f);
 }
 
+/* what a standard account does in Files is held to its file rules, as its commands are */
+static void as_user(bool on)
+{
+    const struct user *me = user_current();
+    vfs_guard = on && me && !me->admin ? me : NULL;
+}
+
 static void event(struct window *w, struct gui_event *e)
 {
     struct files *f = w->data;
+    as_user(true);
     ui_run(w, &f->st, NULL, e, frame, f);
+    as_user(false);
 }
 
 static void destroy(struct window *w)

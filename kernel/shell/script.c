@@ -1,6 +1,8 @@
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/string.h>
+#include <synth/users.h>
+#include <synth/vfs.h>
 
 #include "internal.h"
 
@@ -192,10 +194,15 @@ static int exec_range(struct shell *sh, const struct script *s, size_t from, siz
         case KW_ELSE:
         case KW_END:
             return sh_fail(sh, 2, "syntax", "unexpected '%s'", s->stmts[i]);
-        default:
+        default: {
+            /* a standard account's commands are held to its file rules, unless sudo raised them (su may have
+               changed the account since the last statement) */
+            const struct user *me = user_current();
+            vfs_guard = sh->elevated || !me || me->admin ? NULL : me;
             rc = run_statement(sh, s->stmts[i]);
             i++;
             break;
+        }
         }
         sh->status = rc;
     }
@@ -204,10 +211,12 @@ static int exec_range(struct shell *sh, const struct script *s, size_t from, siz
 
 int script_run_text(struct shell *sh, const char *text)
 {
+    const struct user *saved = vfs_guard;
     struct strvec stmts = {0};
     split_statements(text, &stmts);
     struct script s = {stmts.items, stmts.count};
     int rc = exec_range(sh, &s, 0, s.count);
     strvec_free(&stmts);
+    vfs_guard = saved;
     return rc;
 }

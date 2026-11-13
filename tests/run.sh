@@ -706,6 +706,30 @@ users | grep Builder
 Bob Builder
 su bob; echo I am $USER in $PWD; su
 I am bob in /home/bob
+su bob; echo no > /etc/bob.txt; su
+permission denied
+su bob; cat /home/.users; su
+permission denied
+su bob; echo mine > ~/note.txt; cat ~/note.txt /system/etc/hosts 2>/dev/null | head -n 1; su
+mine
+su bob; acl allow bob write /etc; su
+only an administrator can change file access
+useradd -a -p bosspw boss > /dev/null; su bob; echo wrong | sudo -S mkdir /etc/bobdir; su
+the password for boss is not right
+su bob; echo bosspw | sudo -S mkdir /etc/bobdir; ls -d /etc/bobdir; su
+/etc/bobdir
+acl allow bob write /etc/bobdir; acl check bob /etc/bobdir/x
+bob: read and write
+acl check bob /home/.users; acl check bob /system
+bob: no access
+acl check bob /system; acl deny everyone read /tmp/secret; acl check bob /tmp/secret/a
+bob: no access
+acl check bob /system/etc
+bob: read only
+su bob; echo shared > /etc/bobdir/s.txt; cat /etc/bobdir/s.txt; su
+shared
+acl remove 2; acl remove 1; acl; rm -r /etc/bobdir; userdel boss
+no rules: the defaults apply
 passwd -p topsecret bob
 password for bob updated
 userdel bob

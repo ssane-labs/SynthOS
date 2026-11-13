@@ -50,6 +50,7 @@ struct shell {
     int call_depth;
     bool interactive;
     bool idle;
+    bool elevated; /* sudo: a standard account's command runs with an administrator's rights */
     struct strmap vars;
     struct strmap aliases;
     K64(struct sh_function *funcs);
