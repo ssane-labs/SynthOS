@@ -1,3 +1,4 @@
+#include <synth/crypto.h>
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
@@ -27,7 +28,12 @@ static bool port_used(enum net_type type, uint16_t port)
 
 uint16_t net_ephemeral_port(enum net_type type)
 {
-    static uint16_t next = 49152;
+    static uint16_t next;
+    if (!next) { /* a different start each boot, so a new connection does not meet the last boot's (RFC 6056) */
+        uint16_t r;
+        random_bytes(&r, sizeof(r));
+        next = (uint16_t)(49152 + r % 16384);
+    }
     for (int i = 0; i < 16384; i++) {
         uint16_t port = next++;
         if (next < 49152)

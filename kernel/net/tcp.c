@@ -576,10 +576,18 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *p, size_t length)
         return;
     }
     if (flags & RST) {
+        if (s->state == TCP_SYN_SENT && (!(flags & ACK) || ack != s->snd_nxt))
+            return; /* not about our SYN */
         closed(s, s->state == TCP_SYN_SENT ? E_CONNREFUSED : E_CONNRESET);
         return;
     }
     if (s->state == TCP_SYN_SENT) {
+        /* an ACK for something else (the peer still remembers an old connection on these ports): a reset clears
+           it there, and the next SYN gets through (RFC 793) */
+        if ((flags & ACK) && ack != s->snd_nxt) {
+            reset_reply(src, dst, p, length);
+            return;
+        }
         if ((flags & (SYN | ACK)) == (SYN | ACK) && ack == s->snd_nxt) {
             s->irs = seq;
             s->rcv_nxt = seq + 1;

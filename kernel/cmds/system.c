@@ -6,6 +6,7 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/net.h>
 #include <synth/input.h>
 #include <synth/log.h>
 #include <synth/string.h>
@@ -481,7 +482,7 @@ COMMAND(sleep, NULL, "system", "sleep seconds|<n>ms", "pause for a while")
     while (hal_ticks_ms() < end) {
         if (sh_interrupted())
             return 130;
-        hal_sleep_ms((uint32_t)MIN(end - hal_ticks_ms(), (uint64_t)20));
+        net_wait((int)MIN(end - hal_ticks_ms(), (uint64_t)20)); /* the network keeps running meanwhile */
     }
     return 0;
 }

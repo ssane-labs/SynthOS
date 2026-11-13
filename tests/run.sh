@@ -1563,6 +1563,39 @@ openvpn down
 OpenVPN disconnected
 EOF
 fi
+# an IKEv2 server (strongSwan with userspace ESP) on the host when the tests run as root with charon (tests/ikeserver.sh)
+ikesrv=""
+if [ "$(id -u)" = 0 ] && [ -c /dev/net/tun ] && [ -x /usr/sbin/charon-systemd ] && command -v swanctl >/dev/null &&
+    [ -f /usr/lib/ipsec/plugins/libstrongswan-kernel-libipsec.so ] &&
+    [ -f /usr/lib/ipsec/plugins/libstrongswan-eap-mschapv2.so ] && ! pgrep -x charon-systemd >/dev/null; then
+    ikeport=$((wgport + 9100))
+    if sh tests/ikeserver.sh "$work/ike" "$ikeport" >/dev/null 2>&1; then
+        ikesrv="$(cat "$work/ike/run/pid") $(cat "$work/ike/run/http.pid")"
+        mcopy -i "$work/fat.img" "$work/ike/ikeca.pem" ::/ikeca.pem
+        cat >> "$work/cases" <<EOF
+ikev2 up 10.0.2.2:$ikeport test wrong --ca /mnt/hdb/ikeca.pem --remote-id vpn-server
+the user name or password was not accepted
+ikev2 up 10.0.2.2:$ikeport test secret --ca /mnt/hdb/ikeca.pem --remote-id vpn-server
+IKEv2 10.0.2.2: connected
+wget -O - http://10.66.0.1:8089/
+hello through ikev2 from 10.77.0.
+ikev2 status | grep EAP
+EAP-MSCHAPv2
+ikev2 up 10.0.2.2:$ikeport --psk wrongkey --id client@test --remote-id vpn-server
+the user name, password or key was not accepted
+ikev2 up 10.0.2.2:$ikeport --psk presharedkey123 --id client@test --remote-id vpn-server
+pre-shared key
+wget -O - http://10.66.0.1:8089/ | grep ikev2
+hello through ikev2 from 10.77.0.
+sleep 14; wget -O - http://10.66.0.1:8089/rekeyed | grep ikev2
+from 10.77.0.2 (/rekeyed)
+ikev2 status | grep renewed | grep -v "renewed: 0"
+ESP keys renewed:
+ikev2 down
+IKEv2 disconnected
+EOF
+    fi
+fi
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
          cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
@@ -1591,6 +1624,10 @@ kill $v6peer 2>/dev/null
 
 [ -n "$server" ] && kill $server 2>/dev/null
 [ -n "$ovpn" ] && kill $ovpn 2>/dev/null
+if [ -n "$ikesrv" ]; then
+    kill $ikesrv 2>/dev/null
+    for i in $(seq 40); do pgrep -x charon-systemd >/dev/null || break; sleep 0.25; done
+fi
 
 pass=0
 fail=0
