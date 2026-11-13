@@ -594,6 +594,18 @@ start C:/apps/synthtest.msi | grep Installed
 Installed 3 files, 1 shortcuts and 3 registry values.
 msiexec /x C:/apps/synthtest.msi | grep Removed
 Removed 3 files, 1 shortcuts and 3 registry values.
+msiexec /i C:/apps/synthca.msi /qn | grep opened
+opened hi
+msiexec /i C:/apps/synthca.msi /qn | grep Ran
+Ran 4 custom actions, skipped 1.
+cat 'C:/Program Files/SynthCA Moved/readme.txt' | wc -c; reg query HKLM/Software/SynthCo/SynthCA /v Greeting
+hi Synth CA
+msiexec /x {6A0C1E52-7D11-4B8E-9C2A-5B1D3E4F6A70} | grep Removed
+Removed 1 files, 0 shortcuts and 1 registry values.
+msiexec /i C:/apps/synthfail.msi /qn | grep opened
+opened undo
+msiexec /i C:/apps/synthfail.msi /qn > /dev/null; echo rc=$?; ls 'C:/Program Files/SynthFail' 2>/dev/null | wc -l
+rc=1603
 wintest registry | grep delete
 reg delete=5 tree=0 gone=2
 reg add HKCU/Software/Test /v Count /t REG_DWORD /d 42 > /dev/null; reg query HKCU/Software/Test /v Count

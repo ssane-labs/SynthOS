@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- the custom actions and their order are added by build.py (wixl cannot write most kinds): a property (51),
+     a folder (35), programs from a folder (34) and a property (50), an error that must not fire, a skipped script -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="{6A0C1E52-7D11-4B8E-9C2A-5B1D3E4F6A70}" Name="Synth CA" Language="1033" Version="2.0.0"
+           Manufacturer="SynthCo" UpgradeCode="22345678-1234-1234-1234-123456789abc">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+    <Media Id="1" Cabinet="ca.cab" EmbedCab="yes" />
+    <Property Id="WINTEST" Value="C:\apps\wintest.exe" />
+    <Condition Message="Synth CA needs Windows 7 or newer.">VersionNT &gt;= 601</Condition>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLDIR" Name="SynthCA">
+          <Component Id="CmpMain" Guid="21111111-2222-3333-4444-555555555555">
+            <File Id="FileReadme" Source="src/readme.txt" KeyPath="yes" />
+            <RegistryValue Root="HKLM" Key="Software\SynthCo\SynthCA" Name="Greeting" Type="string" Value="[GREETING]" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="Complete" Title="Synth CA" Level="1">
+      <ComponentRef Id="CmpMain" />
+    </Feature>
+  </Product>
+</Wix>

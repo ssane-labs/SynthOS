@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- a custom action that fails after the files are in: the rollback action runs and the files come back out -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="{7B1D2F63-8E22-4C9F-8D3B-6C2E4F5A7B81}" Name="Synth Fail" Language="1033" Version="1.0.0"
+           Manufacturer="SynthCo" UpgradeCode="32345678-1234-1234-1234-123456789abc">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+    <Media Id="1" Cabinet="fail.cab" EmbedCab="yes" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLDIR" Name="SynthFail">
+          <Component Id="CmpMain" Guid="31111111-2222-3333-4444-555555555555">
+            <File Id="FileReadme" Source="src/readme.txt" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="Complete" Title="Synth Fail" Level="1">
+      <ComponentRef Id="CmpMain" />
+    </Feature>
+  </Product>
+</Wix>
