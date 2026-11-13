@@ -741,5 +741,5 @@ COMMAND(appx, "msix", "system", "appx install <file.msix> | list | remove <name>
 }
 
 static const struct command *const commands[] = {&cmddef_appx};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 GUI_APP_FULL(&appx_app, NULL, &ext);

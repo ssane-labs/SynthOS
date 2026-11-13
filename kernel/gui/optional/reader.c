@@ -545,7 +545,7 @@ COMMAND(pdfpage, NULL, "files", "pdfpage <file.pdf> delete <page>", "delete a pa
 #include "doc/index.h"
 
 static const struct command *const commands[] = {&cmddef_doctext, &cmddef_pdfpage, &cmddef_mdfind, &cmddef_index};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, ix_search};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, ix_search, NULL, NULL};
 static const struct gui_app reader_app = {.name = "Reader",
                                           .description = "PDF, Word, Excel, PowerPoint and OpenDocument files",
                                           .icon = ICON_READER,

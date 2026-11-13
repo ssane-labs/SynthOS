@@ -489,5 +489,5 @@ COMMAND(restore, "rstrui", "system", "restore [list|point [name]|to <n>|delete <
 }
 
 static const struct command *const commands[] = {&cmddef_restore};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 GUI_APP_FULL(&restore_app, NULL, &ext);

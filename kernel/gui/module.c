@@ -295,6 +295,15 @@ int module_audio_decode(const uint8_t *data, size_t size, int16_t **frames, uint
     return E_INVAL;
 }
 
+const void *module_service(const char *name)
+{
+    gui_module_load_all();
+    for (int i = 0; i < module_count; i++)
+        if (modules[i].ext && modules[i].ext->service_name && !strcmp(modules[i].ext->service_name, name))
+            return modules[i].ext->service;
+    return NULL;
+}
+
 int module_content_search(const char *query, void (*hit)(const char *path, void *ctx), void *ctx)
 {
     gui_module_load_all();

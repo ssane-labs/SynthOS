@@ -1,5 +1,6 @@
 #include <synth/command.h>
 #include <synth/exec.h>
+#include <synth/module.h>
 #include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/inflate.h>
@@ -12,6 +13,7 @@
 #include <synth/vfs.h>
 #include <synth/winpath.h>
 
+#include "msiapi.h"
 #include "win32.h"
 
 #if CONFIG_WIN32
@@ -19,7 +21,8 @@
 /* Windows Installer packages (.msi) without the Windows Installer service: the OLE2 container, the tables, the
    cabinets of files, then the files, shortcuts and registry values the package describes are written. What is
    written is listed under C:\Windows\Installer so msiexec /x can take it back out. Launch conditions are checked
-   and custom actions run in the order of the InstallExecuteSequence (see below); services are not installed. */
+   and custom actions run in the order of the InstallExecuteSequence by the msica module; services are not
+   installed. */
 
 #define MSI_MAXSEC 0xFFFFFFF0u
 #define MSI_TEXT 512
@@ -663,9 +666,10 @@ struct msi_run {
     char installdir[PATH_MAX_LEN];
     char *manifest;
     size_t manifest_len, manifest_cap;
-    uint32_t n_files, n_links, n_regs, n_skipped, n_ca, n_ca_skipped;
-    int rollback[16], commit[16];
-    uint32_t nrollback, ncommit;
+    uint32_t n_files, n_links, n_regs, n_skipped;
+    struct msi_table cache;
+    char cache_name[48];
+    bool cached;
     struct lnk link;
     uint8_t blob[4096];
     char text[MSI_TEXT];
@@ -1018,12 +1022,6 @@ static void set_default_folders(struct msi_run *r)
     prop_default(r, "DesktopFolder", "C:\\Users\\Public\\Desktop\\");
     prop_default(r, "FontsFolder", "C:\\Windows\\Fonts\\");
     prop_default(r, "ALLUSERS", "1");
-    static const char *const facts[][2] = {{"VersionNT", "603"}, {"VersionNT64", "603"}, {"WindowsBuild", "9600"},
-                                           {"Privileged", "1"}, {"AdminUser", "1"}, {"UILevel", "2"},
-                                           {"UserLanguageID", "1033"}, {"SystemLanguageID", "1033"}};
-    for (size_t i = 0; i < ARRAY_SIZE(facts); i++)
-        prop_default(r, facts[i][0], facts[i][1]);
-    prop_default(r, "LogonUser", user_current()->name);
     const char *user = user_current()->name;
     static const char *per_user[] = {"AppDataFolder", "LocalAppDataFolder", "PersonalFolder"};
     for (size_t i = 0; i < ARRAY_SIZE(per_user); i++) {
@@ -1113,6 +1111,8 @@ static void msi_run_free(struct msi_run *r)
     msi_table_close(&r->shortcut);
     msi_table_close(&r->folder);
     msi_table_close(&r->custom);
+    if (r->cached)
+        msi_table_close(&r->cache);
     msi_db_close(&r->db);
     kfree(r->files);
     kfree(r->manifest);
@@ -1141,225 +1141,84 @@ static void save_manifest(struct msi_run *r)
         write_win(path, r->manifest, r->manifest_len);
 }
 
-static int msi_remove(struct shell *sh, const char *guid);
+int msi_remove(struct shell *sh, const char *guid);
 
-/* ---- custom actions, launch conditions and rollback ----
-   The InstallExecuteSequence runs in order around the built-in work: actions before InstallFiles first, then the
-   files, shortcuts and registry, then the rest. Supported: set a property (51) or a folder (35), stop with an error
-   (19), and run a program from the package's Binary table (2), from an installed file (18), from a folder (34) or
-   named by a property (50). DLL and script actions need the Windows Installer's own API and are skipped with a
-   note. When an action fails, rollback actions run and everything written so far is taken back out. */
+/* ---- what the custom-action module (msica.sxm) sees of an installation ----
+   Only numbers and strings cross: this side is x32 code, the module is not. One table at a time is kept open. */
 
-#define MSI_SEQ 192
-
-struct msi_step {
-    char action[72];
-    char cond[200];
-    uint32_t seq;
-};
-
-struct msi_cond {
-    struct msi_run *r;
-    const char *p;
-};
-
-static void cond_space(struct msi_cond *c)
+static bool api_table(struct msi_run *r, const char *table)
 {
-    while (*c->p == ' ' || *c->p == '\t' || *c->p == '\r' || *c->p == '\n')
-        c->p++;
-}
-
-static bool cond_word(struct msi_cond *c, const char *w)
-{
-    cond_space(c);
-    size_t n = strlen(w);
-    if (str_ncasecmp(c->p, w, n) || is_alnum((uint8_t)c->p[n]) || c->p[n] == '_')
-        return false;
-    c->p += n;
-    return true;
-}
-
-static bool cond_or(struct msi_cond *c);
-
-/* an operand: "text", a number, a property, %ENV, or $comp ?comp &feature !feature (states: 3 local, 2 absent) */
-static void cond_value(struct msi_cond *c, char *out, size_t cap)
-{
-    cond_space(c);
-    out[0] = 0;
-    if (*c->p == '"') {
-        const char *e = strchr(c->p + 1, '"');
-        size_t n = e ? (size_t)(e - c->p - 1) : strlen(c->p + 1);
-        str_copy(out, c->p + 1, MIN(cap, n + 1));
-        c->p += n + 1 + (e ? 1 : 0);
-        return;
-    }
-    char sigil = strchr("%$?&!", *c->p) && *c->p ? *c->p++ : 0;
-    const char *s = c->p;
-    while (is_alnum((uint8_t)*c->p) || *c->p == '_' || *c->p == '.' || (*c->p == '-' && c->p == s))
-        c->p++;
-    char name[80];
-    str_copy(name, s, MIN(sizeof(name), (size_t)(c->p - s) + 1));
-    if (!sigil) {
-        const char *v = is_digit((uint8_t)name[0]) || name[0] == '-' ? name : prop_get(c->r, name);
-        str_copy(out, v ? v : "", cap);
-    } else if (sigil == '%') {
-        str_copy(out, !strcmp(name, "USERNAME") ? user_current()->name : "", cap);
-    } else if (sigil == '?' || sigil == '!') {
-        str_copy(out, "2", cap);
-    } else { /* what is being installed: every component and feature this package selects */
-        bool on = false;
-        char buf[MSI_TEXT];
-        if (sigil == '$')
-            on = component_selected(c->r, name);
-        for (uint32_t f = 0; sigil == '&' && f < c->r->feature.rows; f++)
-            if (!strcmp(cell_str(&c->r->db, &c->r->feature, f, 0, buf, sizeof(buf)), name))
-                on = cell_int(&c->r->feature, f, 5) > 0;
-        str_copy(out, on ? "3" : "2", cap);
-    }
-}
-
-static bool cond_number(const char *s, long *v)
-{
-    return s[0] && str_parse_long(s, v);
-}
-
-static bool cond_term(struct msi_cond *c)
-{
-    cond_space(c);
-    if (cond_word(c, "NOT"))
-        return !cond_term(c);
-    if (*c->p == '(') {
-        c->p++;
-        bool v = cond_or(c);
-        cond_space(c);
-        if (*c->p == ')')
-            c->p++;
-        return v;
-    }
-    char a[MSI_TEXT], b[MSI_TEXT];
-    cond_value(c, a, sizeof(a));
-    cond_space(c);
-    bool fold = *c->p == '~' && c->p++;
-    static const char *const ops[] = {"<>", "><", "<<", ">>", ">=", "<=", "=", "<", ">"};
-    int op = -1;
-    for (int i = 0; i < (int)ARRAY_SIZE(ops) && op < 0; i++)
-        if (!strncmp(c->p, ops[i], strlen(ops[i]))) {
-            op = i;
-            c->p += strlen(ops[i]);
-        }
-    if (op < 0) {
-        long v;
-        return cond_number(a, &v) ? v != 0 : a[0] != 0;
-    }
-    cond_value(c, b, sizeof(b));
-    long x, y;
-    int cmp;
-    if (cond_number(a, &x) && cond_number(b, &y) && op != 1 && op != 2 && op != 3)
-        cmp = x < y ? -1 : x > y;
-    else
-        cmp = fold ? str_casecmp(a, b) : strcmp(a, b);
-    size_t la = strlen(a), lb = strlen(b);
-    switch (op) {
-    case 0: return cmp != 0;
-    case 1: /* contains */
-        for (size_t i = 0; i + lb <= la; i++)
-            if (!(fold ? str_ncasecmp(a + i, b, lb) : strncmp(a + i, b, lb)))
-                return true;
-        return false;
-    case 2: return la >= lb && !(fold ? str_ncasecmp(a, b, lb) : strncmp(a, b, lb));
-    case 3: return la >= lb && !(fold ? str_ncasecmp(a + la - lb, b, lb) : strncmp(a + la - lb, b, lb));
-    case 4: return cmp >= 0;
-    case 5: return cmp <= 0;
-    case 6: return cmp == 0;
-    case 7: return cmp < 0;
-    default: return cmp > 0;
-    }
-}
-
-static bool cond_and(struct msi_cond *c)
-{
-    bool v = cond_term(c);
-    while (cond_word(c, "AND"))
-        v = cond_term(c) && v;
-    return v;
-}
-
-static bool cond_or(struct msi_cond *c)
-{
-    bool v = cond_and(c);
-    for (;;) {
-        if (cond_word(c, "OR"))
-            v = cond_and(c) || v;
-        else if (cond_word(c, "XOR"))
-            v = cond_and(c) != v;
-        else if (cond_word(c, "EQV"))
-            v = cond_and(c) == v;
-        else if (cond_word(c, "IMP"))
-            v = cond_and(c) || !v;
-        else
-            return v;
-    }
-}
-
-/* an empty condition is true */
-static bool msi_condition(struct msi_run *r, const char *text)
-{
-    struct msi_cond c = {r, text};
-    cond_space(&c);
-    return !*c.p || cond_or(&c);
-}
-
-/* the LaunchCondition table: every condition must hold, or the package says why it cannot install */
-static bool launch_conditions(struct msi_run *r)
-{
-    struct msi_table t;
-    if (!msi_table_open(&r->db, "LaunchCondition", &t))
+    if (r->cached && !strcmp(r->cache_name, table))
         return true;
-    bool ok = true;
-    char cond[MSI_TEXT], text[MSI_TEXT];
-    for (uint32_t i = 0; i < t.rows && ok; i++)
-        if (!msi_condition(r, cell_str(&r->db, &t, i, 0, cond, sizeof(cond)))) {
-            expand(r, cell_str(&r->db, &t, i, 1, cond, sizeof(cond)), text, sizeof(text));
-            say(r, "%s", text);
-            ok = false;
-        }
-    msi_table_close(&t);
+    if (r->cached)
+        msi_table_close(&r->cache);
+    r->cached = msi_table_open(&r->db, table, &r->cache);
+    str_copy(r->cache_name, table, sizeof(r->cache_name));
+    return r->cached;
+}
+
+int msi_api_rows(struct msi_run *r, const char *table)
+{
+    return api_table(r, table) ? (int)r->cache.rows : -1;
+}
+
+int msi_api_str(struct msi_run *r, const char *table, int row, int col, char *out, int cap)
+{
+    out[0] = 0;
+    if (api_table(r, table) && (uint32_t)row < r->cache.rows)
+        cell_str(&r->db, &r->cache, (uint32_t)row, (uint32_t)col, out, (size_t)cap);
+    return out[0] != 0;
+}
+
+int msi_api_int(struct msi_run *r, const char *table, int row, int col)
+{
+    return api_table(r, table) && (uint32_t)row < r->cache.rows ? (int)cell_int(&r->cache, (uint32_t)row, (uint32_t)col)
+                                                                 : 0;
+}
+
+/* kind 0: a property, 1: a folder, 2: an installed file */
+int msi_api_get(struct msi_run *r, int kind, const char *name, char *out, int cap)
+{
+    const char *v = kind == 0 ? prop_get(r, name) : kind == 1 ? dir_path(r, name, 0) : file_path(r, name);
+    str_copy(out, v ? v : "", (size_t)cap);
+    return v != NULL;
+}
+
+/* a property, or a folder (the folders below it follow) */
+void msi_api_set(struct msi_run *r, const char *name, const char *value, int folder)
+{
+    prop_set(r, name, value);
+    if (folder)
+        r->ndirs = 0;
+}
+
+void msi_api_format(struct msi_run *r, const char *in, char *out, int cap)
+{
+    expand(r, in, out, (size_t)cap);
+}
+
+int msi_api_component(struct msi_run *r, const char *comp)
+{
+    return component_selected(r, comp);
+}
+
+void msi_api_say(struct msi_run *r, const char *text)
+{
+    say(r, "%s", text);
+}
+
+/* a stream of the package (Binary.<name>) written out as a file */
+int msi_api_save(struct msi_run *r, const char *stream, const char *win)
+{
+    size_t len = 0;
+    uint8_t *data = cfb_stream(&r->db.cfb, stream, &len);
+    bool ok = data && write_win(win, data, len);
+    kfree(data);
     return ok;
 }
 
-static int load_sequence(struct msi_run *r, struct msi_step *steps)
-{
-    struct msi_table t;
-    if (!msi_table_open(&r->db, "InstallExecuteSequence", &t))
-        return 0;
-    int n = 0;
-    for (uint32_t i = 0; i < t.rows && n < MSI_SEQ; i++) {
-        cell_str(&r->db, &t, i, 0, steps[n].action, sizeof(steps[n].action));
-        cell_str(&r->db, &t, i, 1, steps[n].cond, sizeof(steps[n].cond));
-        steps[n].seq = cell_int(&t, i, 2);
-        n++;
-    }
-    msi_table_close(&t);
-    for (int i = 1; i < n; i++) /* by sequence number */
-        for (int j = i; j > 0 && steps[j].seq < steps[j - 1].seq; j--) {
-            struct msi_step tmp = steps[j];
-            steps[j] = steps[j - 1];
-            steps[j - 1] = tmp;
-        }
-    return n;
-}
-
-static int custom_row(struct msi_run *r, const char *action)
-{
-    char buf[MSI_TEXT];
-    for (uint32_t i = 0; i < r->custom.rows; i++)
-        if (!strcmp(cell_str(&r->db, &r->custom, i, 0, buf, sizeof(buf)), action))
-            return (int)i;
-    return -1;
-}
-
-/* runs a Windows program to the end; its exit code, or -1 when it could not start */
-static int run_program(struct msi_run *r, const char *exe, const char *args, const char *workdir)
+/* runs a Windows program to the end: its exit code, or -1 when it could not start */
+int msi_api_run(struct msi_run *r, const char *exe, const char *args, const char *workdir)
 {
     static struct shell *quiet;
     struct shell *sh = r->sh ? r->sh : quiet ? quiet : (quiet = shell_create());
@@ -1382,109 +1241,6 @@ static int run_program(struct msi_run *r, const char *exe, const char *args, con
     int rc = exec_program(&ctx);
     kfree(buf);
     return rc;
-}
-
-enum { CA_OK, CA_FAILED, CA_STOP };
-
-static int custom_action(struct msi_run *r, int row)
-{
-    char name[80], source[MSI_TEXT], raw[MSI_TEXT], target[MSI_TEXT], exe[PATH_MAX_LEN];
-    cell_str(&r->db, &r->custom, (uint32_t)row, 0, name, sizeof(name));
-    uint32_t type = cell_int(&r->custom, (uint32_t)row, 1);
-    cell_str(&r->db, &r->custom, (uint32_t)row, 2, source, sizeof(source));
-    expand(r, cell_str(&r->db, &r->custom, (uint32_t)row, 3, raw, sizeof(raw)), target, sizeof(target));
-    uint32_t base = type & 7, from = type & 0x30;
-    bool ignore = type & 0x40;
-    if (base == 3 && from == 0x30) { /* 51: property = formatted text */
-        prop_set(r, source, target);
-        r->n_ca++;
-        return CA_OK;
-    }
-    if (base == 3 && from == 0x20) { /* 35: folder = formatted path; folders below it follow */
-        prop_set(r, source, target);
-        r->ndirs = 0;
-        r->n_ca++;
-        return CA_OK;
-    }
-    if (base == 3 && from == 0x10) { /* 19: stop with a message */
-        say(r, "%s", target[0] ? target : "The package stopped the installation.");
-        return CA_STOP;
-    }
-    if (base != 2) {
-        static const char *const kinds[8] = {"", "a DLL", "", "", "", "a JScript", "a VBScript", "a nested install"};
-        say(r, "Skipped custom action %s (%s action needs the Windows Installer service).", name,
-            kinds[base][0] ? kinds[base] : "an unknown");
-        r->n_ca_skipped++;
-        return CA_OK;
-    }
-    const char *args = target, *workdir = NULL;
-    exe[0] = 0;
-    if (from == 0x00) { /* a program kept in the Binary table: written to the temp folder first */
-        char stream[96];
-        size_t len = 0;
-        ksnprintf(stream, sizeof(stream), "Binary.%s", source);
-        uint8_t *data = cfb_stream(&r->db.cfb, stream, &len);
-        ksnprintf(exe, sizeof(exe), "C:\\Windows\\Temp\\msi-%s.exe", source);
-        if (!data || !write_win(exe, data, len))
-            exe[0] = 0;
-        kfree(data);
-    } else if (from == 0x10) {
-        str_copy(exe, file_path(r, source) ? file_path(r, source) : "", sizeof(exe));
-        workdir = r->installdir;
-    } else if (from == 0x30) {
-        str_copy(exe, prop_get(r, source) ? prop_get(r, source) : "", sizeof(exe));
-    } else { /* 34: Source is the folder, Target the whole command line */
-        workdir = dir_path(r, source, 0);
-        const char *s = target;
-        char quote = *s == '"' ? *s++ : ' ';
-        const char *e = strchr(s, quote);
-        size_t n = e ? (size_t)(e - s) : strlen(s);
-        str_copy(exe, s, MIN(sizeof(exe), n + 1));
-        args = e ? e + 1 : "";
-        if (!strchr(exe, '\\') && workdir) {
-            char full[PATH_MAX_LEN];
-            join_win(full, sizeof(full), workdir, exe);
-            str_copy(exe, full, sizeof(exe));
-        }
-    }
-    if (type & 0x80) { /* runs without waiting on Windows: here it runs now, and its result does not count */
-        ignore = true;
-    }
-    say(r, "Running custom action %s", name);
-    int rc = exe[0] ? run_program(r, exe, args, workdir) : -1;
-    r->n_ca++;
-    if (rc == 0 || ignore)
-        return CA_OK;
-    if (rc < 0)
-        say(r, "Custom action %s could not start %s.", name, exe[0] ? exe : source);
-    else
-        say(r, "Custom action %s failed (exit code %d).", name, rc);
-    return CA_FAILED;
-}
-
-/* runs the steps in [from, to) that are custom actions; rollback ones are only remembered */
-static int run_steps(struct msi_run *r, const struct msi_step *steps, int from, int to)
-{
-    for (int i = from; i < to; i++) {
-        int row = custom_row(r, steps[i].action);
-        if (row < 0 || !msi_condition(r, steps[i].cond))
-            continue;
-        uint32_t type = cell_int(&r->custom, (uint32_t)row, 1);
-        if (type & 0x100) { /* rollback */
-            if (r->nrollback < ARRAY_SIZE(r->rollback))
-                r->rollback[r->nrollback++] = row;
-            continue;
-        }
-        if (type & 0x200) { /* commit: after everything succeeded */
-            if (r->ncommit < ARRAY_SIZE(r->commit))
-                r->commit[r->ncommit++] = row;
-            continue;
-        }
-        int rc = custom_action(r, row);
-        if (rc != CA_OK)
-            return rc;
-    }
-    return CA_OK;
 }
 
 static int msi_install_db(struct msi_run *r, const char *package, const char *package_vfs, uint8_t *file, size_t size,
@@ -1513,29 +1269,19 @@ static int msi_install_db(struct msi_run *r, const char *package, const char *pa
     }
     const char *name = prop_get(r, "ProductName"), *version = prop_get(r, "ProductVersion");
     say(r, "Installing %s %s", name ? name : "(unnamed)", version ? version : "");
-    if (!launch_conditions(r))
-        return 1603;
     open_cabs(r, package_vfs);
     if (!r->ncabs) {
         say(r, "The package has no cabinet of files that can be read.");
         return 1334;
     }
     r->files = kzalloc(sizeof(struct msi_file) * (r->file.rows + 1));
-    struct msi_step *steps = kmalloc(sizeof(*steps) * MSI_SEQ);
-    if (!r->files || !steps) {
-        kfree(steps);
+    if (!r->files)
         return 1601;
-    }
-    int nsteps = load_sequence(r, steps), split = nsteps;
-    for (int i = 0; i < nsteps && split == nsteps; i++)
-        if (!strcmp(steps[i].action, "InstallFiles") || steps[i].seq >= 4000)
-            split = i;
-    int rc = run_steps(r, steps, 0, split);
-    if (rc == CA_STOP || rc == CA_FAILED) {
-        kfree(steps);
-        say(r, "Nothing was installed.");
-        return 1603;
-    }
+    /* launch conditions and custom actions: the msica module, when it is there */
+    const struct msi_actions *ca = module_service ? module_service("msi-actions") : NULL;
+    int rc = ca ? ca->before(r) : 0;
+    if (rc)
+        return rc;
     const char *idir = dir_path(r, "INSTALLDIR", 0);
     str_copy(r->installdir, idir ? idir : "", sizeof(r->installdir));
     install_files(r);
@@ -1544,23 +1290,16 @@ static int msi_install_db(struct msi_run *r, const char *package, const char *pa
     create_folders(r);
     register_uninstall(r);
     save_manifest(r);
-    rc = run_steps(r, steps, split, nsteps);
-    kfree(steps);
-    if (rc != CA_OK) { /* rollback: the package's own undo steps, newest first, then what was written */
-        say(r, "Rolling back the installation.");
-        while (r->nrollback)
-            custom_action(r, r->rollback[--r->nrollback]);
+    if (ca && (rc = ca->after(r)) != 0) { /* rolled back: what was written comes back out */
         msi_remove(r->sh, r->guid);
-        return 1603;
+        return rc;
     }
-    for (uint32_t i = 0; i < r->ncommit; i++)
-        custom_action(r, r->commit[i]);
     say(r, "Installed %lu files, %lu shortcuts and %lu registry values.", (unsigned long)r->n_files,
         (unsigned long)r->n_links, (unsigned long)r->n_regs);
     if (r->n_skipped)
         say(r, "%lu files were not in the package's cabinets.", (unsigned long)r->n_skipped);
-    if (r->n_ca || r->n_ca_skipped)
-        say(r, "Ran %lu custom actions, skipped %lu.", (unsigned long)r->n_ca, (unsigned long)r->n_ca_skipped);
+    if (!ca && r->custom.rows)
+        say(r, "%lu custom actions were not run (the msica module is missing).", (unsigned long)r->custom.rows);
     return 0;
 }
 
@@ -1614,7 +1353,7 @@ static bool package_code(const char *package, char *guid, size_t cap)
 }
 
 /* msiexec /x: the files, shortcuts and registry values the package wrote come back out */
-static int msi_remove(struct shell *sh, const char *guid)
+int msi_remove(struct shell *sh, const char *guid)
 {
     struct msi_run *r = kzalloc(sizeof(*r));
     if (!r)

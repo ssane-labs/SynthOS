@@ -629,5 +629,5 @@ COMMAND(avi, NULL, "system", "avi <file>", "show what an AVI video holds")
 }
 
 static const struct command *const commands[] = {&cmddef_avi};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 GUI_APP_FULL(&video_app, NULL, &ext);

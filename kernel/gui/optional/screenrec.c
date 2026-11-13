@@ -647,5 +647,5 @@ COMMAND(screenrec, NULL, "system", "screenrec [start [file] [--half] [--fps n]|s
 }
 
 static const struct command *const commands[] = {&cmddef_screenrec};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 GUI_APP_FULL(NULL, NULL, &ext);

@@ -397,5 +397,5 @@ COMMAND(lsdev, "devmgmt", "system", "lsdev [problems]", "list the devices by kin
 }
 
 static const struct command *const commands[] = {&cmddef_lsdev};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 GUI_APP_FULL(&devices_app, NULL, &ext);

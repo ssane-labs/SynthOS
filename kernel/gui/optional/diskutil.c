@@ -586,5 +586,5 @@ static const struct gui_app diskutil_app = {
     .name = "Disk Utility", .description = "Volumes, their use, disks and partitions", .icon = ICON_DISKUTIL,
     .launch = launch};
 static const struct command *const commands[] = {&cmddef_format};
-static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL};
+static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 GUI_APP_FULL(&diskutil_app, NULL, &ext);
