@@ -364,6 +364,8 @@ screenrec start
 screenrec: the desktop is not running
 screenrec
 not recording
+lsdev
+Host bridge
 format nosuch fat32 --yes
 format: no device nosuch
 format hda fat32
