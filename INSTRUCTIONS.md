@@ -140,6 +140,24 @@ SynthOS 1.2 «Nebula» — рабочая система:
   OCT и BIN (щелчок по строке выбирает систему ввода), размер слова QWORD/DWORD/WORD/BYTE, `and or xor not`,
   `<< >>`, `mod`; «Converter» — длина, площадь, объём, вес, температура, скорость, время, данные, давление.
   Из терминала: `scicalc 2^10 + sin(30)`, `progcalc '0xFF and 0x0F'`, `convert 100 km mi`, `convert list`;
+* **фото — медиатека**: «Photos» открывается сеткой «All Photos» — все картинки из «Pictures» (с вложенными
+  папками), «Desktop» и «Downloads», новые сверху. Каждую картинку Фото один раз читает в фоне: размер,
+  основные цвета, светлая или тёмная, и лица на ней; итог хранится в `~/Pictures/.library`. Слева: поиск,
+  «Favorites» (звёздочка в панели или клавиша F), «Recents», «People» (названные люди и «Unnamed Faces»),
+  альбомы («New Album…», правый щелчок → «Add to Album…»), места. Правый щелчок → «Name People…» обводит
+  каждое найденное лицо и спрашивает имя; похожие лица на других картинках попадают к тому же человеку.
+  Поиск понимает слова из имени файла, цвета (`red`, `blue`, `green`…), год и месяц (`2026`, `march`),
+  `dark`/`bright`, `portrait`/`landscape`/`square`, `people`, `screenshot`, `favorite`, имена людей и
+  названия альбомов; слова складываются. Двойной щелчок открывает картинку, Esc или кнопка с сеткой —
+  обратно. Из терминала: `photos index`, `photos search blue portrait`, `photos faces`,
+  `photos name ~/Pictures/me.png Anna`, `photos people`, `photos album`, `photos album Trip add FILE`,
+  `photos favorite FILE`;
+* **Thunderbolt, USB4 и док‑станции**: когда док‑станция или внешний PCIe‑корпус подключается в порт с
+  горячим подключением (так работают Thunderbolt 3/4/5 и USB4 — туннели строит прошивка), SynthOS включает
+  питание слота, раздаёт новым устройствам адреса и запускает USB‑контроллер док‑станции — её клавиатура,
+  мышь, флешки и сетевой адаптер начинают работать, приходит уведомление «Device Connected». Список
+  контроллеров, портов и того, что за ними: System Information → «Thunderbolt & Docks» или `thunderbolt`
+  (`docks`); `thunderbolt rescan` — проверить порты сразу;
 * **справка и советы**: приложение «Help» (в меню бара Help → SynthOS Help) собирает руководства из
   `/docs` и приветственный тур; поле «Search Help» ищет сразу по всем руководствам и по описаниям всех
   команд, «Commands» — список команд, «Tips» — советы по одному. Раз в день после входа приходит совет
@@ -345,7 +363,7 @@ SynthOS 1.2 «Nebula» — рабочая система:
   «назад/вверх», поле имени при сохранении, «Новая папка» при выборе папки; ею пользуются Блокнот и
   программы Windows (`IFileOpenDialog`/`IFileSaveDialog`, `GetOpenFileName`/`GetSaveFileName`);
 * приложения — Chromium, Терминал, Файлы, Блокнот, **Фото** (PNG, JPEG baseline/progressive, GIF с
-  анимацией, BMP; масштаб, поворот, слайд-шоу, обои из фото), **Музыка** (встроенный синтезатор с тремя
+  анимацией, BMP; масштаб, поворот, слайд-шоу, обои из фото; медиатека с альбомами, людьми и поиском), **Музыка** (встроенный синтезатор с тремя
   своими композициями и WAV-файлы), **Видео** (AVI с Motion JPEG и PCM-звуком), **Просмотр** (любой
   файл текстом или в hex), Paint, Калькулятор, Системный монитор, Системные настройки,
   **Установка SynthOS**; **автозапуск, как в Windows** — это папка «Автозагрузка» (`C:\Users\<имя>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup` и общая `C:\ProgramData\...\Startup`) плюс значения `Run`/`RunOnce` в `HKCU`/`HKLM`, которые пишут установщики: что положено в папку (ярлык `.lnk`, файл, `Имя.app`, `имя.command` с командой) или записано в `Run`, открывается при входе. Настройки → Apps → Open at Login показывают и убирают всё это (кнопки «Add App…» — выбор из списка приложений и «Add File…» — любой файл, без набора текста), `autostart add|remove|list|folder` — то же из терминала;
@@ -810,8 +828,8 @@ kernel/gui/               gfx.c (рисование, сглаживание, с�
                           WAV, команда music), autostart.c, spotlight.c (поиск, Launchpad), lock.c,
                           wallpaper.c (бумажные обои из слоёв), apps/chromium.c (предустановленный браузер), ui.c, terminal.c, image.c; uifont.c и icons.c —
                           сгенерированы
-kernel/gui/apps/          browser, files, notepad, photos, music, video, viewer, installer, paint,
-                          calc_fp, settings, monitor, mines
+kernel/gui/apps/          browser, files, notepad, music, video, viewer, installer, paint,
+                          settings, monitor, mines (Фото и Калькулятор — модули в kernel/gui/optional)
 kernel/lib/               png.c, jpeg.c, gif.c, picture.c (BMP и общий вход), inflate.c, zip.c, lz4.c, …
 kernel/core/install.c     установка: весь диск, свободное место или вместо раздела (команда install)
 kernel/core/parttab.c     таблицы разделов MBR и GPT: карта диска, добавить/удалить раздел (команда part)

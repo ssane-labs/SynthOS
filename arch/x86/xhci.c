@@ -829,6 +829,19 @@ static void found_pci(const struct pci_device *d, void *ctx)
         x->changed[port / 32] |= 1u << (port % 32);
 }
 
+/* a controller that appeared after boot (a dock, Thunderbolt): start it and look at its ports */
+bool xhci_attach(const struct pci_device *d)
+{
+    int before = controller_count;
+    found_pci(d, NULL);
+    if (controller_count == before)
+        return false;
+    if (!before)
+        usb_poll_register(poll_all);
+    usb_port_changed();
+    return true;
+}
+
 void xhci_init(void)
 {
     pci_foreach(found_pci, NULL);

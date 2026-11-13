@@ -256,6 +256,7 @@ void vbe_leave(void);
 const struct framebuffer *uefi_framebuffer(void);
 const struct framebuffer *uefi_more_framebuffer(int index);
 void nvme_init(void);
+bool xhci_attach(const struct pci_device *d);
 void e1000_init(void);
 void realtek_init(void);
 void irq_install(int irq, irq_handler handler);

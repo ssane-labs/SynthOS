@@ -30,6 +30,8 @@ python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DE
 python3 -I tests/msix.py "$work" &&
     for f in tool.msix uwp.msix tool.msixbundle; do mcopy -i "$work/fat.img" "$work/$f" ::/$f; done
 mcopy -i "$work/fat.img" tests/fonts/InterSubset.otf ::/inter.otf
+python3 -I tests/photos.py "$work" &&
+    for f in face face2 red tall; do mcopy -i "$work/fat.img" "$work/$f.png" ::/$f.png; done
 
 if command -v 7z >/dev/null; then
     mkdir -p "$work/7z/pkg/sub"
@@ -1111,6 +1113,30 @@ fonts list | grep Inter
 Inter
 fonts remove Inter; fonts list | grep -c Inter
 Removed Inter
+mkdir -p /home/Pictures/t; cp /mnt/hdb/face.png /mnt/hdb/face2.png /mnt/hdb/red.png /mnt/hdb/tall.png /home/Pictures/t/; photos index
+faces found
+photos faces | grep face.png
+t/face.png  160x120  faces: ?
+photos name /home/Pictures/t/face.png Alice; photos people
+Alice                    2 pictures
+photos search alice green
+t/face2.png  160x120  faces: Alice
+photos search red landscape
+t/red.png  120x80
+photos search portrait blue
+t/tall.png  60x120
+photos favorite /home/Pictures/t/red.png; photos album Trip add /home/Pictures/t/tall.png; photos album
+Trip                     1
+photos search favorite; photos search trip
+t/tall.png
+photos album Trip remove; photos search zzqq
+no pictures match
+thunderbolt
+No Thunderbolt or USB4 host router
+thunderbolt | grep Keyboard
+QEMU USB Keyboard  [0627:0001
+docks rescan
+nothing new behind the hot-plug ports
 unzip -q -d /tmp/z /mnt/hdb/t.zip; cat /tmp/z/pkg/sub/a.txt /tmp/z/pkg/readme.txt
 Azipped hello zipped
 pkg list

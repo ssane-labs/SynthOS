@@ -18,6 +18,7 @@ static const struct page pages[] = {
     {SYM_DISPLAY, "Displays", NULL, "displays"},
     {SYM_VOLUME, "Sound", NULL, "sound"},
     {SYM_USB, "USB", NULL, "lsusb"},
+    {SYM_SNAP, "Thunderbolt & Docks", NULL, "thunderbolt"},
     {SYM_DISK, "Volumes", "Storage", "df"},
     {SYM_FOLDER, "Mounts", NULL, "mount"},
     {SYM_CHIP, "Disks & Partitions", NULL, "part"},
