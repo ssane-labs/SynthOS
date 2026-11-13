@@ -198,6 +198,23 @@ void hal_audio_close(void)
     ac.fill_frames = 0;
 }
 
+/* the microphone: 16-bit stereo frames; returns the rate, or an error when there is nothing to record from */
+int hal_audio_record_open(void)
+{
+    return use_hda(44100) ? hda_record_open() : E_NODEV;
+}
+
+int hal_audio_record_read(int16_t *frames, int max)
+{
+    return use_hda(44100) ? hda_record_read(frames, max) : 0;
+}
+
+void hal_audio_record_close(void)
+{
+    if (use_hda(44100))
+        hda_record_close();
+}
+
 const char *hal_audio_name(void)
 {
     if (use_hda(44100))

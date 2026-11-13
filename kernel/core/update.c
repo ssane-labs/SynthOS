@@ -162,16 +162,23 @@ static int esp_kernel_hash(struct blockdev *sys, uint8_t out[32])
     }
     str_copy(where, path, sizeof(where));
     ksnprintf(file, sizeof(file), "%s/SYNTHOS/KERNEL.BIN", where);
-    char *data;
-    size_t n;
-    int err = vfs_read_all(file, &data, &n);
+    /* in pieces: the kernel is megabytes, and a small machine may not have them in one piece */
+    struct file *f;
+    uint8_t *buf = kmalloc(32768);
+    int err = buf ? vfs_open(file, VFS_READ, &f) : E_NOMEM;
     if (!err) {
         struct sha256 h;
         sha256_init(&h);
-        sha256_update(&h, data, n);
-        sha256_final(&h, out);
-        kfree(data);
+        long n;
+        while ((n = vfs_read(f, buf, 32768)) > 0)
+            sha256_update(&h, buf, (size_t)n);
+        vfs_close(f);
+        if (n < 0)
+            err = (int)n;
+        else
+            sha256_final(&h, out);
     }
+    kfree(buf);
     if (dev) {
         vfs_umount(where);
         if (strcmp(where, ESP_MOUNT))

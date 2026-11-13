@@ -9,5 +9,8 @@ int hda_space(void);
 int hda_write(const int16_t *frames, int count);
 void hda_close(void);
 const char *hda_name(void);
+int hda_record_open(void);
+int hda_record_read(int16_t *frames, int max);
+void hda_record_close(void);
 
 #endif

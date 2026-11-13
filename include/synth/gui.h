@@ -89,6 +89,7 @@ enum icon_id {
     ICON_DISKUTIL,
     ICON_TIMELINE,
     ICON_READER,
+    ICON_ASSISTANT,
     ICON_COUNT,
 };
 
@@ -175,6 +176,8 @@ enum symbol_id {
     SYM_SNAP,
     SYM_WIFI_OFF,
     SYM_COPY,
+    SYM_SPARKLE,
+    SYM_MIC,
     SYM_COUNT,
 };
 

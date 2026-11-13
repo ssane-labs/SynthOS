@@ -1249,6 +1249,24 @@ def reader_art():
     art.put(poly4([(198, 192), (210, 180), (236, 206), (224, 218)]), (hexc("3a7bff"), hexc("1f55d6")))
     return art.done()
 
+
+def assistant_art():
+    """A deep blue-violet tile with a soft glowing orb and a four-pointed spark over it: the local assistant."""
+    art = Art(hexc("3b2a8f"), hexc("120b3a"))
+    art.put(ellipse4((52, 52, 204, 204)), ((120, 160, 255, 90), (180, 90, 255, 30)), 0, 0, blur=10)
+    art.put(ellipse4((76, 76, 180, 180)), (hexc("8fb4ff"), hexc("7a4dff")), 40, 4)
+
+    def spark(cx, cy, r, w):
+        pts = []
+        for i in range(8):
+            a = -math.pi / 2 + i * math.pi / 4
+            rr = r if i % 2 == 0 else w
+            pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+        return poly4(pts)
+    art.put(spark(128, 128, 62, 14), ((255, 255, 255, 255), (226, 232, 255, 255)), 30, 2)
+    art.put(spark(184, 74, 22, 6), (255, 255, 255, 230))
+    return art.done()
+
 ICONS = [
     ("ICON_FOLDER", folder_icon), ("ICON_FILE", blank_doc), ("ICON_TEXT", text_doc), ("ICON_APP", exe_art),
     ("ICON_DLL", dll_doc), ("ICON_IMAGE", image_doc), ("ICON_TERMINAL", terminal_art),
@@ -1266,6 +1284,7 @@ ICONS = [
     ("ICON_GAMES", games_art), ("ICON_CLOCK", clock_art), ("ICON_WEATHER", weather_art), ("ICON_NOTES", notes_art),
     ("ICON_CONSOLE", console_art), ("ICON_SYSINFO", sysinfo_art), ("ICON_NETUTIL", netutil_art),
     ("ICON_DISKUTIL", diskutil_art), ("ICON_TIMELINE", timeline_art), ("ICON_READER", reader_art),
+    ("ICON_ASSISTANT", assistant_art),
 ]
 
 # ---------------------------------------------------------------- symbols (drawn on a 128 grid)
@@ -1776,6 +1795,26 @@ def sym_copy(d):
     d.rounded_rectangle([12, 42, 88, 118], radius=10, outline=255, width=W)
 
 
+
+def sym_sparkle(d):
+    """the assistant: a large four-pointed spark and a small one"""
+    def spark(cx, cy, r, w):
+        pts = []
+        for i in range(8):
+            a = -math.pi / 2 + i * math.pi / 4
+            rr = r if i % 2 == 0 else w
+            pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+        d.polygon(pts, fill=255)
+    spark(56, 72, 52, 13)
+    spark(102, 26, 22, 6)
+
+
+def sym_mic(d):
+    d.rounded_rectangle([42, 8, 86, 82], radius=22, fill=255)
+    d.arc([22, 34, 106, 104], 0, 180, fill=255, width=W)
+    d.line([(64, 104), (64, 122)], fill=255, width=W)
+    d.line([(42, 122), (86, 122)], fill=255, width=W)
+
 SYMBOLS = [
     ("SYM_LOGO", sym_logo), ("SYM_SEARCH", sym_search), ("SYM_CONTROL", sym_control), ("SYM_WIFI", sym_wifi),
     ("SYM_HOME", sym_home), ("SYM_DESKTOP", sym_desktop), ("SYM_DOC", sym_doc), ("SYM_APPS", sym_apps),
@@ -1798,7 +1837,7 @@ SYMBOLS = [
     ("SYM_BELL", sym_bell), ("SYM_HAND", sym_hand), ("SYM_ACCESS", sym_access), ("SYM_WINDOW", sym_window),
     ("SYM_TEXT", sym_text), ("SYM_MUTE", sym_mute), ("SYM_SCREENSHOT", sym_screenshot), ("SYM_CROP", sym_crop),
     ("SYM_MISSION", sym_mission), ("SYM_WIDGETS", sym_widgets), ("SYM_SNAP", sym_snap), ("SYM_WIFI_OFF", sym_wifi_off),
-    ("SYM_COPY", sym_copy),
+    ("SYM_COPY", sym_copy), ("SYM_SPARKLE", sym_sparkle), ("SYM_MIC", sym_mic),
 ]
 
 

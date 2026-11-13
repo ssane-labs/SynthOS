@@ -209,6 +209,7 @@ int gui_module_show(const char *name, bool shown)
         return err;
     if (m)
         m->shown = shown;
+    chrome_changed(); /* a module can have a place in the menu bar */
     return 0;
 }
 
@@ -311,6 +312,20 @@ int module_content_search(const char *query, void (*hit)(const char *path, void 
         if (modules[i].ext && modules[i].ext->content_search)
             return modules[i].ext->content_search(query, hit, ctx);
     return 0;
+}
+
+const struct assistant_service *assistant(void)
+{
+    return gui_module_shown("assistant_fp") ? module_service("assistant") : NULL;
+}
+
+void assistant_toggle(void)
+{
+    const struct assistant_service *a = assistant();
+    if (a)
+        a->toggle();
+    else
+        gui_notify("Assistant", "Get the Assistant from the App Store: a chat with an AI that runs on this computer.");
 }
 
 bool gui_module_shown(const char *name)

@@ -14,7 +14,9 @@
    line out) and the path from a converter (DAC) to each; amplifiers on the way are unmuted and the external
    amplifiers (EAPD, which Realtek codecs need for the speakers) switched on. Sound plays from a cyclic buffer the
    stream's DMA engine walks; what has been played is cleared, so a late writer gives silence, not an echo.
-   Plugged-in headphones take over from the speakers. */
+   Plugged-in headphones take over from the speakers.
+   Recording: a microphone (or else a line in) pin, the path from an analog-to-digital converter (ADC) back to it,
+   and the first input stream filling a ring of its own; the reader takes what the DMA engine has written since. */
 
 #define PERIODS 16
 #define PERIOD_BYTES 4096
@@ -25,6 +27,7 @@
 #define MAX_PATH 6
 #define MAX_OUTS 6
 #define STREAM_TAG 1
+#define IN_TAG 2
 
 enum {
     GCAP = 0x00,
@@ -59,7 +62,7 @@ enum {
 };
 
 enum { W_DAC = 0, W_ADC = 1, W_MIXER = 2, W_SELECTOR = 3, W_PIN = 4 };
-enum { DEV_LINE_OUT = 0, DEV_SPEAKER = 1, DEV_HP = 2 };
+enum { DEV_LINE_OUT = 0, DEV_SPEAKER = 1, DEV_HP = 2, DEV_LINE_IN = 8, DEV_MIC = 10 };
 
 struct node {
     uint32_t caps, pincaps, config, outamp, inamp;
@@ -96,6 +99,13 @@ static struct {
     uint64_t jack_checked;
     bool headphones;
     char name[48];
+    /* recording */
+    struct output in; /* path[0] is the ADC, the pin last */
+    bool in_found, in_running;
+    volatile uint8_t *isd;
+    uint8_t *in_ring;
+    struct bdl_entry *in_bdl;
+    uint32_t in_read;
 } hd;
 
 static uint8_t r8(unsigned off) { return *(volatile uint8_t *)(hd.mmio + off); }
@@ -264,6 +274,65 @@ static bool find_dac(struct output *o, int nid, int depth)
     return false;
 }
 
+/* Depth-first from an ADC to the pin, through mixers and selectors; the path is stored ADC first. */
+static bool find_pin(struct output *o, int nid, int pin, int depth)
+{
+    if (nid <= 0 || nid >= MAX_NODES || depth >= MAX_PATH)
+        return false;
+    for (int i = 0; i < depth; i++)
+        if (o->path[i] == nid)
+            return false;
+    o->path[depth] = nid;
+    o->len = depth + 1;
+    if (nid == pin)
+        return true;
+    int type = widget_type(nid);
+    if (depth > 0 && type != W_MIXER && type != W_SELECTOR)
+        return false;
+    for (int i = 0; i < hd.nodes[nid].nconn; i++) {
+        o->sel[depth] = i;
+        if (find_pin(o, hd.nodes[nid].conn[i], pin, depth + 1))
+            return true;
+    }
+    return false;
+}
+
+/* the microphone the user most likely talks into: a plugged-in one, then a built-in one, then a line in */
+static bool pick_input(void)
+{
+    int best = -1, best_rank = 0;
+    for (int nid = 1; nid < MAX_NODES; nid++) {
+        struct node *n = &hd.nodes[nid];
+        if (widget_type(nid) != W_PIN || !(n->pincaps & (1u << 5)))
+            continue;
+        int connectivity = (int)(n->config >> 30), device = (int)(n->config >> 20 & 0xf);
+        if (connectivity == 1 || (device != DEV_MIC && device != DEV_LINE_IN))
+            continue;
+        int rank = device == DEV_MIC ? 4 : 2;
+        if (connectivity != 2 && (n->pincaps & (1u << 2))) { /* a jack: better when something is in it */
+            verb(nid, 0x709, 0);
+            if (verb(nid, 0xf09, 0) >> 31)
+                rank += 2;
+            else
+                rank -= 1;
+        }
+        if (rank > best_rank)
+            best = nid, best_rank = rank;
+    }
+    if (best < 0)
+        return false;
+    for (int adc = 1; adc < MAX_NODES; adc++) {
+        if (widget_type(adc) != W_ADC || (hd.nodes[adc].caps & (1u << 9)))
+            continue;
+        struct output o = {best, DEV_MIC, false, {0}, {0}, 0};
+        if (find_pin(&o, adc, best, 0)) {
+            hd.in = o;
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint32_t amp_gain(uint32_t caps)
 {
     return caps & 0x7f;
@@ -403,6 +472,69 @@ static bool setup_codec(int codec)
         klog("hda:   %s pin %d via %d nodes to DAC %d",
              hd.outs[i].device == DEV_SPEAKER ? "speaker" : hd.outs[i].device == DEV_HP ? "headphones" : "line out",
              hd.outs[i].pin, hd.outs[i].len, hd.outs[i].path[hd.outs[i].len - 1]);
+    return true;
+}
+
+static void program_input(void)
+{
+    const struct output *o = &hd.in;
+    for (int i = 0; i < o->len; i++) {
+        int nid = o->path[i];
+        struct node *n = &hd.nodes[nid];
+        int type = widget_type(nid);
+        power_up(nid);
+        bool last = i == o->len - 1;
+        if (!last && n->nconn > 1 && type != W_MIXER)
+            verb(nid, 0x701, (uint32_t)o->sel[i]);
+        if (!last && (n->caps & 2))
+            verb(nid, 0x3, 0x7000u | (uint32_t)o->sel[i] << 8 | amp_gain(n->inamp));
+        if (type == W_ADC) {
+            verb(nid, 0x706, IN_TAG << 4);
+            verb(nid, 0x2, hd.format);
+        }
+    }
+    struct node *pin = &hd.nodes[o->pin];
+    if (pin->caps & 2) { /* the microphone boost: two thirds of the way up */
+        uint32_t steps = pin->inamp >> 8 & 0x7f;
+        verb(o->pin, 0x3, 0x7000u | MAX(amp_gain(pin->inamp), steps * 2 / 3));
+    }
+    uint32_t vref = pin->pincaps >> 8 & 0xff, ctl = 0x20;
+    if ((int)(pin->config >> 20 & 0xf) == DEV_MIC)
+        ctl |= vref & (1u << 4) ? 4u : vref & (1u << 1) ? 1u : 0u; /* bias voltage: 80 %, else 50 % */
+    verb(o->pin, 0x707, ctl);
+}
+
+static bool setup_input(void)
+{
+    unsigned iss = r16(GCAP) >> 8 & 0xf;
+    if (!iss || !pick_input())
+        return false;
+    unsigned sd = SD_BASE;
+    hd.isd = hd.mmio + sd;
+    w8(sd + SD_CTL, 1);
+    wait_for(sd + SD_CTL, 1, 1, 8, 10);
+    w8(sd + SD_CTL, 0);
+    wait_for(sd + SD_CTL, 1, 0, 8, 10);
+    if (!hd.in_ring)
+        hd.in_ring = kmalloc_pages(RING_BYTES);
+    if (!hd.in_bdl)
+        hd.in_bdl = kmalloc_pages(4096);
+    if (!hd.in_ring || !hd.in_bdl)
+        return false;
+    memset(hd.in_ring, 0, RING_BYTES);
+    for (int i = 0; i < PERIODS; i++)
+        hd.in_bdl[i] = (struct bdl_entry){vmm_phys(hd.in_ring + i * PERIOD_BYTES), PERIOD_BYTES, 0};
+    w32(sd + SD_CBL, RING_BYTES);
+    w16(sd + SD_LVI, PERIODS - 1);
+    w16(sd + SD_FMT, hd.format);
+    w32(sd + SD_BDPL, vmm_phys(hd.in_bdl));
+    w32(sd + SD_BDPU, 0);
+    w8(sd + SD_CTL + 2, IN_TAG << 4);
+    w8(sd + SD_STS, 0x1c);
+    program_input();
+    klog("hda: recording from %s pin %d via %d nodes from ADC %d",
+         (int)(hd.nodes[hd.in.pin].config >> 20 & 0xf) == DEV_MIC ? "microphone" : "line in", hd.in.pin, hd.in.len,
+         hd.in.path[0]);
     return true;
 }
 
@@ -563,6 +695,49 @@ void hda_close(void)
         hd.write = (pos + LEAD_BYTES) % RING_BYTES;
         hd.queued = LEAD_BYTES;
     }
+}
+
+/* Recording: 16-bit stereo frames at the playback rate */
+int hda_record_open(void)
+{
+    if (!hd.ready)
+        return E_NODEV;
+    if (!hd.in_found && !(hd.in_found = setup_input()))
+        return E_NODEV;
+    unsigned sd = (unsigned)(hd.isd - hd.mmio);
+    if (!hd.in_running) {
+        w8(sd + SD_STS, 0x1c);
+        w8(sd + SD_CTL, r8(sd + SD_CTL) | 2u);
+        hd.in_running = true;
+    }
+    hd.in_read = *(volatile uint32_t *)(hd.isd + SD_LPIB) % RING_BYTES & ~3u;
+    return hd.rate;
+}
+
+int hda_record_read(int16_t *frames, int max)
+{
+    if (!hd.in_running)
+        return 0;
+    uint32_t pos = *(volatile uint32_t *)(hd.isd + SD_LPIB) % RING_BYTES & ~3u;
+    uint32_t have = (pos + RING_BYTES - hd.in_read) % RING_BYTES / 4;
+    int n = (int)MIN(have, (uint32_t)max);
+    uint8_t *dst = (uint8_t *)frames;
+    for (uint32_t done = 0, bytes = (uint32_t)n * 4; done < bytes;) {
+        uint32_t at = (hd.in_read + done) % RING_BYTES, k = MIN(bytes - done, RING_BYTES - at);
+        memcpy(dst + done, hd.in_ring + at, k);
+        done += k;
+    }
+    hd.in_read = (hd.in_read + (uint32_t)n * 4) % RING_BYTES;
+    return n;
+}
+
+void hda_record_close(void)
+{
+    if (!hd.in_running)
+        return;
+    unsigned sd = (unsigned)(hd.isd - hd.mmio);
+    w8(sd + SD_CTL, r8(sd + SD_CTL) & ~2u);
+    hd.in_running = false;
 }
 
 const char *hda_name(void)

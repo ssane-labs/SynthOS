@@ -67,6 +67,7 @@ enum req {
     R_CONTEXT,
     R_FIND,
     R_SOURCE,
+    R_AI,
 };
 
 enum cmd {
@@ -115,6 +116,11 @@ enum cmd {
     CMD_PIN_HOME,
     CMD_PROFILES,
     CMD_NEXT_PROFILE,
+    CMD_AI_ASK,
+    CMD_AI_SUMMARY,
+    CMD_AI_TABS,
+    CMD_AI_WRITE,
+    CMD_AI_EXPLAIN,
     CMD_COUNT,
 };
 
@@ -202,6 +208,7 @@ static struct browser {
     char card_url[3][URL_MAX];
     uint32_t cards_key;
     int set_page; /* the section shown on obscura://settings */
+    int ai_cmd;   /* what the Assistant is to do with the page text being fetched */
 } *br;
 
 static void launch(const char *arg);
@@ -281,6 +288,16 @@ static const struct menu_item tab_items[] = {
     {"About Obscura", KEY_COMMAND(CMD_ABOUT), NULL},
 };
 
+/* the Assistant module, when installed: it reads the page (or the selection) and talks about it */
+static const struct menu_item ai_items[] = {
+    {"Ask About This Page", KEY_COMMAND(CMD_AI_ASK), "Ctrl+Shift+A"},
+    {"Summarize This Page", KEY_COMMAND(CMD_AI_SUMMARY), NULL},
+    {"Ask About All Tabs", KEY_COMMAND(CMD_AI_TABS), NULL},
+    {"", 0, NULL},
+    {"Help Me Write", KEY_COMMAND(CMD_AI_WRITE), NULL},
+    {"Explain the Selection", KEY_COMMAND(CMD_AI_EXPLAIN), NULL},
+};
+
 static const struct app_menu menus[] = {
     {"File", file_items, ARRAY_SIZE(file_items)},
     {"Edit", edit_items, ARRAY_SIZE(edit_items)},
@@ -288,6 +305,7 @@ static const struct app_menu menus[] = {
     {"History", history_items, ARRAY_SIZE(history_items)},
     {"Bookmarks", bookmark_items, ARRAY_SIZE(bookmark_items)},
     {"Tab", tab_items, ARRAY_SIZE(tab_items)},
+    {"Assistant", ai_items, ARRAY_SIZE(ai_items)},
 };
 
 static const struct {
@@ -826,6 +844,7 @@ static void download(const char *url);
 static void save_thumb(void);
 static void found(const char *text);
 static void show_source(const char *html);
+static void ai_answer(char *text);
 static const char *internal_title(const char *url);
 static void files_refresh(void);
 static void new_tab(const char *url);
@@ -1052,6 +1071,7 @@ static void answered(const char *line)
         if (text && !failed)
             save_page(text);
         break;
+    case R_AI: ai_answer(text && !failed ? text : NULL); break;
     case R_HOVER: str_copy(br->hover, text && !failed ? text : "", sizeof(br->hover)); break;
     case R_CONTEXT:
         str_copy(br->menu_link, text && !failed ? text : "", sizeof(br->menu_link));
@@ -2527,6 +2547,81 @@ static void paste_go(void)
     go(text);
 }
 
+/* ---- the Assistant: the page as text, then a conversation about it ---- */
+
+static void ai_start(int cmd)
+{
+    if (!assistant()) {
+        assistant_toggle(); /* says where to get it */
+        return;
+    }
+    br->ai_cmd = cmd;
+    if (tab()->url[0] && !internal(tab()->url) && engine_start()) {
+        /* title, address, the selection, a mark, the text of the page */
+        push_eval(R_AI, "document.title+'\\n'+location.href+'\\n'+String(getSelection()).slice(0,4000)+"
+                        "'\\n\\u0001\\n'+(document.body?document.body.innerText:'').slice(0,14000)");
+        return;
+    }
+    ai_answer(NULL);
+}
+
+static void ai_answer(char *text)
+{
+    const struct assistant_service *a = assistant();
+    if (!a)
+        return;
+    char *title = "", *url = "", *sel = "", *body = "", *nl;
+    if (text) {
+        title = text;
+        if ((nl = strchr(title, '\n'))) {
+            *nl = 0;
+            url = nl + 1;
+            if ((nl = strchr(url, '\n'))) {
+                *nl = 0;
+                sel = nl + 1;
+                char *mark = strstr(sel, "\n\x01\n");
+                if (mark) {
+                    *mark = 0;
+                    body = mark + 3;
+                }
+            }
+        }
+    }
+    int cmd = br->ai_cmd;
+    bool on_sel = (cmd == CMD_AI_WRITE || cmd == CMD_AI_EXPLAIN) && *sel;
+    const size_t cap = 20000;
+    char *ctx = kmalloc(cap);
+    if (!ctx)
+        return;
+    ctx[0] = 0;
+    if (cmd == CMD_AI_TABS) {
+        ksnprintf(ctx, cap, "The open tabs of the browser:\n");
+        for (int i = 0; i < br->ntabs && strlen(ctx) + 200 < cap; i++)
+            ksnprintf(ctx + strlen(ctx), cap - strlen(ctx), "%d. %s - %s\n", i + 1,
+                      br->tabs[i].title[0] ? br->tabs[i].title : "New Tab",
+                      br->tabs[i].url[0] ? br->tabs[i].url : "start page");
+        if (*body)
+            ksnprintf(ctx + strlen(ctx), cap - strlen(ctx), "\nThe text of the tab in front (%s):\n", title);
+    } else if (on_sel) {
+        ksnprintf(ctx, cap, "Text the user selected on the page %s (%s):\n%s", title, url, sel);
+        body = "";
+    } else if (*url) {
+        ksnprintf(ctx, cap, "The web page open in the browser.\nTitle: %s\nAddress: %s\n\n", title, url);
+    }
+    if (*body)
+        str_copy(ctx + strlen(ctx), body, cap - strlen(ctx));
+    const char *label = cmd == CMD_AI_TABS ? "All tabs" : on_sel ? "Selected text" : *title ? title : "This page";
+    const char *q = NULL;
+    if (cmd == CMD_AI_SUMMARY && ctx[0])
+        q = "Summarize this page in a few short points.";
+    else if (cmd == CMD_AI_EXPLAIN && on_sel)
+        q = "Explain the selected text simply.";
+    else if (cmd == CMD_AI_WRITE && on_sel)
+        q = "Improve the selected text: make it clearer and correct, keep its language and meaning.";
+    a->ask(ctx[0] ? label : NULL, ctx[0] ? ctx : NULL, q);
+    kfree(ctx);
+}
+
 static void command(int cmd)
 {
     switch (cmd) {
@@ -2548,6 +2643,11 @@ static void command(int cmd)
         if (tab()->url[0] && !internal(tab()->url) && engine_start())
             push_eval(R_SOURCE, "document.documentElement.outerHTML");
         break;
+    case CMD_AI_ASK:
+    case CMD_AI_SUMMARY:
+    case CMD_AI_TABS:
+    case CMD_AI_WRITE:
+    case CMD_AI_EXPLAIN: ai_start(cmd); break;
     case CMD_RELOAD:
         if (internal(tab()->url))
             break;
@@ -3426,6 +3526,8 @@ static void nav_row(struct ui *ui, struct rect p)
             show_profiles(pr.x, pr.y + pr.h + 4);
     }
     struct rect d = {p.x + p.w - 34, p.y + 4, 26, 24};
+    if (assistant() && icon_button(ui, (struct rect){d.x - 30, d.y, 26, 24}, SYM_SPARKLE, 14, style.accent))
+        command(CMD_AI_ASK);
     bool dhot;
     if (area(ui, d, &dhot))
         show_downloads(d.x - 200, d.y + d.h + 4);
@@ -4965,6 +5067,11 @@ static bool shortcut(int k)
     case 'e': command(CMD_SPLIT); return true;
     case 'g': command(shift ? CMD_FIND_PREV : CMD_FIND_NEXT); return true;
     case 'u': command(CMD_SOURCE); return true;
+    case 'a':
+        if (!shift)
+            return false;
+        command(CMD_AI_ASK);
+        return true;
     case 'm':
         if (!shift)
             return false;

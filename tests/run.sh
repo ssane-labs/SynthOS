@@ -7,7 +7,7 @@ qemu=${QEMU:-qemu-system-x86_64}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp "$image" "$work/disk.img"
-dd if=/dev/zero of="$work/fat.img" bs=1k count=1440 2>/dev/null
+dd if=/dev/zero of="$work/fat.img" count=8192 bs=1k 2>/dev/null
 mkfs.fat -n SYNTHTEST "$work/fat.img" >/dev/null
 echo "hello from fat" > "$work/note.txt"
 mcopy -i "$work/fat.img" "$work/note.txt" "::/Long Name Note.txt"
@@ -51,6 +51,13 @@ if command -v xz >/dev/null; then
     (cd "$work/tar" && tar --format=gnu -cf ../t.tar proj && tar -czf ../t.tgz proj && tar -cJf ../t.tar.xz proj &&
         xz -k -c proj/notes.txt > ../notes.txt.xz && xz --format=lzma -k -c proj/notes.txt > ../notes.txt.lzma)
     for a in t.tar t.tgz t.tar.xz notes.txt.xz notes.txt.lzma; do mcopy -i "$work/fat.img" "$work/$a" ::/$a; done
+fi
+
+# the assistant's engine: a tiny model with random weights in every quantisation, and what it must compute
+# (tests/aimodel.py works it out with numpy)
+if python3 -I -c "import numpy" 2>/dev/null && python3 -I tests/aimodel.py "$work" >/dev/null; then
+    for m in tiny tiny3 tinyl; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
+    mcopy -i "$work/fat.img" "$work/whisper.bin" ::/whisper.bin && mcopy -i "$work/fat.img" "$work/speech.wav" ::/speech.wav
 fi
 
 # each case: a command line, then the text expected somewhere in the output
@@ -1604,6 +1611,28 @@ IKEv2 disconnected
 EOF
     fi
 fi
+if [ -f "$work/cases.txt" ]; then
+    cat "$work/cases.txt" >> "$work/cases"
+    # with the whole tool list the tiny model's prompt is thousands of tokens: too slow on the 32-bit test machine
+    [ "$KERNEL64" = 1 ] && printf 'ai ask -n 3 hi\n[3 tokens, 0 tool calls\n' >> "$work/cases"
+    printf 'ai unload\nmodel unloaded\n' >> "$work/cases"
+fi
+cat >> "$work/cases" <<'EOF'
+ai tool run_command '{"command": "echo ab    zq"}'
+result: ab zq
+ai tool run_command '{"command": "rm /home/nothing.txt"}'
+Run: rm /home/nothing.txt needs approval; add --yes
+ai tool write_file '{"path": "/home/aiw.txt", "content": "first\nsecond"}' --yes
+wrote /home/aiw.txt (12 bytes)
+ai tool read_file '{"path": "/home/aiw.txt"}' | grep result
+result: first
+ai tool setting '{"name": "dnd"}'
+Look at setting dnd
+ai tool open '{"target": "/no/such/thing"}'
+nothing called /no/such/thing to open
+ai listen 1
+ai: no microphone
+EOF
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
          cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \

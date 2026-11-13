@@ -958,3 +958,14 @@ size = 10 KB
 summary = Clear the field without hitting a mine
 about = The classic puzzle with three levels: left click opens a square, right click flags a mine. It comes with SynthOS and is added to Launchpad when you install it.
 kind = module
+
+[assistant_fp]
+name = Assistant
+developer = SynthOS
+category = Utilities
+icon = assistant
+version = 1.0
+size = 470 MB with its model
+summary = An AI to talk to that runs on this computer
+about = Chat with an AI like with any chatbot, but nothing leaves the computer: the language model (Qwen2.5 0.5B Instruct, Apache-2.0) is downloaded once and then works offline. The assistant can open apps, files and web pages, find and read your files (also PDF and Office documents), write files, run terminal commands and change settings; anything that changes something waits for you to allow it. Open it with the sparkle in the menu bar, Win+C, Win+Shift+Space or by saying "Hey Synth". Talk to it with the microphone button: speech is turned into text on this computer too (Whisper base, MIT, 78 MB, downloaded the first time). In Obscura it can summarize the page, answer questions about it or about all your tabs, and help you write. Any GGUF model of the Llama, Qwen2 or Qwen3 kind put in /home/models works too.
+kind = module

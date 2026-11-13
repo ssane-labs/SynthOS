@@ -1,0 +1,816 @@
+#!/usr/bin/env python3
+"""A tiny GGUF language model with random weights, and what SynthOS's assistant engine must compute with it.
+
+usage: aimodel.py OUTDIR
+
+Writes OUTDIR/tiny.gguf (Qwen2), tiny3.gguf (Qwen3) and tinyl.gguf (Llama), a tiny Whisper speech model
+(whisper.bin, the whisper.cpp format) with a sound for it to hear (speech.wav), and OUTDIR/cases.txt: the commands
+for tests/run.sh and what each must print (the tokens of some texts, the next tokens greedy decoding picks). Each
+model has the layout of a real one (tensor names, metadata, a byte-level BPE vocabulary with merges and the ChatML
+special tokens), and its tensors use every quantisation the engine reads: F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K .. Q6_K. The block layouts follow
+ggml (ggml-common.h); quantised blocks hold random codes and scales, so the reference only has to dequantise them.
+"""
+import math
+import struct
+import sys
+
+import numpy as np
+
+QK_K = 256
+
+# ---- GGUF writer ----
+
+T_U32, T_I32, T_F32, T_BOOL, T_STR, T_ARR, T_U64 = 4, 5, 6, 7, 8, 9, 10
+GGML = {"F32": 0, "F16": 1, "Q4_0": 2, "Q4_1": 3, "Q5_0": 6, "Q5_1": 7, "Q8_0": 8, "Q2_K": 10, "Q3_K": 11,
+        "Q4_K": 12, "Q5_K": 13, "Q6_K": 14, "BF16": 30}
+BLOCK = {"F32": (1, 4), "F16": (1, 2), "BF16": (1, 2), "Q4_0": (32, 18), "Q4_1": (32, 20), "Q5_0": (32, 22),
+         "Q5_1": (32, 24), "Q8_0": (32, 34), "Q2_K": (256, 84), "Q3_K": (256, 110), "Q4_K": (256, 144),
+         "Q5_K": (256, 176), "Q6_K": (256, 210)}
+
+
+def gstr(s):
+    b = s.encode()
+    return struct.pack("<Q", len(b)) + b
+
+
+def kv(key, typ, value):
+    out = gstr(key) + struct.pack("<I", typ)
+    if typ == T_U32:
+        out += struct.pack("<I", value)
+    elif typ == T_I32:
+        out += struct.pack("<i", value)
+    elif typ == T_F32:
+        out += struct.pack("<f", value)
+    elif typ == T_BOOL:
+        out += struct.pack("<B", value)
+    elif typ == T_STR:
+        out += gstr(value)
+    elif typ == T_ARR:
+        sub, items = value
+        out += struct.pack("<IQ", sub, len(items))
+        for it in items:
+            out += gstr(it) if sub == T_STR else struct.pack("<i" if sub == T_I32 else "<f", it)
+    return out
+
+
+def write_gguf(path, meta, tensors):
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta))
+    for m in meta:
+        head += kv(*m)
+    data = b""
+    infos = b""
+    for name, typ, dims, raw in tensors:
+        while len(data) % 32:
+            data += b"\0"
+        infos += gstr(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", d) for d in dims)
+        infos += struct.pack("<IQ", GGML[typ], len(data))
+        data += raw
+    blob = head + infos
+    while len(blob) % 32:
+        blob += b"\0"
+    open(path, "wb").write(blob + data)
+
+
+# ---- dequantisation, as ggml does it ----
+
+def f16(b, o):
+    return float(np.frombuffer(b[o:o + 2], dtype="<f2")[0])
+
+
+def scale_min_k4(j, q):
+    if j < 4:
+        return q[j] & 63, q[j + 4] & 63
+    return (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4), (q[j + 4] >> 4) | ((q[j] >> 6) << 4)
+
+
+def deq_block(typ, b):
+    y = []
+    if typ == "Q4_0":
+        d = f16(b, 0)
+        qs = b[2:18]
+        y = [((qs[j] & 15) - 8) * d for j in range(16)] + [((qs[j] >> 4) - 8) * d for j in range(16)]
+    elif typ == "Q4_1":
+        d, m = f16(b, 0), f16(b, 2)
+        qs = b[4:20]
+        y = [(qs[j] & 15) * d + m for j in range(16)] + [(qs[j] >> 4) * d + m for j in range(16)]
+    elif typ in ("Q5_0", "Q5_1"):
+        d = f16(b, 0)
+        m = f16(b, 2) if typ == "Q5_1" else 0.0
+        o = 4 if typ == "Q5_1" else 2
+        qh = struct.unpack("<I", b[o:o + 4])[0]
+        qs = b[o + 4:o + 20]
+        off = 16 if typ == "Q5_0" else 0
+        lo, hi = [], []
+        for j in range(16):
+            xh0 = ((qh >> j) << 4) & 0x10
+            xh1 = (qh >> (j + 12)) & 0x10
+            lo.append((((qs[j] & 15) | xh0) - off) * d + m)
+            hi.append((((qs[j] >> 4) | xh1) - off) * d + m)
+        y = lo + hi
+    elif typ == "Q8_0":
+        d = f16(b, 0)
+        y = [v * d for v in np.frombuffer(b[2:34], dtype=np.int8)]
+    elif typ == "Q2_K":
+        sc, qs, d, mn = b[0:16], b[16:80], f16(b, 80), f16(b, 82)
+        isc = 0
+        for n in range(0, QK_K, 128):
+            q = qs[n // 4:n // 4 + 32]
+            shift = 0
+            for j in range(4):
+                for half in range(2):
+                    s = sc[isc]
+                    isc += 1
+                    dl, ml = d * (s & 15), mn * (s >> 4)
+                    y += [dl * ((q[l + 16 * half] >> shift) & 3) - ml for l in range(16)]
+                shift += 2
+    elif typ == "Q3_K":
+        hm, qs, raw, d = b[0:32], b[32:96], b[96:108], f16(b, 108)
+        aux = list(struct.unpack("<3I", raw)) + [0]
+        tmp = aux[2]
+        k1, k2 = 0x03030303, 0x0F0F0F0F
+        aux[2] = ((aux[0] >> 4) & k2) | (((tmp >> 4) & k1) << 4)
+        aux[3] = ((aux[1] >> 4) & k2) | (((tmp >> 6) & k1) << 4)
+        aux[0] = (aux[0] & k2) | (((tmp >> 0) & k1) << 4)
+        aux[1] = (aux[1] & k2) | (((tmp >> 2) & k1) << 4)
+        scales = np.frombuffer(struct.pack("<4I", *aux), dtype=np.int8)
+        isc, m = 0, 1
+        for n in range(0, QK_K, 128):
+            q = qs[n // 4:n // 4 + 32]
+            shift = 0
+            for j in range(4):
+                for half in range(2):
+                    dl = d * (int(scales[isc]) - 32)
+                    isc += 1
+                    y += [dl * (((q[l + 16 * half] >> shift) & 3) - (0 if hm[l + 16 * half] & m else 4))
+                          for l in range(16)]
+                shift += 2
+                m <<= 1
+    elif typ in ("Q4_K", "Q5_K"):
+        d, mn, sc = f16(b, 0), f16(b, 2), b[4:16]
+        if typ == "Q4_K":
+            qh, ql = None, b[16:144]
+        else:
+            qh, ql = b[16:48], b[48:176]
+        isc, u1, u2 = 0, 1, 2
+        for j in range(0, QK_K, 64):
+            s1, m1 = scale_min_k4(isc, sc)
+            s2, m2 = scale_min_k4(isc + 1, sc)
+            q = ql[j // 2:j // 2 + 32]
+            for l in range(32):
+                h = 16 if qh is not None and qh[l] & u1 else 0
+                y.append(d * s1 * ((q[l] & 15) + h) - mn * m1)
+            for l in range(32):
+                h = 16 if qh is not None and qh[l] & u2 else 0
+                y.append(d * s2 * ((q[l] >> 4) + h) - mn * m2)
+            isc += 2
+            u1 <<= 2
+            u2 <<= 2
+    elif typ == "Q6_K":
+        ql, qh, sc, d = b[0:128], b[128:192], np.frombuffer(b[192:208], dtype=np.int8), f16(b, 208)
+        out = [0.0] * QK_K
+        for n in range(0, QK_K, 128):
+            L, H, S = ql[n // 2:n // 2 + 64], qh[n // 4:n // 4 + 32], sc[n // 16:n // 16 + 8]
+            for l in range(32):
+                i = l // 16
+                q1 = ((L[l] & 15) | (((H[l] >> 0) & 3) << 4)) - 32
+                q2 = ((L[l + 32] & 15) | (((H[l] >> 2) & 3) << 4)) - 32
+                q3 = ((L[l] >> 4) | (((H[l] >> 4) & 3) << 4)) - 32
+                q4 = ((L[l + 32] >> 4) | (((H[l] >> 6) & 3) << 4)) - 32
+                out[n + l] = d * S[i] * q1
+                out[n + l + 32] = d * S[i + 2] * q2
+                out[n + l + 64] = d * S[i + 4] * q3
+                out[n + l + 96] = d * S[i + 6] * q4
+        y = out
+    return y
+
+
+def dequant(typ, raw, n):
+    if typ == "F32":
+        return np.frombuffer(raw, dtype="<f4").astype(np.float64)
+    if typ == "F16":
+        return np.frombuffer(raw, dtype="<f2").astype(np.float64)
+    if typ == "BF16":
+        u = np.frombuffer(raw, dtype="<u2").astype(np.uint32) << 16
+        return u.view(np.float32).astype(np.float64)
+    per, size = BLOCK[typ]
+    out = []
+    for i in range(n // per):
+        out += deq_block(typ, raw[i * size:(i + 1) * size])
+    return np.array(out, dtype=np.float64)
+
+
+def make_raw(rng, typ, n, scale):
+    """random tensor bytes of n values that dequantise to about +-scale"""
+    if typ == "F32":
+        return (rng.standard_normal(n) * scale).astype("<f4").tobytes()
+    if typ == "F16":
+        return (rng.standard_normal(n) * scale).astype("<f2").tobytes()
+    if typ == "BF16":
+        f = (rng.standard_normal(n) * scale).astype("<f4")
+        return (f.view("<u4") >> 16).astype("<u2").tobytes()
+    per, size = BLOCK[typ]
+    out = bytearray()
+    for _ in range(n // per):
+        blk = bytearray(rng.integers(0, 256, size, dtype=np.uint8).tobytes())
+
+        def put16(o, v):
+            blk[o:o + 2] = np.array([v], dtype="<f2").tobytes()
+
+        if typ in ("Q4_0", "Q8_0"):
+            put16(0, scale / (8 if typ == "Q4_0" else 127) * rng.uniform(0.5, 1.5))
+        elif typ in ("Q4_1", "Q5_1"):
+            put16(0, scale / (8 if typ == "Q4_1" else 16) * rng.uniform(0.5, 1.5))
+            put16(2, -scale * rng.uniform(0.5, 1.5))
+        elif typ == "Q5_0":
+            put16(0, scale / 16 * rng.uniform(0.5, 1.5))
+        elif typ == "Q2_K":
+            put16(80, scale / 30 * rng.uniform(0.5, 1.5))
+            put16(82, scale / 15 * rng.uniform(0.5, 1.5))
+        elif typ == "Q3_K":
+            put16(108, scale / 64 * rng.uniform(0.5, 1.5))
+        elif typ in ("Q4_K", "Q5_K"):
+            put16(0, scale / 300 * rng.uniform(0.5, 1.5))
+            put16(2, scale / 40 * rng.uniform(0.5, 1.5))
+        elif typ == "Q6_K":
+            blk[192:208] = rng.integers(-64, 64, 16, dtype=np.int8).tobytes()
+            put16(208, scale / 2000 * rng.uniform(0.5, 1.5))
+        out += blk
+    return bytes(out)
+
+
+# ---- byte-level BPE (GPT-2 style), the vocabulary and the reference tokenizer ----
+
+def bytes_to_unicode():
+    bs = list(range(ord("!"), ord("~") + 1)) + list(range(0xA1, 0xAD)) + list(range(0xAE, 0x100))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return dict(zip(bs, [chr(c) for c in cs]))
+
+
+B2U = bytes_to_unicode()
+U2B = {v: k for k, v in B2U.items()}
+SPECIALS = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
+
+CORPUS = ("the quick brown fox jumps over the lazy dog. hello world, hello there! open the file and change the "
+          "settings of the system. what is the weather today? the assistant reads the page and writes a summary. "
+          "Привет, мир! Это тест. 12345 numbers 2024. ") * 3
+
+
+def is_letter(ch):
+    o = ord(ch)
+    if o < 128:
+        return ch.isalpha()
+    return not (0x2000 <= o <= 0x206F or 0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFF0F or o in (0xA0, 0x85)
+                or 0x80 <= o < 0xA0 or 0xA1 <= o <= 0xBF)
+
+
+def is_number(ch):
+    return "0" <= ch <= "9"
+
+
+def is_space(ch):
+    return ch in " \t\n\r\f\v" or ch in "   　"
+
+
+def pretokenize(text):
+    """the Qwen2 split, as the engine approximates it: contractions, letters with one leading non-letter, single
+    digits, punctuation runs with a leading space, newlines, spaces"""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "'" and i + 1 < n:
+            low = text[i + 1:i + 3].lower()
+            hit = next((s for s in ("re", "ve", "ll") if low.startswith(s)), None)
+            if hit is None and low[:1] in ("s", "t", "m", "d"):
+                hit = low[:1]
+            if hit:
+                out.append(text[i:i + 1 + len(hit)])
+                i += 1 + len(hit)
+                continue
+        j = i
+        if not (c in "\r\n" or is_letter(c) or is_number(c)) and i + 1 < n and is_letter(text[i + 1]):
+            j = i + 1
+        if is_letter(text[j]):
+            k = j
+            while k < n and is_letter(text[k]):
+                k += 1
+            out.append(text[i:k])
+            i = k
+            continue
+        if is_number(c):
+            out.append(c)
+            i += 1
+            continue
+        j = i + 1 if c == " " and i + 1 < n and not (is_space(text[i + 1]) or is_letter(text[i + 1])
+                                                      or is_number(text[i + 1])) else i
+        if not (is_space(text[j]) or is_letter(text[j]) or is_number(text[j])):
+            k = j
+            while k < n and not (is_space(text[k]) or is_letter(text[k]) or is_number(text[k])):
+                k += 1
+            while k < n and text[k] in "\r\n":
+                k += 1
+            out.append(text[i:k])
+            i = k
+            continue
+        # whitespace: \s*[\r\n]+ | \s+(?!\S) | \s+
+        k = i
+        while k < n and is_space(text[k]):
+            k += 1
+        last_nl = max((p for p in range(i, k) if text[p] in "\r\n"), default=-1)
+        if last_nl >= 0:
+            out.append(text[i:last_nl + 1])
+            i = last_nl + 1
+            continue
+        if k < n and k - i > 1:
+            out.append(text[i:k - 1])
+            i = k - 1
+            continue
+        out.append(text[i:k])
+        i = k
+    return out
+
+
+def train_bpe(nmerges):
+    words = {}
+    for w in pretokenize(CORPUS):
+        key = tuple(B2U[b] for b in w.encode())
+        words[key] = words.get(key, 0) + 1
+    merges = []
+    for _ in range(nmerges):
+        pairs = {}
+        for w, c in words.items():
+            for a, b in zip(w, w[1:]):
+                pairs[(a, b)] = pairs.get((a, b), 0) + c
+        if not pairs:
+            break
+        best = max(sorted(pairs), key=lambda p: pairs[p])
+        merges.append(best)
+        new = {}
+        for w, c in words.items():
+            out, i = [], 0
+            while i < len(w):
+                if i + 1 < len(w) and (w[i], w[i + 1]) == best:
+                    out.append(w[i] + w[i + 1])
+                    i += 2
+                else:
+                    out.append(w[i])
+                    i += 1
+            new[tuple(out)] = new.get(tuple(out), 0) + c
+        words = new
+    return merges
+
+
+def bpe(word, ranks):
+    parts = list(word)
+    while len(parts) > 1:
+        best, at = None, -1
+        for i in range(len(parts) - 1):
+            r = ranks.get((parts[i], parts[i + 1]))
+            if r is not None and (best is None or r < best):
+                best, at = r, i
+        if best is None:
+            break
+        parts[at:at + 2] = [parts[at] + parts[at + 1]]
+    return parts
+
+
+def tokenize(text, vocab, ranks):
+    ids = []
+    i = 0
+    while i < len(text):
+        hit = next((s for s in SPECIALS if text.startswith(s, i)), None)
+        nxt = min([p for p in (text.find(s, i) for s in SPECIALS) if p >= 0] or [len(text)])
+        if hit:
+            ids.append(vocab[hit])
+            i += len(hit)
+            continue
+        for w in pretokenize(text[i:nxt]):
+            ids += [vocab[p] for p in bpe("".join(B2U[b] for b in w.encode()), ranks)]
+        i = nxt
+    return ids
+
+
+# ---- the model ----
+
+def build(arch, rng):
+    merges = train_bpe(160)
+    tokens = [B2U[b] for b in range(256)]
+    for a, b in merges:
+        if a + b not in tokens:
+            tokens.append(a + b)
+    tokens += SPECIALS
+    while len(tokens) % 32:
+        tokens.append("<|extra_%d|>" % len(tokens))
+    vocab = {t: i for i, t in enumerate(tokens)}
+    ranks = {m: i for i, m in enumerate(merges)}
+    ttype = [3 if t.startswith("<|") else 1 for t in tokens]
+
+    dim, ffn, heads, kv_heads, layers = 256, 256, 4, 2, 2
+    hd = 64 if arch != "qwen3" else 32  # qwen3: head_dim != dim / heads
+    nv = len(tokens)
+    meta = [
+        ("general.architecture", T_STR, arch),
+        ("general.name", T_STR, "SynthOS tiny test model"),
+        ("general.alignment", T_U32, 32),
+        (arch + ".context_length", T_U32, 4096),
+        (arch + ".embedding_length", T_U32, dim),
+        (arch + ".block_count", T_U32, layers),
+        (arch + ".feed_forward_length", T_U32, ffn),
+        (arch + ".attention.head_count", T_U32, heads),
+        (arch + ".attention.head_count_kv", T_U32, kv_heads),
+        (arch + ".rope.freq_base", T_F32, 1000000.0 if arch != "llama" else 500000.0),
+        (arch + ".attention.layer_norm_rms_epsilon", T_F32, 1e-6),
+        (arch + ".attention.key_length", T_U32, hd),
+        (arch + ".attention.value_length", T_U32, hd),
+        ("tokenizer.ggml.model", T_STR, "gpt2"),
+        ("tokenizer.ggml.pre", T_STR, "qwen2"),
+        ("tokenizer.ggml.tokens", T_ARR, (T_STR, tokens)),
+        ("tokenizer.ggml.token_type", T_ARR, (T_I32, ttype)),
+        ("tokenizer.ggml.merges", T_ARR, (T_STR, [a + " " + b for a, b in merges])),
+        ("tokenizer.ggml.eos_token_id", T_U32, vocab["<|im_end|>"]),
+        ("tokenizer.ggml.padding_token_id", T_U32, vocab["<|endoftext|>"]),
+        ("tokenizer.ggml.add_bos_token", T_BOOL, 0),
+    ]
+    plan = [
+        {"attn_q": "Q4_K", "attn_k": "Q5_K", "attn_v": "Q6_K", "attn_output": "Q8_0", "ffn_gate": "Q3_K",
+         "ffn_up": "Q2_K", "ffn_down": "Q4_0"},
+        {"attn_q": "Q5_0", "attn_k": "F32", "attn_v": "F16", "attn_output": "Q4_1", "ffn_gate": "BF16",
+         "ffn_up": "Q5_1", "ffn_down": "Q8_0"},
+    ]
+    tensors, W = [], {}
+
+    def add(name, typ, cols, rows, scale):
+        raw = make_raw(rng, typ, cols * rows, scale)
+        tensors.append((name, typ, [cols] if rows == 1 else [cols, rows], raw))
+        W[name] = dequant(typ, raw, cols * rows).reshape(rows, cols) if rows > 1 else dequant(typ, raw, cols)
+
+    add("token_embd.weight", "F16", dim, nv, 1.0)
+    for l in range(layers):
+        p = "blk.%d." % l
+        add(p + "attn_norm.weight", "F32", dim, 1, 1.0)
+        add(p + "attn_q.weight", plan[l]["attn_q"], dim, heads * hd, 0.08)
+        add(p + "attn_k.weight", plan[l]["attn_k"], dim, kv_heads * hd, 0.08)
+        add(p + "attn_v.weight", plan[l]["attn_v"], dim, kv_heads * hd, 0.08)
+        if arch == "qwen2":
+            add(p + "attn_q.bias", "F32", heads * hd, 1, 0.2)
+            add(p + "attn_k.bias", "F32", kv_heads * hd, 1, 0.2)
+            add(p + "attn_v.bias", "F32", kv_heads * hd, 1, 0.2)
+        if arch == "qwen3":
+            add(p + "attn_q_norm.weight", "F32", hd, 1, 1.0)
+            add(p + "attn_k_norm.weight", "F32", hd, 1, 1.0)
+        add(p + "attn_output.weight", plan[l]["attn_output"], heads * hd, dim, 0.08)
+        add(p + "ffn_norm.weight", "F32", dim, 1, 1.0)
+        add(p + "ffn_gate.weight", plan[l]["ffn_gate"], dim, ffn, 0.08)
+        add(p + "ffn_up.weight", plan[l]["ffn_up"], dim, ffn, 0.08)
+        add(p + "ffn_down.weight", plan[l]["ffn_down"], ffn, dim, 0.06)
+    add("output_norm.weight", "F32", dim, 1, 1.0)
+    add("output.weight", "Q6_K", dim, nv, 0.08)
+    cfg = dict(arch=arch, dim=dim, ffn=ffn, heads=heads, kv=kv_heads, hd=hd, layers=layers, eps=1e-6,
+               base=1000000.0 if arch != "llama" else 500000.0)
+    return meta, tensors, W, cfg, vocab, ranks
+
+
+def rmsnorm(x, w, eps):
+    return x / np.sqrt(np.mean(x * x) + eps) * w
+
+
+def rope(v, pos, hd, base, neox):
+    out = v.copy()
+    for i in range(hd // 2):
+        theta = pos * base ** (-2.0 * i / hd)
+        c, s = math.cos(theta), math.sin(theta)
+        a, b = (i, i + hd // 2) if neox else (2 * i, 2 * i + 1)
+        out[a] = v[a] * c - v[b] * s
+        out[b] = v[a] * s + v[b] * c
+    return out
+
+
+def forward(W, cfg, tokens):
+    """logits after every position"""
+    hd, H, KV = cfg["hd"], cfg["heads"], cfg["kv"]
+    neox = cfg["arch"] != "llama"
+    kc = [[] for _ in range(cfg["layers"])]
+    vc = [[] for _ in range(cfg["layers"])]
+    res = []
+    for pos, t in enumerate(tokens):
+        x = W["token_embd.weight"][t].copy()
+        for l in range(cfg["layers"]):
+            p = "blk.%d." % l
+            h = rmsnorm(x, W[p + "attn_norm.weight"], cfg["eps"])
+            q = W[p + "attn_q.weight"] @ h
+            k = W[p + "attn_k.weight"] @ h
+            v = W[p + "attn_v.weight"] @ h
+            if cfg["arch"] == "qwen2":
+                q += W[p + "attn_q.bias"]
+                k += W[p + "attn_k.bias"]
+                v += W[p + "attn_v.bias"]
+            q = q.reshape(H, hd)
+            k = k.reshape(KV, hd)
+            if cfg["arch"] == "qwen3":
+                q = np.array([rmsnorm(r, W[p + "attn_q_norm.weight"], cfg["eps"]) for r in q])
+                k = np.array([rmsnorm(r, W[p + "attn_k_norm.weight"], cfg["eps"]) for r in k])
+            q = np.array([rope(r, pos, hd, cfg["base"], neox) for r in q])
+            k = np.array([rope(r, pos, hd, cfg["base"], neox) for r in k])
+            kc[l].append(k)
+            vc[l].append(v.reshape(KV, hd))
+            att = np.zeros(H * hd)
+            for hh in range(H):
+                g = hh // (H // KV)
+                sc = np.array([q[hh] @ kk[g] for kk in kc[l]]) / math.sqrt(hd)
+                sc = np.exp(sc - sc.max())
+                sc /= sc.sum()
+                att[hh * hd:(hh + 1) * hd] = sum(w * vv[g] for w, vv in zip(sc, vc[l]))
+            x = x + W[p + "attn_output.weight"] @ att
+            h = rmsnorm(x, W[p + "ffn_norm.weight"], cfg["eps"])
+            gt = W[p + "ffn_gate.weight"] @ h
+            up = W[p + "ffn_up.weight"] @ h
+            x = x + W[p + "ffn_down.weight"] @ (gt / (1 + np.exp(-gt)) * up)
+        x = rmsnorm(x, W["output_norm.weight"], cfg["eps"])
+        res.append(W["output.weight"] @ x)
+    return res
+
+
+def greedy(W, cfg, prompt, n):
+    ids = list(prompt)
+    margins = []
+    for _ in range(n):
+        logits = forward(W, cfg, ids)[-1]
+        order = np.argsort(-logits)
+        margins.append(logits[order[0]] - logits[order[1]])
+        ids.append(int(order[0]))
+    return ids[len(prompt):], min(margins)
+
+
+def make(out, arch, fname, with_tokens):
+    """writes OUT/<fname>.gguf; returns its run.sh cases"""
+    seed = 1
+    while True:
+        rng = np.random.default_rng(seed)
+        meta, tensors, W, cfg, vocab, ranks = build(arch, rng)
+        prompt = tokenize("<|im_start|>user\nhello world<|im_end|>\n<|im_start|>assistant\n", vocab, ranks)
+        gen, margin = greedy(W, cfg, prompt, 6)
+        if margin > 0.02:  # float32 in the engine must not flip a choice
+            break
+        seed += 1
+    path = "/mnt/hdb/%s.gguf" % fname
+    write_gguf("%s/%s.gguf" % (out, fname), meta, tensors)
+    cases = ["ai load " + path, "loaded SynthOS tiny test model (%s)" % path]
+    if with_tokens:
+        for text in ["hello world", "the quick brown fox jumps", "it's   done ok?! 2024"]:
+            cases += ['ai tokens "%s"' % text, "tokens: " + " ".join(map(str, tokenize(text, vocab, ranks)))]
+        sp = "<|im_start|>user hi<|im_end|>"
+        cases += ['ai tokens -s "%s"' % sp, "tokens: " + " ".join(map(str, tokenize(sp, vocab, ranks)))]
+    cases += ["ai next %s -n 6" % " ".join(map(str, prompt)), "next: " + " ".join(map(str, gen))]
+    return cases
+
+
+
+# ---- a tiny Whisper (speech to text) in the whisper.cpp file format, and what it must hear ----
+
+WH = dict(n_vocab=300 + 1608, a_ctx=24, dim=64, heads=2, a_layers=2, t_ctx=16, t_layers=2, n_mels=80)
+
+
+def wh_build(rng):
+    """the tensors (name, type, dims as ggml lists them, raw) and the same values as float arrays"""
+    D, V, A, T, M = WH["dim"], WH["n_vocab"], WH["a_ctx"], WH["t_ctx"], WH["n_mels"]
+    tensors, W = [], {}
+    kinds = ["F16", "Q8_0", "F32", "Q8_0"]
+
+    def add(name, typ, shape, scale):
+        n = int(np.prod(shape))
+        raw = make_raw(rng, typ, n, scale)
+        tensors.append((name, typ, list(reversed(shape)), raw))
+        W[name] = dequant(typ, raw, n).reshape(shape)
+
+    add("encoder.positional_embedding", "F32", (A, D), 0.5)
+    add("encoder.conv1.weight", "F16", (D, M, 3), 0.15)
+    add("encoder.conv1.bias", "F32", (D, 1), 0.1)
+    add("encoder.conv2.weight", "F16", (D, D, 3), 0.1)
+    add("encoder.conv2.bias", "F32", (D, 1), 0.1)
+    for i in range(WH["a_layers"]):
+        p = "encoder.blocks.%d." % i
+        block(add, p, D, kinds[i % 4], False)
+    add("encoder.ln_post.weight", "F32", (D,), 1.0)
+    add("encoder.ln_post.bias", "F32", (D,), 0.1)
+    add("decoder.positional_embedding", "F32", (T, D), 3.0)
+    add("decoder.token_embedding.weight", "F16", (V, D), 1.0)
+    for i in range(WH["t_layers"]):
+        p = "decoder.blocks.%d." % i
+        block(add, p, D, kinds[(i + 1) % 4], True)
+    add("decoder.ln.weight", "F32", (D,), 1.0)
+    add("decoder.ln.bias", "F32", (D,), 0.1)
+    for k in list(W):
+        if k.endswith(("ln.weight", "ln_post.weight")):
+            W[k] = W[k] * 0.2 + 1.0
+    # the norm weights near 1 also in the file: rewrite them
+    for idx, (name, typ, dims, raw) in enumerate(tensors):
+        if name.endswith(("ln.weight", "ln_post.weight")):
+            tensors[idx] = (name, typ, dims, W[name].astype("<f4").tobytes())
+    return tensors, W
+
+
+def block(add, p, D, kind, cross):
+    add(p + "attn_ln.weight", "F32", (D,), 1.0)
+    add(p + "attn_ln.bias", "F32", (D,), 0.1)
+    for part in (["attn"] + (["cross_attn"] if cross else [])):
+        if part == "cross_attn":
+            add(p + "cross_attn_ln.weight", "F32", (D,), 1.0)
+            add(p + "cross_attn_ln.bias", "F32", (D,), 0.1)
+        add(p + part + ".query.weight", kind, (D, D), 0.15)
+        add(p + part + ".query.bias", "F32", (D,), 0.1)
+        add(p + part + ".key.weight", kind, (D, D), 0.15)
+        add(p + part + ".value.weight", kind, (D, D), 0.15)
+        add(p + part + ".value.bias", "F32", (D,), 0.1)
+        add(p + part + ".out.weight", kind, (D, D), 0.15)
+        add(p + part + ".out.bias", "F32", (D,), 0.1)
+    add(p + "mlp_ln.weight", "F32", (D,), 1.0)
+    add(p + "mlp_ln.bias", "F32", (D,), 0.1)
+    add(p + "mlp.0.weight", kind, (4 * D, D), 0.12)
+    add(p + "mlp.0.bias", "F32", (4 * D,), 0.1)
+    add(p + "mlp.2.weight", kind, (D, 4 * D), 0.06)
+    add(p + "mlp.2.bias", "F32", (D,), 0.1)
+
+
+def wh_words():
+    words = [bytes([b]) for b in range(256)]
+    for a in "etaoinsh":
+        for b in "rdlu c":
+            if len(words) < 300:
+                words.append((" " + a + b).encode() if b != " " else (a + "s").encode())
+    while len(words) < 300:
+        words.append(b"x%d" % len(words))
+    return words[:300]
+
+
+def wh_write(path, tensors, filters, words):
+    out = struct.pack("<12i", 0x67676d6c, WH["n_vocab"], WH["a_ctx"], WH["dim"], WH["heads"], WH["a_layers"],
+                      WH["t_ctx"], WH["dim"], WH["heads"], WH["t_layers"], WH["n_mels"], 1)
+    out += struct.pack("<2i", WH["n_mels"], 201) + filters.astype("<f4").tobytes()
+    out += struct.pack("<i", len(words)) + b"".join(struct.pack("<I", len(w)) + w for w in words)
+    for name, typ, dims, raw in tensors:
+        nb = name.encode()
+        out += struct.pack("<3i", len(dims), len(nb), GGML[typ]) + struct.pack("<%di" % len(dims), *dims) + nb + raw
+    open(path, "wb").write(out)
+
+
+def wh_mel(pcm, filters):
+    frames = 2 * WH["a_ctx"]
+    n = np.arange(400)
+    window = 0.5 - 0.5 * np.cos(2 * np.pi * n / 400)
+    mel = np.zeros((WH["n_mels"], frames))
+    k = np.arange(201)[:, None] * n[None, :]
+    cos, sin = np.cos(2 * np.pi * k / 400), np.sin(2 * np.pi * k / 400)
+    for t in range(frames):
+        at = t * 160 - 200 + n
+        at = np.abs(at)
+        x = np.where(at < len(pcm), pcm[np.minimum(at, len(pcm) - 1)], 0.0) * window
+        power = (cos @ x) ** 2 + (sin @ x) ** 2
+        mel[:, t] = filters @ power
+    mel = np.log10(np.maximum(mel, 1e-10))
+    mel = np.maximum(mel, mel.max() - 8.0)
+    return (mel + 4.0) / 4.0
+
+
+def ln(x, g, b):
+    m = x.mean(-1, keepdims=True)
+    v = ((x - m) ** 2).mean(-1, keepdims=True)
+    return (x - m) / np.sqrt(v + 1e-5) * g + b
+
+
+def gelu(x):
+    return 0.5 * x * (1 + np.tanh(0.7978845608 * (x + 0.044715 * x ** 3)))
+
+
+def conv(x, w, b, stride):
+    cin, L = x.shape
+    pad = np.concatenate([np.zeros((cin, 1)), x, np.zeros((cin, 1))], axis=1)
+    lout = L // stride
+    out = np.zeros((w.shape[0], lout))
+    for t in range(lout):
+        seg = pad[:, t * stride:t * stride + 3]
+        out[:, t] = np.einsum("oik,ik->o", w, seg)
+    return gelu(out + b.reshape(-1, 1))
+
+
+def attend(q, k, v, heads, causal_from=None):
+    D = q.shape[1]
+    hd = D // heads
+    out = np.zeros_like(q)
+    for h in range(heads):
+        s = q[:, h * hd:(h + 1) * hd] @ k[:, h * hd:(h + 1) * hd].T / math.sqrt(hd)
+        if causal_from is not None:
+            for i in range(s.shape[0]):
+                s[i, causal_from + i + 1:] = -1e30
+        s = np.exp(s - s.max(1, keepdims=True))
+        s /= s.sum(1, keepdims=True)
+        out[:, h * hd:(h + 1) * hd] = s @ v[:, h * hd:(h + 1) * hd]
+    return out
+
+
+def lin(W, name, x, bias=True):
+    y = x @ W[name + ".weight"].T
+    return y + W[name + ".bias"] if bias else y
+
+
+def wh_encode(W, mel):
+    x = conv(mel, W["encoder.conv1.weight"], W["encoder.conv1.bias"], 1)
+    x = conv(x, W["encoder.conv2.weight"], W["encoder.conv2.bias"], 2).T + W["encoder.positional_embedding"]
+    for i in range(WH["a_layers"]):
+        p = "encoder.blocks.%d." % i
+        h = ln(x, W[p + "attn_ln.weight"], W[p + "attn_ln.bias"])
+        a = attend(lin(W, p + "attn.query", h), lin(W, p + "attn.key", h, False), lin(W, p + "attn.value", h),
+                   WH["heads"])
+        x = x + lin(W, p + "attn.out", a)
+        h = ln(x, W[p + "mlp_ln.weight"], W[p + "mlp_ln.bias"])
+        x = x + lin(W, p + "mlp.2", gelu(lin(W, p + "mlp.0", h)))
+    return ln(x, W["encoder.ln_post.weight"], W["encoder.ln_post.bias"])
+
+
+def wh_decode(W, enc, tokens):
+    """the logits after the last of tokens"""
+    x = W["decoder.token_embedding.weight"][tokens] + W["decoder.positional_embedding"][:len(tokens)]
+    for i in range(WH["t_layers"]):
+        p = "decoder.blocks.%d." % i
+        h = ln(x, W[p + "attn_ln.weight"], W[p + "attn_ln.bias"])
+        a = attend(lin(W, p + "attn.query", h), lin(W, p + "attn.key", h, False), lin(W, p + "attn.value", h),
+                   WH["heads"], causal_from=0)
+        x = x + lin(W, p + "attn.out", a)
+        h = ln(x, W[p + "cross_attn_ln.weight"], W[p + "cross_attn_ln.bias"])
+        a = attend(lin(W, p + "cross_attn.query", h), lin(W, p + "cross_attn.key", enc, False),
+                   lin(W, p + "cross_attn.value", enc), WH["heads"])
+        x = x + lin(W, p + "cross_attn.out", a)
+        h = ln(x, W[p + "mlp_ln.weight"], W[p + "mlp_ln.bias"])
+        x = x + lin(W, p + "mlp.2", gelu(lin(W, p + "mlp.0", h)))
+    x = ln(x, W["decoder.ln.weight"], W["decoder.ln.bias"])
+    return x[-1] @ W["decoder.token_embedding.weight"].T
+
+
+def pick(logits, lo, hi, margins):
+    seg = logits[lo:hi]
+    order = np.argsort(-seg)
+    margins.append(seg[order[0]] - seg[order[1]])
+    return lo + int(order[0])
+
+
+def wh_transcribe(W, pcm, filters):
+    V = WH["n_vocab"]
+    eot = V - 1509 - 99
+    sot, langs = eot + 1, 99
+    transcribe, no_ts = sot + 1 + langs + 1, sot + 1 + langs + 5
+    enc = wh_encode(W, wh_mel(pcm, filters))
+    margins = []
+    lang = pick(wh_decode(W, enc, [sot]), sot + 1, sot + 1 + langs, margins) - (sot + 1)
+    toks = [sot, sot + 1 + lang, transcribe, no_ts]
+    out = []
+    while len(toks) < WH["t_ctx"]:
+        logits = wh_decode(W, enc, toks)
+        best = pick(logits, 0, eot + 1, margins) if out else pick(logits, 0, eot, margins)
+        if best == eot:
+            break
+        out.append(best)
+        toks.append(best)
+    return lang, out, min(margins)
+
+
+def write_wav(path, pcm):
+    data = np.round(pcm * 32768).astype("<i2").tobytes()
+    head = b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16)
+    open(path, "wb").write(head + b"data" + struct.pack("<I", len(data)) + data)
+
+
+def make_whisper(out):
+    seed = 1
+    while True:
+        rng = np.random.default_rng(1000 + seed)
+        tensors, W = wh_build(rng)
+        filters = rng.uniform(0, 0.02, (WH["n_mels"], 201)).astype(np.float32).astype(np.float64)
+        t = np.arange(6000) / 16000
+        pcm = 0.3 * np.sin(2 * np.pi * 440 * t) * np.sin(np.pi * t / 0.375) + 0.1 * rng.standard_normal(6000)
+        pcm = (np.clip(pcm, -1, 1) * 32767).astype(np.int16).astype(np.float64) / 32768  # what the WAV file holds
+        lang, toks, margin = wh_transcribe(W, pcm, filters)
+        if margin > 0.02 and len(set(toks)) >= 3:
+            break
+        seed += 1
+    wh_write(out + "/whisper.bin", tensors, filters.astype(np.float32), wh_words())
+    write_wav(out + "/speech.wav", pcm)
+    return ["ai hear /mnt/hdb/speech.wav --model /mnt/hdb/whisper.bin",
+            "heard tokens: " + " ".join(map(str, toks)) + " (language %d)" % lang]
+
+
+def main():
+    out = sys.argv[1]
+    cases = make(out, "qwen2", "tiny", True) + make(out, "qwen3", "tiny3", False) + make(out, "llama", "tinyl", False)
+    # a whole turn of the assistant (system prompt with the tools, the chat format) on the last model loaded
+    cases += ["ai ask -n 5 --no-tools hello there", "[5 tokens, 0 tool calls"]
+    cases += make_whisper(out)
+    open(out + "/cases.txt", "w").write("\n".join(cases) + "\n")
+
+
+if __name__ == "__main__":
+    main()

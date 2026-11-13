@@ -147,6 +147,15 @@ void ap_entry(int index);
 void ap_entry(int index)
 {
     cpu_ap_init(index);
+    /* the FPU as the first processor has it: after INIT the x87 control word leaves exceptions unmasked, and jobs
+       that compute in floating point (the assistant's matrices) run here too */
+    uintptr_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 = (cr0 & ~(uintptr_t)(1u << 2)) | (1u << 1) | (1u << 5); /* EM off, MP and NE on */
+    uint32_t mxcsr = 0x1f80;
+    __asm__ volatile("mov %0, %%cr0; fninit" : : "r"(cr0) : "memory");
+    if (cpu_info()->sse)
+        __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
     apic_local_enable();
     /* only the IPI may reach this processor: legacy interrupts (LINT0/1) and local sources stay with the first */
     for (uint32_t reg = 0x320u; reg <= 0x370u; reg += 0x10u)

@@ -402,4 +402,13 @@ void gui_session_login(const char *name);
 const struct canvas *desktop_wallpaper(int screen);
 void desktop_dir(char *out, size_t cap);
 
+/* the Assistant module (assistant_fp), found as the service "assistant" */
+struct assistant_service {
+    void (*toggle)(void);
+    /* a conversation about what an app shows: title and text of a page or a selection; question NULL only opens */
+    void (*ask)(const char *title, const char *context, const char *question);
+};
+const struct assistant_service *assistant(void); /* NULL until it is installed */
+void assistant_toggle(void);
+
 #endif

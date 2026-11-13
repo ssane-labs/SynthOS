@@ -35,6 +35,7 @@ enum status_part {
     S_NETWORK,
     S_DISPLAY,
     S_FOCUS,
+    S_ASSIST,
     S_COUNT,
 };
 
@@ -160,6 +161,9 @@ static void layout(void)
     w = extra(4) ? 32 : 0;
     status[S_SEARCH] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
     right -= w;
+    w = gui_module_shown("assistant_fp") ? 30 : 0;
+    status[S_ASSIST] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
+    right -= w;
     w = keymap_multi() ? gfx_text_width(&font_sans, keymap_label()) + 14 : 0;
     status[S_LANG] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
     right -= w;
@@ -263,6 +267,8 @@ void menubar_paint(struct canvas *c, int screen)
     gfx_text_box(c, clock_r, islanded() ? &font_bold : &font_sans, clock, ink, ALIGN_CENTER);
     if (status[S_SEARCH].w)
         gfx_symbol(c, status[S_SEARCH].x + dx + 8, ty + 4, SYM_SEARCH, 16, ink);
+    if (status[S_ASSIST].w)
+        gfx_symbol(c, status[S_ASSIST].x + dx + 7, ty + 4, SYM_SPARKLE, 16, ink);
     gfx_symbol(c, status[S_CONTROL].x + dx + 8, ty + 4, SYM_CONTROL, 16, ink);
     uint32_t soft = (ink & 0xffffff) | 0x80000000u;
     if (status[S_SOUND].w) {
@@ -585,6 +591,7 @@ void chrome_mouse(int x, int y, unsigned button, bool down, int clicks)
     int top = s.y + MENUBAR_HEIGHT + 6, right = part >= 0 ? status[part].x + dx + status[part].w : 0;
     switch (part) {
     case S_SEARCH: spotlight_toggle(); break;
+    case S_ASSIST: assistant_toggle(); break;
     case S_LANG:
         keymap_next();
         chrome_changed();

@@ -34,6 +34,8 @@
 |-----|--------|----------|--------------|
 | GNU Unifont 15.1.05 (`unifont.hex.gz`) | unifoundry.com, по кнопке Download или `languages install` | SIL OFL 1.1 или GPL 2+ с исключением для шрифтов | с SynthOS не едет; скачивается без изменений в `/home/fonts/cjk`, исключение для шрифтов разрешает рисовать им любой текст |
 | Unihan 15.1 (`Unihan.zip`) | unicode.org, вместе со шрифтом | Unicode License v3 | с SynthOS не едет; из него на компьютере пользователя строится словарь `ime.dat`; лицензия разрешает и распространение с уведомлением |
+| Qwen2.5-0.5B-Instruct, Q4_K_M (`qwen2.5-0.5b-instruct-q4_k_m.gguf`, 470 МБ) | huggingface.co (Qwen), по кнопке в окне «Assistant» или `ai get` | Apache-2.0 | с SynthOS не едет; скачивается без изменений в `/home/models`; код, который его читает и считает, — свой (`kernel/gui/optional/assistant/`) |
+| Whisper base, Q8_0 (`ggml-base-q8_0.bin`, 78 МБ) | huggingface.co (ggerganov/whisper.cpp), по щелчку по микрофону или `ai get speech` | MIT | с SynthOS не едет; скачивается без изменений; разбор формата и распознавание написаны заново (`assistant/whisper.h`) |
 
 ## Магазин
 

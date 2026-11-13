@@ -1727,6 +1727,7 @@ static bool win_key(int key)
     case 'a': control_center_toggle(s.x + s.w - 8); return true;
     case 'n': notification_center_toggle(); return true;
     case 'v': gui_clipboard_history_show(); return true;
+    case 'c': assistant_toggle(); return true;
     case 'm': desktop_show_toggle(); return true;
     case 's':
         if (key & KEY_MOD_SHIFT) {
@@ -1857,6 +1858,11 @@ static void cmd_key(int key)
 
 static void handle_key(int key)
 {
+    if (KEY_BASE(key) == ' ' && (key & KEY_MOD_SUPER) &&
+        ((key & KEY_MOD_SHIFT) || (hal_key_modifiers() & KEY_MOD_SHIFT))) { /* the Assistant, in every key set */
+        assistant_toggle();
+        return;
+    }
     if (key == (' ' | KEY_MOD_SUPER) && keymap_multi()) {
         keymap_next();
         chrome_changed();
