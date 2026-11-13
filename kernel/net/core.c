@@ -200,7 +200,7 @@ uint32_t net_source_for(uint32_t dst)
 uint16_t net_mss_for(uint32_t dst)
 {
     if (wg_routes(dst))
-        return wg_mss();
+        return (uint16_t)(wg_mss() - (net_is_v6(dst) ? 20 : 0));
     return net_is_v6(dst) && !net_is_local(dst) ? 1440 : 1460;
 }
 

@@ -999,6 +999,12 @@ wget -O - http://10.99.0.1/hi.txt
 hello through the tunnel
 nslookup vpn.test
 vpn.test has address 10.99.0.1
+ping -c 1 fd00:99::1 | grep from
+64 bytes from fd00:99::1: icmp_seq=1
+wget -O - http://[fd00:99::1]/six.txt
+hello through the tunnel
+vpn status | grep -c fd00:99::2
+1
 vpn status | grep -c handshake; ping -c 1 10.0.2.2 | grep -c from
 1
 vpn down; ping -c 1 10.99.0.1 | grep -c from; nslookup vpn.test | grep -c 10.99

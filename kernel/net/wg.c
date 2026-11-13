@@ -41,7 +41,10 @@ struct wg_config {
     uint16_t port;
     struct route4 allowed[MAX_ALLOWED];
     int allowed_count;
-    bool v6_all;
+    bool v6_all, has6;
+    uint8_t addr6[16];
+    uint8_t net6[4][16], bits6[4]; /* IPv6 AllowedIPs */
+    int allowed6_count;
     int keepalive;
 };
 
@@ -294,7 +297,12 @@ static int wg_parse(const char *text, struct wg_config *c, char *why, size_t cap
                 if (comma)
                     *comma = 0;
                 uint32_t ip, mask;
-                if (!c->addr && !strchr(item, ':') && parse_cidr(trim(item), &ip, &mask)) {
+                char *t = trim(item), *slash = strchr(t, '/');
+                if (strchr(t, ':') && !c->has6) {
+                    if (slash)
+                        *slash = 0;
+                    c->has6 = net_parse_ip6(t, c->addr6);
+                } else if (!c->addr && !strchr(item, ':') && parse_cidr(trim(item), &ip, &mask)) {
                     char *slash = strchr(item, '/');
                     if (slash)
                         *slash = 0;
@@ -335,8 +343,14 @@ static int wg_parse(const char *text, struct wg_config *c, char *why, size_t cap
                     *comma = 0;
                 char *t = trim(item);
                 if (strchr(t, ':')) {
-                    if (!strcmp(t, "::/0"))
+                    char *slash = strchr(t, '/');
+                    int bits = slash ? (int)str_to_long(slash + 1, NULL, 10) : 128;
+                    if (slash)
+                        *slash = 0;
+                    if (!strcmp(t, "::") && !bits)
                         c->v6_all = true;
+                    if (c->allowed6_count < 4 && bits >= 0 && bits <= 128 && net_parse_ip6(t, c->net6[c->allowed6_count]))
+                        c->bits6[c->allowed6_count++] = (uint8_t)bits;
                 } else if (c->allowed_count < MAX_ALLOWED &&
                            parse_cidr(t, &c->allowed[c->allowed_count].ip, &c->allowed[c->allowed_count].mask)) {
                     c->allowed_count++;
@@ -381,9 +395,44 @@ static int load(const char *name, struct wg_config *c, char *why, size_t cap)
 
 /* --- routing --- */
 
+static bool prefix_match(const uint8_t *a, const uint8_t *net, int bits)
+{
+    int whole = bits / 8;
+    if (memcmp(a, net, (size_t)whole))
+        return false;
+    return bits % 8 == 0 || !((a[whole] ^ net[whole]) & (0xff00 >> (bits % 8)));
+}
+
+/* an IPv6 destination that goes through the tunnel (never link-local or multicast) */
+bool wg_routes6(const uint8_t *d)
+{
+    if (!wg || !wg->up || !wg->cfg.has6 || d[0] == 0xff || (d[0] == 0xfe && (d[1] & 0xc0) == 0x80) ||
+        !memcmp(d, wg->cfg.addr6, 16))
+        return false;
+    uint8_t e[16]; /* the endpoint itself stays outside */
+    if (net_is_v6(wg->endpoint) && net_v6_addr(wg->endpoint, e) && !memcmp(d, e, 16))
+        return false;
+    for (int i = 0; i < wg->cfg.allowed6_count; i++)
+        if (prefix_match(d, wg->cfg.net6[i], wg->cfg.bits6[i]))
+            return true;
+    return false;
+}
+
+/* the tunnel's own IPv6 address, while it is up */
+bool wg_address6(uint8_t *out)
+{
+    if (!wg || !wg->up || !wg->cfg.has6)
+        return false;
+    memcpy(out, wg->cfg.addr6, 16);
+    return true;
+}
+
 bool wg_routes(uint32_t dst)
 {
-    if (!wg || !wg->up || !dst || net_is_v6(dst) || dst == wg->endpoint || dst >> 24 == 127 || dst == 0xffffffffu ||
+    uint8_t d[16];
+    if (net_is_v6(dst))
+        return net_v6_addr(dst, d) && wg_routes6(d);
+    if (!wg || !wg->up || !dst || dst == wg->endpoint || dst >> 24 == 127 || dst == 0xffffffffu ||
         dst == wg->cfg.addr)
         return false;
     for (int i = 0; i < net_interface_count(); i++) {
@@ -404,7 +453,7 @@ uint32_t wg_address(void)
 
 bool wg_blocks_v6(uint32_t dst)
 {
-    return wg && wg->up && wg->cfg.v6_all && (!dst || dst != wg->endpoint);
+    return wg && wg->up && wg->cfg.v6_all && !wg->cfg.has6 && (!dst || dst != wg->endpoint);
 }
 
 uint16_t wg_mss(void)
@@ -579,6 +628,15 @@ static void data_input(const uint8_t *m, size_t n)
         if (allowed && total <= len) {
             wg->rx_bytes += total;
             net_ip_input(plain, total);
+        }
+    } else if (len >= 40 && plain[0] >> 4 == 6) {
+        size_t total = 40u + rd16(plain + 4);
+        bool allowed = false;
+        for (int i = 0; i < wg->cfg.allowed6_count; i++)
+            allowed |= prefix_match(plain + 8, wg->cfg.net6[i], wg->cfg.bits6[i]);
+        if (allowed && total <= len) {
+            wg->rx_bytes += total;
+            ip6_tunnel_input(plain, total);
         }
     }
     kfree(plain);
@@ -870,8 +928,14 @@ static void print_status(struct shell *sh)
         sh_printf(sh, "VPN is off%s%s\n", st.error[0] ? ": " : "", st.error);
         return;
     }
-    char addr[48], dns[48], ep[48], rx[16], tx[16];
+    char addr[96], dns[48], ep[48], rx[16], tx[16];
     net_format_ip(st.address, addr, sizeof(addr));
+    uint8_t a6[16];
+    if (wg_address6(a6)) {
+        size_t l = strlen(addr);
+        addr[l++] = ' ';
+        net_format_ip6(a6, addr + l, sizeof(addr) - l);
+    }
     net_format_ip(st.dns, dns, sizeof(dns));
     net_format_ip(st.endpoint, ep, sizeof(ep));
     fmt_size(rx, sizeof(rx), st.rx);

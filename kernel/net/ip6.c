@@ -255,6 +255,9 @@ struct net6 *net_v6_info(int index)
 
 bool net_v6_local(uint32_t ip)
 {
+    uint8_t a[16];
+    if (ip && wg_address6(a) && net_v6_handle(a) == ip)
+        return true;
     for (int i = 0; i < NET_MAX_IFACES; i++)
         if (ip && (v6[i].ll_h == ip || v6[i].global_h == ip))
             return true;
@@ -306,7 +309,11 @@ static struct net_iface *pick(const uint8_t *dst, uint8_t *src)
 uint32_t net_source6_for(uint32_t dst)
 {
     uint8_t d[16], s[16];
-    if (!net_v6_addr(dst, d) || !pick(d, s))
+    if (!net_v6_addr(dst, d))
+        return 0;
+    if (wg_routes6(d) && wg_address6(s))
+        return net_v6_handle(s);
+    if (!pick(d, s))
         return 0;
     return net_v6_handle(s);
 }
@@ -390,6 +397,8 @@ static int raw_send(struct net_iface *ifc, const uint8_t *src, const uint8_t *ds
             sum += rd16(h + 8 + i);
         wr16(icmp + 2, net_checksum(icmp, length, sum));
     }
+    if (!ifc) /* into the VPN tunnel */
+        return wg_output(packet, total);
     uint8_t mac[6];
     if (dst[0] == 0xff) {
         multicast_mac(dst, mac);
@@ -425,6 +434,13 @@ int ip6_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, siz
     uint8_t d[16], s[16], chosen[16];
     if (!net_v6_addr(dst, d) || v6_off)
         return E_UNREACH;
+    if (proto == IP_ICMP)
+        proto = ICMP6;
+    if (wg_routes6(d)) {
+        if (!src || !net_v6_addr(src, s))
+            wg_address6(s);
+        return raw_send(NULL, s, d, proto, 64, payload, length);
+    }
     if (wg_blocks_v6(dst) && !(d[0] == 0xfe && (d[1] & 0xc0) == 0x80))
         return E_UNREACH;
     struct net_iface *ifc = pick(d, chosen);
@@ -436,8 +452,6 @@ int ip6_send(uint32_t src, uint32_t dst, uint8_t proto, const void *payload, siz
         for (int i = 0; i < net_interface_count(); i++)
             if (v6[i].ll_ok && !memcmp(s, v6[i].ll, 16))
                 ifc = net_interface(i);
-    if (proto == IP_ICMP)
-        proto = ICMP6;
     return raw_send(ifc, s, d, proto, 64, payload, length);
 }
 
@@ -595,6 +609,39 @@ void ip6_input(struct net_iface *ifc, const uint8_t *p, size_t length)
     if (next == IP_TCP)
         tcp_input(sh, dh, payload, n);
     else
+        udp_input(sh, dh, payload, n);
+}
+
+/* An IPv6 packet out of the VPN tunnel, for the tunnel's address */
+void ip6_tunnel_input(const uint8_t *p, size_t length)
+{
+    uint8_t me[16];
+    if (v6_off || length < IP6_HEADER || !wg_address6(me) || memcmp(p + 24, me, 16) || p[6] == 0 || p[6] == 43 ||
+        p[6] == 60)
+        return;
+    const uint8_t *src = p + 8, *payload = p + IP6_HEADER;
+    size_t n = length - IP6_HEADER;
+    if (p[6] == ICMP6) {
+        uint32_t sum = (uint32_t)n + ICMP6;
+        for (int i = 0; i < 32; i += 2)
+            sum += rd16(p + 8 + i);
+        if (n < 8 || net_checksum(payload, n, sum) != 0)
+            return;
+        if (payload[0] == 129)
+            net_ping_answer(rd16(payload + 4), rd16(payload + 6), p[7]);
+        uint8_t *reply = payload[0] == 128 ? kmalloc(n) : NULL;
+        if (reply) {
+            memcpy(reply, payload, n);
+            reply[0] = 129;
+            raw_send(NULL, me, src, ICMP6, 64, reply, n);
+            kfree(reply);
+        }
+        return;
+    }
+    uint32_t sh = net_v6_handle(src), dh = net_v6_handle(me);
+    if (sh && dh && p[6] == IP_TCP)
+        tcp_input(sh, dh, payload, n);
+    else if (sh && dh && p[6] == IP_UDP)
         udp_input(sh, dh, payload, n);
 }
 

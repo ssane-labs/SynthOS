@@ -1,5 +1,5 @@
 """A WireGuard server for the tests: answers handshakes on a UDP port of the host (10.0.2.2 inside QEMU) and, inside
-the tunnel, is 10.99.0.1: pings, DNS (vpn.test is 10.99.0.1) and HTTP on port 80 with a tiny TCP.
+the tunnel, is 10.99.0.1 and fd00:99::1: pings, DNS (vpn.test is 10.99.0.1) and HTTP on port 80 with a tiny TCP.
 Usage: wgpeer.py --config PORT   prints the client configuration
        wgpeer.py PORT            runs the server
 """
@@ -19,6 +19,7 @@ SERVER = X25519PrivateKey.from_private_bytes(hashlib.sha256(b"synthos wg server"
 CLIENT = X25519PrivateKey.from_private_bytes(hashlib.sha256(b"synthos wg client").digest())
 PSK = hashlib.sha256(b"synthos wg psk").digest()
 INNER = bytes([10, 99, 0, 1])
+INNER6 = bytes.fromhex("fd000099000000000000000000000001")
 BODY = b"hello through the tunnel\n"
 
 
@@ -33,7 +34,7 @@ def b64(data):
 if sys.argv[1] == "--config":
     priv = hashlib.sha256(b"synthos wg client").digest()
     print("[Interface]\nPrivateKey = %s\nAddress = 10.99.0.2/32, fd00:99::2/128\nDNS = 10.99.0.1\n\n"
-          "[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.99.0.0/24\nEndpoint = 10.0.2.2:%s\n"
+          "[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.99.0.0/24, fd00:99::/64\nEndpoint = 10.0.2.2:%s\n"
           "PersistentKeepalive = 25" % (b64(priv), b64(raw(SERVER)), b64(PSK), sys.argv[2]))
     sys.exit(0)
 
@@ -118,7 +119,27 @@ def checksum(data):
     return (~s) & 0xFFFF
 
 
+def seal(plain):
+    plain += bytes(-len(plain) % 16)
+    n = session["counter"]
+    session["counter"] += 1
+    sock.sendto(b"\x04\0\0\0" + session["peer"] + struct.pack("<Q", n) + aead(session["send"], n, plain, b""),
+                session["addr"])
+
+
+def send_ip6(dst, proto, payload):
+    at = {58: 2, 6: 16}[proto]
+    pseudo = INNER6 + dst + struct.pack("!IxxxB", len(payload), proto)
+    payload = bytearray(payload)
+    payload[at:at + 2] = b"\0\0"
+    payload[at:at + 2] = struct.pack("!H", checksum(pseudo + bytes(payload)))
+    seal(struct.pack("!IHBB", 6 << 28, len(payload), proto, 64) + INNER6 + dst + bytes(payload))
+
+
 def send_ip(dst, proto, payload):
+    if len(dst) == 16:
+        send_ip6(dst, proto, payload)
+        return
     if proto in (6, 17):
         at = 16 if proto == 6 else 6
         pseudo = INNER + dst + struct.pack("!BBH", 0, proto, len(payload))
@@ -131,12 +152,7 @@ def send_ip(dst, proto, payload):
         payload = bytes(payload)
     hdr = bytearray(struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(payload), 0, 0x4000, 64, proto, 0, INNER, dst))
     hdr[10:12] = struct.pack("!H", checksum(bytes(hdr)))
-    plain = bytes(hdr) + payload
-    plain += bytes(-len(plain) % 16)
-    n = session["counter"]
-    session["counter"] += 1
-    sock.sendto(b"\x04\0\0\0" + session["peer"] + struct.pack("<Q", n) + aead(session["send"], n, plain, b""),
-                session["addr"])
+    seal(bytes(hdr) + payload)
 
 
 def dns_answer(q):
@@ -193,6 +209,14 @@ def tcp(src, seg):
 
 
 def inner(packet):
+    if len(packet) >= 40 and packet[0] >> 4 == 6 and packet[24:40] == INNER6:
+        length, proto, src = struct.unpack("!H", packet[4:6])[0], packet[6], packet[8:24]
+        payload = packet[40:40 + length]
+        if proto == 58 and payload[0] == 128:
+            send_ip6(src, 58, b"\x81\0\0\0" + payload[4:])
+        elif proto == 6 and struct.unpack("!H", payload[2:4])[0] == 80:
+            tcp(src, payload)
+        return
     if len(packet) < 20 or packet[0] >> 4 != 4 or packet[16:20] != INNER:
         return
     hl, total, proto, src = (packet[0] & 15) * 4, struct.unpack("!H", packet[2:4])[0], packet[9], packet[12:16]
