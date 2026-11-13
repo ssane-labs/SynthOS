@@ -364,6 +364,10 @@ screenrec start
 screenrec: the desktop is not running
 screenrec
 not recording
+mkdir -p /home/apps/kept; restore point base; mkdir -p /home/apps/later; restore to 1; ls /home/apps
+back to "base": 1 apps removed, 0 to install again
+restore list
+Before going back to "base"
 clip set hello clipboard; clip; clip info
 text 15 bytes
 clip; clip set two; clip
