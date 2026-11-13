@@ -289,6 +289,7 @@ $(OUT)/kernel.elf: $(KERNEL_OBJ) arch/x86/$(if $(X64),64/)linker.ld
 	@$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJ)
 
 $(OUT)/obj/%_fp.o: CFLAGS += $(if $(X64),-msse -msse2 -mfpmath=sse,-m80387 -mfpmath=387)
+$(OUT)/obj/optional/%_fp.o: MODCFLAGS += $(if $(X64),-msse -msse2 -mfpmath=sse,-m80387 -mfpmath=387)
 # The 64-bit kernel's Windows subsystem is x32 code (64-bit mode, 4-byte pointers and longs: the structure layouts
 # 32-bit programs use), built by clang and turned into ELF64 objects. Every source gets its call gate signatures
 # (tools/w32sig.py) appended; references to the few kernel functions whose pointer or size_t out-parameters differ

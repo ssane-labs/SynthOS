@@ -1065,6 +1065,28 @@ appx install /mnt/hdb/uwp.msix
 is a Universal Windows app
 appx remove Synth.SampleTool; appx list
 no MSIX packages installed
+scicalc 2 + 3 * 4 ^ 2
+50
+scicalc sin(30) + cos(60) + 5!
+121
+scicalc -r 2pi + ln(e^3) - sqrt(16)
+5.283185307
+scicalc log(1000) * (1 + 2
+9
+scicalc 1/0
+Cannot divide by zero
+progcalc '0xFF and 0x0F or 0b10000 xor 1 << 8' | head -n 2
+hex 11F
+progcalc -8 200 + 100 | grep dec
+dec 44
+progcalc -16 not 0 | grep bin
+bin 1111 1111 1111 1111
+convert 100 km mi
+62.1371192237 mi
+convert 100 f c; convert 1 GiB MB
+1073.741824 MB
+convert 5 kg mi
+kg is Weight and mi is Length
 tips all | grep -c .
 30
 tips off; cat /home/etc/tips
