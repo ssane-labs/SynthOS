@@ -252,6 +252,8 @@ void gfx_image(struct canvas *c, int x, int y, const uint32_t *argb, int w, int 
 void gfx_icon(struct canvas *c, int x, int y, enum icon_id id, int size);
 void gfx_icon_alpha(struct canvas *c, int x, int y, enum icon_id id, int size, int alpha);
 void gfx_symbol(struct canvas *c, int x, int y, enum symbol_id id, int size, uint32_t color);
+/* set by a module with a bitmap font: 16 rows of a character the desktop fonts lack, width 8 or 16 */
+extern const uint8_t *(*gfx_wide_glyph)(uint32_t code, int *width);
 const uint32_t *gfx_icon_pixels(enum icon_id id);
 
 enum text_align {

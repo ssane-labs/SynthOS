@@ -1151,9 +1151,51 @@ static const struct ui_glyph *find_glyph(const struct ui_font *f, uint32_t code)
     return g ? g : lookup(f, '?');
 }
 
+/* Characters the desktop fonts lack (Chinese, Japanese, Korean, ...) can come from a 16-pixel bitmap font a
+   module provides: drawn at the font's height, the bottom two rows below the baseline. */
+const uint8_t *(*gfx_wide_glyph)(uint32_t code, int *width);
+
+static const uint8_t *wide_bitmap(const struct ui_font *f, uint32_t code, int *w)
+{
+    if (code < 0x80 || !gfx_wide_glyph || lookup(f, code))
+        return NULL;
+    return gfx_wide_glyph(code, w);
+}
+
+static int draw_wide(struct canvas *c, int x, int y, const struct ui_font *f, const uint8_t *bm, int w, uint32_t color)
+{
+    int size = MAX(f->height - 1, 8), tw = size * w / 16;
+    if (!c)
+        return tw;
+    int top = y + f->ascent - size * 14 / 16, bytes = w / 8;
+    unsigned base = color >> 24;
+    for (int ty = 0; ty < size; ty++) {
+        int py = top + ty;
+        if (py < c->clip.y || py >= c->clip.y + c->clip.h)
+            continue;
+        for (int tx = 0; tx < tw; tx++) {
+            int px = x + tx;
+            if (px < c->clip.x || px >= c->clip.x + c->clip.w)
+                continue;
+            int on = 0; /* 4 x 4 samples of the source pixels under this one */
+            for (int j = 0; j < 4; j++) {
+                int sy = ((ty * 4 + j) * 2 + 1) * 16 / (size * 8);
+                for (int i = 0; i < 4; i++) {
+                    int sx = ((tx * 4 + i) * 2 + 1) * 16 / (size * 8);
+                    on += bm[sy * bytes + sx / 8] >> (7 - sx % 8) & 1;
+                }
+            }
+            if (on)
+                put_a(c, px, py, color, base * (unsigned)on / 16);
+        }
+    }
+    return tw;
+}
+
 bool gfx_has_glyph(const struct ui_font *f, uint32_t code)
 {
-    return lookup(f, code) != NULL;
+    int w;
+    return lookup(f, code) != NULL || wide_bitmap(f, code, &w) != NULL;
 }
 
 static const uint8_t *font_pack(const struct ui_font *f)
@@ -1228,6 +1270,10 @@ bool gfx_glyph_bitmap(const struct ui_font *f, uint32_t code, struct ui_glyph *i
 
 int gfx_glyph(struct canvas *c, int x, int y, const struct ui_font *f, uint32_t code, uint32_t color)
 {
+    int w;
+    const uint8_t *bm = wide_bitmap(f, code, &w);
+    if (bm)
+        return draw_wide(c, x, y, f, bm, w, color);
     const struct ui_glyph *g = find_glyph(f, code);
     if (!g)
         return 0;
@@ -1241,7 +1287,14 @@ int gfx_text_n(struct canvas *c, int x, int y, const struct ui_font *f, const ch
     int start = x;
     const char *end = s + n;
     while (s < end && *s) {
-        const struct ui_glyph *g = find_glyph(f, utf8_next(&s));
+        uint32_t code = utf8_next(&s);
+        int w;
+        const uint8_t *bm = wide_bitmap(f, code, &w);
+        if (bm) {
+            x += draw_wide(c, x, y, f, bm, w, color);
+            continue;
+        }
+        const struct ui_glyph *g = find_glyph(f, code);
         if (!g)
             continue;
         if (c)

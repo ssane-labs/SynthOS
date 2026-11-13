@@ -54,6 +54,10 @@ static const struct layout layouts[] = {
     {"lt", "LT", "Lithuanian", "Lietuvių", "12345678=!@#$%^&*+", "ąčęėįšųūžĄČĘĖĮŠŲŪŽ"},
     {"gr", "EL", "Greek", "Ελληνικά", "qwertyuiopasdfghjklzxcvbnmQERTYUIOPASDFGHJKLZXCVBNM",
      ";ςερτυθιοπασδφγηξκλζχψωβνμ:ΕΡΤΥΘΙΟΠΑΣΔΦΓΗΞΚΛΖΧΨΩΒΝΜ"},
+    /* input methods: keymap_ime (the languages module) composes the text; without it they type like "us" */
+    {"ko", "KO", "Korean (2-Set)", "한국어", NULL, NULL},
+    {"ja", "JA", "Japanese (Romaji)", "日本語", NULL, NULL},
+    {"zh", "ZH", "Chinese (Pinyin)", "中文", NULL, NULL},
 };
 
 #define LAYOUTS ((int)ARRAY_SIZE(layouts))
@@ -139,8 +143,12 @@ void keymap_next(void)
     active = order[(k + 1) % order_n];
 }
 
+int (*keymap_ime)(const char *layout, int key);
+
 int keymap_translate(int key)
 {
+    if (!layouts[active].from)
+        return keymap_ime && !KEY_IS_TEXT(key) ? keymap_ime(layouts[active].name, key) : key;
     if (KEY_IS_TEXT(key) || (key & (KEY_MOD_CTRL | KEY_MOD_ALT | KEY_MOD_SUPER)) || !active)
         return key;
     int base = KEY_BASE(key);
@@ -205,7 +213,7 @@ static int set_keyboard(struct shell *sh, const char *value)
 }
 
 static const struct setting s_keyboard = {"keyboard", "<layout>,<layout>,... (us, ru, ua, de, fr, es, it, pt, pl, gb, "
-                                          "dvorak, colemak, by, bg, rs, cz, sk, hu, ro, tr, se, fi, no, dk, ee, lt, gr)",
+                                          "dvorak, colemak, by, bg, rs, cz, sk, hu, ro, tr, se, fi, no, dk, ee, lt, gr, ko, ja, zh)",
                                           "input languages, the primary one first; Win+Space switches between them",
                                           get_keyboard, set_keyboard};
 SETTING(s_keyboard);

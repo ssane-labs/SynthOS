@@ -1863,6 +1863,8 @@ static void handle_key(int key)
         return;
     }
     key = keymap_translate(key);
+    if (!key)
+        return;
     int base = KEY_BASE(key);
     if (gui_locked()) {
         struct window *lock = wm_top_popup();

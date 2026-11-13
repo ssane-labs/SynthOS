@@ -49,12 +49,17 @@ enum key_code {
 
 /* A character from a keyboard layout: the code point (below U+1000) and the US key that was pressed. */
 #define KEY_TEXT 0x1000000
-#define KEY_TEXT_CHAR(cp, phys) (KEY_TEXT | (phys) << 16 | (cp))
+/* a typed character: bits 0-11 and 25-28 hold the code point (the whole BMP), 16-22 the US key it was typed
+   on; bits 12-15 (the modifiers) stay clear */
+#define KEY_TEXT_CHAR(cp, phys) (KEY_TEXT | (phys) << 16 | ((cp) & 0xfff) | (((cp) >> 12) & 0xf) << 25)
 #define KEY_IS_TEXT(k) (((k) & KEY_TEXT) != 0)
-#define KEY_TEXT_CP(k) ((k) & 0xfff)
+#define KEY_TEXT_CP(k) (((k) & 0xfff) | (((k) >> 25) & 0xf) << 12)
 #define KEY_TEXT_PHYS(k) (((k) >> 16) & 0x7f)
 
 int keymap_translate(int key);
+/* An input method (Korean, Japanese, Chinese) sees every key while its layout is active: it returns the key to
+   deliver, or 0 when it kept the key to compose with (and sends what it composed itself). */
+extern int (*keymap_ime)(const char *layout, int key);
 int keymap_plain(int key);
 void keymap_next(void);
 bool keymap_multi(void);
