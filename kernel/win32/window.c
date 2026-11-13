@@ -760,6 +760,7 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
             w->destroyed = true;
             return NULL;
         }
+        w->wm->drop = bridge_drop;
         w->wm->app = app_of_process();
         if (caption)
             w->caption_due = hal_ticks_ms() + 500;
@@ -4497,6 +4498,7 @@ static BOOL WINAPI TrackMouseEvent(uint32_t *t)
 /* Desktop events can arrive while another process runs: they wait here for the window's own process. */
 #define DEFER_PAINT (-1)
 #define DEFER_CLOSE (-2)
+#define DEFER_DROP (-3)
 #define DEFERRED_MAX 128
 
 static struct deferred {
@@ -4534,6 +4536,7 @@ static void forget_deferred(struct window *wm)
 }
 
 static void bridge_dispatch(struct window *wm, struct gui_event *e);
+static void drop_deliver(struct window *wm);
 
 static void gui_replay(void)
 {
@@ -4552,6 +4555,8 @@ static void gui_replay(void)
             w32_invalidate(w, NULL, true);
         else if ((int)d.e.type == DEFER_CLOSE)
             w32_post(w, WM_CLOSE, 0, 0);
+        else if ((int)d.e.type == DEFER_DROP)
+            drop_deliver(d.wm);
         else
             bridge_dispatch(d.wm, &d.e);
     }
@@ -4667,6 +4672,151 @@ static void bridge_destroy(struct window *wm)
 }
 
 static const struct window_ops bridge_ops = {bridge_paint, bridge_event, bridge_close, bridge_destroy};
+
+/* ---- files dragged in from the desktop or Files: WM_DROPFILES with an HDROP, for windows that accept files ---- */
+
+#define WM_DROPFILES 0x0233
+#define WS_EX_ACCEPTFILES 0x10
+
+struct dropfiles {
+    DWORD files; /* offset of the double-zero-ended list of paths */
+    LONG x, y;
+    BOOL nc, wide;
+};
+
+static struct {
+    char *paths;
+    int x, y;
+} drop_wait;
+
+static void drop_deliver(struct window *wm)
+{
+    struct w32_window *top = bridged(wm);
+    char *paths = drop_wait.paths;
+    drop_wait.paths = NULL;
+    struct w32_window *t = top ? window_at(top, drop_wait.x, drop_wait.y) : NULL;
+    for (t = t ? t : top; t && !(t->exstyle & WS_EX_ACCEPTFILES); t = t->parent)
+        ;
+    size_t chars = 1;
+    char win[PATH_MAX_LEN], one[PATH_MAX_LEN];
+    for (int pass = 0; t && paths && pass < 2; pass++) {
+        struct dropfiles *d = NULL;
+        WCHAR *out = NULL;
+        if (pass) {
+            d = w32_alloc(sizeof(*d) + chars * sizeof(WCHAR));
+            if (!d)
+                break;
+            struct rect a = w32_area(t);
+            *d = (struct dropfiles){sizeof(*d), drop_wait.x - a.x, drop_wait.y - a.y, FALSE, TRUE};
+            out = (WCHAR *)(d + 1);
+        }
+        size_t at = 0;
+        for (const char *p = paths; *p;) {
+            const char *nl = strchr(p, '\n');
+            size_t n = nl ? (size_t)(nl - p) : strlen(p);
+            str_copy(one, p, MIN(n + 1, sizeof(one)));
+            p += n + (nl ? 1 : 0);
+            if (!one[0])
+                continue;
+            w32_path_to_win(one, win, sizeof(win));
+            at += w32_cp_to_wide(win, -1, out ? out + at : NULL, out ? chars - at : 0, 65001);
+        }
+        if (!pass) {
+            chars = at + 1;
+            continue;
+        }
+        out[at] = 0;
+        w32_post(t, WM_DROPFILES, (WPARAM)(uintptr_t)d, 0);
+    }
+    kfree(paths);
+}
+
+static void bridge_drop(struct window *wm, int x, int y, const char *paths)
+{
+    kfree(drop_wait.paths);
+    drop_wait.paths = kstrdup(paths);
+    drop_wait.x = x;
+    drop_wait.y = y;
+    if (!defer(wm, NULL, DEFER_DROP))
+        drop_deliver(wm);
+}
+
+static void WINAPI DragAcceptFiles(HANDLE h, BOOL accept)
+{
+    struct w32_window *w = w32_win(h);
+    if (w)
+        w->exstyle = accept ? w->exstyle | WS_EX_ACCEPTFILES : w->exstyle & ~(uint32_t)WS_EX_ACCEPTFILES;
+}
+
+/* the i-th path of a drop (i = 0xffffffff: how many there are) */
+static const WCHAR *drop_path(HANDLE drop, UINT i, UINT *count)
+{
+    const struct dropfiles *d = drop;
+    const WCHAR *p = d ? (const WCHAR *)((const uint8_t *)d + d->files) : NULL;
+    UINT k = 0;
+    for (; p && *p; k++) {
+        if (k == i)
+            return p;
+        p += w32_wcslen(p) + 1;
+    }
+    if (count)
+        *count = k;
+    return NULL;
+}
+
+static UINT WINAPI DragQueryFileW(HANDLE drop, UINT i, WCHAR *buf, UINT cch)
+{
+    UINT count = 0;
+    const WCHAR *p = drop_path(drop, i, &count);
+    if (!p)
+        return i == 0xffffffffu ? count : 0;
+    UINT n = (UINT)w32_wcslen(p);
+    if (!buf)
+        return n;
+    UINT k = MIN(n, cch ? cch - 1 : 0);
+    memcpy(buf, p, k * sizeof(WCHAR));
+    if (cch)
+        buf[k] = 0;
+    return k;
+}
+
+static UINT WINAPI DragQueryFileA(HANDLE drop, UINT i, char *buf, UINT cch)
+{
+    UINT count = 0;
+    const WCHAR *p = drop_path(drop, i, &count);
+    if (!p)
+        return i == 0xffffffffu ? count : 0;
+    UINT n = (UINT)w32_wide_to_cp(p, -1, NULL, 0, 0) - 1;
+    if (!buf)
+        return n;
+    if (!cch)
+        return 0;
+    w32_wide_to_cp(p, -1, buf, cch, 0);
+    buf[cch - 1] = 0;
+    return MIN(n, cch - 1);
+}
+
+static BOOL WINAPI DragQueryPoint(HANDLE drop, POINT *pt)
+{
+    const struct dropfiles *d = drop;
+    if (!d || !pt)
+        return FALSE;
+    pt->x = d->x;
+    pt->y = d->y;
+    return !d->nc;
+}
+
+static void WINAPI DragFinish(HANDLE drop)
+{
+    w32_free(drop);
+}
+
+static const struct w32_export drop_exports[] = {
+    W32_FN(DragAcceptFiles), W32_FN(DragQueryFileW), W32_FN(DragQueryFileA), W32_FN(DragQueryPoint),
+    W32_FN(DragFinish),
+};
+
+W32_EXPORTS(drop_module, "shell32.dll", drop_exports);
 
 void w32_gdi_reset(void);
 

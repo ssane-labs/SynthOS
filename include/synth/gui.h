@@ -426,6 +426,7 @@ struct window {
     bool anim_hold;
     int space;
     struct rect anchor;
+    K64(void (*drop)(struct window *w, int x, int y, const char *paths)); /* files dropped on it, one path a line */
 };
 
 #define TITLE_HEIGHT 28
@@ -447,6 +448,9 @@ void wm_invalidate(struct window *w);
 int wm_controls_width(void);
 void wm_controls_paint(struct canvas *c, const struct window *w, int x, int cy, int hot);
 int wm_controls_at(const struct window *w, int dx);
+/* dragging files between windows: the ghost under the pointer (count 0 hides it), and the drop itself */
+void wm_file_drag(int x, int y, int count, enum icon_id icon);
+bool wm_file_drop(int x, int y, const char *paths);
 void wm_set_pinned(struct window *w, bool on);
 void wm_peek_desktop(bool on);
 enum snap_zone {

@@ -831,8 +831,60 @@ bool desktop_icon_drag(int x, int y)
         icon_entry(drag_icon, entry, sizeof(entry));
         dock_drag_move(entry, x, y);
     }
+    /* over a window the icons can be dropped into it: their ghost shows above the windows */
+    wm_file_drag(x, y, wm_window_at(x, y) && !dock_dragging() ? selected_count() : 0, it->icon);
     wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
     return true;
+}
+
+/* the paths of the selected desktop icons, one a line (disks and the computer stay out) */
+static char *selected_paths(void)
+{
+    size_t cap = 1;
+    for (int i = 0; i < icon_count; i++)
+        if (icons[i].selected)
+            cap += strlen(icons[i].path) + 1;
+    char *out = kzalloc(cap);
+    for (int i = 0; out && i < icon_count; i++)
+        if (icons[i].selected && !icons[i].volume && strcmp(icons[i].path, "/")) {
+            str_append(out, icons[i].path, cap);
+            str_append(out, "\n", cap);
+        }
+    return out;
+}
+
+/* Files dropped on a window: the window takes them if it can (its drop handler, Windows programs that accept files),
+   otherwise its app opens each one it has a format for. */
+static bool extension_listed(const char *list, const char *ext);
+
+bool wm_file_drop(int x, int y, const char *paths)
+{
+    wm_file_drag(0, 0, 0, ICON_FILE);
+    struct window *w = wm_window_at(x, y);
+    if (!w || !paths || !*paths)
+        return false;
+    struct rect cr = wm_client_rect(w);
+    if (w->drop) {
+        wm_focus(w);
+        w->drop(w, x - cr.x, y - cr.y, paths);
+        return true;
+    }
+    const struct gui_app *app = w->app;
+    if (!app || !app->launch || !app->extensions)
+        return false;
+    bool any = false;
+    char path[PATH_MAX_LEN];
+    for (const char *p = paths; *p;) {
+        const char *nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        str_copy(path, p, MIN(n + 1, sizeof(path)));
+        if (path[0] && extension_listed(app->extensions, path_ext(path))) {
+            gui_app_launch(app, path);
+            any = true;
+        }
+        p += n + (nl ? 1 : 0);
+    }
+    return any;
 }
 
 /* The selected icons go to the cells the drag points at; a taken cell sends an icon to the nearest free one. */
@@ -875,6 +927,15 @@ void desktop_mouse(int x, int y, unsigned button, bool down, int clicks)
         int i = drag_icon;
         bool was = icon_dragging;
         icon_dragging = false;
+        wm_file_drag(0, 0, 0, ICON_FILE);
+        if (was && !dock_dragging() && wm_window_at(x, y)) {
+            char *paths = selected_paths();
+            wm_file_drop(x, y, paths);
+            kfree(paths);
+            drag_icon = -1;
+            wm_damage_z(wm_screen_rect(0), Z_DESKTOP);
+            return;
+        }
         if (was) {
             bool single = selected_count() == 1;
             if (single && dock_dragging() && dock_drag_drop(x, y)) {

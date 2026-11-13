@@ -73,6 +73,8 @@ struct files {
     bool sidebar;
     bool windows;
     int scroll;
+    int press_x, press_y;
+    bool armed, dragging; /* a press on a file that may become a drag to another window */
 };
 
 static char file_clip[PATH_MAX_LEN];
@@ -787,6 +789,84 @@ static const struct canvas *thumbnail(struct files *f, const struct entry *e)
     return t->failed ? NULL : &t->c;
 }
 
+/* Files dropped on this window move into its folder (or are copied when they cannot be moved, as from /system). */
+static void files_drop(struct window *w, int x, int y, const char *paths)
+{
+    UNUSED(x);
+    UNUSED(y);
+    struct files *f = w->data;
+    char path[PATH_MAX_LEN], dir[PATH_MAX_LEN], target[PATH_MAX_LEN];
+    int err = 0, done = 0;
+    for (const char *p = paths; *p;) {
+        const char *nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        str_copy(path, p, MIN(n + 1, sizeof(path)));
+        p += n + (nl ? 1 : 0);
+        path_dirname(path, dir, sizeof(dir));
+        if (!path[0] || !strcmp(dir, f->path) || str_starts(f->path, path))
+            continue;
+        child_path(f, path_basename(path), target);
+        int e = vfs_move(path, target);
+        if (e)
+            e = vfs_copy(path, target);
+        err = err ? err : e;
+        done += !e;
+    }
+    if (done || err)
+        report(err, "moved");
+    refresh(w, f);
+}
+
+/* A file pressed and pulled away: its ghost follows the pointer, and let go over another window (or the desktop)
+   the file is dropped there. */
+static void file_drag(struct window *w, struct files *f, struct ui *ui, int result)
+{
+    struct gui_event *e = ui->e;
+    if (!e)
+        return;
+    if (e->type == EV_MOUSE_DOWN) {
+        f->armed = e->button == BUTTON_LEFT && result == LIST_SELECT && selected(f);
+        f->dragging = false;
+        f->press_x = e->x;
+        f->press_y = e->y;
+        return;
+    }
+    if (!f->armed || !selected(f))
+        return;
+    struct rect cr = wm_client_rect(w);
+    int sx = cr.x + e->x, sy = cr.y + e->y;
+    if (e->type == EV_MOUSE_MOVE && (e->buttons & BUTTON_LEFT)) {
+        int dx = e->x - f->press_x, dy = e->y - f->press_y;
+        if (!f->dragging && dx * dx + dy * dy < 64)
+            return;
+        f->dragging = true;
+        wm_file_drag(sx, sy, 1, icon_for(f->path, selected(f)));
+        ui->consumed = true;
+    } else if (e->type == EV_MOUSE_UP) {
+        bool was = f->dragging;
+        f->armed = f->dragging = false;
+        wm_file_drag(0, 0, 0, ICON_FILE);
+        if (!was)
+            return;
+        ui->consumed = true;
+        char path[PATH_MAX_LEN + 1];
+        child_path(f, selected(f)->name, path);
+        struct window *over = wm_window_at(sx, sy);
+        if (over && over != w) {
+            str_append(path, "\n", sizeof(path));
+            wm_file_drop(sx, sy, path);
+        } else if (!over) {
+            char desk[PATH_MAX_LEN], target[PATH_MAX_LEN];
+            path_join(user_home(), "Desktop", desk, sizeof(desk));
+            path_join(desk, path_basename(path), target, sizeof(target));
+            if (strcmp(target, path)) {
+                report(vfs_move(path, target), "moved to the desktop");
+                refresh(w, f);
+            }
+        }
+    }
+}
+
 static int grid_columns(struct rect area)
 {
     return MAX(1, (area.w - 16) / CELL_W);
@@ -978,6 +1058,7 @@ static void frame(struct ui *ui, void *data)
         f->list.zebra = true;
         result = ui_list(ui, (struct rect){area.x, area.y + HEADER_H, area.w, area.h - HEADER_H}, &f->list, draw_row, f);
     }
+    file_drag(w, f, ui, result);
     if (result == LIST_ACTIVATE && selected(f)) {
         open_entry(w, f, selected(f));
         return;
@@ -1110,6 +1191,7 @@ static void launch(const char *arg)
         return;
     }
     w->toolbar_h = NAV_H;
+    w->drop = files_drop;
     w->min_w = 560;
     w->min_h = 320;
     wm_set_menus(w, menus, ARRAY_SIZE(menus));

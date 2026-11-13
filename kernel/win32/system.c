@@ -1102,7 +1102,7 @@ static const struct w32_export shell32_exports[] = {
     W32_AS("SHAppBarMessage", w32_zero2), W32_FN(SHGetStockIconInfo),
     W32_AS("SHGetPropertyStoreForWindow", shell_notimpl3), W32_AS("SetCurrentProcessExplicitAppUserModelID", w32_zero1),
     W32_AS("Shell_NotifyIconW", w32_one2), W32_AS("Shell_NotifyIconA", w32_one2), W32_FN(ILFindLastID),
-    W32_FN(SHCreateDirectoryExW), W32_FN(SHCreateDirectoryExA), W32_FN(SHCreateDirectory), W32_AS("DragQueryFileW", w32_zero4),
+    W32_FN(SHCreateDirectoryExW), W32_FN(SHCreateDirectoryExA), W32_FN(SHCreateDirectory),
     W32_AS("SHCreateAssociationRegistration", shell_notimpl2), W32_AS("SHChangeNotifyRegister", w32_zero6),
     W32_AS("SHChangeNotifyDeregister", w32_one1), W32_FN(ILCreateFromPathW),
     W32_AS("IsUserAnAdmin", w32_one0), W32_FN(SHFileOperationA), W32_FN(SHFileOperationW),

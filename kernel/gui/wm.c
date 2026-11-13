@@ -1927,6 +1927,44 @@ int wm_controls_at(const struct window *w, int dx)
     return -1;
 }
 
+/* Files dragged from Files or the desktop: their ghost follows the pointer over every window. */
+static struct {
+    int x, y, count;
+    enum icon_id icon;
+} fdrag;
+
+static struct rect fdrag_rect(void)
+{
+    return (struct rect){fdrag.x - 30, fdrag.y - 30, 66, 60};
+}
+
+void wm_file_drag(int x, int y, int count, enum icon_id icon)
+{
+    if (fdrag.count)
+        wm_damage(fdrag_rect());
+    fdrag.x = x;
+    fdrag.y = y;
+    fdrag.count = count;
+    fdrag.icon = icon;
+    if (count)
+        wm_damage(fdrag_rect());
+}
+
+static void draw_file_drag(struct canvas *c)
+{
+    if (!fdrag.count)
+        return;
+    gfx_icon_alpha(c, fdrag.x - 24, fdrag.y - 24, fdrag.icon, 48, 200);
+    if (fdrag.count > 1) {
+        char n[8];
+        ksnprintf(n, sizeof(n), "%d", fdrag.count);
+        int w = MAX(gfx_text_width(&font_small, n) + 10, 20);
+        struct rect b = {fdrag.x + 30 - w, fdrag.y - 28, w, 20};
+        gfx_round(c, b, 10, style.error);
+        gfx_text_box(c, b, &font_small, n, RGB(255, 255, 255), ALIGN_CENTER);
+    }
+}
+
 /* The halo line along the top of the focused window: the SynthOS colors, faded at the corners. */
 static void draw_halo(struct canvas *c, struct window *w)
 {
@@ -2092,6 +2130,8 @@ static void compose(int index, struct rect area)
         dock_paint(c, index);
     if (index == 0)
         dock_paint_drag(c);
+    if (index == 0)
+        draw_file_drag(c);
     for (struct window *w = bottom; w; w = w->above)
         if (visible(w) && !w->anim_hold && floating(w) && !rect_empty(rect_intersect(outer_rect(w), c->clip)))
             draw_window(c, w);

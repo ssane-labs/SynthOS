@@ -578,8 +578,8 @@ static UINT WINAPI ExtractIconExA(LPCSTR file, int index, HANDLE *large, HANDLE 
 }
 
 static const struct w32_export vcl_shell32_more[] = {
-    W32_FN(ExtractIconExW), W32_FN(ExtractIconExA), W32_AS("DragAcceptFiles", w32_zero2),
-    W32_AS("DragFinish", w32_zero1), W32_AS("DragQueryFileA", w32_zero4), W32_AS("DragQueryPoint", w32_zero2),
+    W32_FN(ExtractIconExW), W32_FN(ExtractIconExA), 
+    
     W32_AS("SHDoDragDrop", shell_drag_cancel),
 };
 
