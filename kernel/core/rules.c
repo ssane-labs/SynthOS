@@ -64,8 +64,28 @@ static int save(void)
     return err == E_NOENT ? 0 : err;
 }
 
+/* "at" events carry "HH:MM d" (d: weekday, 0 Sunday); rules say "at HH:MM", "at HH:MM mon,fri" or "every N"
+   (minutes) */
+static bool on_time(const char *when, const char *subject)
+{
+    if (!subject || strlen(subject) < 5)
+        return false;
+    int minute = (int)str_to_long(subject, NULL, 10) * 60 + (int)str_to_long(subject + 3, NULL, 10);
+    if (!strncmp(when, "every ", 6)) {
+        long n = str_to_long(when + 6, NULL, 10);
+        return n > 0 && minute % n == 0;
+    }
+    if (strncmp(when, "at ", 3) || strncmp(when + 3, subject, 5))
+        return false;
+    static const char days[] = "sunmontuewedthufrisat";
+    return !when[8] || (subject[5] && subject[6] >= '0' && subject[6] <= '6' && strstr(when + 9, (char[4]){days[(subject[6] - '0') * 3], days[(subject[6] - '0') * 3 + 1],
+                                                    days[(subject[6] - '0') * 3 + 2], 0}) != NULL);
+}
+
 static bool matches(const char *when, const char *kind, const char *subject)
 {
+    if (!strcmp(kind, "at"))
+        return on_time(when, subject);
     size_t k = strlen(kind);
     if (strncmp(when, kind, k) || (when[k] && when[k] != ' '))
         return false;
@@ -134,13 +154,16 @@ void rules_run_pending(void)
 static bool valid_when(const char *w)
 {
     if (!strncmp(w, "at ", 3))
-        return strlen(w) == 8 && w[5] == ':' && w[3] >= '0' && w[3] <= '2' && w[6] >= '0' && w[6] <= '5';
+        return strlen(w) >= 8 && w[5] == ':' && w[3] >= '0' && w[3] <= '2' && w[6] >= '0' && w[6] <= '5' &&
+               (!w[8] || w[8] == ' ');
+    if (!strncmp(w, "every ", 6))
+        return str_to_long(w + 6, NULL, 10) > 0;
     return !strncmp(w, "open ", 5) || !strncmp(w, "save ", 5) || !strcmp(w, "login") || !strcmp(w, "start");
 }
 
 COMMAND(rules, "when", "system",
         "rules [add <when> -- <command> | remove <n> | run <when>]",
-        "run commands by themselves: at HH:MM, open <app>, save <folder>, login, start")
+        "run commands by themselves: at HH:MM [days], every <minutes>, open <app>, save <folder>, login, start")
 {
     load();
     if (argc == 1) {
@@ -164,7 +187,7 @@ COMMAND(rules, "when", "system",
             str_append(cmd, argv[i], sizeof(cmd));
         }
         if (!valid_when(when))
-            return sh_error(sh, "rules", "when: at HH:MM, open <app>, save <folder>, login or start");
+            return sh_error(sh, "rules", "when: at HH:MM [mon,tue…], every <minutes>, open <app>, save <folder>, login or start");
         if (!strcmp(argv[1], "run")) {
             char *space = strchr(when, ' ');
             if (space)

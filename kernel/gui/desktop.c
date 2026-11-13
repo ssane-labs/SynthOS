@@ -1971,8 +1971,9 @@ static void pump(int timeout_ms)
         focus_tick();
         static int rule_minute = -1;
         if (t.minute != rule_minute) {
-            char hm[8];
-            ksnprintf(hm, sizeof(hm), "%02u:%02u", t.hour, t.minute);
+            char hm[10];
+            ksnprintf(hm, sizeof(hm), "%02u:%02u %u", t.hour, t.minute,
+                      (unsigned)(((time_now() + (uint32_t)(time_zone() * 60)) / 86400 + 4) % 7));
             if (rule_minute >= 0)
                 rules_event("at", hm);
             rule_minute = t.minute;

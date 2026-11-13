@@ -364,6 +364,12 @@ screenrec start
 screenrec: the desktop is not running
 screenrec
 not recording
+rules add at 09:30 mon,fri -- echo weekly-fired; rules add every 15 -- echo interval-fired; rules run at 09:30 5; rules run at 09:45 2; rules remove 2; rules remove 1
+weekly-fired
+rules add at 09:30 mon -- echo not-today; rules run at 09:30 2; rules remove 1
+no rule fits
+rules add every 15 -- echo interval-fired; rules run at 10:45 1; rules remove 1
+interval-fired
 lsdev
 Host bridge
 format nosuch fat32 --yes
