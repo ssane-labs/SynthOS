@@ -252,7 +252,7 @@ struct w32_thread {
     uint32_t exit_code;
     uint8_t *teb64;
     void *fls[64];
-    uint8_t fpu_area[528];
+    uint8_t fpu_area[ARCH_FPU_AREA + 64];
     struct w32_process *proc;
     bool boot;
     struct w32_fiber *fiber;

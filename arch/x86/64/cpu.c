@@ -97,6 +97,9 @@ static arch_fault_fn fault_handler;
 static void (*tick_hook)(uint32_t eip);
 static bool sse;
 static struct cpu_info info;
+static uint64_t xcr0;            /* the register state XSAVE keeps; 0 without AVX (then FXSAVE) */
+static uint32_t xsave_bytes = 512;
+static uint32_t simd_bits;
 static volatile int interrupt_depth;
 static irq_handler irq_handlers[16];
 
@@ -142,9 +145,81 @@ void irq_install(int irq, irq_handler handler)
     irq_unmask(irq);
 }
 
+static void cpuid_sub(uint32_t leaf, uint32_t sub, uint32_t r[4])
+{
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
+}
+
 static void cpuid(uint32_t leaf, uint32_t r[4])
 {
-    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
+    cpuid_sub(leaf, 0, r);
+}
+
+/* SSSE3 to AVX-512: what the processor has, and which wider registers the kernel turns on (XCR0) and saves with
+   XSAVE when a Windows thread is switched out. AVX-512 only when its state fits the save area threads have. */
+static void detect_simd(void)
+{
+    uint32_t r[4], max;
+    cpuid(0, r);
+    max = r[0];
+    cpuid(1, r);
+    uint32_t c1 = r[2];
+    simd_bits = HAL_SIMD_SSE2;
+    if (c1 & (1u << 9))
+        simd_bits |= HAL_SIMD_SSSE3;
+    if (c1 & (1u << 19))
+        simd_bits |= HAL_SIMD_SSE41;
+    bool osxsave_ok = (c1 & (1u << 26)) && (c1 & (1u << 28)) && max >= 0xd;
+    if (!osxsave_ok)
+        return;
+    uint32_t b7 = 0, c7 = 0, a71 = 0;
+    if (max >= 7) {
+        cpuid_sub(7, 0, r);
+        b7 = r[1];
+        c7 = r[2];
+        cpuid_sub(7, 1, r);
+        a71 = r[0];
+    }
+    cpuid_sub(0xd, 0, r);
+    uint64_t can = r[0] | (uint64_t)r[3] << 32;
+    if ((can & 7) != 7)
+        return;
+    xcr0 = 7; /* x87, SSE, AVX */
+    simd_bits |= HAL_SIMD_AVX;
+    if ((c1 & (1u << 12)) && (b7 & (1u << 5)))
+        simd_bits |= HAL_SIMD_AVX2 | HAL_SIMD_FMA;
+    if (c1 & (1u << 29))
+        simd_bits |= HAL_SIMD_F16C;
+    if (a71 & (1u << 4))
+        simd_bits |= HAL_SIMD_AVXVNNI;
+    if ((b7 & (1u << 16)) && (b7 & (1u << 30)) && (can & 0xe0) == 0xe0) {
+        xcr0 |= 0xe0; /* opmask, upper ZMM halves, ZMM16-31 */
+        simd_bits |= HAL_SIMD_AVX512;
+        if (c7 & (1u << 11))
+            simd_bits |= HAL_SIMD_AVX512VNNI;
+    }
+}
+
+/* every processor: XSAVE on and the chosen state in XCR0 */
+static void simd_local_init(void)
+{
+    if (!xcr0)
+        return;
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= 1ull << 18;
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
+    __asm__ volatile("xsetbv" : : "c"(0u), "a"((uint32_t)xcr0), "d"((uint32_t)(xcr0 >> 32)));
+}
+
+uint32_t hal_simd(void)
+{
+    return simd_bits;
+}
+
+uint32_t arch_fpu_area_size(void)
+{
+    return xsave_bytes;
 }
 
 static void detect_cpu(void)
@@ -192,6 +267,7 @@ static void cpu_local_init(void)
     __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
     info.fpu = true;
     sse = true;
+    simd_local_init();
 }
 
 void cpu_init(void)
@@ -210,7 +286,19 @@ void cpu_init(void)
     idt_ptr = (struct table_ptr){sizeof(idt) - 1, (uint64_t)(uintptr_t)idt};
     __asm__ volatile("lidt %0" : : "m"(idt_ptr));
     detect_cpu();
+    detect_simd();
     cpu_local_init();
+    if (xcr0) {
+        uint32_t r[4];
+        cpuid_sub(0xd, 0, r); /* the size for the state XCR0 now holds */
+        if (r[1] > ARCH_FPU_AREA - 64 && (xcr0 & 0xe0)) { /* too big for the save areas: AVX-512 stays off */
+            xcr0 = 7;
+            simd_bits &= ~(uint32_t)(HAL_SIMD_AVX512 | HAL_SIMD_AVX512VNNI);
+            simd_local_init();
+            cpuid_sub(0xd, 0, r);
+        }
+        xsave_bytes = r[1];
+    }
 }
 
 void cpu_set_gate(int vector, uintptr_t handler)
@@ -372,12 +460,19 @@ void arch_set_irq_depth(int depth)
     interrupt_depth = depth;
 }
 
+/* area: ARCH_FPU_AREA bytes, 64-byte aligned */
 void arch_fpu_save(void *area)
 {
-    __asm__ volatile("fxsave64 (%0)" : : "r"(area) : "memory");
+    if (xcr0)
+        __asm__ volatile("xsave64 (%0)" : : "r"(area), "a"((uint32_t)xcr0), "d"((uint32_t)(xcr0 >> 32)) : "memory");
+    else
+        __asm__ volatile("fxsave64 (%0)" : : "r"(area) : "memory");
 }
 
 void arch_fpu_restore(const void *area)
 {
-    __asm__ volatile("fxrstor64 (%0)" : : "r"(area) : "memory");
+    if (xcr0)
+        __asm__ volatile("xrstor64 (%0)" : : "r"(area), "a"((uint32_t)xcr0), "d"((uint32_t)(xcr0 >> 32)) : "memory");
+    else
+        __asm__ volatile("fxrstor64 (%0)" : : "r"(area) : "memory");
 }

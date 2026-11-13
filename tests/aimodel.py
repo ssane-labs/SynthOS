@@ -277,7 +277,7 @@ def is_space(ch):
     return ch in " \t\n\r\f\v" or ch in "   　"
 
 
-def pretokenize(text):
+def pretokenize(text, digits=1):
     """the Qwen2 split, as the engine approximates it: contractions, letters with one leading non-letter, single
     digits, punctuation runs with a leading space, newlines, spaces"""
     out = []
@@ -304,8 +304,11 @@ def pretokenize(text):
             i = k
             continue
         if is_number(c):
-            out.append(c)
-            i += 1
+            k = i
+            while k < n and k - i < digits and is_number(text[k]):
+                k += 1
+            out.append(text[i:k])
+            i = k
             continue
         j = i + 1 if c == " " and i + 1 < n and not (is_space(text[i + 1]) or is_letter(text[i + 1])
                                                       or is_number(text[i + 1])) else i
@@ -380,7 +383,7 @@ def bpe(word, ranks):
     return parts
 
 
-def tokenize(text, vocab, ranks):
+def tokenize(text, vocab, ranks, digits=1, whole=False):
     ids = []
     i = 0
     while i < len(text):
@@ -390,13 +393,46 @@ def tokenize(text, vocab, ranks):
             ids.append(vocab[hit])
             i += len(hit)
             continue
-        for w in pretokenize(text[i:nxt]):
-            ids += [vocab[p] for p in bpe("".join(B2U[b] for b in w.encode()), ranks)]
+        for w in pretokenize(text[i:nxt], digits):
+            enc = "".join(B2U[b] for b in w.encode())
+            if whole and len(enc) > 1 and enc in vocab:  # ignore_merges (MiniCPM5, Llama 3)
+                ids.append(vocab[enc])
+                continue
+            ids += [vocab[p] for p in bpe(enc, ranks)]
         i = nxt
     return ids
 
 
 # ---- the model ----
+
+# ---- the engine's integer path: inputs of quantised matrices go to 8 bits, a scale per 32 values ----
+
+INT_TYPES = {"Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q8_0", "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K"}
+
+
+def qdq(x):
+    """x as the engine sees it after quant_act: rounded to 8 bits with amax/127 per block of 32 (float32)"""
+    x = np.asarray(x, dtype=np.float32)
+    v = x.reshape(-1, 32)
+    d = (np.abs(v).max(1, keepdims=True) / np.float32(127)).astype(np.float32)
+    inv = np.where(d > 0, np.float32(1) / np.where(d > 0, d, 1), 0).astype(np.float32)
+    s = (v * inv).astype(np.float32)
+    q = np.sign(s) * np.floor(np.abs(s) + np.float32(0.5))
+    return (q * d).astype(np.float64).reshape(x.shape)
+
+
+class QMat:
+    """a matrix of a quantised type: its products see the input as the engine does"""
+
+    def __init__(self, a):
+        self.a = a
+
+    def __matmul__(self, h):
+        return self.a @ qdq(h)
+
+    def __getitem__(self, i):
+        return self.a[i]
+
 
 def build(arch, rng):
     merges = train_bpe(160)
@@ -404,6 +440,8 @@ def build(arch, rng):
     for a, b in merges:
         if a + b not in tokens:
             tokens.append(a + b)
+    if arch == "llama":  # words the merges never build: only whole-word lookup finds them
+        tokens += [w for w in ("\u0120quickly", "\u0120brownish") if w not in tokens]
     tokens += SPECIALS
     while len(tokens) % 32:
         tokens.append("<|extra_%d|>" % len(tokens))
@@ -429,7 +467,7 @@ def build(arch, rng):
         (arch + ".attention.key_length", T_U32, hd),
         (arch + ".attention.value_length", T_U32, hd),
         ("tokenizer.ggml.model", T_STR, "gpt2"),
-        ("tokenizer.ggml.pre", T_STR, "qwen2"),
+        ("tokenizer.ggml.pre", T_STR, "minicpm5" if arch == "llama" else "qwen2"),
         ("tokenizer.ggml.tokens", T_ARR, (T_STR, tokens)),
         ("tokenizer.ggml.token_type", T_ARR, (T_I32, ttype)),
         ("tokenizer.ggml.merges", T_ARR, (T_STR, [a + " " + b for a, b in merges])),
@@ -449,6 +487,8 @@ def build(arch, rng):
         raw = make_raw(rng, typ, cols * rows, scale)
         tensors.append((name, typ, [cols] if rows == 1 else [cols, rows], raw))
         W[name] = dequant(typ, raw, cols * rows).reshape(rows, cols) if rows > 1 else dequant(typ, raw, cols)
+        if rows > 1 and typ in INT_TYPES and cols % 32 == 0 and name != "token_embd.weight":
+            W[name] = QMat(W[name])
 
     add("token_embd.weight", "F16", dim, nv, 1.0)
     for l in range(layers):
@@ -553,7 +593,9 @@ def make(out, arch, fname, with_tokens):
     while True:
         rng = np.random.default_rng(seed)
         meta, tensors, W, cfg, vocab, ranks = build(arch, rng)
-        prompt = tokenize("<|im_start|>user\nhello world<|im_end|>\n<|im_start|>assistant\n", vocab, ranks)
+        tk = (lambda text: tokenize(text, vocab, ranks, 3, True)) if arch == "llama" else \
+            (lambda text: tokenize(text, vocab, ranks))
+        prompt = tk("<|im_start|>user\nhello world<|im_end|>\n<|im_start|>assistant\n")
         gen, margin = greedy(W, cfg, prompt, 6)
         if margin > 0.02:  # float32 in the engine must not flip a choice
             break
@@ -563,9 +605,12 @@ def make(out, arch, fname, with_tokens):
     cases = ["ai load " + path, "loaded SynthOS tiny test model (%s)" % path]
     if with_tokens:
         for text in ["hello world", "the quick brown fox jumps", "it's   done ok?! 2024"]:
-            cases += ['ai tokens "%s"' % text, "tokens: " + " ".join(map(str, tokenize(text, vocab, ranks)))]
+            cases += ['ai tokens "%s"' % text, "tokens: " + " ".join(map(str, tk(text)))]
         sp = "<|im_start|>user hi<|im_end|>"
-        cases += ['ai tokens -s "%s"' % sp, "tokens: " + " ".join(map(str, tokenize(sp, vocab, ranks)))]
+        cases += ['ai tokens -s "%s"' % sp, "tokens: " + " ".join(map(str, tk(sp)))]
+    if arch == "llama":
+        text = "a quickly brownish fox 12345"
+        cases += ['ai tokens "%s"' % text, "tokens: " + " ".join(map(str, tk(text)))]
     cases += ["ai next %s -n 6" % " ".join(map(str, prompt)), "next: " + " ".join(map(str, gen))]
     return cases
 
@@ -587,6 +632,7 @@ def wh_build(rng):
         raw = make_raw(rng, typ, n, scale)
         tensors.append((name, typ, list(reversed(shape)), raw))
         W[name] = dequant(typ, raw, n).reshape(shape)
+        WT[name] = typ
 
     add("encoder.positional_embedding", "F32", (A, D), 0.5)
     add("encoder.conv1.weight", "F16", (D, M, 3), 0.15)
@@ -713,7 +759,12 @@ def attend(q, k, v, heads, causal_from=None):
     return out
 
 
+WT = {}  # the whisper tensors' types
+
+
 def lin(W, name, x, bias=True):
+    if WT.get(name + ".weight") in INT_TYPES and x.shape[-1] % 32 == 0:
+        x = qdq(x)
     y = x @ W[name + ".weight"].T
     return y + W[name + ".bias"] if bias else y
 

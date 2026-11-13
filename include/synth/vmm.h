@@ -19,6 +19,9 @@ size_t vmm_high_pages(void);
 size_t vmm_high_total_pages(void);
 bool vmm_frames_alloc(uint32_t *pfns, size_t n);
 void vmm_frames_free(const uint32_t *pfns, size_t n);
+/* a big buffer outside the kernel heap (a language model): contiguous memory above it, NULL where there is none */
+void *vmm_big_alloc(size_t size);
+void vmm_big_free(void *ptr, size_t size);
 int vmm_map_frames(uintptr_t vaddr, const uint32_t *pfns, size_t n);
 uint32_t vmm_long_mode_root(void);
 uint32_t vmm_pae_root(void);

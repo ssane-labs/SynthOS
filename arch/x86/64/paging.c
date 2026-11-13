@@ -448,6 +448,55 @@ void vmm_frames_free(const uint32_t *pfns, size_t n)
         }
 }
 
+/* contiguous frames of one free area, seen through DIRECT: the kernel's way to the memory past its 1 GiB heap */
+void *vmm_big_alloc(size_t size)
+{
+    uint32_t n = (uint32_t)((size + 4095) / 4096);
+    if (!n || vmm_high_pages() < n)
+        return NULL;
+    for (int i = 0; i < region_count; i++) {
+        struct region *r = &regions[i];
+        if (r->free < n)
+            continue;
+        for (uint32_t start = 0, run = 0, k = 0; k < r->count; k++) {
+            if (r->bitmap[k / 32] & (1u << (k % 32))) {
+                run = 0;
+                start = k + 1;
+                continue;
+            }
+            if (++run < n)
+                continue;
+            uint64_t phys = (uint64_t)(r->first_pfn + start) << 12;
+            void *p = map_direct(phys, (size_t)n * 4096, 0);
+            if (!p)
+                return NULL;
+            for (uint32_t b = start; b < start + n; b++)
+                r->bitmap[b / 32] |= 1u << (b % 32);
+            r->free -= n;
+            return p;
+        }
+    }
+    return NULL;
+}
+
+void vmm_big_free(void *ptr, size_t size)
+{
+    if (!ptr)
+        return;
+    uint64_t first = ((uint64_t)(uintptr_t)ptr - DIRECT) >> 12, n = (size + 4095) / 4096;
+    for (int i = 0; i < region_count; i++) {
+        struct region *r = &regions[i];
+        if (first < r->first_pfn || first - r->first_pfn >= r->count)
+            continue;
+        for (uint64_t b = first - r->first_pfn; b < first - r->first_pfn + n && b < r->count; b++)
+            if (r->bitmap[b / 32] & (1u << (b % 32))) {
+                r->bitmap[b / 32] &= ~(1u << (b % 32));
+                r->free++;
+            }
+        return;
+    }
+}
+
 int vmm_map_frames(uintptr_t vaddr, const uint32_t *pfns, size_t n)
 {
     if (!enabled || (vaddr & 4095))

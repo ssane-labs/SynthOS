@@ -15,9 +15,11 @@ struct ai_tok {
     uint32_t merge_mask;
     int byte_tok[256];
     int digits;         /* how many digits make one word: 1 (Qwen) or 3 (Llama 3) */
+    bool whole_words;   /* a word that is a token as a whole is that token, whatever the merges say (MiniCPM5) */
     int *specials;      /* control and user-defined tokens, longest first */
     int special_count;
     int eos, eot, bos;  /* end of turn tokens; -1 if none */
+    bool bos_first;     /* the chat template starts with the beginning-of-text token (MiniCPM5) */
 };
 
 /* GPT-2's byte -> character map: printable Latin-1 bytes are themselves, the rest move to 256 and up */
@@ -145,6 +147,7 @@ static int tok_load(struct ai_tok *t, const struct gguf *g, char *why, size_t ca
     }
     struct gguf_str pre = gv_str(gguf_find(g, "tokenizer.ggml.pre"));
     t->digits = gs_eq(pre, "qwen2") || gs_eq(pre, "deepseek-llm") ? 1 : 3;
+    t->whole_words = gs_eq(pre, "minicpm5") || gs_eq(pre, "llama3") || gs_eq(pre, "llama-bpe");
     uint32_t ty;
     uint64_t n;
     const uint8_t *items;
@@ -244,6 +247,12 @@ static int tok_load(struct ai_tok *t, const struct gguf *g, char *why, size_t ca
             t->specials[k] = i;
         }
     t->bos = (int)gv_uint(gguf_find(g, "tokenizer.ggml.bos_token_id"), (uint64_t)-1);
+    struct gguf_str tmpl = gv_str(gguf_find(g, "tokenizer.chat_template"));
+    for (size_t i = 0; i < tmpl.n && i < 16; i++)
+        if (i + 9 <= tmpl.n && !memcmp(tmpl.s + i, "bos_token", 9)) {
+            t->bos_first = t->bos >= 0 && t->bos < t->n;
+            break;
+        }
     t->eos = (int)gv_uint(gguf_find(g, "tokenizer.ggml.eos_token_id"), (uint64_t)-1);
     t->eot = tok_find(t, "<|im_end|>", 10);
     if (t->eot < 0)
@@ -343,6 +352,19 @@ static int bpe_word(const struct ai_tok *t, const char *s, int len, int *out, in
     if (!sym)
         return count;
     int n = 0;
+    if (t->whole_words && len > 1 && len <= 64 && count < cap) {
+        char enc[64 * 2];
+        int el = 0;
+        for (int i = 0; i < len; i++)
+            el += utf8_put(b2u[(uint8_t)s[i]], enc + el);
+        int id = tok_find(t, enc, (size_t)el);
+        if (id >= 0) {
+            out[count++] = id;
+            if (sym != buf)
+                kfree(sym);
+            return count;
+        }
+    }
     for (int i = 0; i < len; i++) {
         int id = t->byte_tok[(uint8_t)s[i]];
         if (id >= 0)

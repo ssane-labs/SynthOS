@@ -1632,6 +1632,14 @@ ai tool open '{"target": "/no/such/thing"}'
 nothing called /no/such/thing to open
 ai listen 1
 ai: no microphone
+ai reply 'Sure.<function name="run_command"><param name="command">echo "hi"</param></function>'
+call: run_command {"command": "echo \"hi\""}
+ai reply 'Done:<function name="write_file"><param name="path">/home/a.txt</param><param name="content"><![CDATA[x<y]]></param></function>' | grep text
+text: Done:
+ai reply 'Done:<function name="write_file"><param name="path">/home/a.txt</param><param name="content"><![CDATA[x<y]]></param></function>' | grep call
+call: write_file {"path": "/home/a.txt", "content": "x<y"}
+ai reply 'Ok <tool_call>{"name": "open", "arguments": {"target": "x"}}</tool_call>'
+call: open {"target": "x"}
 EOF
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }

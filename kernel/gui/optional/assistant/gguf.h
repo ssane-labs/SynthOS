@@ -1,6 +1,44 @@
 /* GGUF, the file format of llama.cpp models (version 2 and 3): metadata (key, type, value) followed by tensor
    descriptions and the aligned tensor data. The whole file is in memory; every length is checked against it. */
 
+/* Big buffers (a model file, its key and value cache) come from the memory past the kernel heap where there is
+   some: the heap holds 1 GiB, a 2B model in Q4 is 1.6 GB. */
+#define BIG_MIN (64u << 20)
+#define BIG_SLOTS 16
+
+static struct {
+    void *p;
+    size_t size;
+} bigs[BIG_SLOTS];
+
+static void *big_alloc(size_t size)
+{
+    if (size >= BIG_MIN)
+        for (int i = 0; i < BIG_SLOTS; i++)
+            if (!bigs[i].p) {
+                void *p = vmm_big_alloc(size);
+                if (!p)
+                    break;
+                bigs[i].p = p;
+                bigs[i].size = size;
+                return p;
+            }
+    return kmalloc(size ? size : 1);
+}
+
+static void big_free(void *p)
+{
+    if (!p)
+        return;
+    for (int i = 0; i < BIG_SLOTS; i++)
+        if (bigs[i].p == p) {
+            vmm_big_free(p, bigs[i].size);
+            bigs[i].p = NULL;
+            return;
+        }
+    kfree(p);
+}
+
 enum {
     GV_U8, GV_I8, GV_U16, GV_I16, GV_U32, GV_I32, GV_F32, GV_BOOL, GV_STR, GV_ARR, GV_U64, GV_I64, GV_F64,
 };

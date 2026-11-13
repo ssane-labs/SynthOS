@@ -49,7 +49,7 @@ static void read_stop(void)
     if (reading.f)
         vfs_close(reading.f);
     reading.f = NULL;
-    kfree(reading.buf);
+    big_free(reading.buf);
     reading.buf = NULL;
     reading.active = false;
 }
@@ -64,7 +64,7 @@ static bool read_start(void)
         return false;
     struct vstat st;
     int err = vfs_stat(reading.path, &st);
-    if (!err && !(reading.buf = kmalloc(st.size ? st.size : 1)))
+    if (!err && !(reading.buf = big_alloc(st.size)))
         err = E_NOMEM;
     if (!err)
         err = vfs_open(reading.path, VFS_READ, &reading.f);
@@ -99,7 +99,7 @@ static void read_step(void)
     vfs_close(reading.f);
     reading.f = NULL;
     if (model_load_fit(&model, reading.buf, reading.size, CTX_DEFAULT, reading.error, sizeof(reading.error))) {
-        kfree(reading.buf);
+        big_free(reading.buf);
     } else {
         str_copy(model.path, reading.path, sizeof(model.path));
         loaded = true;
@@ -310,11 +310,13 @@ static bool model_card(struct ui *ui, struct rect area)
         }
         return true;
     }
-    const char *msg = reading.error[0]   ? reading.error
-                      : download_error[0] ? download_error
-                                          : "The assistant needs a language model on this computer: Qwen2.5 0.5B "
-                                            "Instruct, 470 MB, downloaded once. After that it works offline and "
-                                            "nothing you write leaves the computer.";
+    char about[240];
+    const struct download *d = chat_choice();
+    ksnprintf(about, sizeof(about),
+              "The assistant needs a language model on this computer: %s, %u MB, downloaded once. After that it "
+              "works offline and nothing you write leaves the computer.",
+              d == &big_model ? "MiniCPM5 2B" : "Qwen2.5 0.5B Instruct", d->bytes >> 20);
+    const char *msg = reading.error[0] ? reading.error : download_error[0] ? download_error : about;
     if (ui->c)
         ui_wrap_text(ui->c, text, &font_sans, msg, reading.error[0] || download_error[0] ? style.error : style.secondary);
     if (ui_button_primary(ui, (struct rect){cx - 90, y + 200, 180, 32},
@@ -550,7 +552,7 @@ static void tick(void)
         want_download = false;
         download_error[0] = 0;
         progress_open("Assistant", "Downloading the model");
-        int err = download_model(&chat_model, progress_update, NULL, download_error, sizeof(download_error));
+        int err = download_model(chat_choice(), progress_update, NULL, download_error, sizeof(download_error));
         progress_close();
         if (!err) {
             read_start();

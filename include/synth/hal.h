@@ -118,6 +118,19 @@ int hal_audio_space(void);
 int hal_audio_write(const int16_t *frames, int count);
 void hal_audio_close(void);
 const char *hal_audio_name(void);
+
+/* the vector instructions this processor has and the kernel has turned on, for code that picks its fastest path */
+#define HAL_SIMD_SSE2 0x001u
+#define HAL_SIMD_SSSE3 0x002u
+#define HAL_SIMD_SSE41 0x004u
+#define HAL_SIMD_AVX 0x008u
+#define HAL_SIMD_AVX2 0x010u
+#define HAL_SIMD_FMA 0x020u
+#define HAL_SIMD_F16C 0x040u
+#define HAL_SIMD_AVXVNNI 0x080u
+#define HAL_SIMD_AVX512 0x100u /* F, BW */
+#define HAL_SIMD_AVX512VNNI 0x200u
+uint32_t hal_simd(void);
 int hal_audio_record_open(void);
 int hal_audio_record_read(int16_t *frames, int max);
 void hal_audio_record_close(void);

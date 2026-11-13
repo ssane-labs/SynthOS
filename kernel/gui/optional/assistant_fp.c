@@ -14,26 +14,39 @@
 #include <synth/string.h>
 #include <synth/time.h>
 #include <synth/vfs.h>
+#include <synth/vmm.h>
 
 #include "../internal.h"
 
 #include "assistant/gguf.h"
 #include "assistant/quant.h"
 #include "assistant/tok.h"
+#include "assistant/qdot.h"
 #include "assistant/llm.h"
 #include "assistant/whisper.h"
 
 #define MODELS_DIR "/home/models"
 #define CTX_DEFAULT 4096
-/* the model the assistant downloads: Qwen2.5 0.5B Instruct (Apache-2.0), 4-bit, 470 MB */
+/* the models the assistant downloads (both Apache-2.0, 4-bit): MiniCPM5 2B, 1.5 GB, where there is memory for it
+   and its cache, else Qwen2.5 0.5B Instruct, 470 MB */
 struct download {
     const char *name, *url;
     uint32_t bytes;
 };
-static const struct download chat_model = {
+static const struct download big_model = {
+    "MiniCPM5-2B-Q4_K_M.gguf", "https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf",
+    1561318368u};
+static const struct download small_model = {
     "qwen2.5-0.5b-instruct-q4_k_m.gguf",
     "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
     491400032u};
+#define BIG_MODEL_NEEDS (2300ull << 20) /* the file, its key and value cache at 4096 tokens, the working space */
+
+/* the model for this computer */
+static const struct download *chat_choice(void)
+{
+    return (uint64_t)vmm_high_pages() * 4096 >= BIG_MODEL_NEEDS ? &big_model : &small_model;
+}
 /* speech recognition: Whisper base (MIT), 8-bit, 78 MB, from the whisper.cpp project */
 static const struct download speech_model = {
     "ggml-base-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin", 81768585u};
@@ -43,9 +56,26 @@ static bool loaded;
 
 #include "assistant/agent.h"
 
-/* the first .gguf file in the models folder */
+#define DEFAULT_FILE MODELS_DIR "/default.txt"
+
+/* the model chosen with ai use (or in Settings), else the first .gguf file in the models folder */
 static bool default_model(char *out, size_t cap)
 {
+    char *chosen;
+    size_t n;
+    if (!vfs_read_all(DEFAULT_FILE, &chosen, &n)) {
+        while (n && (chosen[n - 1] == '\n' || chosen[n - 1] == '\r' || chosen[n - 1] == ' '))
+            n--;
+        char path[200];
+        ksnprintf(path, sizeof(path), "%s%s%.*s", chosen[0] == '/' ? "" : MODELS_DIR, chosen[0] == '/' ? "" : "/",
+                  (int)MIN(n, (size_t)150), chosen);
+        kfree(chosen);
+        struct vstat st;
+        if (n && !vfs_stat(path, &st)) {
+            str_copy(out, path, cap);
+            return true;
+        }
+    }
     struct vnode *dir;
     if (vfs_lookup(MODELS_DIR, &dir))
         return false;
@@ -74,7 +104,7 @@ static int load(struct shell *sh, const char *path, char *why, size_t cap)
         model_free(&model);
         loaded = false;
     }
-    uint8_t *buf = kmalloc(st.size ? st.size : 1);
+    uint8_t *buf = big_alloc(st.size);
     if (!buf) {
         char size[16];
         fmt_size(size, sizeof(size), st.size);
@@ -100,13 +130,13 @@ static int load(struct shell *sh, const char *path, char *why, size_t cap)
     if (!err)
         vfs_close(f);
     if (err) {
-        kfree(buf);
+        big_free(buf);
         ksnprintf(why, cap, "%s: %s", path, err_str(err));
         return err;
     }
     err = model_load_fit(&model, buf, st.size, CTX_DEFAULT, why, cap);
     if (err) {
-        kfree(buf);
+        big_free(buf);
         return err;
     }
     str_copy(model.path, path, sizeof(model.path));
@@ -147,15 +177,23 @@ static const char *main_type(void)
     return gguf_type_name((uint32_t)best);
 }
 
+/* how the matrices are computed */
+static const char *accel_name(void)
+{
+    if (!qdot_on)
+        return "floats (exact)";
+    return qdot_avx2 ? "8-bit integers, AVX2" : "8-bit integers";
+}
+
 static void print_info(struct shell *sh)
 {
     char size[16];
     fmt_size(size, sizeof(size), model.file_size);
     sh_printf(sh, "loaded %s (%s)\n  %s, %d layers, %u.%02u B parameters, %s, %s\n  context %d tokens, %d in use, "
-                  "%d processors\n",
+                  "%d processors, %s\n",
               *model.name ? model.name : model.path, model.path, model.arch_name, model.layers,
               (unsigned)(model.params / 1000000000u), (unsigned)(model.params / 10000000u % 100u), main_type(), size,
-              model.ctx, model.n_past, hal_parallel_cpus());
+              model.ctx, model.n_past, hal_parallel_cpus(), accel_name());
 }
 
 static int ids_from(int argc, char **argv, int from, int *ids, int cap, int *n_out)
@@ -570,7 +608,7 @@ static int ask(struct shell *sh, int argc, char **argv)
 }
 
 COMMAND(ai, NULL, "system",
-        "ai [get [speech]|load <file.gguf>|unload|info|hear <sound file>|listen [seconds]|ask [--yes] [--no-tools] [-n count] <question>|tool <name> <json> [--yes]|tokens [-s] <text>|"
+        "ai [get [minicpm|small|speech]|load <file.gguf>|models|use <file>|unload|info|hear <sound file>|listen [seconds]|ask [--yes] [--no-tools] [-n count] <question>|tool <name> <json> [--yes]|reply <text>|tokens [-s] <text>|bench [n]|exact on|off|"
         "next <ids…> [-n count]]",
         "the assistant's language model, on this computer")
 {
@@ -608,8 +646,12 @@ COMMAND(ai, NULL, "system",
         return 0;
     }
     if (!strcmp(sub, "get")) {
-        const struct download *d = argc > 2 && !strcmp(argv[2], "speech") ? &speech_model : &chat_model;
-        if (d == &chat_model && default_model(why, sizeof(why)))
+        const char *which = argc > 2 ? argv[2] : "";
+        const struct download *d = !strcmp(which, "speech")    ? &speech_model
+                                   : !strcmp(which, "small")   ? &small_model
+                                   : !strcmp(which, "minicpm") ? &big_model
+                                                               : chat_choice();
+        if (d != &speech_model && default_model(why, sizeof(why)))
             sh_printf(sh, "there is already a model: %s\n", why);
         sh_printf(sh, "downloading %s (%u MB) to " MODELS_DIR "\n", d->name, d->bytes >> 20);
         if (download_model(d, shell_progress, sh, why, sizeof(why))) {
@@ -617,6 +659,48 @@ COMMAND(ai, NULL, "system",
             return sh_error(sh, "ai", "%s", why);
         }
         sh_printf(sh, "\nsaved " MODELS_DIR "/%s\n", d->name);
+        return 0;
+    }
+    if (!strcmp(sub, "models") || !strcmp(sub, "use")) { /* the models there are; which one the assistant uses */
+        if (!strcmp(sub, "use")) {
+            if (argc < 3)
+                return sh_error(sh, "ai", "use needs a model file");
+            char path[200];
+            sh_resolve(sh, argv[2], path, sizeof(path));
+            struct vstat st;
+            if (vfs_stat(path, &st)) {
+                ksnprintf(path, sizeof(path), MODELS_DIR "/%s", argv[2]);
+                if (vfs_stat(path, &st))
+                    return sh_error(sh, "ai", "no model %s", argv[2]);
+            }
+            int err = vfs_write_all(DEFAULT_FILE, path, strlen(path));
+            if (err)
+                return sh_error(sh, "ai", "%s: %s", DEFAULT_FILE, err_str(err));
+            if (loaded && strcmp(model.path, path)) {
+                model_free(&model);
+                loaded = false;
+            }
+            sh_printf(sh, "the assistant uses %s\n", path);
+            return 0;
+        }
+        char def[200] = "";
+        default_model(def, sizeof(def));
+        struct vdir it;
+        if (vfs_opendir(MODELS_DIR, &it))
+            return sh_error(sh, "ai", "no models yet; run: ai get");
+        struct vfs_dirent e;
+        while (!vfs_readdir(&it, &e)) {
+            if (!str_iends(e.name, ".gguf") && !str_iends(e.name, ".bin"))
+                continue;
+            char path[200], size[16];
+            struct vstat st;
+            ksnprintf(path, sizeof(path), MODELS_DIR "/%s", e.name);
+            fmt_size(size, sizeof(size), vfs_stat(path, &st) ? 0 : st.size);
+            sh_printf(sh, "%c %-44s %8s  %s\n", !strcmp(path, def) ? '*' : ' ', e.name, size,
+                      str_iends(e.name, ".bin") ? "speech" : "language");
+        }
+        vfs_closedir(&it);
+        sh_printf(sh, "for this computer: %s\n", chat_choice()->name);
         return 0;
     }
     if (!strcmp(sub, "hear") || !strcmp(sub, "listen"))
@@ -640,10 +724,56 @@ COMMAND(ai, NULL, "system",
         kfree(a);
         return 0;
     }
+    if (!strcmp(sub, "reply")) { /* what the agent reads in a reply: the visible text and the tool call */
+        char text[2048] = "", name[32], args[1024], *vis = kmalloc(MAX_REPLY);
+        if (!vis)
+            return sh_error(sh, "ai", "%s", err_str(E_NOMEM));
+        for (int i = 2; i < argc; i++)
+            ksnprintf(text + strlen(text), sizeof(text) - strlen(text), "%s%s", i > 2 ? " " : "", argv[i]);
+        visible_reply(text, vis, MAX_REPLY);
+        sh_printf(sh, "text: %s\n", vis);
+        if (find_call(text, name, sizeof(name), args, sizeof(args)))
+            sh_printf(sh, "call: %s %s\n", name, args);
+        kfree(vis);
+        return 0;
+    }
     if (!ensure_model(sh))
         return 1;
     if (!strcmp(sub, "ask"))
         return ask(sh, argc, argv);
+    if (!strcmp(sub, "exact")) { /* floats everywhere: slower, for comparing */
+        qdot_on = argc > 2 && !strcmp(argv[2], "off");
+        sh_printf(sh, "computing with %s\n", accel_name());
+        return 0;
+    }
+    if (!strcmp(sub, "bench")) { /* prompt and generation speed: n tokens of each */
+        int n = argc > 2 ? (int)CLAMP(str_to_long(argv[2], NULL, 10), 4, 512) : 64;
+        n = MIN(n, model.ctx / 2);
+        int *ids = kmalloc(sizeof(int) * (size_t)n);
+        if (!ids)
+            return sh_error(sh, "ai", "%s", err_str(E_NOMEM));
+        for (int i = 0; i < n; i++)
+            ids[i] = (int)((uint32_t)(i * 7919 + 13) % (uint32_t)MIN(model.vocab, 1000));
+        model.n_past = 0;
+        uint64_t t0 = hal_ticks_ms();
+        int err = model_feed(&model, ids, n, NULL);
+        uint64_t t1 = hal_ticks_ms();
+        int id = ids[n - 1];
+        for (int i = 0; !err && i < n / 4; i++)
+            forward(&model, &id, 1, true);
+        uint64_t t2 = hal_ticks_ms();
+        kfree(ids);
+        model.n_past = 0;
+        if (err)
+            return sh_error(sh, "ai", "%s", err_str(err));
+        unsigned p10 = (unsigned)((uint64_t)n * 10000 / MAX(t1 - t0, 1ull)),
+                 g10 = (unsigned)((uint64_t)(n / 4) * 10000 / MAX(t2 - t1, 1ull));
+        sh_printf(sh, "prompt: %d tokens in %u ms, %u.%u tokens/s\ngeneration: %d tokens in %u ms, %u.%u tokens/s\n"
+                      "(%s, %d processors)\n",
+                  n, (unsigned)(t1 - t0), p10 / 10, p10 % 10, n / 4, (unsigned)(t2 - t1), g10 / 10, g10 % 10,
+                  accel_name(), hal_parallel_cpus());
+        return 0;
+    }
     if (!strcmp(sub, "tokens")) {
         bool specials = argc > 2 && !strcmp(argv[2], "-s");
         char text[1024] = "";

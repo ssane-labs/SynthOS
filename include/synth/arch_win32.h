@@ -39,6 +39,9 @@ bool arch_has_sse(void);
 void arch_switch(uint32_t *save_esp, uint32_t new_esp);
 int arch_irq_depth(void);
 void arch_set_irq_depth(int depth);
+/* the FPU and vector registers of a thread: FXSAVE, or XSAVE where AVX is on; 64-byte aligned areas */
+#define ARCH_FPU_AREA 2816
+uint32_t arch_fpu_area_size(void);
 void arch_fpu_save(void *area);
 void arch_fpu_restore(const void *area);
 void arch_load_teb_selector(void);

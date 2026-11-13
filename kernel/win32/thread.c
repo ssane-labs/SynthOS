@@ -38,7 +38,7 @@ struct critical_section {
 
 static uint8_t *fpu_of(struct w32_thread *t)
 {
-    return (uint8_t *)(((uintptr_t)t->fpu_area + 15) & ~(uintptr_t)15);
+    return (uint8_t *)(((uintptr_t)t->fpu_area + 63) & ~(uintptr_t)63);
 }
 
 uint32_t w32_thread_id(void)
@@ -113,7 +113,7 @@ uint32_t w32_switch_frame(void (*entry)(void), uint8_t *stack_top)
 
 void w32_thread_frame(struct w32_thread *t, void (*entry)(void), uint8_t *stack_top)
 {
-    arch_fpu_save((uint8_t *)(((uintptr_t)t->fpu_area + 15) & ~(uintptr_t)15));
+    arch_fpu_save((uint8_t *)(((uintptr_t)t->fpu_area + 63) & ~(uintptr_t)63));
     t->esp = w32_switch_frame(entry, stack_top);
 }
 

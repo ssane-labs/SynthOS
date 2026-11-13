@@ -15,12 +15,12 @@ struct w32_fiber {
     uint32_t stack_size;
     void *start;
     struct w32_thread *converted;
-    uint8_t fpu_area[528];
+    uint8_t fpu_area[ARCH_FPU_AREA + 64];
 };
 
 static uint8_t *fpu_of(struct w32_fiber *f)
 {
-    return (uint8_t *)(((uintptr_t)f->fpu_area + 15) & ~(uintptr_t)15);
+    return (uint8_t *)(((uintptr_t)f->fpu_area + 63) & ~(uintptr_t)63);
 }
 
 static struct w32_fiber *current_fiber(void)

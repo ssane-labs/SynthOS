@@ -189,6 +189,7 @@ static bool wh_block_load(const struct whisper *w, const char *pre, int dim, boo
 /* takes file (kmalloc'd) on success */
 static int wh_load(struct whisper *w, uint8_t *file, size_t size, char *why, size_t cap)
 {
+    qdot_choose();
     memset(w, 0, sizeof(*w));
     half_init();
     struct gguf_reader r = {file, file + size, false};

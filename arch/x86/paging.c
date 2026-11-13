@@ -396,6 +396,19 @@ size_t vmm_high_pages(void)
     return free;
 }
 
+/* the 32-bit kernel cannot see memory past its address space in one piece */
+void *vmm_big_alloc(size_t size)
+{
+    UNUSED(size);
+    return NULL;
+}
+
+void vmm_big_free(void *ptr, size_t size)
+{
+    UNUSED(ptr);
+    UNUSED(size);
+}
+
 size_t vmm_high_total_pages(void)
 {
     if (!high_ready)

@@ -56,8 +56,8 @@ static void model_free(struct ai_model *m)
     kfree(m->L);
     kfree(m->out_norm);
     kfree(m->inv_freq);
-    kfree(m->kc);
-    kfree(m->vc);
+    big_free(m->kc);
+    big_free(m->vc);
     kfree(m->past);
     kfree(m->x);
     kfree(m->xb);
@@ -72,7 +72,7 @@ static void model_free(struct ai_model *m)
     kfree(m->rope_cs);
     tok_free(&m->tok);
     gguf_free(&m->g);
-    kfree(m->file);
+    big_free(m->file);
     memset(m, 0, sizeof(*m));
 }
 
@@ -113,6 +113,7 @@ static float *get_vector(struct ai_model *m, const char *name, int n, bool optio
 /* takes over file (the whole .gguf in memory) */
 static int model_load(struct ai_model *m, uint8_t *file, size_t size, int ctx_want, char *why, size_t cap)
 {
+    qdot_choose();
     memset(m, 0, sizeof(*m));
     if (!half_init()) {
         str_copy(why, "not enough memory", cap);
@@ -199,8 +200,8 @@ static int model_load(struct ai_model *m, uint8_t *file, size_t size, int ctx_wa
     }
     size_t B = AI_BATCH, wide = (size_t)MAX(MAX(qd, m->dim), kvd);
     m->inv_freq = kmalloc(sizeof(float) * (size_t)(m->hd / 2));
-    m->kc = kmalloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
-    m->vc = kmalloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
+    m->kc = big_alloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
+    m->vc = big_alloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
     m->past = kmalloc(sizeof(int) * (size_t)m->ctx);
     m->x = kmalloc(sizeof(float) * B * (size_t)m->dim);
     m->xb = kmalloc(sizeof(float) * B * wide);
@@ -251,7 +252,30 @@ struct mm_job {
     const float *in;
     float *out;
     int batch, in_stride, out_stride;
+    const int8_t *aq; /* the input in 8 bits (the integer path), else NULL */
+    const float *ad;
+    const int32_t *as;
 };
+
+static bool qdot_on = true; /* ai exact turns it off, to compare */
+static int8_t *act_q;
+static float *act_d;
+static int32_t *act_s;
+static size_t act_cap; /* values */
+
+static bool act_room(size_t n)
+{
+    if (n <= act_cap)
+        return true;
+    kfree(act_q);
+    kfree(act_d);
+    kfree(act_s);
+    act_q = kmalloc(n);
+    act_d = kmalloc(sizeof(float) * (n / 32 + 1));
+    act_s = kmalloc(sizeof(int32_t) * (n / 16 + 1));
+    act_cap = act_q && act_d && act_s ? n : 0;
+    return act_cap != 0;
+}
 
 static void mm_part(void *ctx, int from, int to)
 {
@@ -266,7 +290,17 @@ static void mm_part(void *ctx, int from, int to)
         const uint8_t *row = w->data + (size_t)r * w->row_bytes;
         for (int t = 0; t < j->batch; t++)
             acc[t] = 0;
-        if (w->type == GT_F32) {
+        if (j->aq) {
+            int8_t qb[256];
+            float sc[16], mn[16];
+            for (int c = 0; c < w->cols; c += per, row += bytes) {
+                int cnt = unpack_block(w->type, row, qb, sc, mn);
+                for (int t = 0; t < j->batch; t++) {
+                    size_t at = (size_t)t * (size_t)w->cols + (size_t)c;
+                    acc[t] += qdot(qb, sc, mn, cnt, j->aq + at, j->ad + at / 32, j->as + at / 16);
+                }
+            }
+        } else if (w->type == GT_F32) {
             for (int t = 0; t < j->batch; t++)
                 acc[t] = dot((const float *)row, j->in + (size_t)t * (size_t)j->in_stride, w->cols);
         } else if (per == 1) {
@@ -292,7 +326,16 @@ static void mm_part(void *ctx, int from, int to)
 /* out[t][r] = W[r] . in[t] for every row r and token t */
 static void matmul(const struct ai_tensor *w, const float *in, int in_stride, float *out, int out_stride, int batch)
 {
-    struct mm_job j = {w, in, out, batch, in_stride, out_stride};
+    struct mm_job j = {w, in, out, batch, in_stride, out_stride, NULL, NULL, NULL};
+    if (qdot_on && int_type(w->type) && !(w->cols % 32) && act_room((size_t)batch * (size_t)w->cols)) {
+        for (int t = 0; t < batch; t++) {
+            size_t at = (size_t)t * (size_t)w->cols;
+            quant_act(in + (size_t)t * (size_t)in_stride, w->cols, act_q + at, act_d + at / 32, act_s + at / 16);
+        }
+        j.aq = act_q;
+        j.ad = act_d;
+        j.as = act_s;
+    }
     hal_parallel(mm_part, &j, w->rows, MAX(1, 64 / batch));
 }
 

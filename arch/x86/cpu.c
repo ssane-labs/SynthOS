@@ -1,4 +1,5 @@
 #include <synth/arch_win32.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/string.h>
@@ -477,6 +478,17 @@ int arch_irq_depth(void)
 void arch_set_irq_depth(int depth)
 {
     interrupt_depth = depth;
+}
+
+/* the 32-bit kernel keeps to SSE2 (FXSAVE) */
+uint32_t hal_simd(void)
+{
+    return sse ? HAL_SIMD_SSE2 : 0;
+}
+
+uint32_t arch_fpu_area_size(void)
+{
+    return 512;
 }
 
 void arch_fpu_save(void *area)

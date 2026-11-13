@@ -463,6 +463,8 @@ static int agent_prompt(struct agent *a, int *out, int cap, bool tools)
     }
     if (llama3_format())
         put(&b, "<|begin_of_text|>", true);
+    else if (model.tok.bos_first && b.n < b.cap)
+        b.t[b.n++] = model.tok.bos;
     put_turn(&b, "system", sys);
     kfree(sys);
     /* the newest messages that fit, keeping room for the answer */
@@ -535,6 +537,13 @@ static void visible_reply(const char *in, char *out, size_t cap)
             in = e + 12;
             continue;
         }
+        if (str_starts(in, "<function name=")) {
+            const char *e = strstr(in, "</function>");
+            if (!e)
+                break;
+            in = e + 11;
+            continue;
+        }
         if (str_starts(in, "<think>")) {
             const char *e = strstr(in, "</think>");
             if (!e)
@@ -555,11 +564,84 @@ static void visible_reply(const char *in, char *out, size_t cap)
 }
 
 /* the first tool call in the reply: name and arguments; false if none */
+/* appends text to a JSON string being built, escaped */
+static size_t js_put(char *out, size_t n, size_t cap, const char *s, size_t len)
+{
+    for (size_t i = 0; i < len && n + 7 < cap; i++) {
+        char c = s[i];
+        if (c == '"' || c == '\\') {
+            out[n++] = '\\';
+            out[n++] = c;
+        } else if (c == '\n') {
+            out[n++] = '\\';
+            out[n++] = 'n';
+        } else if ((unsigned char)c < 0x20) {
+            n += (size_t)ksnprintf(out + n, cap - n, "\\u%04x", (unsigned)(unsigned char)c);
+        } else {
+            out[n++] = c;
+        }
+    }
+    out[n] = 0;
+    return n;
+}
+
+/* the XML form MiniCPM5 writes: <function name="x"><param name="p">value</param>...</function>, a value maybe in
+   <![CDATA[...]]>; the arguments become a JSON object */
+static bool xml_call(const char *reply, char *name, size_t ncap, char *args, size_t acap)
+{
+    const char *s = strstr(reply, "<function name=\"");
+    if (!s)
+        return false;
+    s += 16;
+    const char *q = strchr(s, '"');
+    if (!q)
+        return false;
+    size_t nl = MIN((size_t)(q - s), ncap - 1);
+    memcpy(name, s, nl);
+    name[nl] = 0;
+    const char *end = strstr(q, "</function>");
+    if (!end)
+        end = q + strlen(q);
+    size_t n = 0;
+    args[n++] = '{';
+    for (const char *p = strstr(q, "<param name=\""); p && p < end; p = strstr(p, "<param name=\"")) {
+        p += 13;
+        const char *pq = strchr(p, '"'), *gt = pq ? strchr(pq, '>') : NULL;
+        if (!gt || gt > end)
+            break;
+        const char *v = gt + 1, *ve = strstr(v, "</param>");
+        if (!ve || ve > end)
+            ve = end;
+        const char *cd = strstr(v, "<![CDATA[");
+        if (cd && cd < ve) {
+            v = cd + 9;
+            const char *ce = strstr(v, "]]>");
+            if (ce && ce < ve)
+                ve = ce;
+        }
+        if (n > 1 && n + 2 < acap)
+            args[n++] = ',', args[n++] = ' ';
+        if (n + 2 < acap)
+            args[n++] = '"';
+        n = js_put(args, n, acap, p, (size_t)(pq - p));
+        if (n + 4 < acap)
+            args[n++] = '"', args[n++] = ':', args[n++] = ' ', args[n++] = '"';
+        n = js_put(args, n, acap, v, (size_t)(ve - v));
+        if (n + 2 < acap)
+            args[n++] = '"';
+        p = ve;
+    }
+    if (n + 2 < acap)
+        args[n++] = '}';
+    args[MIN(n, acap - 1)] = 0;
+    return true;
+}
+
 static bool find_call(const char *reply, char *name, size_t ncap, char *args, size_t acap)
 {
     const char *s = strstr(reply, "<tool_call>");
-    if (!s)
-        return false;
+    if (!s || (!strstr(s, "{") && strstr(s, "<function name=")))
+        return xml_call(reply, name, ncap, args, acap);
     s += 11;
     const char *e = strstr(s, "</tool_call>");
     char body[1200];
@@ -657,8 +739,7 @@ static bool agent_step(struct agent *a)
         a->generated++;
         a->tokens_out++;
         /* a finished tool call needs no more words */
-        const char *close = strstr(a->reply, "</tool_call>");
-        done = close != NULL;
+        done = strstr(a->reply, "</tool_call>") || strstr(a->reply, "</function>");
         if (!done)
             forward(&model, &id, 1, true);
     }
