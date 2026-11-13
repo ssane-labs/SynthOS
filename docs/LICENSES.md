@@ -7,7 +7,7 @@
 ## Своё
 
 Ядро, загрузчики (`arch/x86/boot`, `arch/x86/efi`), рабочий стол, подсистема Windows (`kernel/win32`, в том числе
-`msvcp60.dll` из `programs/win32/dll/msvcp60.c`), сжатие (LZ4, deflate/inflate), криптография, PNG/JPEG/GIF/AVI,
+`msvcp60.dll` из `programs/win32/dll/msvcp60.c`), сжатие (LZ4, deflate/inflate), криптография, PNG/JPEG/GIF/AVI, FLAC/AIFF/TIFF/TGA/QOI/ICO,
 значки (`tools/mkicons.py` рисует их кодом), музыка (`kernel/gui/media.c` синтезирует), видео-образец
 `Sunset.avi` (нарисован программно), тестовые программы в `programs/*/prebuilt` (собраны из исходников рядом).
 Чужой код в ядро не копировался; `.spec` из Wine `tools/w32audit.py` только читает на машине разработчика, в образ
@@ -24,6 +24,9 @@
 | shim (Ubuntu, подписан Microsoft) | раздел EFI | BSD 2-clause | копирайт | `\SYNTHOS\SHIM.TXT` на разделе EFI |
 | Chromium | только образ с рабочим столом, `/home/apps/chromium` | BSD 3-clause + лицензии частей | копирайт и условия | текст BSD в `/system/LICENSES.txt`, список частей — `chrome://credits` |
 | Obscura (движок браузера) | только 64-битный образ с рабочим столом, `/home/apps/obscura` | Apache-2.0 | копия лицензии, файл NOTICE (если есть), пометки в изменённых файлах | полный текст Apache-2.0 в `/system/LICENSES.txt`; NOTICE у проекта нет; файлы Obscura не меняются (официальный релиз v0.2.2), окно браузера — свой код (`kernel/gui/apps/obscura.c`), с движком говорит по MCP через канал |
+| minimp3 | модуль `media` (`kernel/gui/optional/media/minimp3.h`), MP3 | CC0 1.0 | ничего | упомянут в `/system/LICENSES.txt` |
+| stb_vorbis | модуль `media`, Ogg Vorbis | MIT или public domain (на выбор) | при MIT — копирайт и текст лицензии | взят по MIT, текст в `/system/LICENSES.txt` |
+| simplewebp | модуль `media`, WebP (с потерями и без) | BSD 3-clause (код libwebp) + патентная оговорка WebM | копирайт, условия и отказ от гарантий в документации | полный текст в `/system/LICENSES.txt`; в файлах заменены только `#include`, это отмечено в их начале |
 
 ## Что пользователь скачивает сам
 

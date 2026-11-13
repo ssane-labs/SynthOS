@@ -1,8 +1,8 @@
 SynthOS - third-party components and their licenses
 
 SynthOS is written from scratch: the kernel, the boot loaders, the desktop, the
-Windows subsystem, the compression, crypto and picture code are its own. The
-parts below come from other projects; this file carries the notices their
+Windows subsystem, the compression, crypto and most picture and sound code are
+its own. The parts below come from other projects; this file carries the notices their
 licenses ask for. Read it with: cat /system/LICENSES.txt
 
 Component            Where in SynthOS                        License
@@ -21,6 +21,12 @@ Chromium             desktop image only: /home/apps/chromium BSD 3-clause and th
 Obscura (engine)     64-bit desktop image: /home/apps/obscura Apache License 2.0
                      (unchanged release, obscura.exe and
                      obscura-worker.exe)
+minimp3              MP3 decoding in the media module        CC0 1.0 (public domain)
+                     (kernel/gui/optional/media/minimp3.h)
+stb_vorbis           Ogg Vorbis decoding, media module       MIT or public domain
+                     (kernel/gui/optional/media/stb_vorbis.h)
+simplewebp           WebP decoding, media module             BSD 3-clause (from libwebp)
+                     (kernel/gui/optional/media/simplewebp.h) and the WebM patent grant
 
 Programs from the App Store are not part of SynthOS: the store downloads them
 from their makers' own servers when you press GET, under their own licenses
@@ -425,3 +431,76 @@ Apache License
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+
+========================================================================
+minimp3 (https://github.com/lieff/minimp3)
+To the extent possible under law, the author(s) have dedicated all copyright
+and related and neighboring rights to this software to the public domain
+worldwide. This software is distributed without any warranty.
+See <http://creativecommons.org/publicdomain/zero/1.0/>.
+
+
+========================================================================
+stb_vorbis (https://github.com/nothings/stb), used under the MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+========================================================================
+simplewebp (https://github.com/MikuAuahDark/simplewebp)
+This software is available under BSD-3-Clause License
+Some parts of WebP Lossless code is taken from "whale" project by Matej Fencl
+
+Copyright (c) 2010 Google Inc., 2023 Miku AuahDark
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+following conditions are met:
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+   disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+   following disclaimer in the documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
+   products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Additional IP Rights Grant (Patents)
+------------------------------------
+
+"These implementations" means the copyrightable works that implement the WebM codecs distributed by Google as part
+of the WebM Project.
+
+Google hereby grants to you a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except as
+stated in this section) patent license to make, have made, use, offer to sell, sell, import, transfer, and
+otherwise run, modify and propagate the contents of these implementations of WebM, where such license applies only
+to those patent claims, both currently owned by Google and acquired in the future, licensable by Google that are
+necessarily infringed by these implementations of WebM. This grant does not include claims that would be infringed
+only as a consequence of further modification of these implementations. If you or your agent or exclusive licensee
+institute or order or agree to the institution of patent litigation or any other patent enforcement activity
+against any entity (including a cross-claim or counterclaim in a lawsuit) alleging that any of these
+implementations of WebM or any code incorporated within any of these implementations of WebM constitute direct or
+contributory patent infringement, or inducement of patent infringement, then any patent rights granted to you under
+this License for these implementations of WebM shall terminate as of the date such litigation is filed.
+ 

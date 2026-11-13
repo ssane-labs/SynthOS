@@ -115,6 +115,14 @@ music /system/samples/Formats/Tone.flac
 Tone - Music, playing 0:00 of 0:01
 music /system/samples/Formats/Tone.aiff
 Tone - Music, playing 0:00 of 0:00
+clip image /system/samples/Formats/Gradient.webp && clip info | grep 48x32 && echo lossy webp read
+lossy webp read
+clip image /system/samples/Formats/Lossless.webp && clip info | grep 48x32 && echo lossless webp read
+lossless webp read
+music /system/samples/Formats/Tone.mp3
+Tone - Music, playing 0:00 of 0:01
+music /system/samples/Formats/Tone.ogg
+Tone - Music, playing 0:00 of 0:01
 avi /system/samples/Sunset.avi
 256x160, 60 frames, 10.00 fps, 0:06, Motion JPEG, sound 11025 Hz 8-bit mono
 avi /system/samples/Formats/Bars.avi

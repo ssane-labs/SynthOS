@@ -353,6 +353,15 @@ sysinfo, netutil, diskutil — общий каркас в `gui/optional/systool.
 `GUI_APPS_FOREACH` обходят встроенные приложения и затем показанные модули; `gui_module_tick()` зовётся из
 цикла стола.
 
+Кроме приложения модуль может дать `struct module_ext` (`synth/module.h`, третий аргумент `GUI_APP_FULL`): команды
+оболочки, декодеры картинок и звука, поиск по содержимому и именованную службу (`module_service`). Ядро, не узнав
+файл само, зовёт `module_picture_decode`/`module_audio_decode`: те пробуют декодер каждого модуля, пока какой-то не
+вернёт что-то кроме `E_INVAL`, — поэтому декодер обязан отвергать чужие данные по сигнатуре. `module_handles` решает
+по расширению, показывать ли файл в «Фото»/«Музыке». Так устроены `codecs` (TIFF, TGA, PNM, QOI, ICO, FLAC, AIFF)
+и `media_fp.c` (MP3, Ogg Vorbis, WebP): во втором чужие однофайловые декодеры лежат в `optional/media/` без
+изменений, кроме `#include`, а `media/libc.h` даёт им malloc/free/qsort/abs и немного математики поверх ядра;
+stb_vorbis получает арену вместо `alloca`.
+
 **App Store** (`apps/store.c` + `kernel/core/store.c`): каталог — текст из блоков `[id]` со строками
 `ключ = значение` (`/system/store/catalog.txt`; свежий из релиза кладётся в `/home/etc/store/catalog.txt`,
 установленное — `/home/etc/store/installed`, «id версия» в строке). Виды: `zip` (скачивается в память,
