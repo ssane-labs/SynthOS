@@ -1,6 +1,7 @@
 #include <synth/error.h>
 #include <synth/fmt.h>
 #include <synth/hal.h>
+#include <synth/module.h>
 #include <synth/heap.h>
 #include <synth/net.h>
 #include <synth/path.h>
@@ -1125,6 +1126,22 @@ static void paint_apps(struct canvas *c, struct widget *w, struct rect r)
 
 /* ---- dispatch */
 
+static const struct widget_feeds *feeds(void)
+{
+    static const struct widget_feeds *f;
+    if (!f && module_service)
+        f = module_service("widget-feeds");
+    return f;
+}
+
+static void paint_feed(struct canvas *c, struct widget *w, struct rect r)
+{
+    if (feeds())
+        feeds()->paint(c, w, r);
+    else
+        widget_text(c, w, r, &font_small, "Needs the Feeds module", widget_soft(w), ALIGN_CENTER);
+}
+
 void widget_paint_kind(struct canvas *c, struct widget *w, struct rect r)
 {
     switch (w->kind) {
@@ -1140,6 +1157,9 @@ void widget_paint_kind(struct canvas *c, struct widget *w, struct rect r)
     case WK_NOTES: paint_notes(c, w, r); break;
     case WK_SYSTEM: paint_system(c, w, r); break;
     case WK_APPS: paint_apps(c, w, r); break;
+    case WK_NEWS:
+    case WK_STOCKS:
+    case WK_SPORTS: paint_feed(c, w, r); break;
     }
 }
 
@@ -1163,6 +1183,9 @@ int widget_parts(const struct widget *w, struct rect r, struct rect *out, int ma
             out[n++] = app_cell(w, r, i);
         break;
     }
+    case WK_NEWS:
+    case WK_STOCKS:
+    case WK_SPORTS: n = feeds() ? feeds()->parts(w, r, out, max) : 0; break;
     default: break;
     }
     return n;
@@ -1234,6 +1257,12 @@ void widget_click(struct widget *w, int part, int clicks)
     case WK_VISUALIZER:
         if (clicks >= 2)
             gui_app_launch(gui_app_find("Music"), NULL);
+        break;
+    case WK_NEWS:
+    case WK_STOCKS:
+    case WK_SPORTS:
+        if (feeds())
+            feeds()->click(w, part, clicks);
         break;
     case WK_CLOCK:
     case WK_ANALOG:
@@ -1310,5 +1339,7 @@ void widget_kinds_tick(void)
             widget_damage(&ws[i]);
         }
     weather_tick();
+    if ((any_kind(WK_NEWS) || any_kind(WK_STOCKS) || any_kind(WK_SPORTS)) && feeds())
+        feeds()->tick();
 }
 

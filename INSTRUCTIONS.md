@@ -127,6 +127,12 @@ SynthOS 1.2 «Nebula» — рабочая система:
   Launchpad. Из бандла выбирается пакет под этот процессор. Приложения UWP (WinRT) не поддерживаются — об
   этом говорится прямо. Из терминала: `appx install файл.msix`, `appx info файл.msix`, `appx list`,
   `appx remove <имя>`;
+* **виджеты новостей, акций и спорта**: в «Edit Widgets» есть «News», «Stocks» и «Sports». News показывает
+  заголовки ленты RSS или Atom (в «Edit Widget» — адрес ленты; по умолчанию BBC World), Stocks — котировки
+  с stooq.com и изменение за день (поле «Symbols»: `AAPL MSFT NVDA`), Sports — счёт и статус матчей лиги ESPN
+  (поле «League»: `soccer/eng.1`, `basketball/nba`, `football/nfl`, `hockey/nhl`). Щелчок по строке открывает
+  новость, котировку или матч в браузере, двойной щелчок по заголовку обновляет. Из терминала:
+  `feeds news [адрес]`, `feeds stocks AAPL MSFT`, `feeds sports basketball/nba`;
 * **калькулятор**: кнопка с названием режима слева вверху (или меню View, ⌘1…⌘4) переключает
   «Basic» — обычный; «Scientific» — выражение целиком со скобками и приоритетом операций: `sin cos tan`, обратные
   `asin acos atan` (градусы или радианы — кнопка «Deg»/«Rad»), `ln log`, `√`, `x²`, `x^y`, `n!`, `π`, `e`, «Ans»;

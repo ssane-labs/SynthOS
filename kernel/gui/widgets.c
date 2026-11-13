@@ -4,6 +4,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
+#include <synth/module.h>
 #include <synth/path.h>
 #include <synth/shell.h>
 #include <synth/string.h>
@@ -30,6 +31,9 @@ const struct widget_kind_info widget_kinds[WK_COUNT] = {
     {"notes", "Notes", SYM_PENCIL, 2, 2, 2, 2, 6, 5},
     {"system", "System", SYM_CHIP, 2, 2, 2, 1, 6, 2},
     {"apps", "Apps", SYM_APPS, 2, 2, 2, 1, 4, 2},
+    {"news", "News", SYM_TEXT, 4, 2, 2, 2, 8, 5},
+    {"stocks", "Stocks", SYM_UP, 2, 2, 2, 1, 6, 5},
+    {"sports", "Sports", SYM_STAR, 4, 2, 2, 1, 6, 5},
 };
 
 static const char *const size_names[WS_COUNT] = {"small", "medium", "large", "slim"};
@@ -1124,6 +1128,9 @@ static int inspector_height(const struct widget *w)
     switch (w->kind) {
     case WK_NOTES:
     case WK_PHOTO:
+    case WK_NEWS:
+    case WK_STOCKS:
+    case WK_SPORTS:
     case WK_WEATHER: extra = 44; break;
     case WK_WORLD: extra = 44; break;
     case WK_APPS: extra = 26 * 6 + 10; break;
@@ -1185,6 +1192,19 @@ static void inspector_frame(struct ui *ui, void *data)
             changed(w);
         }
         break;
+    case WK_NEWS:
+    case WK_STOCKS:
+    case WK_SPORTS: {
+        const struct widget_feeds *f = module_service ? module_service("widget-feeds") : NULL;
+        ui_label(ui, (struct rect){18, y, 90, 26}, w->kind == WK_NEWS ? "Feed" : w->kind == WK_STOCKS ? "Symbols"
+                                                                                                   : "League",
+                 &font_sans, style.text, ALIGN_LEFT);
+        if (ui_textbox_hint(ui, (struct rect){100, y, W - 118, 26}, &in->text, f ? f->option_hint(w->kind) : "")) {
+            str_copy(w->opt, in->text.buf, sizeof(w->opt));
+            changed(w);
+        }
+        break;
+    }
     case WK_WEATHER:
         ui_label(ui, (struct rect){18, y, 90, 26}, "City", &font_sans, style.text, ALIGN_LEFT);
         if (ui_textbox_hint(ui, (struct rect){100, y, W - 118, 26}, &in->city, "By address"))
@@ -1331,7 +1351,7 @@ static void inspector_open(struct widget *w)
     if (!in)
         return;
     in->w = w;
-    if (w->kind == WK_NOTES || w->kind == WK_PHOTO)
+    if (w->kind == WK_NOTES || w->kind == WK_PHOTO || w->kind >= WK_NEWS)
         ui_text_set(&in->text, w->opt);
     char city[48];
     gui_setting_get("weathercity", city, sizeof(city));

@@ -23,6 +23,9 @@ enum widget_kind {
     WK_NOTES,
     WK_SYSTEM,
     WK_APPS,
+    WK_NEWS,
+    WK_STOCKS,
+    WK_SPORTS,
     WK_COUNT,
 };
 
@@ -88,6 +91,15 @@ void widget_free_kind(struct widget *w);
 void widget_default_opt(struct widget *w);
 bool widget_kind_animating(void);
 struct widget *widget_list(int *n);
+
+/* News, stocks and sports come from the network through a module ("widget-feeds") */
+struct widget_feeds {
+    void (*paint)(struct canvas *c, struct widget *w, struct rect r);
+    int (*parts)(const struct widget *w, struct rect r, struct rect *out, int max);
+    void (*click)(struct widget *w, int part, int clicks);
+    void (*tick)(void);
+    const char *(*option_hint)(int kind);
+};
 int widget_opt_int(const struct widget *w, const char *key, int fallback);
 void widget_opt_set(struct widget *w, const char *key, int value);
 #define CLOCK_FONTS 5

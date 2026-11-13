@@ -1258,6 +1258,17 @@ if command -v openssl >/dev/null; then
     cp "$work/www/synthos-update$sfx.sup" "$work/www/new/"
     sed 's/^kernel-sha256=.*/kernel-sha256=0000/' "$work/www/synthos-update$sfx.txt" > "$work/www/new/synthos-update$sfx.txt"
     printf 'SYNUPD01 broken' > "$work/www/bad.sup"
+    # what the News, Stocks and Sports widgets read
+    cat > "$work/www/feed.xml" <<'XEOF'
+<?xml version="1.0"?><rss version="2.0"><channel><title><![CDATA[Test Wire]]></title>
+<item><title><![CDATA[Rain &amp; wind expected]]></title><link>https://example.com/rain</link>
+<pubDate>Fri, 13 Nov 2026 06:12:00 GMT</pubDate></item>
+<item><title>Caf&#233; opens on the moon</title><link>https://example.com/moon</link></item>
+</channel></rss>
+XEOF
+    printf '<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Desk</title><entry><title>First entry</title><link href="https://example.com/1"/><updated>2026-11-13T06:12:00Z</updated></entry></feed>' > "$work/www/atom.xml"
+    printf 'Symbol,Date,Time,Open,High,Low,Close,Volume\r\nAAPL.US,2026-11-13,22:00:00,200.00,206,199,205.50,1000\r\nMSFT.US,2026-11-13,22:00:00,400,401,390,396.00,900\r\n' > "$work/www/quotes.csv"
+    printf '{"leagues":[{"name":"Test League"}],"events":[{"id":"1","uid":"s:600~l:700~e:1","shortName":"AAA @ BBB","competitions":[{"id":"1","uid":"s:600~l:700~e:1~c:1","competitors":[{"id":"9","homeAway":"home","score":"2","team":{"id":"9","abbreviation":"BBB"}},{"id":"8","homeAway":"away","score":"1","team":{"id":"8","abbreviation":"AAA"}}]}],"status":{"type":{"shortDetail":"FT"}},"links":[{"href":"https://example.com/match/_/gameId/1"}]},{"id":"2","uid":"s:600~l:700~e:2","shortName":"CCC @ DDD","competitions":[{"id":"2","uid":"s:600~l:700~e:2~c:2","competitors":[{"id":"7","homeAway":"home","score":"0","team":{"id":"7","abbreviation":"DDD"}},{"id":"6","homeAway":"away","score":"0","team":{"id":"6","abbreviation":"CCC"}}]}],"status":{"type":{"shortDetail":"Sat 3:00 PM"}}}]}' > "$work/www/scores.json"
     mkdir -p "$work/www/store"
     python3 -I -c 'import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
@@ -1356,6 +1367,22 @@ wget -O - https://10.0.2.2:$port/hello.txt
 certificate is not trusted
 mkdir /home/certs; cp /mnt/hdb/test-ca.pem /home/certs/; certs reload | grep -c trusted; wget -O - https://10.0.2.2:$port/hello.txt
 secret over tls
+feeds news https://10.0.2.2:$port/feed.xml
+Rain & wind expected                     13 Nov 06:12
+feeds news https://10.0.2.2:$port/feed.xml | grep moon
+opens on the moon
+feeds news https://10.0.2.2:$port/atom.xml
+First entry                              11-13 06:12
+feeds stocks https://10.0.2.2:$port/quotes.csv | grep MSFT
+396.00 -1.00%
+feeds stocks https://10.0.2.2:$port/quotes.csv | grep AAPL
+205.50 +2.75%
+feeds sports https://10.0.2.2:$port/scores.json
+AAA 1 - 2 BBB
+feeds sports https://10.0.2.2:$port/scores.json | grep CCC
+CCC @ DDD                                Sat 3:00 PM
+feeds news https://10.0.2.2:$port/missing.xml
+Nothing could be read from 10.0.2.2
 wallpaper https://10.0.2.2:$port/starry-night.jpg
 Wallpapers/starry-night.jpg and set it as the wallpaper
 config wallpaper
