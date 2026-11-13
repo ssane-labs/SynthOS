@@ -29,6 +29,7 @@ python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DE
     mcopy -i "$work/fat.img" "$work/t.zip" ::/t.zip
 python3 -I tests/msix.py "$work" &&
     for f in tool.msix uwp.msix tool.msixbundle; do mcopy -i "$work/fat.img" "$work/$f" ::/$f; done
+mcopy -i "$work/fat.img" tests/fonts/InterSubset.otf ::/inter.otf
 
 if command -v 7z >/dev/null; then
     mkdir -p "$work/7z/pkg/sub"
@@ -1064,6 +1065,20 @@ appx install /mnt/hdb/uwp.msix
 is a Universal Windows app
 appx remove Synth.SampleTool; appx list
 no MSIX packages installed
+fonts info /system/fonts/DejaVuSans.ttf
+family: DejaVu Sans
+fonts info /mnt/hdb/inter.otf | grep outlines
+outlines: CFF
+fonts render /system/fonts/DejaVuSans.ttf H 16 | grep -c '#'
+12
+fonts render /mnt/hdb/inter.otf Synth 16
+pixels inked
+fonts install /mnt/hdb/inter.otf; fonts list | grep -c Inter
+Installed into /
+fonts list | grep Inter
+Inter
+fonts remove Inter; fonts list | grep -c Inter
+Removed Inter
 unzip -q -d /tmp/z /mnt/hdb/t.zip; cat /tmp/z/pkg/sub/a.txt /tmp/z/pkg/readme.txt
 Azipped hello zipped
 pkg list
