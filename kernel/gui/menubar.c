@@ -406,7 +406,10 @@ static const struct menu_item help_items[] = {
 static void pick_help(struct window *owner, int index)
 {
     UNUSED(owner);
-    if (index == 0)
+    const struct gui_app *help = gui_app_find("Help");
+    if (index == 0 && help)
+        gui_app_launch(help, NULL);
+    else if (index == 0)
         gui_app_launch(gui_app_find("Notepad"), "/docs/desktop.txt");
     else
         gui_message("Keyboard Shortcuts",

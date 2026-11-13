@@ -1065,6 +1065,16 @@ appx install /mnt/hdb/uwp.msix
 is a Universal Windows app
 appx remove Synth.SampleTool; appx list
 no MSIX packages installed
+tips all | grep -c .
+30
+tips off; cat /home/etc/tips
+off
+tips on; tips
+Launchpad
+apropos wireguard vpn
+vpn import my.conf
+apropos zzqqxx
+nothing matches zzqqxx
 fonts info /system/fonts/DejaVuSans.ttf
 family: DejaVu Sans
 fonts info /mnt/hdb/inter.otf | grep outlines
