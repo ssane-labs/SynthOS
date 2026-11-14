@@ -151,6 +151,18 @@ void wm_set_tint(int brightness, int warmth);
 int gui_glass_strength(void);
 enum glass_effect { GLASS_FX_REGULAR, GLASS_FX_CLEAR, GLASS_FX_TINTED, GLASS_FX_SMOKY, GLASS_FX_PRISM, GLASS_FX_HALO };
 int gui_glass_effect(void);
+struct glass_preview {
+    int effect, strength, edge, frost;
+};
+extern const struct glass_preview *glass_preview;
+
+/* the Settings previews (module preview.c): a picture of this computer showing what a pane or a setting does */
+struct settings_preview {
+    void (*hero)(struct canvas *c, struct rect r, const char *pane, uint32_t ms);
+    bool (*shows)(const char *key);
+    void (*setting)(struct canvas *c, struct rect r, const char *key, const char *before, const char *after,
+                    uint32_t ms);
+};
 int gui_glass_edge(void);
 int gui_glass_frost(void);
 #ifndef ABS

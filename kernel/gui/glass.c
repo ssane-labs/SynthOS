@@ -722,9 +722,12 @@ void glass_draw_alpha(struct canvas *c, struct glass *g, const struct glass_look
         gfx_round_frame(c, (struct rect){f.x - 1, f.y - 1, f.w + 2, f.h + 2}, radius + 1, look->outline);
 }
 
+/* a Settings preview drawing the glass of a choice that is not the one in use */
+const struct glass_preview *glass_preview;
+
 static void apply_strength(struct glass_look *look)
 {
-    int k = gui_glass_strength();
+    int k = glass_preview ? glass_preview->strength : gui_glass_strength();
     if (!look->liquid || k == 70)
         return;
     if (!k) {
@@ -753,7 +756,7 @@ static void apply_effect(struct glass_look *look, enum glass_kind kind)
 {
     int a = (int)(look->tint >> 24);
     bool dark = style.dark;
-    switch (gui_glass_effect()) {
+    switch (glass_preview ? glass_preview->effect : gui_glass_effect()) {
     case GLASS_FX_CLEAR:
         look->tint = with_alpha(look->tint, a * 45 / 100);
         look->blur = MAX(1, look->blur - 1);
@@ -786,7 +789,7 @@ static void apply_effect(struct glass_look *look, enum glass_kind kind)
     default:
         break;
     }
-    int e = gui_glass_edge();
+    int e = glass_preview ? glass_preview->edge : gui_glass_edge();
     if (e != 50) {
         if (!look->rim && e > 50 && kind != GLASS_MENUBAR)
             look->rim = (e - 50) * 2;
@@ -797,7 +800,7 @@ static void apply_effect(struct glass_look *look, enum glass_kind kind)
         if (e >= 85 && kind != GLASS_MENUBAR)
             look->edge_line = true;
     }
-    int f = gui_glass_frost();
+    int f = glass_preview ? glass_preview->frost : gui_glass_frost();
     if (f != 50)
         look->blur = CLAMP(look->blur * f / 50, f ? 1 : 0, 9);
 }

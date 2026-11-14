@@ -20,6 +20,7 @@
 #include <synth/winshell.h>
 
 #include <synth/keys.h>
+#include <synth/module.h>
 
 #include <synth/vpn.h>
 
@@ -53,6 +54,7 @@ struct page {
     int hits;
     int sec, rows, sec_y;
     int *sec_h, *sec_rows;
+    const char *thumb, *thumb_before; /* the next row starts with a picture of what this setting does */
 };
 
 typedef void (*pane_fn)(struct page *p);
@@ -161,14 +163,35 @@ struct settings {
     char pending_user[USER_NAME_MAX];
     char popup_key[24];
     const char *const *popup_values;
+    struct anim { /* the pictures that move, redrawn on their own between full repaints */
+        struct rect r;
+        const char *key;
+        char before[24], after[24];
+    } anims[16];
+    int anim_n;
+    struct rect hero, content;
+    uint64_t last_full;
 };
 
 SYNTH_TABLE_DECLARE(synth_gui_apps, struct gui_app);
 
 static struct window *instance;
 
+static char last_key[24], last_value[24]; /* the setting changed last and what it was before */
+
+static const struct settings_preview *previews(void)
+{
+    return module_service ? module_service("settings-preview") : NULL;
+}
+
 static void apply(const char *name, const char *value)
 {
+    char was[24];
+    gui_setting_get(name, was, sizeof(was));
+    if (strcmp(was, value)) {
+        str_copy(last_key, name, sizeof(last_key));
+        str_copy(last_value, was, sizeof(last_value));
+    }
     gui_setting(name, value);
 }
 
@@ -285,13 +308,47 @@ static struct rect ctl(struct rect r, int w, int h)
 }
 
 /* A row of the current group; cw is how wide its control is, so the label stops before it. */
+#define PIC_W 80
+#define PIC_H 50
+
+/* The setting the next row is about shows a little screen going from before to after. */
+static void picture(struct page *p, const char *key, const char *before)
+{
+    const struct settings_preview *v = previews();
+    if (v && v->shows(key)) {
+        p->thumb = key;
+        p->thumb_before = before;
+    }
+}
+
+static void draw_picture(struct page *p, struct rect r, const char *key, const char *before)
+{
+    struct settings *s = p->s;
+    const struct settings_preview *v = previews();
+    if (!v || s->anim_n >= (int)ARRAY_SIZE(s->anims))
+        return;
+    struct anim *a = &s->anims[s->anim_n++];
+    a->r = r;
+    a->key = key;
+    current(key, a->after, sizeof(a->after));
+    str_copy(a->before, !strcmp(last_key, key) && strcmp(last_value, a->after) ? last_value : before ? before : "",
+             sizeof(a->before));
+    v->setting(p->ui->c, r, key, a->before, a->after, (uint32_t)hal_ticks_ms());
+}
+
 static struct rect row(struct page *p, const char *label, const char *desc, int h, int cw)
 {
-    int tw = p->w - 28 - (cw ? cw + 14 : 0);
+    const char *pic = p->thumb, *pic_before = p->thumb_before;
+    p->thumb = p->thumb_before = NULL;
+    bool fixed = h != 0;
+    int lx = pic ? 14 + PIC_W + 14 : 14;
+    int tw = p->w - lx - 14 - (cw ? cw + 14 : 0);
     if (!h) /* a description that wraps to more lines makes the row taller */
         h = desc ? MAX(ROW_DESC, 36 + wrap(NULL, (struct rect){0, 0, tw, 0}, &font_small, desc, 0, ALIGN_LEFT) *
                                           (font_small.height + 3))
                  : ROW;
+    if (pic)
+        h = MAX(h, PIC_H + 16);
     struct rect r = {p->x, p->y, p->w, h};
     bool last = p->sec < SECTIONS && p->rows + 1 >= p->sec_rows[p->sec];
     p->rows++;
@@ -307,11 +364,15 @@ static struct rect row(struct page *p, const char *label, const char *desc, int 
     if (hit)
         gfx_round(c, rect_inset(r, 3), 8, ALPHA(style.accent, style.dark ? 70 : 46));
     if (label && desc) {
-        gfx_text_box(c, (struct rect){r.x + 14, r.y + 9, tw, 18}, &font_sans, label, style.text, ALIGN_LEFT);
-        wrap(c, (struct rect){r.x + 14, r.y + 28, tw, 0}, &font_small, desc, style.secondary, ALIGN_LEFT);
+        int lines = wrap(NULL, (struct rect){0, 0, tw, 0}, &font_small, desc, 0, ALIGN_LEFT);
+        int top = pic && !fixed ? r.y + (r.h - 19 - lines * (font_small.height + 3)) / 2 : r.y + 9;
+        gfx_text_box(c, (struct rect){r.x + lx, top, tw, 18}, &font_sans, label, style.text, ALIGN_LEFT);
+        wrap(c, (struct rect){r.x + lx, top + 19, tw, 0}, &font_small, desc, style.secondary, ALIGN_LEFT);
     } else if (label) {
-        gfx_text_box(c, (struct rect){r.x + 14, r.y, tw, r.h}, &font_sans, label, style.text, ALIGN_LEFT);
+        gfx_text_box(c, (struct rect){r.x + lx, r.y, tw, r.h}, &font_sans, label, style.text, ALIGN_LEFT);
     }
+    if (pic)
+        draw_picture(p, (struct rect){r.x + 14, r.y + (r.h - PIC_H) / 2, PIC_W, PIC_H}, pic, pic_before);
     if (!last)
         gfx_fill(c, (struct rect){r.x + 14, r.y + r.h - 1, r.w - 28, 1}, style.separator);
     return r;
@@ -339,14 +400,42 @@ static bool toggle(struct page *p, const char *label, const char *desc, bool *va
 static void toggle_setting(struct page *p, const char *label, const char *desc, const char *key)
 {
     bool on = is_on(key);
+    picture(p, key, on ? "off" : "on");
     if (toggle(p, label, desc, &on))
         apply(key, on ? "on" : "off");
+}
+
+/* For a picture of a choice: the first of the other values */
+static const char *other_value(const char *key, const char *const *values, int n)
+{
+    char v[48];
+    current(key, v, sizeof(v));
+    for (int i = 0; i < n; i++)
+        if (strcmp(v, values[i]))
+            return values[i];
+    return NULL;
 }
 
 static void choice(struct page *p, const char *label, const char *desc, const char *key,
                    const char *const *labels, const char *const *values, int n, int width)
 {
-    struct rect r = row(p, label, desc, 0, width);
+    picture(p, key, other_value(key, values, n));
+    int lx = p->thumb ? 14 + PIC_W + 14 : 14, tw = p->w - lx - 14;
+    struct rect r, b;
+    if (tw - width - 14 < 200) { /* too wide to share the row with the words: under them */
+        int h = (desc ? 36 + wrap(NULL, (struct rect){0, 0, tw, 0}, &font_small, desc, 0, ALIGN_LEFT) *
+                                  (font_small.height + 3)
+                      : 30) + 34;
+        if (p->thumb)
+            h = MAX(h, PIC_H + 16);
+        r = row(p, desc ? label : NULL, desc, h, 0);
+        if (!desc && !p->measure && p->ui->c)
+            gfx_text_box(p->ui->c, (struct rect){r.x + lx, r.y + 6, tw, 24}, &font_sans, label, style.text, ALIGN_LEFT);
+        b = (struct rect){r.x + lx, r.y + r.h - 34, MIN(width, tw), 24};
+    } else {
+        r = row(p, label, desc, 0, width);
+        b = ctl(r, width, 24);
+    }
     if (p->measure)
         return;
     char v[48];
@@ -355,7 +444,7 @@ static void choice(struct page *p, const char *label, const char *desc, const ch
     for (int i = 0; i < n; i++)
         if (!strcmp(v, values[i]))
             sel = i;
-    if (ui_segmented(p->ui, ctl(r, width, 24), labels, n, &sel))
+    if (ui_segmented(p->ui, b, labels, n, &sel))
         apply(key, values[sel]);
 }
 
@@ -378,6 +467,7 @@ static void popup(struct page *p, const char *label, const char *desc, const cha
     for (int i = 0; i < n; i++)
         width = MAX(width, gfx_text_width(&font_sans, labels[i]));
     width = MIN(width + 40, p->w / 2);
+    picture(p, key, other_value(key, values, n));
     struct rect r = row(p, label, desc, 0, width);
     if (p->measure)
         return;
@@ -477,6 +567,11 @@ static bool link(struct page *p, enum symbol_id sym, uint32_t color, const char 
 /* The card at the top of some panes: a big icon, the name and what the pane is for. */
 static void header(struct page *p, enum symbol_id sym, uint32_t color, const char *title, const char *text)
 {
+    if (previews()) { /* the moving picture at the top says it better; the words still count in a search */
+        if (p->query && (found(p->query, title) || found(p->query, text)))
+            p->hits += p->measure;
+        return;
+    }
     section(p, NULL);
     int lines = wrap(NULL, (struct rect){0, 0, p->w - 80, 0}, &font_small, text, 0, ALIGN_CENTER);
     struct rect r = row(p, NULL, NULL, 128 + lines * (font_small.height + 3), 0);
@@ -489,6 +584,50 @@ static void header(struct page *p, enum symbol_id sym, uint32_t color, const cha
              ALIGN_CENTER);
     }
     end(p, NULL);
+}
+
+/* The top of every pane: a computer acting out what the pane is for */
+#define HERO_H 260
+
+static void hero(struct page *p, int pane)
+{
+    const struct settings_preview *v = previews();
+    if (!v)
+        return;
+    struct rect r = {p->x, p->y, p->w, HERO_H};
+    p->y += HERO_H + GAP;
+    if (p->measure || !p->ui->c)
+        return;
+    p->s->hero = r;
+    v->hero(p->ui->c, r, panes[pane].key, (uint32_t)hal_ticks_ms());
+}
+
+/* Between full repaints only the pictures change: redraw them straight into the window. */
+static void animate(struct window *w, struct settings *s)
+{
+    const struct settings_preview *v = previews();
+    if (!v)
+        return;
+    struct canvas c = w->surface;
+    c.clip = rect_intersect((struct rect){0, 0, c.w, c.h}, s->content);
+    uint32_t ms = (uint32_t)hal_ticks_ms();
+    struct rect dirty = {0, 0, 0, 0};
+    if (!rect_empty(rect_intersect(s->hero, c.clip))) {
+        gfx_fill(&c, s->hero, style.window);
+        v->hero(&c, s->hero, panes[s->pane].key, ms);
+        dirty = s->hero;
+    }
+    for (int i = 0; i < s->anim_n; i++) {
+        struct anim *a = &s->anims[i];
+        if (rect_empty(rect_intersect(a->r, c.clip)))
+            continue;
+        gfx_fill(&c, a->r, style.group);
+        v->setting(&c, a->r, a->key, a->before, a->after, ms);
+        dirty = rect_union(dirty, a->r);
+    }
+    dirty = rect_intersect(dirty, c.clip);
+    if (!rect_empty(dirty))
+        wm_damage_client(w, dirty);
 }
 
 static void go(struct settings *s, int pane)
@@ -1039,6 +1178,7 @@ static void pane_appearance(struct page *p)
     current("glass", material, sizeof(material));
     if (!strcmp(material, "liquid")) {
         int k = (int)number("glassstrength", 70);
+        picture(p, "glassstrength", k >= 50 ? "10" : "100");
         if (slider(p, "Liquid Glass effect", "How strongly the glass bends and shows what lies behind it", &k, 0,
                    100, "Subtle", "Strong"))
             apply_number("glassstrength", k);
@@ -1049,9 +1189,11 @@ static void pane_appearance(struct page *p)
         choice(p, "Effect", "Of every glass surface: menus, panels, widgets, the Dock", "glasseffect", effects,
                effect_values, 6, 420);
         int e = (int)number("glassedge", 50);
+        picture(p, "glassedge", e >= 50 ? "0" : "100");
         if (slider(p, "Edge brightness", "How bright the rim of light along the glass is", &e, 0, 100, "None", "Bright"))
             apply_number("glassedge", e);
         int f = (int)number("glassfrost", 50);
+        picture(p, "glassfrost", f >= 50 ? "0" : "100");
         if (slider(p, "Frost", "How much the glass blurs what lies behind it", &f, 0, 100, "Sharp", "Frosted"))
             apply_number("glassfrost", f);
     }
@@ -1224,6 +1366,7 @@ static void pane_displays(struct page *p)
     int n = wm_screen_count();
     section(p, "Brightness");
     int b = (int)number("brightness", 100);
+    picture(p, "brightness", b >= 60 ? "30" : "100");
     if (slider(p, "Brightness", "Dims the picture when the screen has no control of its own", &b, 10, 100, NULL,
                NULL))
         apply_number("brightness", b);
@@ -1232,6 +1375,7 @@ static void pane_displays(struct page *p)
     choice(p, "Night Shift", "Warmer colors in the evening (21:00 to 7:00)", "nightshift", nights, night_values, 3,
            300);
     int warm = (int)number("nightwarmth", 50);
+    picture(p, "nightwarmth", warm >= 50 ? "0" : "100");
     if (slider(p, "Color temperature", NULL, &warm, 0, 100, "Less Warm", "More Warm"))
         apply_number("nightwarmth", warm);
     end(p, NULL);
@@ -2144,7 +2288,7 @@ static int search_hits(struct ui *ui, struct settings *s, int pane, int w)
     struct ui quiet = *ui;
     quiet.c = NULL;
     quiet.e = NULL;
-    struct page m = {&quiet, s, 0, 0, w, true, s->search.buf, 0, 0, 0, 0, h, r};
+    struct page m = {&quiet, s, 0, 0, w, true, s->search.buf, 0, 0, 0, 0, h, r, NULL, NULL};
     panes[pane].fn(&m);
     return m.hits + (found(s->search.buf, panes[pane].name) ? 1 : 0);
 }
@@ -2289,7 +2433,7 @@ static void frame(struct ui *ui, void *data)
     if (!ui->win)
         return;
     toolbar(ui, s, cx, W);
-    uint32_t tick = s->pane == P_NETWORK ? 1000 : 0;
+    uint32_t tick = previews() && is_on("animations") ? 100 : s->pane == P_NETWORK ? 1000 : 0;
     if (ui->win->timer_ms != tick)
         wm_set_timer(ui->win, tick);
     struct rect content = {cx, TOOLBAR_HEIGHT, W - cx, H - TOOLBAR_HEIGHT};
@@ -2301,7 +2445,8 @@ static void frame(struct ui *ui, void *data)
     struct ui quiet = *ui;
     quiet.c = NULL;
     quiet.e = NULL;
-    struct page m = {&quiet, s, x, 0, wdt, true, query, 0, 0, 0, 0, s->sec_h, s->sec_rows};
+    struct page m = {&quiet, s, x, 0, wdt, true, query, 0, 0, 0, 0, s->sec_h, s->sec_rows, NULL, NULL};
+    hero(&m, s->pane);
     panes[s->pane].fn(&m);
     s->height = m.y;
     s->scroll = CLAMP(s->scroll, 0, MAX(0, s->height + 16 - content.h));
@@ -2314,7 +2459,14 @@ static void frame(struct ui *ui, void *data)
     struct gui_event *event = ui->e;
     if (event && (event->type == EV_MOUSE_DOWN || event->type == EV_WHEEL) && !rect_contains(content, event->x, event->y))
         ui->e = NULL;
-    struct page p = {ui, s, x, TOOLBAR_HEIGHT + 6 - s->scroll, wdt, false, query, 0, 0, 0, 0, s->sec_h, s->sec_rows};
+    struct page p = {ui, s, x, TOOLBAR_HEIGHT + 6 - s->scroll, wdt, false, query, 0, 0, 0, 0, s->sec_h, s->sec_rows,
+                     NULL, NULL};
+    if (ui->c) {
+        s->anim_n = 0;
+        s->hero = (struct rect){0, 0, 0, 0};
+        s->content = content;
+    }
+    hero(&p, s->pane);
     panes[s->pane].fn(&p);
     ui->e = event;
     if (ui->win && saved)
@@ -2330,6 +2482,14 @@ static void paint(struct window *w, struct canvas *c)
 static void event(struct window *w, struct gui_event *e)
 {
     struct settings *s = w->data;
+    if (e->type == EV_TIMER && previews()) { /* the network pane still refreshes once a second */
+        uint64_t now = hal_ticks_ms();
+        if (s->pane != P_NETWORK || now - s->last_full < 1000) {
+            animate(w, s);
+            return;
+        }
+        s->last_full = now;
+    }
     ui_run(w, &s->st, NULL, e, frame, s);
 }
 
