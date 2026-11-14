@@ -2153,8 +2153,8 @@ static bool side_item(struct ui *ui, struct rect r, int pane, bool selected)
 {
     bool hot = ui_hover(ui, r);
     if (ui->c) {
-        if (selected)
-            gfx_round(ui->c, r, 6, style.accent);
+        if (selected || hot)
+            ui_glass(ui->c, r, MIN(10, r.h / 2), selected ? style.accent : 0, selected ? 0 : 8);
         ui_settings_icon(ui->c, r.x + 6, r.y + 4, 20, panes[pane].sym, panes[pane].color);
         gfx_text_box(ui->c, (struct rect){r.x + 34, r.y, r.w - 38, r.h}, &font_sans, panes[pane].name,
                      selected ? RGB(255, 255, 255) : style.text, ALIGN_LEFT);
@@ -2245,9 +2245,11 @@ static void sidebar(struct ui *ui, struct settings *s, int H, int w)
 
 static void toolbar(struct ui *ui, struct settings *s, int cx, int W)
 {
-    struct rect back = {cx + 14, (TOOLBAR_HEIGHT - 28) / 2, 28, 28}, fwd = {cx + 44, back.y, 28, 28};
+    struct rect back = {cx + 14, (TOOLBAR_HEIGHT - 28) / 2, 28, 28}, fwd = {cx + 46, back.y, 28, 28};
     bool can_back = s->back_n > 0 || panes[s->pane].parent >= 0, can_fwd = s->forward_n > 0;
-    if (ui->c) {
+    if (ui->c) { /* two drops of glass */
+        ui_glass(ui->c, back, 14, 0, can_back && ui_hover(ui, back) ? 12 : 0);
+        ui_glass(ui->c, fwd, 14, 0, can_fwd && ui_hover(ui, fwd) ? 12 : 0);
         gfx_symbol(ui->c, back.x + 6, back.y + 6, SYM_LEFT, 16, can_back ? style.text : style.tertiary);
         gfx_symbol(ui->c, fwd.x + 6, fwd.y + 6, SYM_RIGHT, 16, can_fwd ? style.text : style.tertiary);
     }

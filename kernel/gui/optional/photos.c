@@ -1117,8 +1117,12 @@ static void paint_bar(struct photos *ph, struct canvas *c)
         return;
     struct rect b = bar_rect(c->w, c->h, show);
     int a = show * 255 / 1024;
-    gfx_round(c, b, b.h / 2, RGBA(24, 24, 30, 200 * a / 255));
-    gfx_round_frame(c, b, b.h / 2, ALPHA(0xffffffffu, 36 * a / 255));
+    if (a >= 250) { /* fully shown: the system's glass over the photo */
+        ui_glass(c, b, b.h / 2, RGB(24, 24, 30), 0);
+    } else {
+        gfx_round(c, b, b.h / 2, RGBA(24, 24, 30, 200 * a / 255));
+        gfx_round_frame(c, b, b.h / 2, ALPHA(0xffffffffu, 36 * a / 255));
+    }
     for (int i = 0; i < BAR_BUTTONS; i++) {
         struct rect r = bar_button(b, i);
         bool off = (bar_cmds[i] == CMD_PREV || bar_cmds[i] == CMD_NEXT) && ph->count < 2;

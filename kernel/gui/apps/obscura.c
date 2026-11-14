@@ -2830,8 +2830,8 @@ static bool icon_button(struct ui *ui, struct rect r, enum symbol_id s, int size
 {
     bool hot, hit = area(ui, r, &hot);
     if (ui->c) {
-        if (hot)
-            gfx_round(ui->c, r, 7, hover_back());
+        if (hot) /* a drop of the system's glass under the pointer */
+            ui_glass(ui->c, r, MIN(r.h / 2, 10), 0, 12);
         gfx_symbol(ui->c, r.x + (r.w - size) / 2, r.y + (r.h - size) / 2, s, size, hot ? style.text : color);
     }
     return hit;
@@ -2841,7 +2841,7 @@ static bool pill_button(struct ui *ui, struct rect r, const char *label, uint32_
 {
     bool hot, hit = area(ui, r, &hot);
     if (ui->c) {
-        gfx_round(ui->c, r, 6, hot ? color_shade(back, style.dark && color_luma(back) < 128 ? 18 : -14) : back);
+        ui_glass(ui->c, r, r.h / 2, back, hot ? 12 : 0);
         int tw = gfx_text_width(&font_sans, label) + (check ? 18 : 0), x = r.x + (r.w - tw) / 2;
         if (check)
             gfx_symbol(ui->c, x, r.y + (r.h - 12) / 2, SYM_CHECK, 12, fore);

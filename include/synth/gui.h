@@ -571,6 +571,7 @@ int ui_next_id(struct ui *ui);
 bool ui_hover(struct ui *ui, struct rect r);
 bool ui_button(struct ui *ui, struct rect r, const char *label);
 bool ui_button_primary(struct ui *ui, struct rect r, const char *label);
+void ui_glass(struct canvas *c, struct rect r, int radius, uint32_t tint, int lift); /* a control of system glass */
 void ui_glass_face(struct canvas *c, struct rect r, uint32_t tint, bool hot, bool pressed); /* every button's glass */
 bool ui_tool(struct ui *ui, struct rect r, enum icon_id icon, const char *label, bool toggled);
 bool ui_symbol_button(struct ui *ui, struct rect r, enum symbol_id sym, bool toggled);

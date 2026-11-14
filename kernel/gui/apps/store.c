@@ -404,8 +404,10 @@ static void toolbar(struct ui *ui, struct store_win *s, int cx, int W)
     int tx = cx + 20;
     if (s->detail >= 0) {
         struct rect back = {cx + 14, (TOOLBAR_HEIGHT - 28) / 2, 28, 28};
-        if (ui->c)
+        if (ui->c) {
+            ui_glass(ui->c, back, 14, 0, ui_hover(ui, back) ? 12 : 0);
             gfx_symbol(ui->c, back.x + 6, back.y + 6, SYM_LEFT, 16, style.text);
+        }
         if (ui->e && ui->e->type == EV_MOUSE_DOWN && ui_hover(ui, back)) {
             ui->consumed = true;
             s->detail = -1;

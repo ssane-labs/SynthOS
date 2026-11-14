@@ -220,14 +220,13 @@ static void shrink(const uint32_t *from, int stride, struct rect area, int scale
 
 /* The frosted copy is `scale` times smaller and blurred; liquid glass also keeps a sharp half-size copy that the
    edge refracts, so the lens shows the background crisp at the rim and frosted inside. */
-static bool capture(struct canvas *c, struct glass *g, int blur, int scale, bool lens)
+/* what lies under the glass, within bounds and m pixels around it, shrunk by scale and frosted */
+static bool capture_in(struct canvas *c, struct glass *g, int blur, int scale, bool lens, struct rect bounds, int m)
 {
     if (no_capture)
         return false;
-    struct rect screen = wm_compose_screen();
-    int m = glass_margin();
     struct rect src = rect_intersect((struct rect){g->frame.x - m, g->frame.y - m, g->frame.w + 2 * m, g->frame.h + 2 * m},
-                                     screen);
+                                     bounds);
     if (rect_empty(src) || !rect_inside(src, c->clip))
         return false;
     int sw = (src.w + scale - 1) / scale, sh = (src.h + scale - 1) / scale;
@@ -255,6 +254,11 @@ static bool capture(struct canvas *c, struct glass *g, int blur, int scale, bool
     g->luma = count ? (int)(sum / count) : 128;
     g->stamp++;
     return true;
+}
+
+static bool capture(struct canvas *c, struct glass *g, int blur, int scale, bool lens)
+{
+    return capture_in(c, g, blur, scale, lens, wm_compose_screen(), glass_margin());
 }
 
 /* The picture behind a glass can only be taken while the area being drawn covers all of it. When it does not, the
@@ -873,6 +877,19 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
         look->saturation = 400;
         look->brightness = 0;
         break;
+    case GLASS_CONTROL: /* small glass inside a window: a finer lens, less frost, a brighter edge */
+        look->tint = ALPHA(color_mix(dark ? RGB(74, 72, 82) : RGB(255, 255, 255), style.tint | 0xff000000u, dark ? 30 : 18),
+                           look->liquid ? (dark ? 84 : 120) : (dark ? 140 : 190));
+        look->solid_color = dark ? RGB(62, 62, 68) : RGB(252, 252, 253);
+        look->brightness = dark ? 12 : 10;
+        look->scale = 2;
+        look->blur = 1;
+        look->band = 10;
+        look->refract = 9;
+        look->rim = look->liquid ? 170 : 70;
+        look->dispersion = look->liquid;
+        look->outline = dark ? ALPHA(0, 80) : ALPHA(0, 34);
+        break;
     case GLASS_OVERLAY:
         look->tint = dark ? RGBA(0, 0, 0, 90) : RGBA(0, 0, 0, 40);
         look->solid_color = dark ? RGB(20, 20, 24) : RGB(90, 90, 100);
@@ -887,4 +904,120 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius)
     apply_strength(look);
     if (kind != GLASS_WINDOW && kind != GLASS_OVERLAY && !look->solid)
         apply_effect(look, kind);
+}
+
+/* ---- the same glass on controls: buttons, switches, sliders, lists ---- */
+
+/* The lit edge of liquid glass without the lens: a band along the edge brightened where the light falls (top left),
+   as render() does, for a piece of glass whose picture behind is the compositor's (a see-through window) */
+static void rim_only(struct canvas *c, struct rect f, const struct glass_look *look)
+{
+    int radius = MIN(look->radius, MIN(f.w, f.h) / 2);
+    int band = look->liquid ? MIN(MAX(look->band / 2, 4), MIN(f.w, f.h) / 2) : 0;
+    if (band <= 0 || !look->rim) {
+        if (look->rim)
+            gfx_round_frame_gradient(c, f, radius, ALPHA(0xffffffffu, look->rim), ALPHA(0xffffffffu, look->rim / 3));
+        return;
+    }
+    struct rect area = rect_intersect(f, c->clip);
+    int band16 = band * 16;
+    for (int y = area.y; y < area.y + area.h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        bool edge_row = y < f.y + band + radius || y >= f.y + f.h - band - radius;
+        for (int x = area.x; x < area.x + area.w; x++) {
+            if (!edge_row && x >= f.x + band + radius && x < f.x + f.w - band - radius) {
+                x = f.x + f.w - band - radius - 1;
+                continue;
+            }
+            int nx, ny, d = edge(f, radius, x, y, &nx, &ny);
+            if (d < 0 || d >= band16)
+                continue;
+            int i = d * 64 / band16;
+            int light = (-nx * 181 - ny * 181) >> 8;
+            int dir = light > 0 ? light * light >> 8 : (light * light >> 8) * 5 / 8;
+            int spec = MIN(255, rim_lut[i] * (look->rim * (64 + dir * 3 / 4) >> 8) >> 8);
+            if (spec <= 0)
+                continue;
+            uint32_t p = row[x];
+            unsigned a = p >> 24;
+            int r = (int)(p >> 16 & 0xff), g = (int)(p >> 8 & 0xff), b = (int)(p & 0xff);
+            r += (255 - r) * spec >> 8;
+            g += (255 - g) * spec >> 8;
+            b += (255 - b) * spec >> 8;
+            a += (255 - a) * (unsigned)spec >> 9;
+            row[x] = a << 24 | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+        }
+    }
+}
+
+/* the lit edge alone, in the look of a kind of glass: for panels whose fill is already there */
+void glass_lit_edge(struct canvas *c, struct rect r, int radius, enum glass_kind kind)
+{
+    struct glass_look look;
+    glass_look_for(&look, kind, radius);
+    if (look.solid)
+        return;
+    if (!look.rim)
+        look.rim = 60;
+    rim_only(c, r, &look);
+    if (look.halo)
+        glass_halo_edge(c, r, MIN(radius, MIN(r.w, r.h) / 2), 255);
+}
+
+#define CONTROL_GLASSES 16
+static struct glass *control_glass; /* from the heap: the 32-bit kernel image has no room to spare */
+static int control_turn;
+
+/* one glass per size, so the shape of the lens is worked out once */
+static struct glass *control_for(struct rect r, int radius)
+{
+    if (!control_glass && !(control_glass = kzalloc(sizeof(struct glass) * CONTROL_GLASSES)))
+        return NULL;
+    for (int i = 0; i < CONTROL_GLASSES; i++)
+        if (control_glass[i].geo && control_glass[i].geo_w == r.w && control_glass[i].geo_h == r.h &&
+            control_glass[i].geo_r == MIN(radius, MIN(r.w, r.h) / 2))
+            return &control_glass[i];
+    return &control_glass[control_turn++ % CONTROL_GLASSES];
+}
+
+/* A control made of the system's glass: the look of the widgets and panels for the chosen glass level and effect
+   (and its frost and edge settings), its lens bending what the window drew under it. tint, when not 0, colours the
+   glass (the accent of a primary button or a switch that is on); lift brightens (hovered) or darkens (pressed). */
+void glass_control(struct canvas *c, struct rect r, int radius, enum glass_kind kind, uint32_t tint, int lift)
+{
+    if (r.w < 4 || r.h < 4 || rect_empty(rect_intersect(r, c->clip)))
+        return;
+    struct glass_look look;
+    glass_look_for(&look, kind, radius);
+    look.pointer_light = 0; /* the pointer is in screen places; the window's canvas is not */
+    look.brightness += lift;
+    if (tint) {
+        tint |= 0xff000000u;
+        look.tint = ALPHA(color_mix(look.tint | 0xff000000u, tint, 210), MAX((int)(look.tint >> 24), 200));
+        look.solid_color = tint;
+    }
+    if (lift && look.solid)
+        look.solid_color = color_shade(look.solid_color, lift);
+    struct rect in = rect_intersect(r, c->clip);
+    uint32_t mid = c->px[(in.y + in.h / 2) * c->stride + in.x + in.w / 2];
+    if (!look.solid && mid >> 24 < 200) { /* a see-through window: the compositor frosts what is behind */
+        gfx_round(c, r, radius, look.tint);
+        rim_only(c, r, &look);
+        if (look.halo)
+            glass_halo_edge(c, r, MIN(radius, MIN(r.w, r.h) / 2), 255);
+        return;
+    }
+    struct glass *g = control_for(r, radius);
+    if (!g) {
+        gfx_round(c, r, radius, look.solid ? look.solid_color : ALPHA(look.tint, 255));
+        return;
+    }
+    g->frame = r;
+    g->valid = false;
+    if (!look.solid && !capture_in(c, g, look.blur, look.scale ? look.scale : 4, look.liquid, c->clip, 6)) {
+        gfx_round(c, r, radius, ALPHA(look.tint, 255));
+        rim_only(c, r, &look);
+        return;
+    }
+    glass_draw_alpha(c, g, &look, 255);
 }

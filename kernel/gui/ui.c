@@ -130,49 +130,17 @@ void ui_label(struct ui *ui, struct rect r, const char *text, const struct ui_fo
         gfx_text_box(ui->c, r, f ? f : &font_sans, text, color, align);
 }
 
-static void control_box(struct canvas *c, struct rect r, int radius, bool pressed)
+
+/* Every control is made of the system's glass (glass.c): the same lens, rim and effect as the widgets, the dock and
+   the panels, so it changes with the glass level and effect chosen in Appearance. */
+void ui_glass(struct canvas *c, struct rect r, int radius, uint32_t tint, int lift)
 {
-    if (style.dark) {
-        gfx_round(c, r, radius, pressed ? style.control_pressed : style.control);
-        gfx_round_frame_gradient(c, r, radius, ALPHA(0xffffffffu, 46), ALPHA(0xffffffffu, 8));
-    } else {
-        gfx_round(c, (struct rect){r.x, r.y + 1, r.w, r.h}, radius, ALPHA(0, 22));
-        gfx_round(c, r, radius, pressed ? style.control_pressed : style.control);
-        gfx_round_frame(c, r, radius, style.control_border);
-    }
+    glass_control(c, r, radius, GLASS_CONTROL, tint, lift);
 }
 
-/* The glass face every button shares: a capsule of tinted, see-through glass with a sheen on its upper half, a rim
-   that is bright where the light falls (the top) and fades down the sides, a faint glow along the bottom where light
-   leaves the glass, and a soft shadow under it. tint 0 is clear glass; pressing darkens, hovering brightens. */
 void ui_glass_face(struct canvas *c, struct rect r, uint32_t tint, bool hot, bool pressed)
 {
-    if (r.w < 4 || r.h < 4)
-        return;
-    int radius = MIN(r.h / 2, r.w / 2);
-    bool dark = style.dark;
-    gfx_round(c, (struct rect){r.x, r.y + 2, r.w, r.h}, radius, ALPHA(0, dark ? 70 : 30));
-    uint32_t top, bottom;
-    if (tint) {
-        uint32_t base = pressed ? color_shade(tint, -36) : hot ? color_shade(tint, 14) : tint;
-        top = ALPHA(color_shade(base, 30), 236);
-        bottom = ALPHA(base, 224);
-    } else {
-        int lift = pressed ? -14 : hot ? 12 : 0;
-        top = dark ? ALPHA(0xffffffffu, 40 + lift) : ALPHA(0xffffffffu, 200 + lift / 2);
-        bottom = dark ? ALPHA(0xffffffffu, 18 + lift) : ALPHA(RGB(236, 238, 244), 170 + lift / 2);
-    }
-    gfx_round_gradient(c, r, radius, top, bottom);
-    if (!pressed && r.h >= 12) {
-        struct rect sheen = {r.x + 3, r.y + 1, r.w - 6, r.h / 2};
-        gfx_round_gradient(c, sheen, MIN(radius, sheen.h), ALPHA(0xffffffffu, dark || tint ? 44 : 90),
-                           ALPHA(0xffffffffu, 0));
-    }
-    struct rect glow = {r.x + radius / 2, r.y + r.h - 3, r.w - radius, 2};
-    if (glow.w > 0)
-        gfx_round(c, glow, 1, ALPHA(0xffffffffu, dark || tint ? 26 : 60));
-    gfx_round_frame_gradient(c, r, radius, ALPHA(0xffffffffu, dark || tint ? 120 : 230),
-                             dark ? ALPHA(0xffffffffu, 22) : ALPHA(0, tint ? 30 : 34));
+    ui_glass(c, r, MIN(r.h / 2, r.w / 2), tint, pressed ? -22 : hot ? 12 : 0);
 }
 
 /* where a capsule's label goes: clear of the round ends */
@@ -208,11 +176,11 @@ bool ui_button_primary(struct ui *ui, struct rect r, const char *label)
     return clicked;
 }
 
-/* tool and symbol buttons sit bare until the pointer comes, then turn into the same glass */
+/* tool and symbol buttons: a pane of glass, lit when the pointer is on it */
 static void tool_back(struct ui *ui, int id, struct rect r, bool toggled)
 {
-    if (toggled || is_active(ui, id) || is_hot(ui, id))
-        ui_glass_face(ui->c, r, 0, is_hot(ui, id) || toggled, is_active(ui, id) && is_hot(ui, id));
+    ui_glass(ui->c, r, MIN(r.h / 2, 10), toggled ? style.accent : 0,
+             is_active(ui, id) && is_hot(ui, id) ? -22 : is_hot(ui, id) ? 12 : 0);
 }
 
 bool ui_tool(struct ui *ui, struct rect r, enum icon_id icon, const char *label, bool toggled)
@@ -240,7 +208,7 @@ bool ui_symbol_button(struct ui *ui, struct rect r, enum symbol_id sym, bool tog
     if (ui->c) {
         tool_back(ui, id, r, toggled);
         gfx_symbol(ui->c, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, sym, 16,
-                   toggled ? style.accent : ALPHA(style.text, 210));
+                   toggled ? RGB(255, 255, 255) : ALPHA(style.text, 210));
     }
     return clicked;
 }
@@ -254,12 +222,9 @@ bool ui_checkbox(struct ui *ui, struct rect r, const char *label, bool *value)
     ax(ui, AX_CHECK, r, label, NULL, *value ? AX_ON : 0);
     if (ui->c) {
         struct rect box = {r.x, r.y + (r.h - 16) / 2, 16, 16};
-        if (*value) {
-            gfx_round_gradient(ui->c, box, 4, color_shade(style.accent, 20), style.accent);
+        ui_glass(ui->c, box, 5, *value ? style.accent : 0, is_active(ui, id) ? -22 : is_hot(ui, id) ? 12 : 0);
+        if (*value)
             gfx_symbol(ui->c, box.x + 2, box.y + 2, SYM_CHECK, 12, RGB(255, 255, 255));
-        } else {
-            control_box(ui->c, box, 4, is_active(ui, id));
-        }
         gfx_text_box(ui->c, (struct rect){r.x + 24, r.y, r.w - 24, r.h}, &font_sans, label, style.text, ALIGN_LEFT);
     }
     return clicked;
@@ -269,20 +234,16 @@ bool ui_switch(struct ui *ui, struct rect r, bool *value)
 {
     bool clicked;
     int id = track(ui, r, &clicked);
-    UNUSED(id);
     if (clicked)
         *value = !*value;
     ax(ui, AX_SWITCH, r, NULL, NULL, *value ? AX_ON : 0);
     if (ui->c) {
         int h = r.h, radius = h / 2;
-        uint32_t track_color = *value ? style.accent : style.dark ? RGB(72, 72, 76) : RGB(226, 226, 230);
-        gfx_round(ui->c, r, radius, track_color);
-        if (!style.dark && !*value)
-            gfx_round_frame(ui->c, r, radius, ALPHA(0, 20));
-        int knob = h - 4, kx = *value ? r.x + r.w - knob - 2 : r.x + 2;
-        struct rect k = {kx, r.y + 2, knob, knob};
-        gfx_drop_shadow(ui->c, k, knob / 2, 4, 70, 1);
-        gfx_round(ui->c, k, knob / 2, RGB(255, 255, 255));
+        ui_glass(ui->c, r, radius, *value ? style.accent : 0, *value ? 26 : -10); /* the groove, lit when on */
+        int knob = h - 4, kw = knob * 3 / 2, kx = *value ? r.x + r.w - kw - 2 : r.x + 2;
+        struct rect k = {kx, r.y + 2, kw, knob}; /* a drop of clear glass sliding in it */
+        gfx_drop_shadow(ui->c, k, knob / 2, 4, 60, 1);
+        ui_glass(ui->c, k, knob / 2, RGB(255, 255, 255), is_active(ui, id) ? -10 : 18);
     }
     return clicked;
 }
@@ -294,14 +255,10 @@ bool ui_radio(struct ui *ui, struct rect r, const char *label, bool selected)
     ax(ui, AX_RADIO, r, label, NULL, selected ? AX_ON : 0);
     if (ui->c) {
         int cx = r.x + 8, cy = r.y + r.h / 2;
-        if (selected) {
-            gfx_circle(ui->c, cx, cy, 8, style.accent);
+        ui_glass(ui->c, (struct rect){cx - 8, cy - 8, 16, 16}, 8, selected ? style.accent : 0,
+                 is_active(ui, id) ? -22 : is_hot(ui, id) ? 12 : 0);
+        if (selected)
             gfx_circle(ui->c, cx, cy, 3, RGB(255, 255, 255));
-        } else {
-            gfx_circle(ui->c, cx, cy + (style.dark ? 0 : 1), 8, style.dark ? ALPHA(0, 0) : ALPHA(0, 22));
-            gfx_circle(ui->c, cx, cy, 8, is_active(ui, id) ? style.control_pressed : style.control);
-            gfx_ring(ui->c, cx, cy, 8, style.control_border);
-        }
         gfx_text_box(ui->c, (struct rect){r.x + 24, r.y, r.w - 24, r.h}, &font_sans, label, style.text, ALIGN_LEFT);
     }
     return clicked;
@@ -325,12 +282,12 @@ bool ui_slider(struct ui *ui, struct rect r, int *value, int min, int max)
     if (ui->c) {
         int cy = r.y + r.h / 2;
         int pos = r.x + (*value - min) * r.w / MAX(max - min, 1);
-        gfx_round(ui->c, (struct rect){r.x, cy - 2, r.w, 4}, 2, style.dark ? RGB(80, 80, 84) : RGB(216, 216, 220));
-        gfx_round(ui->c, (struct rect){r.x, cy - 2, pos - r.x, 4}, 2, style.accent);
-        struct rect knob = {pos - 9, cy - 9, 18, 18};
-        gfx_drop_shadow(ui->c, knob, 9, 5, 80, 1);
-        gfx_circle(ui->c, pos, cy, 9, RGB(255, 255, 255));
-        gfx_ring(ui->c, pos, cy, 9, ALPHA(0, 30));
+        ui_glass(ui->c, (struct rect){r.x, cy - 4, r.w, 8}, 4, 0, -6); /* a glass groove */
+        if (pos - r.x > 2)
+            gfx_round(ui->c, (struct rect){r.x + 2, cy - 2, pos - r.x - 2, 4}, 2, style.accent);
+        struct rect knob = {pos - 13, cy - 9, 26, 18}; /* a lens riding on it */
+        gfx_drop_shadow(ui->c, knob, 9, 5, 70, 1);
+        ui_glass(ui->c, knob, 9, RGB(255, 255, 255), is_active(ui, id) ? -10 : 18);
     }
     return changed;
 }
@@ -354,13 +311,12 @@ bool ui_capsule_slider(struct ui *ui, struct rect r, enum symbol_id sym, int *va
     ax_range(ui, r, *value, min, max);
     if (ui->c) {
         int fill = r.h + (*value - min) * span / MAX(max - min, 1);
-        gfx_round(ui->c, r, rad, style.dark ? ALPHA(0xffffffffu, 34) : ALPHA(0, 22));
+        ui_glass(ui->c, r, rad, 0, -6);
         uint32_t knob = style.dark ? RGB(236, 236, 240) : RGB(255, 255, 255);
-        gfx_round(ui->c, (struct rect){r.x, r.y, fill, r.h}, rad, knob);
+        gfx_round(ui->c, (struct rect){r.x, r.y, fill, r.h}, rad, ALPHA(knob, 220));
         struct rect k = {r.x + fill - r.h, r.y, r.h, r.h};
         gfx_drop_shadow(ui->c, k, rad, 4, 60, 1);
-        gfx_circle(ui->c, k.x + rad, k.y + rad, rad, knob);
-        gfx_ring(ui->c, k.x + rad, k.y + rad, rad, ALPHA(0, 26));
+        ui_glass(ui->c, k, rad, knob, is_active(ui, id) ? -10 : 18);
         gfx_symbol(ui->c, r.x + (r.h - 16) / 2 + 1, r.y + (r.h - 16) / 2, sym, 16, RGB(118, 118, 124));
     }
     return changed;
@@ -370,11 +326,8 @@ bool ui_segmented(struct ui *ui, struct rect r, const char *const *labels, int c
 {
     bool changed = false;
     int sw = r.w / MAX(count, 1);
-    if (ui->c) { /* a groove of glass the selected piece floats in */
-        gfx_round(ui->c, r, r.h / 2, style.dark ? ALPHA(0xffffffffu, 20) : ALPHA(0, 14));
-        gfx_round_frame_gradient(ui->c, r, r.h / 2, ALPHA(0, style.dark ? 40 : 20),
-                                 ALPHA(0xffffffffu, style.dark ? 30 : 140));
-    }
+    if (ui->c) /* a groove of glass the selected piece floats in */
+        ui_glass(ui->c, r, r.h / 2, 0, -8);
     for (int i = 0; i < count; i++) {
         struct rect s = {r.x + i * sw, r.y, i == count - 1 ? r.w - i * sw : sw, r.h};
         bool clicked;
@@ -387,7 +340,7 @@ bool ui_segmented(struct ui *ui, struct rect r, const char *const *labels, int c
         if (!ui->c)
             continue;
         if (i == *selected) {
-            ui_glass_face(ui->c, rect_inset(s, 2), 0, true, false);
+            ui_glass(ui->c, rect_inset(s, 2), (s.h - 4) / 2, 0, 20);
         } else if (is_active(ui, id)) {
             gfx_round(ui->c, rect_inset(s, 2), (s.h - 4) / 2, style.hover);
         } else if (i > 0 && i - 1 != *selected) {
@@ -733,10 +686,8 @@ bool ui_sidebar_item(struct ui *ui, struct rect r, enum symbol_id sym, const cha
     int id = track(ui, r, &clicked);
     ax(ui, AX_ITEM, r, label, NULL, selected ? AX_ON : 0);
     if (ui->c) {
-        if (selected)
-            gfx_round(ui->c, r, 7, style.dark ? ALPHA(0xffffffffu, 34) : ALPHA(0, 24));
-        else if (is_active(ui, id))
-            gfx_round(ui->c, r, 7, style.hover);
+        if (selected || is_active(ui, id))
+            ui_glass(ui->c, r, MIN(10, r.h / 2), 0, selected ? 14 : -10);
         gfx_symbol(ui->c, r.x + 8, r.y + (r.h - 16) / 2, sym, 16, style.accent);
         gfx_text_box(ui->c, (struct rect){r.x + 32, r.y, r.w - 36, r.h}, &font_sans, label, style.text, ALIGN_LEFT);
     }
@@ -769,8 +720,7 @@ void ui_sidebar_panel(struct ui *ui, int width, int height, uint32_t back)
             }
         }
     }
-    gfx_round_frame_gradient(c, r, radius, ALPHA(0xffffffffu, style.dark ? 70 : 200),
-                             ALPHA(0xffffffffu, style.dark ? 20 : 90));
+    glass_lit_edge(c, r, radius, GLASS_PANEL); /* the lit edge of the panels' glass */
     gfx_round_frame(c, (struct rect){r.x - 1, r.y - 1, r.w + 2, r.h + 2}, radius + 1,
                     style.dark ? ALPHA(0, 120) : ALPHA(0, 22));
 }

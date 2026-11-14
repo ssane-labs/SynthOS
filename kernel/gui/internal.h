@@ -64,6 +64,7 @@ enum glass_kind {
     GLASS_PANEL,
     GLASS_WINDOW,
     GLASS_OVERLAY,
+    GLASS_CONTROL,
 };
 
 struct glass_look {
@@ -126,6 +127,8 @@ void glass_look_for(struct glass_look *look, enum glass_kind kind, int radius);
 void glass_draw_alpha(struct canvas *c, struct glass *g, const struct glass_look *look, int alpha);
 bool glass_ready(struct canvas *c, struct glass *g, const struct glass_look *look);
 void glass_halo_edge(struct canvas *c, struct rect f, int radius, int alpha);
+void glass_lit_edge(struct canvas *c, struct rect r, int radius, enum glass_kind kind);
+void glass_control(struct canvas *c, struct rect r, int radius, enum glass_kind kind, uint32_t tint, int lift);
 int glass_margin(void);
 int gfx_corner_coverage(struct rect r, int radius, int x, int y);
 
