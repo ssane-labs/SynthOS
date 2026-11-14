@@ -3,6 +3,7 @@
    windows describe themselves while they are painted for it (gui_ax in ui.c and gfx.c); Windows programs keep a
    list of their controls (w32_describe). Then `web`: a web page as text with numbered links and fields. */
 
+#include <synth/config.h>
 #include <synth/exec.h>
 #include <synth/html.h>
 
@@ -485,7 +486,14 @@ static void js_quote(const char *in, char *out, size_t cap)
 static int web_live(struct shell *sh, const char *address, const char *js, bool changes)
 {
     char *text = NULL;
+#if CONFIG_WIN32 && defined(__x86_64__)
     int err = obscura_page(address, js, changes, &text, 30000);
+#else /* no Obscura in this build */
+    UNUSED(address);
+    UNUSED(js);
+    UNUSED(changes);
+    int err = E_NOENT;
+#endif
     if (err == E_NOENT) {
         kfree(text);
         return ax_error(sh, "web", "Obscura is not showing a web page (and needs its engine for this): web page <address>");
@@ -525,7 +533,11 @@ static int web_live_act(struct shell *sh, const char *op, long n, const char *te
     if (r || !strcmp(op, "type") || !strcmp(op, "set"))
         return r;
     for (uint64_t t = hal_ticks_ms(); hal_ticks_ms() - t < 1500;) /* what the press did: the page after it */
+#if CONFIG_WIN32
         w32_host_sleep(50);
+#else
+        hal_sleep_ms(50);
+#endif
     sh_puts(sh, "\n");
     return web_live(sh, NULL, web_read_js, false);
 }
