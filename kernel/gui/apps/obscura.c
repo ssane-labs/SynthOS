@@ -68,6 +68,7 @@ enum req {
     R_FIND,
     R_SOURCE,
     R_AI,
+    R_AGENT,
 };
 
 enum cmd {
@@ -974,6 +975,10 @@ static void save_page(const char *html)
 
 static void context_menu(void);
 
+/* what the assistant's script in the page answered (obscura_page) */
+static char *agent_answer;
+static bool agent_waiting, agent_failed;
+
 static void got_info(char *text)
 {
     char *nl = strchr(text, '\n'), *icon = NULL;
@@ -1072,6 +1077,13 @@ static void answered(const char *line)
             save_page(text);
         break;
     case R_AI: ai_answer(text && !failed ? text : NULL); break;
+    case R_AGENT:
+        kfree(agent_answer);
+        agent_answer = text;
+        text = NULL;
+        agent_failed = failed;
+        agent_waiting = false;
+        break;
     case R_HOVER: str_copy(br->hover, text && !failed ? text : "", sizeof(br->hover)); break;
     case R_CONTEXT:
         str_copy(br->menu_link, text && !failed ? text : "", sizeof(br->menu_link));
@@ -5317,6 +5329,46 @@ static void open_arg(const char *arg, bool fresh_tab)
         new_tab(url);
     else
         go(url);
+}
+
+/* For the assistant's text mode: runs a script in the page Obscura shows (opening address first, if given) and
+   waits for its answer. The page keeps its own scripts running, so this sees what the person sees. An answer
+   "nav:address" goes there; one from a script that changed the page brings a fresh picture of it. */
+int obscura_page(const char *address, const char *js, bool changes, char **out, uint32_t timeout_ms)
+{
+    *out = NULL;
+    if (!wm_screen_count())
+        return E_NOENT;
+    if (address && *address)
+        launch(address);
+    if (!br || !vfs_exists(ENGINE))
+        return E_NOENT;
+    if (!tab()->url[0] || internal(tab()->url))
+        return E_NOENT;
+    if (!br->link && !engine_start())
+        return E_IO;
+    kfree(agent_answer);
+    agent_answer = NULL;
+    agent_waiting = true;
+    push_eval(R_AGENT, js);
+    uint64_t start = hal_ticks_ms();
+    while (br && br->link && agent_waiting && hal_ticks_ms() - start < timeout_ms) {
+        pump();
+        w32_host_sleep(10); /* the engine is a Windows program: it runs while the desktop waits */
+    }
+    if (!br || agent_waiting) {
+        agent_waiting = false;
+        return E_TIMEDOUT;
+    }
+    *out = agent_answer;
+    agent_answer = NULL;
+    if (changes && *out && !strncmp(*out, "nav:", 4))
+        navigate(*out + 4);
+    else if (changes)
+        push_shot();
+    if (br->win)
+        wm_invalidate(br->win);
+    return agent_failed ? E_IO : 0;
 }
 
 static void launch(const char *arg)

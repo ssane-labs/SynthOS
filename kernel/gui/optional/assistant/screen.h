@@ -3,6 +3,7 @@
    windows describe themselves while they are painted for it (gui_ax in ui.c and gfx.c); Windows programs keep a
    list of their controls (w32_describe). Then `web`: a web page as text with numbered links and fields. */
 
+#include <synth/exec.h>
 #include <synth/html.h>
 
 #define AX_NODES 320
@@ -409,9 +410,125 @@ COMMAND(screen, NULL, "system",
 
 static struct {
     struct html_doc doc;
-    bool open;
+    bool open, live; /* live: the page Obscura shows, with its scripts, read through the engine */
     char url[HTTP_URL_MAX];
 } page;
+
+/* ---- the page in Obscura: read and used by scripts run inside it, so pages built by JavaScript work too */
+
+static const char web_read_js[] =
+    "(function(){var L=[],F=[],o=[],T=0;\n"
+    "function lab(e){return((e.getAttribute&&(e.getAttribute('aria-label')||e.getAttribute('title')||e.getAttribute('alt')))||e.placeholder||'').trim();}\n"
+    "function hid(e){var s=getComputedStyle(e);return s.display=='none'||s.visibility=='hidden';}\n"
+    "function nl(){if(o.length&&o[o.length-1]!='\\n')o.push('\\n');}\n"
+    "function walk(n){if(T>24000)return;\n"
+    "if(n.nodeType==3){var t=n.data.replace(/\\s+/g,' ');if(t.trim()){o.push(t);T+=t.length;}return;}\n"
+    "if(n.nodeType!=1)return;var g=n.tagName.toUpperCase();\n"
+    "if(/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|SVG|HEAD|IFRAME)$/.test(g)||hid(n))return;\n"
+    "var ty=String(n.type||'').toLowerCase(),r=n.getAttribute('role');\n"
+    "if(g=='INPUT'&&ty=='hidden')return;\n"
+    "if(g=='INPUT'||g=='TEXTAREA'||g=='SELECT'||g=='BUTTON'||r=='button'||r=='checkbox'||(n.isContentEditable&&!(n.parentElement&&n.parentElement.isContentEditable))){\n"
+    "F.push(n);var k=F.length,d,x=lab(n);\n"
+    "if(g=='BUTTON'||r=='button'||ty=='submit'||ty=='button'||ty=='reset'||ty=='image')d='button \"'+(String(n.innerText||n.value||'').trim().slice(0,60)||x)+'\"';\n"
+    "else if(ty=='checkbox'||ty=='radio'||r=='checkbox')d=(ty=='radio'?'option':'checkbox')+(x?' \"'+x+'\"':'')+' '+(n.checked||n.getAttribute('aria-checked')=='true'?'on':'off');\n"
+    "else if(ty=='password')d='password field'+(n.value?' (filled)':'');\n"
+    "else if(g=='SELECT')d='choice'+(x?' \"'+x+'\"':'')+' = \"'+(n.selectedOptions&&n.selectedOptions[0]?n.selectedOptions[0].text:'')+'\" of '+[].map.call(n.options,function(p){return p.text.trim()}).slice(0,12).join(' | ');\n"
+    "else d='field'+(x?' \"'+x+'\"':'')+' = \"'+String(g=='INPUT'||g=='TEXTAREA'?n.value:n.innerText).slice(0,80)+'\"';\n"
+    "o.push(' {'+k+' '+d+'} ');return;}\n"
+    "var b=/^(P|DIV|LI|TR|H[1-6]|SECTION|ARTICLE|HEADER|FOOTER|NAV|UL|OL|TABLE|FORM|BR|HR|MAIN|ASIDE|DL|DT|DD|PRE|BLOCKQUOTE|FIGURE)$/.test(g);\n"
+    "if(b)nl();if(/^H[1-6]$/.test(g))o.push('# ');if(g=='LI')o.push('- ');\n"
+    "if(g=='IMG'&&lab(n))o.push('[image: '+lab(n)+']');\n"
+    "for(var c=n.firstChild;c;c=c.nextSibling)walk(c);\n"
+    "if(g=='A'&&n.href&&String(n.href).indexOf('javascript:')!=0){L.push(n);o.push('['+L.length+']');}\n"
+    "else if(g=='A'||r=='link'||(n.onclick&&!b)){F.push(n);o.push(' {'+F.length+' button}');}\n"
+    "if(b)nl();}\n"
+    "walk(document.body||document.documentElement);window.__sxL=L;window.__sxF=F;\n"
+    "return document.title+'\\n'+location.href+'\\n\\n'+o.join('').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').replace(/ {2,}/g,' ').slice(0,24000);})()";
+
+static const char web_act_js[] =
+    "(function(n,t,op){var L=window.__sxL,F=window.__sxF;if(!L||!F)return 'error:look at the page first (web show)';\n"
+    "if(op=='link'){var a=L[n-1];if(!a)return 'error:there is no link '+n;var h=String(a.href);\n"
+    "if(h.indexOf('#')<0||h.split('#')[0]!=String(location.href).split('#')[0])return 'nav:'+h;a.click();return 'followed link '+n;}\n"
+    "var e=F[n-1];if(!e)return 'error:there is no field '+n;var g=e.tagName.toUpperCase(),ty=String(e.type||'').toLowerCase();\n"
+    "function fire(k){e.dispatchEvent(new Event(k,{bubbles:true}));}\n"
+    "if(op=='type'||op=='set'){if(e.focus)e.focus();\n"
+    "if(g=='SELECT'){for(var i=0;i<e.options.length;i++)if(e.options[i].text.trim().toLowerCase()==t.toLowerCase()||e.options[i].value==t){e.selectedIndex=i;fire('input');fire('change');return 'choice '+n+' = \"'+e.options[i].text.trim()+'\"';}return 'error:choice '+n+' has no '+t;}\n"
+    "if(g!='INPUT'&&g!='TEXTAREA'&&!e.isContentEditable)return 'error:field '+n+' is not for text: press it';\n"
+    "if(ty=='checkbox'||ty=='radio'||ty=='submit'||ty=='button')return 'error:field '+n+' is not for text: press it';\n"
+    "if(e.isContentEditable)e.innerText=(op=='set'?'':e.innerText)+t;else e.value=(op=='set'?'':e.value)+t;\n"
+    "fire('input');fire('change');return 'field '+n+' = \"'+String(e.isContentEditable?e.innerText:e.value).slice(0,200)+'\"';}\n"
+    "if(op=='key'){if(e.focus)e.focus();var o={key:t,code:t,bubbles:true};e.dispatchEvent(new KeyboardEvent('keydown',o));e.dispatchEvent(new KeyboardEvent('keyup',o));\n"
+    "if(t=='Enter'&&e.form){if(e.form.requestSubmit)e.form.requestSubmit();else e.form.submit();return 'sent the form';}return 'pressed '+t;}\n"
+    "if(e.focus)e.focus();e.click();\n"
+    "if(ty=='checkbox'||ty=='radio')return (ty=='radio'?'option ':'checkbox ')+n+' '+(e.checked?'on':'off');\n"
+    "return 'pressed '+n;})(%d,%s,'%s')";
+
+
+static void js_quote(const char *in, char *out, size_t cap)
+{
+    size_t n = 0;
+    out[n++] = '\'';
+    for (; *in && n + 7 < cap; in++) {
+        unsigned char ch = (unsigned char)*in;
+        if (ch == '\'' || ch == '\\')
+            out[n++] = '\\', out[n++] = (char)ch;
+        else if (ch < 0x20)
+            n += (size_t)ksnprintf(out + n, cap - n, "\\x%02x", ch);
+        else
+            out[n++] = (char)ch;
+    }
+    out[n++] = '\'';
+    out[n] = 0;
+}
+
+/* runs a script in Obscura's page; its answer goes to the terminal, or the error */
+static int web_live(struct shell *sh, const char *address, const char *js, bool changes)
+{
+    char *text = NULL;
+    int err = obscura_page(address, js, changes, &text, 30000);
+    if (err == E_NOENT) {
+        kfree(text);
+        return ax_error(sh, "web", "Obscura is not showing a web page (and needs its engine for this): web page <address>");
+    }
+    if (err || !text) {
+        int r = ax_error(sh, "web", "the page did not answer (%s)%s%s", err_str(err ? err : E_IO), text ? ": " : "",
+                         text ? text : "");
+        kfree(text);
+        return r;
+    }
+    if (!strncmp(text, "error:", 6)) {
+        int r = ax_error(sh, "web", "%s", text + 6);
+        kfree(text);
+        return r;
+    }
+    page.live = true;
+    if (!strncmp(text, "nav:", 4))
+        sh_printf(sh, "going to %s\n", text + 4);
+    else {
+        sh_puts(sh, text);
+        if (*text && text[strlen(text) - 1] != '\n')
+            sh_puts(sh, "\n");
+    }
+    kfree(text);
+    return 0;
+}
+
+static int web_live_act(struct shell *sh, const char *op, long n, const char *text)
+{
+    char q[1100], *js = kmalloc(sizeof(web_act_js) + sizeof(q) + 32);
+    if (!js)
+        return ax_error(sh, "web", "out of memory");
+    js_quote(text, q, sizeof(q));
+    ksnprintf(js, sizeof(web_act_js) + sizeof(q) + 32, web_act_js, (int)n, q, op);
+    int r = web_live(sh, NULL, js, true);
+    kfree(js);
+    if (r || !strcmp(op, "type") || !strcmp(op, "set"))
+        return r;
+    for (uint64_t t = hal_ticks_ms(); hal_ticks_ms() - t < 1500;) /* what the press did: the page after it */
+        w32_host_sleep(50);
+    sh_puts(sh, "\n");
+    return web_live(sh, NULL, web_read_js, false);
+}
 
 static int web_load(struct shell *sh, const char *where, const char *body, size_t body_len)
 {
@@ -532,13 +649,37 @@ static void web_show(struct shell *sh)
     kfree(b.p);
 }
 
-COMMAND(web, NULL, "system", "web [<address>|link <n>|type <n> <text>|press <n>|show]",
-        "a web page as text for the assistant: links are [n], fields and buttons {n}")
+COMMAND(web, NULL, "system",
+        "web [<address>|page [<address>]|link <n>|type <n> <text>|set <n> <text>|press <n>|key <n> <key>|show]",
+        "a web page as text for the assistant: links are [n], fields and buttons {n}; page: the one in Obscura")
 {
     if (argc < 2)
         return command_usage(sh, command_find("web"));
     const char *op = argv[1];
     long k;
+    if (!strcmp(op, "page")) /* Obscura's page, scripts and all */
+        return web_live(sh, argc > 2 ? argv[2] : NULL, web_read_js, false);
+    if (page.live && !strcmp(op, "show"))
+        return web_live(sh, NULL, web_read_js, false);
+    if (page.live && argc >= 3 &&
+        (!strcmp(op, "link") || !strcmp(op, "type") || !strcmp(op, "set") || !strcmp(op, "press") ||
+         !strcmp(op, "key"))) {
+        if (!str_parse_long(argv[2], &k) || k < 1)
+            return ax_error(sh, "web", "%s is not a number", argv[2]);
+        char text[1024] = "";
+        for (int i = 3; i < argc; i++) {
+            if (i > 3)
+                str_append(text, " ", sizeof(text));
+            str_append(text, argv[i], sizeof(text));
+        }
+        if (!strcmp(op, "key")) /* enter, tab, escape... as the page knows them */
+            str_copy(text, !str_casecmp(text, "enter") || !*text ? "Enter" : !str_casecmp(text, "tab") ? "Tab"
+                           : !str_casecmp(text, "esc") || !str_casecmp(text, "escape") ? "Escape" : text,
+                     sizeof(text));
+        return web_live_act(sh, op, k, text);
+    }
+    if (!page.open && !strcmp(op, "show"))
+        return web_live(sh, NULL, web_read_js, false);
     if (!strcmp(op, "show") || (argc >= 3 && (!strcmp(op, "link") || !strcmp(op, "type") || !strcmp(op, "press")))) {
         if (!page.open)
             return ax_error(sh, "web", "no page is open: web <address>");
@@ -600,6 +741,7 @@ COMMAND(web, NULL, "system", "web [<address>|link <n>|type <n> <text>|press <n>|
         web_show(sh);
         return 0;
     }
+    page.live = false;
     if (web_load(sh, op, NULL, 0))
         return 1;
     web_show(sh);

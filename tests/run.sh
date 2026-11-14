@@ -1647,6 +1647,10 @@ web press 2 | grep Second
 Second page here
 web link 3
 web: there is no link 3
+web page /home/wa.html
+Obscura is not showing a web page
+ai tool web '{"do": "page"}' | grep result
+result: web: Obscura is not showing
 ai tool web '{"do": "link", "target": "1"}' | grep result
 result: web: there is no link 1
 ai tool screen '{"do": "click", "target": "4"}'

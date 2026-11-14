@@ -188,8 +188,10 @@ static const char tools_json[] =
     "\"parameters\": {\"type\": \"object\", \"properties\": {\"do\": {\"type\": \"string\"}, \"target\": "
     "{\"type\": \"string\"}, \"text\": {\"type\": \"string\"}}, \"required\": [\"do\"]}}}\n"
     "{\"type\": \"function\", \"function\": {\"name\": \"web\", \"description\": \"Read the web as text: do=open "
-    "(target: address) shows the page with links [n] and fields {n}; do=link (target: n) follows a link, type "
-    "(target: n, text) fills a field, press (target: n) presses a button or checkbox, show shows the page again.\", "
+    "(target: address) shows the page with links [n] and fields {n}; do=page (target: address or nothing) reads the "
+    "page in the Obscura browser instead, with its scripts running; do=link (target: n) follows a link, type or set "
+    "(target: n, text) fills a field, press (target: n) presses a button or checkbox, key (target: n, text: enter) "
+    "presses a key in a field, show shows the page again.\", "
     "\"parameters\": {\"type\": \"object\", \"properties\": {\"do\": {\"type\": \"string\"}, \"target\": "
     "{\"type\": \"string\"}, \"text\": {\"type\": \"string\"}}, \"required\": [\"do\"]}}}";
 
@@ -236,7 +238,8 @@ static bool tool_needs_approval(const char *name, const char *args)
         return true;
     if (!strcmp(name, "screen") || !strcmp(name, "web")) { /* looking is free; doing is asked */
         js_arg(args, "do", buf, sizeof(buf));
-        return strcmp(buf, "look") && strcmp(buf, "show") && strcmp(buf, "open") && strcmp(buf, "link") && *buf;
+        return strcmp(buf, "look") && strcmp(buf, "show") && strcmp(buf, "open") && strcmp(buf, "page") &&
+               strcmp(buf, "link") && *buf;
     }
     if (!strcmp(name, "setting"))
         return js_arg(args, "value", buf, sizeof(buf)) && *buf;
@@ -409,6 +412,9 @@ static void tool_run(struct agent *a, const char *name, const char *args, char *
             ksnprintf(line, sizeof(line), "screen menu %s %s", qm, qi);
         } else if (!strcmp(d, "look") || !strcmp(d, "show") || !*d) {
             ksnprintf(line, sizeof(line), web ? "web show" : "screen %s", t);
+        } else if (web && !strcmp(d, "page")) {
+            quote_arg(t, qt, sizeof(qt));
+            ksnprintf(line, sizeof(line), "web page %s", *t ? qt : "");
         } else if (web && !strcmp(d, "open")) {
             quote_arg(t, qt, sizeof(qt));
             ksnprintf(line, sizeof(line), "web %s", qt);
