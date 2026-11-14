@@ -372,7 +372,7 @@ static bool place(struct widget *w)
 }
 
 /* A new widget takes the free cells nearest the top right corner, or is not added when there are none. */
-static bool place_new(struct widget *w)
+static bool place_quietly(struct widget *w)
 {
     if (place(w)) {
         spring_set(&w->intro, -500);
@@ -380,6 +380,13 @@ static bool place_new(struct widget *w)
         return true;
     }
     drop_widget(w);
+    return false;
+}
+
+static bool place_new(struct widget *w)
+{
+    if (place_quietly(w))
+        return true;
     gui_notify("Widgets", "There is no room on the desktop for another widget of this size.");
     return false;
 }
@@ -545,7 +552,7 @@ void widgets_paint(struct canvas *c, struct rect area)
                 continue;
             card(c, w, top);
             struct canvas clip = *c;
-            clip.clip = rect_intersect(c->clip, rect_inset(w->r, -2));
+            clip.clip = rect_intersect(c->clip, w->r); /* nothing a widget draws leaves its card */
             widget_paint_kind(&clip, w, content_rect(w));
             int k = CLAMP(edit_pop.pos, 0, 1200);
             if (k > 16 && !w->leaving) {
@@ -1419,12 +1426,19 @@ static int set_kinds(const char *value)
             else
                 drop_widget(&ws[i]);
         }
+    int left_out = 0;
     for (int k = 0; k < WK_COUNT; k++)
         if ((want >> k & 1) && !has_kind(k)) {
             struct widget *w = add_widget(k);
-            if (w && started)
-                place_new(w);
+            if (w && started && !place_quietly(w))
+                left_out++;
         }
+    if (left_out) { /* one note for all of them */
+        char line[96];
+        ksnprintf(line, sizeof(line), "There is no room on the desktop for %d more widget%s.", left_out,
+                  left_out == 1 ? "" : "s");
+        gui_notify("Widgets", line);
+    }
     save();
     if (started) {
         widgets_layout();

@@ -181,7 +181,17 @@ static const char tools_json[] =
     "{\"type\": \"function\", \"function\": {\"name\": \"setting\", \"description\": \"Read a system setting, or "
     "change it when value is given (config names: theme, wallpaper, volume, brightness, dnd, keyboard, "
     "uiscale...).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}, "
-    "\"value\": {\"type\": \"string\"}}, \"required\": [\"name\"]}}}";
+    "\"value\": {\"type\": \"string\"}}, \"required\": [\"name\"]}}}\n"
+    "{\"type\": \"function\", \"function\": {\"name\": \"screen\", \"description\": \"See and use the windows on "
+    "the screen as text: do=look lists the front window's controls with numbers; then do=click (target: number), "
+    "type or set (target: number, text), key (target: enter, tab, esc, ctrl+s...), menu (target: Menu > Item).\", "
+    "\"parameters\": {\"type\": \"object\", \"properties\": {\"do\": {\"type\": \"string\"}, \"target\": "
+    "{\"type\": \"string\"}, \"text\": {\"type\": \"string\"}}, \"required\": [\"do\"]}}}\n"
+    "{\"type\": \"function\", \"function\": {\"name\": \"web\", \"description\": \"Read the web as text: do=open "
+    "(target: address) shows the page with links [n] and fields {n}; do=link (target: n) follows a link, type "
+    "(target: n, text) fills a field, press (target: n) presses a button or checkbox, show shows the page again.\", "
+    "\"parameters\": {\"type\": \"object\", \"properties\": {\"do\": {\"type\": \"string\"}, \"target\": "
+    "{\"type\": \"string\"}, \"text\": {\"type\": \"string\"}}, \"required\": [\"do\"]}}}";
 
 /* commands that only look */
 static bool read_only_command(const char *line)
@@ -224,9 +234,19 @@ static bool tool_needs_approval(const char *name, const char *args)
     }
     if (!strcmp(name, "write_file"))
         return true;
+    if (!strcmp(name, "screen") || !strcmp(name, "web")) { /* looking is free; doing is asked */
+        js_arg(args, "do", buf, sizeof(buf));
+        return strcmp(buf, "look") && strcmp(buf, "show") && strcmp(buf, "open") && strcmp(buf, "link") && *buf;
+    }
     if (!strcmp(name, "setting"))
         return js_arg(args, "value", buf, sizeof(buf)) && *buf;
     return false;
+}
+
+/* Settings → AI → what the assistant may do without asking */
+static bool tool_asks(const char *name, const char *args)
+{
+    return gui_ai.allow == AI_ALLOW_ASK || (gui_ai.allow == AI_ALLOW_LOOK && tool_needs_approval(name, args));
 }
 
 /* a line for the window: what the tool is about to do */
@@ -254,6 +274,12 @@ static void tool_label(const char *name, const char *args, char *out, size_t cap
             ksnprintf(out, cap, "Change setting %s to %s", a, b);
         else
             ksnprintf(out, cap, "Look at setting %s", a);
+    } else if (!strcmp(name, "screen") || !strcmp(name, "web")) {
+        char t[80];
+        js_arg(args, "do", b, sizeof(b));
+        js_arg(args, "target", t, sizeof(t));
+        js_arg(args, "text", a, sizeof(a));
+        ksnprintf(out, cap, "%s %s %s%s%s", !strcmp(name, "web") ? "Web:" : "Screen:", b, t, *a ? ": " : "", a);
     } else {
         ksnprintf(out, cap, "%s", name);
     }
@@ -361,6 +387,35 @@ static void tool_run(struct agent *a, const char *name, const char *args, char *
         else
             ksnprintf(line, sizeof(line), "config %s", p);
         capture(a, line, out, cap);
+    } else if (!strcmp(name, "screen") || !strcmp(name, "web")) {
+        char d[24], t[200], x[300], qt[420];
+        js_arg(args, "do", d, sizeof(d));
+        js_arg(args, "target", t, sizeof(t));
+        js_arg(args, "text", x, sizeof(x));
+        quote_arg(x, qt, sizeof(qt));
+        bool web = !strcmp(name, "web");
+        if (!web && !strcmp(d, "menu")) { /* "File > Open" */
+            char *gt = strchr(t, '>');
+            char item[200] = "";
+            if (gt) {
+                *gt = 0;
+                str_copy(item, js_ws(gt + 1), sizeof(item));
+                for (size_t n = strlen(t); n && t[n - 1] == ' '; n--)
+                    t[n - 1] = 0;
+            }
+            char qm[220], qi[220];
+            quote_arg(t, qm, sizeof(qm));
+            quote_arg(*item ? item : x, qi, sizeof(qi));
+            ksnprintf(line, sizeof(line), "screen menu %s %s", qm, qi);
+        } else if (!strcmp(d, "look") || !strcmp(d, "show") || !*d) {
+            ksnprintf(line, sizeof(line), web ? "web show" : "screen %s", t);
+        } else if (web && !strcmp(d, "open")) {
+            quote_arg(t, qt, sizeof(qt));
+            ksnprintf(line, sizeof(line), "web %s", qt);
+        } else {
+            ksnprintf(line, sizeof(line), "%s %s %s %s", name, d, t, *x ? qt : "");
+        }
+        capture(a, line, out, cap);
     } else {
         ksnprintf(out, cap, "there is no tool called %s", name);
     }
@@ -434,7 +489,7 @@ static void system_prompt(struct agent *a, char *out, size_t cap, bool tools)
     struct window *w = wm_focused();
     ksnprintf(out, cap,
               "You are the assistant of SynthOS, an operating system. You run on the user's own computer, offline. "
-              "Answer briefly and helpfully, in the user's language. You can act on the computer with tools: "
+              "%s, in the user's language. You can act on the computer with tools: "
               "use one only when the request needs it, then tell the user in plain words what you did or found.\n"
               "Now: %d %s %d, %02d:%02d. The user's home folder: %s (Documents, Downloads, Pictures, Music, "
               "Desktop inside).%s%s%s%s"
@@ -442,6 +497,9 @@ static void system_prompt(struct agent *a, char *out, size_t cap, bool tools)
               "function signatures within <tools></tools> XML tags:\n<tools>\n%s\n</tools>\n\nFor each function "
               "call, return a json object with function name and arguments within <tool_call></tool_call> XML "
               "tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>",
+              gui_ai.style == AI_STYLE_BRIEF      ? "Answer in as few words as possible"
+              : gui_ai.style == AI_STYLE_DETAILED ? "Answer fully and explain, step by step when it helps"
+                                                  : "Answer briefly, warmly and helpfully",
               t.day, time_month_name(t.month), t.year, t.hour, t.minute, home ? home : "/home",
               w && w->app ? " The app in front: " : "", w && w->app ? w->app->name : "", w && w->app ? "." : "",
               tools ? "\n\n" : "", tools_json);
@@ -688,7 +746,7 @@ static void agent_reply_done(struct agent *a)
         find_call(a->reply, a->call_name, sizeof(a->call_name), a->call_args, sizeof(a->call_args))) {
         a->rounds++;
         tool_label(a->call_name, a->call_args, a->call_label, sizeof(a->call_label));
-        if (!a->auto_approve && tool_needs_approval(a->call_name, a->call_args)) {
+        if (!a->auto_approve && tool_asks(a->call_name, a->call_args)) {
             a->state = AG_APPROVE;
             str_copy(a->status, "Waiting for your answer", sizeof(a->status));
             return;

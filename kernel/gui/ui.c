@@ -11,6 +11,24 @@
 
 static bool list_focused;
 
+struct ax_sink *gui_ax;
+
+/* tells the agent's screen reader about a control (only while it asks: see gui_ax) */
+static void ax(struct ui *ui, int kind, struct rect r, const char *name, const char *value, unsigned flags)
+{
+    if (gui_ax_on(ui->c))
+        gui_ax->note(gui_ax, kind, r, name ? name : "", name ? strlen(name) : 0, value, flags);
+}
+
+static void ax_range(struct ui *ui, struct rect r, int value, int min, int max)
+{
+    char v[40];
+    if (!gui_ax_on(ui->c))
+        return;
+    ksnprintf(v, sizeof(v), "%d (%d..%d)", value, min, max);
+    ax(ui, AX_SLIDER, r, NULL, v, 0);
+}
+
 void ui_run(struct window *w, struct ui_state *st, struct canvas *c, struct gui_event *e, ui_frame_fn frame,
             void *data)
 {
@@ -112,11 +130,6 @@ void ui_label(struct ui *ui, struct rect r, const char *text, const struct ui_fo
         gfx_text_box(ui->c, r, f ? f : &font_sans, text, color, align);
 }
 
-static int control_radius(struct rect r)
-{
-    return MIN(r.h / 2, r.h >= 30 ? 9 : 7);
-}
-
 static void control_box(struct canvas *c, struct rect r, int radius, bool pressed)
 {
     if (style.dark) {
@@ -129,13 +142,54 @@ static void control_box(struct canvas *c, struct rect r, int radius, bool presse
     }
 }
 
+/* The glass face every button shares: a capsule of tinted, see-through glass with a sheen on its upper half, a rim
+   that is bright where the light falls (the top) and fades down the sides, a faint glow along the bottom where light
+   leaves the glass, and a soft shadow under it. tint 0 is clear glass; pressing darkens, hovering brightens. */
+void ui_glass_face(struct canvas *c, struct rect r, uint32_t tint, bool hot, bool pressed)
+{
+    if (r.w < 4 || r.h < 4)
+        return;
+    int radius = MIN(r.h / 2, r.w / 2);
+    bool dark = style.dark;
+    gfx_round(c, (struct rect){r.x, r.y + 2, r.w, r.h}, radius, ALPHA(0, dark ? 70 : 30));
+    uint32_t top, bottom;
+    if (tint) {
+        uint32_t base = pressed ? color_shade(tint, -36) : hot ? color_shade(tint, 14) : tint;
+        top = ALPHA(color_shade(base, 30), 236);
+        bottom = ALPHA(base, 224);
+    } else {
+        int lift = pressed ? -14 : hot ? 12 : 0;
+        top = dark ? ALPHA(0xffffffffu, 40 + lift) : ALPHA(0xffffffffu, 200 + lift / 2);
+        bottom = dark ? ALPHA(0xffffffffu, 18 + lift) : ALPHA(RGB(236, 238, 244), 170 + lift / 2);
+    }
+    gfx_round_gradient(c, r, radius, top, bottom);
+    if (!pressed && r.h >= 12) {
+        struct rect sheen = {r.x + 3, r.y + 1, r.w - 6, r.h / 2};
+        gfx_round_gradient(c, sheen, MIN(radius, sheen.h), ALPHA(0xffffffffu, dark || tint ? 44 : 90),
+                           ALPHA(0xffffffffu, 0));
+    }
+    struct rect glow = {r.x + radius / 2, r.y + r.h - 3, r.w - radius, 2};
+    if (glow.w > 0)
+        gfx_round(c, glow, 1, ALPHA(0xffffffffu, dark || tint ? 26 : 60));
+    gfx_round_frame_gradient(c, r, radius, ALPHA(0xffffffffu, dark || tint ? 120 : 230),
+                             dark ? ALPHA(0xffffffffu, 22) : ALPHA(0, tint ? 30 : 34));
+}
+
+/* where a capsule's label goes: clear of the round ends */
+static struct rect glass_label(struct rect r)
+{
+    int pad = MIN(r.h / 3, 10);
+    return (struct rect){r.x + pad, r.y, MAX(r.w - 2 * pad, 0), r.h};
+}
+
 bool ui_button(struct ui *ui, struct rect r, const char *label)
 {
     bool clicked;
     int id = track(ui, r, &clicked);
+    ax(ui, AX_BUTTON, r, label, NULL, 0);
     if (ui->c) {
-        control_box(ui->c, r, control_radius(r), is_active(ui, id) && is_hot(ui, id));
-        gfx_text_box(ui->c, rect_inset(r, 4), &font_sans, label, style.text, ALIGN_CENTER);
+        ui_glass_face(ui->c, r, 0, is_hot(ui, id), is_active(ui, id) && is_hot(ui, id));
+        gfx_text_box(ui->c, glass_label(r), &font_sans, label, style.text, ALIGN_CENTER);
     }
     return clicked;
 }
@@ -144,36 +198,28 @@ bool ui_button_primary(struct ui *ui, struct rect r, const char *label)
 {
     bool clicked;
     int id = track(ui, r, &clicked);
+    ax(ui, AX_BUTTON, r, label, NULL, 0);
     if (ui->c) {
-        int radius = control_radius(r);
         bool pressed = is_active(ui, id) && is_hot(ui, id);
-        uint32_t base = window_active(ui) ? style.accent : style.control;
-        if (pressed)
-            base = color_shade(base, -40);
-        if (!style.dark)
-            gfx_round(ui->c, (struct rect){r.x, r.y + 1, r.w, r.h}, radius, ALPHA(0, 26));
-        gfx_round_gradient(ui->c, r, radius, color_shade(base, 22), base);
-        gfx_round_frame_gradient(ui->c, r, radius, ALPHA(0xffffffffu, 50), ALPHA(0, 20));
-        gfx_text_box(ui->c, rect_inset(r, 4), &font_sans, label, window_active(ui) ? RGB(255, 255, 255) : style.text,
-                     ALIGN_CENTER);
+        ui_glass_face(ui->c, r, window_active(ui) ? style.accent : 0, is_hot(ui, id), pressed);
+        gfx_text_box(ui->c, glass_label(r), &font_sans, label,
+                     window_active(ui) ? RGB(255, 255, 255) : style.text, ALIGN_CENTER);
     }
     return clicked;
 }
 
+/* tool and symbol buttons sit bare until the pointer comes, then turn into the same glass */
 static void tool_back(struct ui *ui, int id, struct rect r, bool toggled)
 {
-    if (toggled)
-        gfx_round(ui->c, r, 7, style.dark ? ALPHA(0xffffffffu, 34) : ALPHA(0, 22));
-    else if (is_active(ui, id))
-        gfx_round(ui->c, r, 7, style.dark ? ALPHA(0xffffffffu, 40) : ALPHA(0, 30));
-    else if (is_hot(ui, id))
-        gfx_round(ui->c, r, 7, style.hover);
+    if (toggled || is_active(ui, id) || is_hot(ui, id))
+        ui_glass_face(ui->c, r, 0, is_hot(ui, id) || toggled, is_active(ui, id) && is_hot(ui, id));
 }
 
 bool ui_tool(struct ui *ui, struct rect r, enum icon_id icon, const char *label, bool toggled)
 {
     bool clicked;
     int id = track(ui, r, &clicked);
+    ax(ui, AX_BUTTON, r, label, NULL, toggled ? AX_ON : 0);
     if (ui->c) {
         tool_back(ui, id, r, toggled);
         if (label && *label) {
@@ -190,6 +236,7 @@ bool ui_symbol_button(struct ui *ui, struct rect r, enum symbol_id sym, bool tog
 {
     bool clicked;
     int id = track(ui, r, &clicked);
+    ax(ui, AX_BUTTON, r, NULL, NULL, toggled ? AX_ON : 0);
     if (ui->c) {
         tool_back(ui, id, r, toggled);
         gfx_symbol(ui->c, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, sym, 16,
@@ -204,6 +251,7 @@ bool ui_checkbox(struct ui *ui, struct rect r, const char *label, bool *value)
     int id = track(ui, r, &clicked);
     if (clicked)
         *value = !*value;
+    ax(ui, AX_CHECK, r, label, NULL, *value ? AX_ON : 0);
     if (ui->c) {
         struct rect box = {r.x, r.y + (r.h - 16) / 2, 16, 16};
         if (*value) {
@@ -224,6 +272,7 @@ bool ui_switch(struct ui *ui, struct rect r, bool *value)
     UNUSED(id);
     if (clicked)
         *value = !*value;
+    ax(ui, AX_SWITCH, r, NULL, NULL, *value ? AX_ON : 0);
     if (ui->c) {
         int h = r.h, radius = h / 2;
         uint32_t track_color = *value ? style.accent : style.dark ? RGB(72, 72, 76) : RGB(226, 226, 230);
@@ -242,6 +291,7 @@ bool ui_radio(struct ui *ui, struct rect r, const char *label, bool selected)
 {
     bool clicked;
     int id = track(ui, r, &clicked);
+    ax(ui, AX_RADIO, r, label, NULL, selected ? AX_ON : 0);
     if (ui->c) {
         int cx = r.x + 8, cy = r.y + r.h / 2;
         if (selected) {
@@ -271,6 +321,7 @@ bool ui_slider(struct ui *ui, struct rect r, int *value, int min, int max)
             ui->changed = true;
         }
     }
+    ax_range(ui, r, *value, min, max);
     if (ui->c) {
         int cy = r.y + r.h / 2;
         int pos = r.x + (*value - min) * r.w / MAX(max - min, 1);
@@ -300,6 +351,7 @@ bool ui_capsule_slider(struct ui *ui, struct rect r, enum symbol_id sym, int *va
             ui->changed = true;
         }
     }
+    ax_range(ui, r, *value, min, max);
     if (ui->c) {
         int fill = r.h + (*value - min) * span / MAX(max - min, 1);
         gfx_round(ui->c, r, rad, style.dark ? ALPHA(0xffffffffu, 34) : ALPHA(0, 22));
@@ -318,8 +370,11 @@ bool ui_segmented(struct ui *ui, struct rect r, const char *const *labels, int c
 {
     bool changed = false;
     int sw = r.w / MAX(count, 1);
-    if (ui->c)
-        gfx_round(ui->c, r, 7, style.dark ? ALPHA(0xffffffffu, 24) : ALPHA(0, 16));
+    if (ui->c) { /* a groove of glass the selected piece floats in */
+        gfx_round(ui->c, r, r.h / 2, style.dark ? ALPHA(0xffffffffu, 20) : ALPHA(0, 14));
+        gfx_round_frame_gradient(ui->c, r, r.h / 2, ALPHA(0, style.dark ? 40 : 20),
+                                 ALPHA(0xffffffffu, style.dark ? 30 : 140));
+    }
     for (int i = 0; i < count; i++) {
         struct rect s = {r.x + i * sw, r.y, i == count - 1 ? r.w - i * sw : sw, r.h};
         bool clicked;
@@ -328,15 +383,13 @@ bool ui_segmented(struct ui *ui, struct rect r, const char *const *labels, int c
             *selected = i;
             changed = true;
         }
+        ax(ui, AX_TAB, s, labels[i], NULL, i == *selected ? AX_ON : 0);
         if (!ui->c)
             continue;
         if (i == *selected) {
-            struct rect k = rect_inset(s, 2);
-            if (!style.dark)
-                gfx_drop_shadow(ui->c, k, 6, 4, 50, 1);
-            gfx_round(ui->c, k, 6, style.dark ? RGB(100, 100, 104) : RGB(255, 255, 255));
+            ui_glass_face(ui->c, rect_inset(s, 2), 0, true, false);
         } else if (is_active(ui, id)) {
-            gfx_round(ui->c, rect_inset(s, 2), 6, style.hover);
+            gfx_round(ui->c, rect_inset(s, 2), (s.h - 4) / 2, style.hover);
         } else if (i > 0 && i - 1 != *selected) {
             gfx_fill(ui->c, (struct rect){s.x, s.y + 6, 1, s.h - 12}, style.separator);
         }
@@ -516,6 +569,7 @@ static bool text_field(struct ui *ui, struct rect r, struct ui_text *t, const ch
         t->scroll = caret - room;
     if (caret < t->scroll)
         t->scroll = caret;
+    ax(ui, AX_FIELD, r, hint, t->password ? "(hidden)" : t->buf, ui->st->focus == id ? AX_FOCUS : 0);
     if (ui->c) {
         bool focused = ui->st->focus == id;
         if (search) {
@@ -659,6 +713,7 @@ int ui_list(struct ui *ui, struct rect r, struct ui_list *l, ui_list_draw_fn dra
             if (row.y >= area.y + area.h)
                 break;
             bool sel = i == l->selected;
+            ax(ui, AX_ITEM, rect_intersect(row, area), NULL, NULL, sel ? AX_ON : 0);
             if (sel)
                 gfx_round(&inner, (struct rect){row.x + 6, row.y, row.w - 12, row.h}, 6,
                           list_focused ? style.selection : style.selection_inactive);
@@ -676,6 +731,7 @@ bool ui_sidebar_item(struct ui *ui, struct rect r, enum symbol_id sym, const cha
 {
     bool clicked;
     int id = track(ui, r, &clicked);
+    ax(ui, AX_ITEM, r, label, NULL, selected ? AX_ON : 0);
     if (ui->c) {
         if (selected)
             gfx_round(ui->c, r, 7, style.dark ? ALPHA(0xffffffffu, 34) : ALPHA(0, 24));

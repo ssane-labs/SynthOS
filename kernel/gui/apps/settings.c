@@ -79,6 +79,7 @@ enum pane {
     P_MOUSE,
     P_TERMINAL,
     P_SCREENSHOT,
+    P_AI,
     P_COUNT,
 };
 
@@ -99,6 +100,7 @@ static void pane_mouse(struct page *p);
 static void pane_apps(struct page *p);
 static void pane_terminal(struct page *p);
 static void pane_screenshot(struct page *p);
+static void pane_ai(struct page *p);
 static void pane_about(struct page *p);
 static void pane_storage(struct page *p);
 static void pane_datetime(struct page *p);
@@ -137,6 +139,7 @@ static const struct {
     {"Mouse", "mouse", SYM_MOUSE, RGB(142, 142, 148), 4, P_DEVICES, pane_mouse},
     {"Terminal", "terminal", SYM_TERMINAL, RGB(60, 60, 64), 4, P_APPS, pane_terminal},
     {"Screenshot", "screenshot", SYM_SCREENSHOT, RGB(142, 142, 148), 4, P_APPS, pane_screenshot},
+    {"AI", "ai", SYM_SPARKLE, RGB(124, 92, 236), 2, -1, pane_ai},
 };
 
 static const char *const wall_names[WALLS] = {"From the look", "Mono", "Halo", "Sunrise", "Earthset", "Aurora",
@@ -387,8 +390,8 @@ static void popup(struct page *p, const char *label, const char *desc, const cha
     struct rect b = ctl(r, width, 24);
     bool hot = ui_hover(p->ui, b);
     if (p->ui->c) {
-        gfx_round(p->ui->c, b, 6, style.dark ? ALPHA(0xffffffffu, hot ? 34 : 22) : ALPHA(0, hot ? 18 : 10));
-        gfx_text_box(p->ui->c, (struct rect){b.x + 10, b.y, b.w - 34, b.h}, &font_sans, shown, style.text, ALIGN_LEFT);
+        ui_glass_face(p->ui->c, b, 0, hot, false);
+        gfx_text_box(p->ui->c, (struct rect){b.x + 12, b.y, b.w - 36, b.h}, &font_sans, shown, style.text, ALIGN_LEFT);
         gfx_symbol(p->ui->c, b.x + b.w - 20, b.y + 4, SYM_DOWN, 16, style.secondary);
     }
     if (p->ui->e && p->ui->e->type == EV_MOUSE_DOWN && hot) {
@@ -1284,8 +1287,8 @@ static void pane_displays(struct page *p)
             struct rect b = ctl(r, 160, 24);
             bool hot = ui_hover(p->ui, b);
             if (p->ui->c) {
-                gfx_round(p->ui->c, b, 6, style.dark ? ALPHA(0xffffffffu, hot ? 34 : 22) : ALPHA(0, hot ? 18 : 10));
-                gfx_text_box(p->ui->c, (struct rect){b.x + 10, b.y, b.w - 34, b.h}, &font_sans, res, style.text,
+                ui_glass_face(p->ui->c, b, 0, hot, false);
+                gfx_text_box(p->ui->c, (struct rect){b.x + 12, b.y, b.w - 36, b.h}, &font_sans, res, style.text,
                              ALIGN_LEFT);
                 gfx_symbol(p->ui->c, b.x + b.w - 20, b.y + 4, SYM_DOWN, 16, style.secondary);
             }
@@ -1882,6 +1885,74 @@ static void pane_screenshot(struct page *p)
     toggle_setting(p, "Open the editor after each screenshot", NULL, "shotedit");
     toggle_setting(p, "Copy to the clipboard too", "Paste the picture right away", "shotcopy");
     end(p, NULL);
+}
+
+/* Settings → AI: the master switch, then every part (aiconf.c) */
+static void pane_ai(struct page *p)
+{
+    header(p, SYM_SPARKLE, panes[P_AI].color, "AI",
+           "The assistant, its voice and Tab completion run on this computer: nothing you say or type leaves it.");
+    section(p, NULL);
+    toggle_setting(p, "Use AI", "Off: no assistant icon or shortcut, no Hey Synth, no Tab completion", "ai");
+    end(p, NULL);
+    if (!gui_ai.on)
+        return;
+    section(p, "Model");
+    static const char *const models[] = {"By memory", "MiniCPM5 2B", "Qwen2.5 0.5B"};
+    static const char *const model_values[] = {"auto", "main", "small"};
+    popup(p, "Language model", "Downloaded the first time it is needed", "aimodel", models, model_values, 3);
+    static const char *const speeds[] = {"Fast", "Exact"};
+    static const char *const speed_values[] = {"fast", "exact"};
+    choice(p, "Arithmetic", "Fast: 8-bit integer products", "aispeed", speeds, speed_values, 2, 160);
+    end(p, NULL);
+    section(p, "Asking");
+    static const char *const inputs[] = {"Smart", "Voice", "Text", "Voice and text"};
+    static const char *const input_values[] = {"smart", "voice", "text", "both"};
+    popup(p, "Ask by", "Smart: by voice when the microphone hears anything, else by typing", "aiinput", inputs,
+          input_values, 4);
+    toggle_setting(p, "Listen for \"Hey Synth\"", "The microphone waits for the phrase, then for the question", "aiwake");
+    toggle_setting(p, "Let me interrupt", "Talking over the answer pauses it; going on stops it", "aibarge");
+    end(p, NULL);
+    section(p, "Answers");
+    static const char *const answers[] = {"Subtitles", "Voice only", "Small chat"};
+    static const char *const answer_values[] = {"subtitles", "voice", "chat"};
+    popup(p, "Show answers as", NULL, "aianswer", answers, answer_values, 3);
+    toggle_setting(p, "Say answers aloud", "Answers to spoken questions (the voice is an 860 MB download)", "aispeak");
+    static const char *const voices[] = {"Ryan", "Aiden", "Eric", "Dylan", "Serena", "Vivian", "Uncle Fu", "Ono Anna",
+                                         "Sohee"};
+    static const char *const voice_values[] = {"ryan",   "aiden",  "eric",     "dylan",   "serena",
+                                               "vivian", "uncle_fu", "ono_anna", "sohee"};
+    popup(p, "Voice", NULL, "aivoice", voices, voice_values, 9);
+    static const char *const styles[] = {"Friendly", "Brief", "Detailed"};
+    static const char *const style_values[] = {"friendly", "brief", "detailed"};
+    choice(p, "Style", NULL, "aistyle", styles, style_values, 3, 240);
+    end(p, NULL);
+    section(p, "Tab completion");
+    static const char *const kinds[] = {"Text", "Code", "Web addresses", "Postal addresses"};
+    static const char *const kind_keys[] = {"text", "code", "url", "address"};
+    static const char *const kind_desc[] = {"In every text field", "In Notepad, for program files",
+                                            "In the Obscura address bar", "From your address book"};
+    for (int i = 0; i < 4; i++) {
+        bool on = gui_ai.complete & (1u << i);
+        if (toggle(p, kinds[i], kind_desc[i], &on)) {
+            unsigned mask = on ? gui_ai.complete | (1u << i) : gui_ai.complete & ~(1u << i);
+            char list[48] = "";
+            for (int k = 0; k < 4; k++)
+                if (mask & (1u << k)) {
+                    if (list[0])
+                        str_append(list, ",", sizeof(list));
+                    str_append(list, kind_keys[k], sizeof(list));
+                }
+            apply("aicomplete", list[0] ? list : "off");
+        }
+    }
+    end(p, NULL);
+    section(p, "Permissions");
+    static const char *const allows[] = {"Nothing", "Look around", "Anything"};
+    static const char *const allow_values[] = {"ask", "look", "all"};
+    popup(p, "Without asking, it may do", "Look around: read files and settings, see the screen and the web", "aiallow",
+          allows, allow_values, 3);
+    end(p, "Anything that changes something waits for your Allow unless this says Anything.");
 }
 
 /* the built-in browsers and every browser an installer registered (Firefox, Brave, Opera, ...) */

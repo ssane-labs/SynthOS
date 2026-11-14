@@ -939,7 +939,365 @@ def make_whisper(out):
     wh_write(out + "/whisper.bin", tensors, filters.astype(np.float32), wh_words())
     write_wav(out + "/speech.wav", pcm)
     return ["ai hear /mnt/hdb/speech.wav --model /mnt/hdb/whisper.bin",
-            "heard tokens: " + " ".join(map(str, toks)) + " (language %d)" % lang]
+            "heard tokens: " + " ".join(map(str, toks)) + " (language %d)" % lang,
+            # streaming: attempts every 500 ms, then the whole of it, which must be the same words
+            "ai hear --stream /mnt/hdb/speech.wav --model /mnt/hdb/whisper.bin",
+            "streamed tokens: " + " ".join(map(str, toks)) + " (language %d)" % lang]
+
+
+# ---- a tiny Qwen3-TTS: the talker, the code predictor and the codec, and what it must say ----
+
+TT = dict(dim=64, ffn=128, heads=4, kv=2, hd=16, layers=2, text_dim=48, proj=96, groups=4, codes=64, vocab=128,
+          cp_layers=1, eps=1e-6, theta=1000000.0)
+TC = dict(cb_dim=16, hidden=32, latent=64, dec=48, heads=2, hd=16, ffn=64, layers=2, window=4, eps=1e-5,
+          theta=10000.0)
+TID = dict(pad=100, bos=101, eos=102, think=104, nothink=105, think_bos=106, think_eos=107)
+TLANG = {"english": 110, "russian": 111}
+TSPK = {"alice": 120, "bob": 121}
+
+
+class TTSBuilder:
+    def __init__(self, rng):
+        self.rng, self.tensors, self.W = rng, [], {}
+
+    def add(self, name, typ, dims, scale, offset=0.0):
+        """dims as ggml lists them (fastest first); W holds the numpy array with the dimensions reversed"""
+        n = int(np.prod(dims))
+        raw = make_raw(self.rng, typ, n, scale)
+        if offset:
+            raw = (dequant(typ, raw, n) + offset).astype("<f4").tobytes()
+        self.tensors.append((name, typ, list(dims), raw))
+        a = dequant(typ, raw, n).reshape(tuple(reversed(dims)))
+        self.W[name] = QMat(a) if typ in INT_TYPES and len(dims) == 2 else a
+
+
+def tts_qwen_build(b, pre, layers):
+    D, F, H, KV, hd = TT["dim"], TT["ffn"], TT["heads"], TT["kv"], TT["hd"]
+    for l in range(layers):
+        p = "%s.blk.%d." % (pre, l)
+        b.add(p + "attn_norm.weight", "F32", [D], 0.1, 1.0)
+        b.add(p + "ffn_norm.weight", "F32", [D], 0.1, 1.0)
+        b.add(p + "attn_q.weight", "Q8_0" if l == 0 else "F16", [D, H * hd], 0.12)
+        b.add(p + "attn_k.weight", "F16", [D, KV * hd], 0.12)
+        b.add(p + "attn_v.weight", "F32", [D, KV * hd], 0.12)
+        b.add(p + "attn_output.weight", "F16", [H * hd, D], 0.12)
+        b.add(p + "attn_q_norm.weight", "F32", [hd], 0.1, 1.0)
+        b.add(p + "attn_k_norm.weight", "F32", [hd], 0.1, 1.0)
+        b.add(p + "ffn_gate.weight", "F16", [D, F], 0.12)
+        b.add(p + "ffn_up.weight", "F16", [D, F], 0.12)
+        b.add(p + "ffn_down.weight", "F16", [F, D], 0.1)
+    b.add(pre + ".output_norm.weight", "F32", [D], 0.1, 1.0)
+
+
+def tts_lin(W, name, x):
+    w = W[name]
+    return w @ x if isinstance(w, QMat) else w @ x
+
+
+class TTSStack:
+    """the talker's or the code predictor's Qwen3 layers, fed vectors, with a cache"""
+
+    def __init__(self, W, pre, layers):
+        self.W, self.pre, self.layers = W, pre, layers
+        self.reset()
+
+    def reset(self):
+        self.kc = [[] for _ in range(self.layers)]
+        self.vc = [[] for _ in range(self.layers)]
+
+    def step(self, x):
+        """one input vector; the normalised state after it"""
+        W, hd, H, KV, eps = self.W, TT["hd"], TT["heads"], TT["kv"], TT["eps"]
+        pos = len(self.kc[0])
+        for l in range(self.layers):
+            p = "%s.blk.%d." % (self.pre, l)
+            h = rmsnorm(x, W[p + "attn_norm.weight"], eps)
+            q = tts_lin(W, p + "attn_q.weight", h).reshape(H, hd)
+            k = tts_lin(W, p + "attn_k.weight", h).reshape(KV, hd)
+            v = tts_lin(W, p + "attn_v.weight", h).reshape(KV, hd)
+            q = np.array([rope(rmsnorm(r, W[p + "attn_q_norm.weight"], eps), pos, hd, TT["theta"], True) for r in q])
+            k = np.array([rope(rmsnorm(r, W[p + "attn_k_norm.weight"], eps), pos, hd, TT["theta"], True) for r in k])
+            self.kc[l].append(k)
+            self.vc[l].append(v)
+            att = np.zeros(H * hd)
+            for a in range(H):
+                g = a // (H // KV)
+                sc = np.array([q[a] @ kk[g] for kk in self.kc[l]]) / math.sqrt(hd)
+                sc = np.exp(sc - sc.max())
+                sc /= sc.sum()
+                att[a * hd:(a + 1) * hd] = sum(w * vv[g] for w, vv in zip(sc, self.vc[l]))
+            x = x + tts_lin(W, p + "attn_output.weight", att)
+            h = rmsnorm(x, W[p + "ffn_norm.weight"], eps)
+            gt = tts_lin(W, p + "ffn_gate.weight", h)
+            x = x + tts_lin(W, p + "ffn_down.weight", gt / (1 + np.exp(-gt)) * tts_lin(W, p + "ffn_up.weight", h))
+        return rmsnorm(x, W[self.pre + ".output_norm.weight"], eps)
+
+
+def tts_text(W, i):
+    h = W["talker.text_proj.fc1.weight"] @ W["talker.text_embd.weight"][i] + W["talker.text_proj.fc1.bias"]
+    return W["talker.text_proj.fc2.weight"] @ (h / (1 + np.exp(-h))) + W["talker.text_proj.fc2.bias"]
+
+
+def tts_codes(W, role, body, lang, speaker, frames):
+    """the codes greedy decoding makes, and the smallest gap between a choice and the next"""
+    nt = W["talker.text_embd.weight"].shape[0]
+    pad_t, bos_t, eos_t = (tts_text(W, nt - 3 + i) for i in range(3))
+    ce = W["talker.codec_embd.weight"]
+    left = [TID["think"], TID["think_bos"], TLANG[lang], TID["think_eos"], TSPK[speaker], TID["pad"]]
+    rows = [tts_text(W, i) for i in role]
+    rows += [ce[c] + (bos_t if i == len(left) - 1 else pad_t) for i, c in enumerate(left)]
+    rows += [tts_text(W, i) + ce[TID["pad"]] for i in body] + [eos_t + ce[TID["pad"]], pad_t + ce[TID["bos"]]]
+    talker, cp = TTSStack(W, "talker", TT["layers"]), TTSStack(W, "code_pred", TT["cp_layers"])
+    for r in rows:
+        h = talker.step(r)
+    out, hist, gaps = [], [], []
+    for _ in range(frames):
+        lg = W["talker.codec_head.weight"] @ h
+        for t in set(hist):
+            lg[t] = lg[t] * 1.05 if lg[t] < 0 else lg[t] / 1.05
+        lg[TT["codes"]:] = np.where(np.arange(TT["codes"], TT["vocab"]) == TID["eos"], lg[TT["codes"]:], -1e30)
+        order = np.argsort(-lg)
+        gaps.append(lg[order[0]] - lg[order[1]])
+        c0 = int(order[0])
+        if c0 == TID["eos"]:
+            break
+        hist.append(c0)
+        codes = [c0]
+        cp.reset()
+        cp.step(h)
+        hc = cp.step(ce[c0])
+        for g in range(TT["groups"] - 1):
+            if g:
+                hc = cp.step(W["code_pred.codec_embd.%d.weight" % (g - 1)][codes[g]])
+            lg = W["code_pred.lm_head.%d.weight" % g] @ hc
+            order = np.argsort(-lg)
+            gaps.append(lg[order[0]] - lg[order[1]])
+            codes.append(int(order[0]))
+        out.append(codes)
+        x = ce[c0] + sum(W["code_pred.codec_embd.%d.weight" % i][codes[i + 1]] for i in range(TT["groups"] - 1))
+        h = talker.step(x + pad_t)
+    return out, min(gaps)
+
+
+def tts_conv(x, w, b, dil=1):
+    """causal; x [T][cin], w [cout][cin][k]"""
+    K, T = w.shape[2], x.shape[0]
+    xp = np.concatenate([np.zeros(((K - 1) * dil, x.shape[1])), x])
+    return sum(xp[k * dil:k * dil + T] @ w[:, :, k].T for k in range(K)) + b
+
+
+def tts_tconv(x, w, b, s):
+    """causal transposed; w [cin][cout][k]"""
+    T, K = x.shape[0], w.shape[2]
+    y = np.zeros(((T - 1) * s + K, w.shape[1]))
+    for k in range(K):
+        y[k:k + (T - 1) * s + 1:s] += x @ w[:, :, k]
+    return y[:T * s] + b
+
+
+def tts_snake(x, W, name):
+    a, ib = np.exp(W[name + ".alpha"]), 1 / (np.exp(W[name + ".beta"]) + 1e-9)
+    return x + np.sin(a * x) ** 2 * ib
+
+
+def tts_decode(W, codes):
+    codes = np.array(codes)
+    T, C = codes.shape[0], TC
+    s1 = W["tok_dec.vq_first.0.codebook"][codes[:, 0]]
+    s2 = sum(W["tok_dec.vq_rest.%d.codebook" % k][codes[:, k + 1]] for k in range(TT["groups"] - 1))
+    x = s1 @ W["tok_dec.vq_first.output_proj.weight"][:, :, 0].T + s2 @ W["tok_dec.vq_rest.output_proj.weight"][:, :, 0].T
+    x = tts_conv(x, W["tok_dec.pre_conv.weight"], W["tok_dec.pre_conv.bias"])
+    P = "tok_dec.pre_tfm."
+    z = np.array([tts_lin(W, P + "input_proj.weight", r) for r in x]) + W[P + "input_proj.bias"]
+    H, hd = C["heads"], C["hd"]
+    for l in range(C["layers"]):
+        p = P + "blk.%d." % l
+        h = np.array([rmsnorm(r, W[p + "attn_norm.weight"], C["eps"]) for r in z])
+        q = np.array([np.array([rope(v, t, hd, C["theta"], True) for v in tts_lin(W, p + "attn_q.weight", r).reshape(H, hd)])
+                      for t, r in enumerate(h)])
+        k = np.array([np.array([rope(v, t, hd, C["theta"], True) for v in tts_lin(W, p + "attn_k.weight", r).reshape(H, hd)])
+                      for t, r in enumerate(h)])
+        v = np.array([tts_lin(W, p + "attn_v.weight", r).reshape(H, hd) for r in h])
+        att = np.zeros((T, H * hd))
+        for t in range(T):
+            lo = max(0, t - C["window"] + 1)
+            for a in range(H):
+                sc = k[lo:t + 1, a] @ q[t, a] / math.sqrt(hd)
+                sc = np.exp(sc - sc.max())
+                sc /= sc.sum()
+                att[t, a * hd:(a + 1) * hd] = sc @ v[lo:t + 1, a]
+        z = z + np.array([tts_lin(W, p + "attn_output.weight", r) for r in att]) * W[p + "attn_scale"]
+        h = np.array([rmsnorm(r, W[p + "ffn_norm.weight"], C["eps"]) for r in z])
+        f = []
+        for r in h:
+            gt = tts_lin(W, p + "ffn_gate.weight", r)
+            f.append(tts_lin(W, p + "ffn_down.weight", gt / (1 + np.exp(-gt)) * tts_lin(W, p + "ffn_up.weight", r)))
+        z = z + np.array(f) * W[p + "ffn_scale"]
+    z = np.array([rmsnorm(r, W[P + "norm.weight"], C["eps"]) for r in z])
+    x = np.array([tts_lin(W, P + "output_proj.weight", r) for r in z]) + W[P + "output_proj.bias"]
+    erf = np.vectorize(math.erf)
+    for i in range(2):
+        U = "tok_dec.upsample.%d." % i
+        x = tts_tconv(x, W[U + "conv.weight"], W[U + "conv.bias"], 2)
+        dw = W[U + "dwconv.weight"][:, 0, :]
+        xp = np.concatenate([np.zeros((6, x.shape[1])), x])
+        y = sum(xp[j:j + x.shape[0]] * dw[:, j] for j in range(7)) + W[U + "dwconv.bias"]
+        m = y.mean(1, keepdims=True)
+        y = (y - m) / np.sqrt(((y - m) ** 2).mean(1, keepdims=True) + 1e-6) * W[U + "norm.weight"] + W[U + "norm.bias"]
+        y = np.array([tts_lin(W, U + "pwconv1.weight", r) for r in y]) + W[U + "pwconv1.bias"]
+        y = 0.5 * y * (1 + erf(y / math.sqrt(2)))
+        y = np.array([tts_lin(W, U + "pwconv2.weight", r) for r in y]) + W[U + "pwconv2.bias"]
+        x = x + y * W[U + "gamma"]
+    x = tts_conv(x, W["tok_dec.dec.0.conv.weight"], W["tok_dec.dec.0.conv.bias"])
+    for i, s in enumerate((8, 5, 4, 3)):
+        B = "tok_dec.dec.%d." % (i + 1)
+        x = tts_tconv(tts_snake(x, W, B + "snake"), W[B + "conv_t.weight"], W[B + "conv_t.bias"], s)
+        for r, d in enumerate((1, 3, 9)):
+            R = B + "res.%d." % r
+            y = tts_conv(tts_snake(x, W, R + "act1"), W[R + "conv1.weight"], W[R + "conv1.bias"], d)
+            x = x + tts_conv(tts_snake(y, W, R + "act2"), W[R + "conv2.weight"], W[R + "conv2.bias"])
+    x = tts_conv(tts_snake(x, W, "tok_dec.dec.5.snake"), W["tok_dec.dec.6.conv.weight"], W["tok_dec.dec.6.conv.bias"])
+    return np.clip(x[:, 0], -1, 1)
+
+
+def tts_build(rng):
+    """the talker's and the codec's files: (meta, tensors) each, and all values in W"""
+    meta, _, _, _, vocab, ranks = build("qwen3", rng)
+    tok_meta = [m for m in meta if m[0].startswith("tokenizer.")]
+    nt = len(vocab) + 32  # the text embedding has rows past the tokenizer's; the last three are tts_pad/bos/eos
+    b = TTSBuilder(rng)
+    D = TT["dim"]
+    b.add("talker.text_embd.weight", "F16", [TT["text_dim"], nt], 1.0)
+    b.add("talker.text_proj.fc1.weight", "F16", [TT["text_dim"], TT["proj"]], 0.15)
+    b.add("talker.text_proj.fc1.bias", "F32", [TT["proj"]], 0.1)
+    b.add("talker.text_proj.fc2.weight", "F32", [TT["proj"], D], 0.15)
+    b.add("talker.text_proj.fc2.bias", "F32", [D], 0.1)
+    b.add("talker.codec_embd.weight", "F16", [D, TT["vocab"]], 1.0)
+    b.add("talker.codec_head.weight", "Q8_0", [D, TT["vocab"]], 0.15)
+    tts_qwen_build(b, "talker", TT["layers"])
+    tts_qwen_build(b, "code_pred", TT["cp_layers"])
+    for g in range(TT["groups"] - 1):
+        b.add("code_pred.codec_embd.%d.weight" % g, "F16", [D, TT["codes"]], 1.0)
+        b.add("code_pred.lm_head.%d.weight" % g, "F32", [D, TT["codes"]], 0.15)
+    tmeta = [("general.architecture", T_STR, "qwen3-tts"), ("general.name", T_STR, "SynthOS tiny test voice"),
+             ("general.alignment", T_U32, 32), ("qwen3-tts.num_code_groups", T_U32, TT["groups"])]
+    for pre, layers in (("talker", TT["layers"]), ("code_pred", TT["cp_layers"])):
+        tmeta += [("qwen3-tts.%s.embedding_length" % pre, T_U32, D),
+                  ("qwen3-tts.%s.feed_forward_length" % pre, T_U32, TT["ffn"]),
+                  ("qwen3-tts.%s.block_count" % pre, T_U32, layers),
+                  ("qwen3-tts.%s.attention.head_count" % pre, T_U32, TT["heads"]),
+                  ("qwen3-tts.%s.attention.head_count_kv" % pre, T_U32, TT["kv"]),
+                  ("qwen3-tts.%s.attention.key_length" % pre, T_U32, TT["hd"]),
+                  ("qwen3-tts.%s.rope.freq_base" % pre, T_F32, TT["theta"]),
+                  ("qwen3-tts.%s.attention.layer_norm_rms_epsilon" % pre, T_F32, TT["eps"])]
+    tmeta += [("qwen3-tts.codec.%s_id" % k, T_U32, v) for k, v in TID.items()]
+    tmeta += [("qwen3-tts.codec.language_names", T_ARR, (T_STR, list(TLANG))),
+              ("qwen3-tts.codec.language_ids", T_ARR, (T_I32, list(TLANG.values()))),
+              ("qwen3-tts.codec.speaker_names", T_ARR, (T_STR, list(TSPK))),
+              ("qwen3-tts.codec.speaker_ids", T_ARR, (T_I32, list(TSPK.values())))]
+    tmeta += [("qwen3-tts.text.tts_pad_id", T_U32, nt - 3), ("qwen3-tts.text.tts_bos_id", T_U32, nt - 2),
+              ("qwen3-tts.text.tts_eos_id", T_U32, nt - 1)] + tok_meta
+    talker = (tmeta, b.tensors)
+    W = b.W
+    c, C = TTSBuilder(rng), TC
+    c.add("tok_dec.vq_first.0.codebook", "F32", [C["cb_dim"], TT["codes"]], 1.0)
+    for k in range(TT["groups"] - 1):
+        c.add("tok_dec.vq_rest.%d.codebook" % k, "F32", [C["cb_dim"], TT["codes"]], 0.5)
+    c.add("tok_dec.vq_first.output_proj.weight", "F16", [1, C["cb_dim"], C["hidden"]], 0.25)
+    c.add("tok_dec.vq_rest.output_proj.weight", "F32", [1, C["cb_dim"], C["hidden"]], 0.25)
+    c.add("tok_dec.pre_conv.weight", "F16", [3, C["hidden"], C["latent"]], 0.15)
+    c.add("tok_dec.pre_conv.bias", "F32", [C["latent"]], 0.1)
+    P = "tok_dec.pre_tfm."
+    c.add(P + "input_proj.weight", "F16", [C["latent"], C["hidden"]], 0.12)
+    c.add(P + "input_proj.bias", "F32", [C["hidden"]], 0.1)
+    qd = C["heads"] * C["hd"]
+    for l in range(C["layers"]):
+        p = P + "blk.%d." % l
+        c.add(p + "attn_norm.weight", "F32", [C["hidden"]], 0.1, 1.0)
+        c.add(p + "ffn_norm.weight", "F32", [C["hidden"]], 0.1, 1.0)
+        c.add(p + "attn_q.weight", "F16", [C["hidden"], qd], 0.2)
+        c.add(p + "attn_k.weight", "F32", [C["hidden"], qd], 0.2)
+        c.add(p + "attn_v.weight", "F16", [C["hidden"], qd], 0.2)
+        c.add(p + "attn_output.weight", "F16", [qd, C["hidden"]], 0.2)
+        c.add(p + "ffn_gate.weight", "F16", [C["hidden"], C["ffn"]], 0.2)
+        c.add(p + "ffn_up.weight", "Q8_0" if l == 0 else "F16", [C["hidden"], C["ffn"]], 0.2)
+        c.add(p + "ffn_down.weight", "F16", [C["ffn"], C["hidden"]], 0.15)
+        c.add(p + "attn_scale", "F32", [C["hidden"]], 0.1, 0.5)
+        c.add(p + "ffn_scale", "F32", [C["hidden"]], 0.1, 0.5)
+    c.add(P + "norm.weight", "F32", [C["hidden"]], 0.1, 1.0)
+    c.add(P + "output_proj.weight", "F16", [C["hidden"], C["latent"]], 0.2)
+    c.add(P + "output_proj.bias", "F32", [C["latent"]], 0.1)
+    L = C["latent"]
+    for i in range(2):
+        U = "tok_dec.upsample.%d." % i
+        c.add(U + "conv.weight", "F16", [2, L, L], 0.12)
+        c.add(U + "conv.bias", "F32", [L], 0.1)
+        c.add(U + "dwconv.weight", "F16", [7, 1, L], 0.3)
+        c.add(U + "dwconv.bias", "F32", [L], 0.1)
+        c.add(U + "norm.weight", "F32", [L], 0.1, 1.0)
+        c.add(U + "norm.bias", "F32", [L], 0.1)
+        c.add(U + "pwconv1.weight", "F16", [L, 4 * L], 0.12)
+        c.add(U + "pwconv1.bias", "F32", [4 * L], 0.1)
+        c.add(U + "pwconv2.weight", "F32", [4 * L, L], 0.06)
+        c.add(U + "pwconv2.bias", "F32", [L], 0.1)
+        c.add(U + "gamma", "F32", [L], 0.2, 0.5)
+    ch = C["dec"]
+    c.add("tok_dec.dec.0.conv.weight", "F16", [7, L, ch], 0.05)
+    c.add("tok_dec.dec.0.conv.bias", "F32", [ch], 0.1)
+    for i, s in enumerate((8, 5, 4, 3)):
+        B, out = "tok_dec.dec.%d." % (i + 1), ch // 2
+        c.add(B + "snake.alpha", "F32", [ch], 0.3)
+        c.add(B + "snake.beta", "F32", [ch], 0.3)
+        c.add(B + "conv_t.weight", "F16" if i % 2 == 0 else "F32", [2 * s, out, ch], 0.4 / math.sqrt(ch))
+        c.add(B + "conv_t.bias", "F32", [out], 0.05)
+        for r in range(3):
+            R = B + "res.%d." % r
+            for a in ("act1", "act2"):
+                c.add(R + a + ".alpha", "F32", [out], 0.3)
+                c.add(R + a + ".beta", "F32", [out], 0.3)
+            c.add(R + "conv1.weight", "F16", [7, out, out], 0.3 / math.sqrt(7 * out))
+            c.add(R + "conv1.bias", "F32", [out], 0.05)
+            c.add(R + "conv2.weight", "BF16", [1, out, out], 0.3 / math.sqrt(out))
+            c.add(R + "conv2.bias", "F32", [out], 0.05)
+        ch = out
+    c.add("tok_dec.dec.5.snake.alpha", "F32", [ch], 0.3)
+    c.add("tok_dec.dec.5.snake.beta", "F32", [ch], 0.3)
+    c.add("tok_dec.dec.6.conv.weight", "F16", [7, ch, 1], 0.15)
+    c.add("tok_dec.dec.6.conv.bias", "F32", [1], 0.02)
+    D_ = "qwen3-tts-tokenizer.decoder."
+    cmeta = [("general.architecture", T_STR, "qwen3-tts-tokenizer"), ("general.alignment", T_U32, 32),
+             (D_ + "num_quantizers", T_U32, TT["groups"]), (D_ + "codebook_size", T_U32, TT["codes"]),
+             (D_ + "codebook_dim_internal", T_U32, C["cb_dim"]), (D_ + "hidden_size", T_U32, C["hidden"]),
+             (D_ + "vector_quantization_hidden_dim", T_U32, C["hidden"]), (D_ + "latent_dim", T_U32, L),
+             (D_ + "decoder_dim", T_U32, C["dec"]), (D_ + "sliding_window", T_U32, C["window"]),
+             (D_ + "num_attention_heads", T_U32, C["heads"]), (D_ + "head_dim", T_U32, C["hd"]),
+             (D_ + "num_hidden_layers", T_U32, C["layers"]), (D_ + "intermediate_size", T_U32, C["ffn"]),
+             (D_ + "rms_norm_eps", T_F32, C["eps"]), (D_ + "rope_theta", T_F32, C["theta"])]
+    W.update(c.W)
+    return talker, (cmeta, c.tensors), W, vocab, ranks
+
+
+def make_tts(out):
+    text, frames = "hello world", 6
+    seed = 1
+    while True:
+        rng = np.random.default_rng(2000 + seed)
+        talker, codec, W, vocab, ranks = tts_build(rng)
+        role = tokenize("<|im_start|>assistant\n", vocab, ranks)
+        codes, gap = tts_codes(W, role, tokenize(text, vocab, ranks), "english", "bob", frames)
+        if gap > 0.02 and len(codes) == frames:
+            pcm = tts_decode(W, codes)
+            peak = float(np.abs(pcm).max())
+            if 0.05 < peak < 0.95 and abs(peak * 100 - math.floor(peak * 100) - 0.5) < 0.3:
+                break
+        seed += 1
+    write_gguf(out + "/tts.gguf", *talker)
+    write_gguf(out + "/ttscodec.gguf", *codec)
+    cmd = "ai say --voice /mnt/hdb/tts.gguf --codec /mnt/hdb/ttscodec.gguf --greedy --frames %d --speaker bob " \
+          "--lang english %s" % (frames, text)
+    return [cmd + " | grep first", "first codes: " + " ".join(map(str, codes[0])),
+            cmd + " | grep leading", "leading codes: " + " ".join(str(c[0]) for c in codes),
+            cmd + " -o /home/said.wav | grep peak", "peak %.2f" % peak]
 
 
 def main():
@@ -949,6 +1307,7 @@ def main():
     # a whole turn of the assistant (system prompt with the tools, the chat format) on the last model loaded
     cases += ["ai ask -n 5 --no-tools hello there", "[5 tokens, 0 tool calls"]
     cases += make_whisper(out)
+    cases += make_tts(out)
     open(out + "/cases.txt", "w").write("\n".join(cases) + "\n")
 
 

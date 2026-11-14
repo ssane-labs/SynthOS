@@ -58,6 +58,7 @@ fi
 if python3 -I -c "import numpy" 2>/dev/null && python3 -I tests/aimodel.py "$work" >/dev/null; then
     for m in tiny tiny3 tinyl tinysc; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
     mcopy -i "$work/fat.img" "$work/whisper.bin" ::/whisper.bin && mcopy -i "$work/fat.img" "$work/speech.wav" ::/speech.wav
+    mcopy -i "$work/fat.img" "$work/tts.gguf" ::/tts.gguf && mcopy -i "$work/fat.img" "$work/ttscodec.gguf" ::/ttscodec.gguf
 fi
 
 # each case: a command line, then the text expected somewhere in the output
@@ -1636,8 +1637,40 @@ ai tool setting '{"name": "dnd"}'
 Look at setting dnd
 ai tool open '{"target": "/no/such/thing"}'
 nothing called /no/such/thing to open
+echo '<html><head><title>Shop</title></head><body><p>Hi <a href="b.html">next page</a></p><form action="b.html"><input name="q" placeholder="Find"><input type="submit" value="Go"></form></body></html>' > /home/wa.html; echo '<html><body><p>Second page here</p></body></html>' > /home/b.html; web /home/wa.html | grep next
+Hi next page[1]
+web show | grep Find
+{1 field "Find" = ""} {2 button "Go"}
+web type 1 red shoes
+field 1 = "red shoes"
+web press 2 | grep Second
+Second page here
+web link 3
+web: there is no link 3
+ai tool web '{"do": "link", "target": "1"}' | grep result
+result: web: there is no link 1
+ai tool screen '{"do": "click", "target": "4"}'
+Screen: click 4 needs approval; add --yes
+screen
+screen: the desktop is not running
+config aiinput voice; config aiinput; config aiinput smart
+aiinput = voice
+config aicomplete text,url; config aicomplete; config aicomplete all
+aicomplete = text,url
+config aivoice; config aianswer; config aistyle
+aivoice = ryan
+config aiallow ask; ai tool read_file '{"path": "/home/x.txt"}'; config aiallow look
+Read /home/x.txt needs approval; add --yes
+config ai off; config ai; config ai on
+ai = off
 ai listen 1
 ai: no microphone
+ai voice-test | grep vad:
+vad: ok
+ai voice-test | grep aec:
+aec: ok
+ai voice-test | grep barge-in:
+barge-in: ok
 ai reply 'Sure.<function name="run_command"><param name="command">echo "hi"</param></function>'
 call: run_command {"command": "echo \"hi\""}
 ai reply 'Done:<function name="write_file"><param name="path">/home/a.txt</param><param name="content"><![CDATA[x<y]]></param></function>' | grep text
@@ -1667,7 +1700,7 @@ python3 -I tests/v6peer.py "$v6port" "$((v6port + 1))" >/dev/null 2>&1 &
 v6peer=$!
 python3 -I tests/wgpeer.py "$wgport" >/dev/null 2>&1 &
 v6peer="$v6peer $!"
-timeout 150 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
+timeout 240 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
     -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
     -netdev socket,id=v6,udp=127.0.0.1:$v6port,localaddr=127.0.0.1:$((v6port + 1)) \
     -device e1000,netdev=v6,mac=52:54:00:12:34:57 < "$work/input" > "$work/output" 2>&1

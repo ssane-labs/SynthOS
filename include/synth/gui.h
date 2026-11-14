@@ -571,6 +571,7 @@ int ui_next_id(struct ui *ui);
 bool ui_hover(struct ui *ui, struct rect r);
 bool ui_button(struct ui *ui, struct rect r, const char *label);
 bool ui_button_primary(struct ui *ui, struct rect r, const char *label);
+void ui_glass_face(struct canvas *c, struct rect r, uint32_t tint, bool hot, bool pressed); /* every button's glass */
 bool ui_tool(struct ui *ui, struct rect r, enum icon_id icon, const char *label, bool toggled);
 bool ui_symbol_button(struct ui *ui, struct rect r, enum symbol_id sym, bool toggled);
 bool ui_checkbox(struct ui *ui, struct rect r, const char *label, bool *value);
@@ -695,6 +696,40 @@ void gui_clipboard_history_show(void);
 void gui_quit(int action);
 const char *gui_user(void);
 void gui_lock(void);
+
+/* Settings → AI (gui/aiconf.c): every part of the system's AI asks here first */
+enum { AI_IN_SMART, AI_IN_VOICE, AI_IN_TEXT, AI_IN_BOTH };
+enum { AI_OUT_SUBTITLES, AI_OUT_VOICE, AI_OUT_CHAT };
+enum { AI_STYLE_FRIENDLY, AI_STYLE_BRIEF, AI_STYLE_DETAILED };
+enum { AI_ALLOW_ASK, AI_ALLOW_LOOK, AI_ALLOW_ALL };
+#define AI_COMPLETE_ALL 15 /* bit 0 text, 1 code, 2 web addresses, 3 postal addresses (COMPLETE_* order) */
+struct gui_ai_conf {
+    bool on, wake, barge, speak;
+    uint8_t input, answer, style, allow, speed, model, complete;
+    char voice[24];
+};
+extern struct gui_ai_conf gui_ai;
+
+/* The screen as text, for an agent that cannot see it: while gui_ax is set and a window is painted with its pixels,
+   every control and every piece of text drawn there reports itself (where, what, its state). name is n bytes long. */
+enum { AX_TEXT, AX_BUTTON, AX_CHECK, AX_SWITCH, AX_RADIO, AX_SLIDER, AX_FIELD, AX_TAB, AX_ITEM, AX_LIST, AX_KINDS };
+#define AX_ON 1u    /* checked, selected, switched on */
+#define AX_FOCUS 2u /* has the keyboard */
+#define AX_OFF 4u   /* disabled */
+struct ax_sink {
+    void (*note)(struct ax_sink *s, int kind, struct rect r, const char *name, size_t n, const char *value,
+                 unsigned flags);
+    const uint32_t *px; /* the pixels of the window being described */
+};
+extern struct ax_sink *gui_ax;
+static inline bool gui_ax_on(const struct canvas *c)
+{
+    return gui_ax && c && c->px == gui_ax->px;
+}
+int wm_window_list(struct window **out, int max);
+void wm_render(void);
+/* Windows programs' own controls (buttons, fields, lists...) of a desktop window */
+void w32_describe(struct window *w, struct ax_sink *s);
 
 enum {
     QUIT_TEXT,

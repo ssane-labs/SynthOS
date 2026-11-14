@@ -709,13 +709,19 @@ static void cover_art(struct canvas *c, struct rect r, int index, int radius)
         gfx_fill(&clip, (struct rect){r.x, cy + k * 5 - 2, r.w, 2 + k / 2}, ALPHA(bottoms[i], 200));
 }
 
+/* the cover of the medium and large player: square, at most a third of the width, so the text keeps its room */
+static int music_cover(struct rect r)
+{
+    return MAX(MIN(r.h - 32, (r.w - 32) / 3), 24);
+}
+
 static struct rect music_button(const struct widget *w, struct rect r, int i)
 {
     if (w->size == WS_SMALL)
         return (struct rect){r.x + r.w / 2 - 54 + i * 38, r.y + r.h - 44, 32, 32};
     if (w->size == WS_SLIM)
         return (struct rect){r.x + r.w - 132 + i * 40, r.y + r.h / 2 - 16, 32, 32};
-    return (struct rect){r.x + 114 + i * 44, r.y + r.h - 46, 32, 32};
+    return (struct rect){r.x + 30 + music_cover(r) + i * 44, r.y + r.h - 46, 32, 32};
 }
 
 static void music_buttons(struct canvas *c, const struct widget *w, struct rect r)
@@ -756,11 +762,11 @@ static void paint_music(struct canvas *c, struct widget *w, struct rect r)
         music_buttons(c, w, r);
         return;
     }
-    cover_art(c, (struct rect){r.x + 16, r.y + 16, r.h - 32, r.h - 32}, t->index, 16);
-    int x = r.x + 114;
-    widget_text(c, w, (struct rect){x, r.y + 18, r.w - 130, 20}, &font_bold, t->title, ink, ALIGN_LEFT);
-    widget_text(c, w, (struct rect){x, r.y + 38, r.w - 130, 16}, &font_small, t->artist, soft, ALIGN_LEFT);
-    struct rect bar = {x, r.y + 66, r.w - 134, 4};
+    int cover = music_cover(r), x = r.x + 30 + cover, tw = r.x + r.w - 18 - x;
+    cover_art(c, (struct rect){r.x + 16, r.y + (r.h - cover) / 2, cover, cover}, t->index, MIN(16, cover / 5));
+    widget_text(c, w, (struct rect){x, r.y + 18, tw, 20}, &font_bold, t->title, ink, ALIGN_LEFT);
+    widget_text(c, w, (struct rect){x, r.y + 38, tw, 16}, &font_small, t->artist, soft, ALIGN_LEFT);
+    struct rect bar = {x, r.y + 66, tw, 4};
     gfx_round(c, bar, 2, ALPHA(ink, 50));
     int fill = bar.w * CLAMP(progress.pos, 0, 1024) / 1024;
     if (fill > 0)
@@ -1134,10 +1140,16 @@ static const struct widget_feeds *feeds(void)
     return f;
 }
 
+/* the feeds draw edge to edge of what they get: keep them inside the card like every other kind */
+static struct rect feed_rect(struct rect r)
+{
+    return (struct rect){r.x + 16, r.y + 12, MAX(r.w - 32, 8), MAX(r.h - 24, 8)};
+}
+
 static void paint_feed(struct canvas *c, struct widget *w, struct rect r)
 {
     if (feeds())
-        feeds()->paint(c, w, r);
+        feeds()->paint(c, w, feed_rect(r));
     else
         widget_text(c, w, r, &font_small, "Needs the Feeds module", widget_soft(w), ALIGN_CENTER);
 }
@@ -1185,7 +1197,7 @@ int widget_parts(const struct widget *w, struct rect r, struct rect *out, int ma
     }
     case WK_NEWS:
     case WK_STOCKS:
-    case WK_SPORTS: n = feeds() ? feeds()->parts(w, r, out, max) : 0; break;
+    case WK_SPORTS: n = feeds() ? feeds()->parts(w, feed_rect(r), out, max) : 0; break;
     default: break;
     }
     return n;

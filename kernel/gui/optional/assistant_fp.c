@@ -24,6 +24,8 @@
 #include "assistant/qdot.h"
 #include "assistant/llm.h"
 #include "assistant/whisper.h"
+#include "assistant/listen.h"
+#include "assistant/tts.h"
 
 #define MODELS_DIR "/home/models"
 #define CTX_DEFAULT 4096
@@ -45,11 +47,23 @@ static const struct download small_model = {
 /* the model for this computer */
 static const struct download *chat_choice(void)
 {
+    if (gui_ai.model)
+        return gui_ai.model == 1 ? &big_model : &small_model;
     return (uint64_t)vmm_high_pages() * 4096 >= BIG_MODEL_NEEDS ? &big_model : &small_model;
 }
 /* speech recognition: Whisper base (MIT), 8-bit, 78 MB, from the whisper.cpp project */
 static const struct download speech_model = {
     "ggml-base-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin", 81768585u};
+
+/* the voice (assistant/tts.h): Qwen3-TTS 0.6B with nine speakers and its codec (Apache-2.0), 4-bit, converted to
+   GGUF by the qwentts.cpp project */
+static const struct download voice_model = {
+    "qwen-talker-0.6b-customvoice-Q4_K_M.gguf",
+    "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-0.6b-customvoice-Q4_K_M.gguf",
+    604878080u};
+static const struct download codec_model = {
+    "qwen-tokenizer-12hz-Q4_K_M.gguf",
+    "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q4_K_M.gguf", 254974752u};
 
 /* Tab completion (assistant/complete.h): a keyboard model for text and two for code, all Apache-2.0 or BigCode
    OpenRAIL-M; they are never the assistant's own model */
@@ -68,7 +82,8 @@ static const struct download coder_big_model = {
 
 static bool helper_file(const char *name)
 {
-    return !strcmp(name, keys_model.name) || !strcmp(name, coder_model.name) || !strcmp(name, coder_big_model.name);
+    return !strcmp(name, keys_model.name) || !strcmp(name, coder_model.name) || !strcmp(name, coder_big_model.name) ||
+           str_starts(name, "qwen-talker-") || str_starts(name, "qwen-tokenizer-");
 }
 
 static struct ai_model model;
@@ -83,6 +98,12 @@ static bool default_model(char *out, size_t cap)
 {
     char *chosen;
     size_t n;
+    if (gui_ai.model) { /* Settings → AI names one: that one, once it is here */
+        struct vstat st;
+        ksnprintf(out, cap, MODELS_DIR "/%s", chat_choice()->name);
+        if (!vfs_stat(out, &st))
+            return true;
+    }
     if (!vfs_read_all(DEFAULT_FILE, &chosen, &n)) {
         while (n && (chosen[n - 1] == '\n' || chosen[n - 1] == '\r' || chosen[n - 1] == ' '))
             n--;
@@ -110,8 +131,8 @@ static bool default_model(char *out, size_t cap)
     return found;
 }
 
-/* reads a model file into m with up to ctx tokens of context; sh shows the progress */
-static int read_model(struct ai_model *m, struct shell *sh, const char *path, int ctx, char *why, size_t cap)
+/* a whole file into a big buffer; sh shows the progress */
+static int read_big(struct shell *sh, const char *path, uint8_t **out, size_t *size, char *why, size_t cap)
 {
     struct vstat st;
     int err = vfs_stat(path, &st);
@@ -121,9 +142,9 @@ static int read_model(struct ai_model *m, struct shell *sh, const char *path, in
     }
     uint8_t *buf = big_alloc(st.size);
     if (!buf) {
-        char size[16];
-        fmt_size(size, sizeof(size), st.size);
-        ksnprintf(why, cap, "not enough memory to load %s (%s)", path, size);
+        char sz[16];
+        fmt_size(sz, sizeof(sz), st.size);
+        ksnprintf(why, cap, "not enough memory to load %s (%s)", path, sz);
         return E_NOMEM;
     }
     struct file *f;
@@ -149,7 +170,20 @@ static int read_model(struct ai_model *m, struct shell *sh, const char *path, in
         ksnprintf(why, cap, "%s: %s", path, err_str(err));
         return err;
     }
-    err = model_load_fit(m, buf, st.size, ctx, why, cap);
+    *out = buf;
+    *size = st.size;
+    return 0;
+}
+
+/* reads a model file into m with up to ctx tokens of context; sh shows the progress */
+static int read_model(struct ai_model *m, struct shell *sh, const char *path, int ctx, char *why, size_t cap)
+{
+    uint8_t *buf;
+    size_t size;
+    int err = read_big(sh, path, &buf, &size, why, cap);
+    if (err)
+        return err;
+    err = model_load_fit(m, buf, size, ctx, why, cap);
     if (err) {
         big_free(buf);
         return err;
@@ -347,9 +381,21 @@ static bool default_speech(char *out, size_t cap)
     return found;
 }
 
+static bool model_idle(void);
+
+/* little memory (an old PC, a 32-bit kernel): the language model, while it is not answering, makes room for the ears */
+static bool free_model_for_room(void)
+{
+    if (!loaded || !model_idle())
+        return false;
+    model_free(&model);
+    loaded = false;
+    return true;
+}
+
 static int ear_load(const char *path, char *why, size_t cap)
 {
-    if (ear_loaded && !strcmp(ear.path, path))
+    if (ear_loaded && (!path || !strcmp(ear.path, path))) /* no path: whichever is loaded */
         return 0;
     char found[160];
     if (!path && !default_speech(found, sizeof(found))) {
@@ -366,11 +412,15 @@ static int ear_load(const char *path, char *why, size_t cap)
     char *data;
     size_t size;
     int err = vfs_read_all(path, &data, &size);
+    if (err == E_NOMEM && free_model_for_room())
+        err = vfs_read_all(path, &data, &size);
     if (err) {
         ksnprintf(why, cap, "%s: %s", path, err_str(err));
         return err;
     }
-    if ((err = wh_load(&ear, (uint8_t *)data, size, why, cap))) {
+    if ((err = wh_load(&ear, (uint8_t *)data, size, why, cap)) == E_NOMEM && free_model_for_room())
+        err = wh_load(&ear, (uint8_t *)data, size, why, cap);
+    if (err) {
         kfree(data);
         return err;
     }
@@ -476,6 +526,44 @@ static int hear(const int16_t *frames, uint32_t count, uint32_t rate, char *text
     return 0;
 }
 
+/* ai hear --stream: what the window would show while the words come, then the words */
+static int hear_stream(struct shell *sh, const int16_t *frames, uint32_t count, uint32_t rate, int *tokens, int *n_tokens,
+                       int *lang)
+{
+    int n, toks[WH_MAX_TOKENS];
+    float *pcm = to_16k(frames, count, rate, 2 * ear.a_ctx * WH_HOP, &n);
+    struct stream_asr *s = kzalloc(sizeof(*s));
+    if (!pcm || !s) {
+        kfree(pcm);
+        kfree(s);
+        return E_NOMEM;
+    }
+    int err = 0;
+    for (int end = MIN(WH_RATE / 2, n);; end = MIN(end + WH_RATE / 2, n)) {
+        uint64_t t0 = hal_ticks_ms();
+        int got = wh_transcribe(&ear, pcm, end, toks, WH_MAX_TOKENS, lang);
+        if (got < 0) {
+            err = got;
+            break;
+        }
+        if (end >= n) {
+            stream_update(s, toks, got);
+            stream_finish(s);
+            break;
+        }
+        int fin = stream_update(s, toks, got);
+        char done[512], maybe[512];
+        wh_text(&ear, s->final, fin, done, sizeof(done));
+        wh_text(&ear, toks + MIN(fin, got), got - MIN(fin, got), maybe, sizeof(maybe));
+        sh_printf(sh, "at %d ms (%u ms): %s [%s]\n", end / 16, (unsigned)(hal_ticks_ms() - t0), done, maybe);
+    }
+    memcpy(tokens, s->final, sizeof(int) * (size_t)s->n_final);
+    *n_tokens = s->n_final;
+    kfree(pcm);
+    kfree(s);
+    return err;
+}
+
 /* records from the microphone for up to ms, or until a second of quiet after speech */
 static int record(int ms, int16_t **frames, uint32_t *count, uint32_t *rate)
 {
@@ -509,14 +597,19 @@ static int record(int ms, int16_t **frames, uint32_t *count, uint32_t *rate)
 
 static int hear_command(struct shell *sh, int argc, char **argv)
 {
-    bool listen = !strcmp(argv[1], "listen");
+    bool listen = !strcmp(argv[1], "listen"), stream = false;
     const char *model_path = NULL, *file = NULL;
+    wh_full_ctx = false;
     char path[160], why[200];
     int seconds = 5;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--model") && i + 1 < argc) {
             sh_resolve(sh, argv[++i], path, sizeof(path));
             model_path = path;
+        } else if (!strcmp(argv[i], "--stream")) {
+            stream = true;
+        } else if (!strcmp(argv[i], "--full")) {
+            wh_full_ctx = true;
         } else if (listen) {
             seconds = (int)CLAMP(str_to_long(argv[i], NULL, 10), 1, 30);
         } else {
@@ -546,11 +639,16 @@ static int hear_command(struct shell *sh, int argc, char **argv)
     char text[1024];
     int toks[WH_MAX_TOKENS], n = 0, lang = -1;
     uint64_t start = hal_ticks_ms();
-    err = hear(frames, count, rate, text, sizeof(text), toks, &n, &lang);
+    if (stream) /* as if it were being said now: a new attempt every 500 ms of it */
+        err = hear_stream(sh, frames, count, rate, toks, &n, &lang);
+    else
+        err = hear(frames, count, rate, text, sizeof(text), toks, &n, &lang);
+    if (stream && !err)
+        wh_text(&ear, toks, n, text, sizeof(text));
     kfree(frames);
     if (err)
         return sh_error(sh, "ai", "%s", err_str(err));
-    sh_printf(sh, "heard tokens:");
+    sh_printf(sh, stream ? "streamed tokens:" : "heard tokens:");
     for (int i = 0; i < n; i++)
         sh_printf(sh, " %d", toks[i]);
     sh_printf(sh, " (language %d)\nheard (%s, %u ms): %s\n", lang,
@@ -559,9 +657,16 @@ static int hear_command(struct shell *sh, int argc, char **argv)
     return 0;
 }
 
+#include "assistant/speak.h"
+#include "assistant/screen.h"
 #include "assistant/voice.h"
 #include "assistant/complete.h"
 #include "assistant/window.h"
+
+static bool model_idle(void)
+{
+    return gui_agent.state == AG_IDLE && !reading.active;
+}
 
 /* a conversation of one question in the terminal; tools that change something run only with --yes */
 static int ask(struct shell *sh, int argc, char **argv)
@@ -642,7 +747,7 @@ static int ask(struct shell *sh, int argc, char **argv)
 }
 
 COMMAND(ai, NULL, "system",
-        "ai [get [minicpm|small|speech|keys|coder|coder-big]|complete [on|off] [--code|--url|--address] [--model <file>] <text>|load <file.gguf>|models|use <file>|unload|info|hear <sound file>|listen [seconds]|ask [--yes] [--no-tools] [-n count] <question>|tool <name> <json> [--yes]|reply <text>|tokens [-s] <text>|bench [n]|exact on|off|"
+        "ai [get [minicpm|small|speech|voice|keys|coder|coder-big]|say [--speaker name] [--lang name] [--greedy] [-o file.wav] <text>|complete [on|off] [--code|--url|--address] [--model <file>] <text>|load <file.gguf>|models|use <file>|unload|info|hear [--stream] [--full] <sound file>|listen [seconds]|voice-test|ask [--yes] [--no-tools] [-n count] <question>|tool <name> <json> [--yes]|reply <text>|tokens [-s] <text>|bench [n]|exact on|off|"
         "next <ids…> [-n count]]",
         "the assistant's language model, on this computer")
 {
@@ -681,6 +786,20 @@ COMMAND(ai, NULL, "system",
     }
     if (!strcmp(sub, "complete"))
         return complete_command(sh, argc, argv);
+    if (!strcmp(sub, "get") && argc > 2 && !strcmp(argv[2], "voice")) { /* the talker and its codec */
+        const struct download *both[] = {&voice_model, &codec_model};
+        for (int i = 0; i < 2; i++) {
+            sh_printf(sh, "downloading %s (%u MB) to " MODELS_DIR "\n", both[i]->name, both[i]->bytes >> 20);
+            if (download_model(both[i], shell_progress, sh, why, sizeof(why))) {
+                sh_printf(sh, "\n");
+                return sh_error(sh, "ai", "%s", why);
+            }
+            sh_printf(sh, "\nsaved " MODELS_DIR "/%s\n", both[i]->name);
+        }
+        return 0;
+    }
+    if (!strcmp(sub, "say"))
+        return say_command(sh, argc, argv);
     if (!strcmp(sub, "get")) {
         const char *which = argc > 2 ? argv[2] : "";
         const struct download *d = !strcmp(which, "speech")      ? &speech_model
@@ -737,12 +856,17 @@ COMMAND(ai, NULL, "system",
             ksnprintf(path, sizeof(path), MODELS_DIR "/%s", e.name);
             fmt_size(size, sizeof(size), vfs_stat(path, &st) ? 0 : st.size);
             sh_printf(sh, "%c %-44s %8s  %s\n", !strcmp(path, def) ? '*' : ' ', e.name, size,
-                      str_iends(e.name, ".bin") ? "speech" : "language");
+                      str_iends(e.name, ".bin")              ? "speech"
+                      : str_starts(e.name, "qwen-talker-")    ? "voice"
+                      : str_starts(e.name, "qwen-tokenizer-") ? "voice codec"
+                                                              : "language");
         }
         vfs_closedir(&it);
         sh_printf(sh, "for this computer: %s\n", chat_choice()->name);
         return 0;
     }
+    if (!strcmp(sub, "voice-test"))
+        return voice_test_command(sh);
     if (!strcmp(sub, "hear") || !strcmp(sub, "listen"))
         return hear_command(sh, argc, argv);
     if (!strcmp(sub, "tool")) {
@@ -751,7 +875,7 @@ COMMAND(ai, NULL, "system",
         bool yes = argc > 4 && !strcmp(argv[4], "--yes");
         char label[160];
         tool_label(argv[2], argv[3], label, sizeof(label));
-        if (!yes && tool_needs_approval(argv[2], argv[3]))
+        if (!yes && tool_asks(argv[2], argv[3]))
             return sh_error(sh, "ai", "%s needs approval; add --yes", label);
         struct agent *a = kzalloc(sizeof(*a));
         char *out = kmalloc(TOOL_OUT);
@@ -782,7 +906,7 @@ COMMAND(ai, NULL, "system",
     if (!strcmp(sub, "ask"))
         return ask(sh, argc, argv);
     if (!strcmp(sub, "exact")) { /* floats everywhere: slower, for comparing */
-        qdot_on = argc > 2 && !strcmp(argv[2], "off");
+        gui_setting("aispeed", argc > 2 && !strcmp(argv[2], "off") ? "fast" : "exact");
         sh_printf(sh, "computing with %s\n", accel_name());
         return 0;
     }
@@ -850,7 +974,7 @@ COMMAND(ai, NULL, "system",
     return sh_error(sh, "ai", "unknown command %s", sub);
 }
 
-static const struct command *const commands[] = {&cmddef_ai};
+static const struct command *const commands[] = {&cmddef_ai, &cmddef_screen, &cmddef_web};
 static const struct assistant_service service = {toggle, ask_about};
 static const struct module_ext ext = {commands, ARRAY_SIZE(commands), NULL, NULL, NULL, NULL, NULL, "assistant",
                                       &service};

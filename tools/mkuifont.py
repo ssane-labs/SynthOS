@@ -44,7 +44,7 @@ FONTS = [
     ("font_clock_serif", DEJAVU + "DejaVuSerif-Bold.ttf", DEJAVU + "DejaVuSerif-Bold.ttf", 92,
      [ord(c) for c in "0123456789: "]),
     ("font_display", INTER + "InterDisplay-Light.otf", DEJAVU + "DejaVuSans.ttf", 46,
-     [ord(c) for c in " 0123456789.,-+e×÷−=%()ErorCandivbyzIlpt"]),
+     [ord(c) for c in " 0123456789.,-+e×÷−=%()ErorCandivbyzIlpt:°AMP"]),
 ]
 
 

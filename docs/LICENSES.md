@@ -40,6 +40,7 @@
 | StarCoder2-3B, Q4_K_M (`starcoder2-3b-Q4_K_M.gguf`, 1,8 ГБ) | huggingface.co (second-state, квантование модели BigCode), `ai get coder-big` | BigCode OpenRAIL-M | с SynthOS не едет; скачивается только по команде; автодополнение кода на мощных ПК |
 | Qwen2.5-0.5B-Instruct, Q4_K_M (`qwen2.5-0.5b-instruct-q4_k_m.gguf`, 470 МБ) | huggingface.co (Qwen), по кнопке в окне «Assistant» или `ai get` | Apache-2.0 | с SynthOS не едет; скачивается без изменений в `/home/models`; код, который его читает и считает, — свой (`kernel/gui/optional/assistant/`) |
 | Whisper base, Q8_0 (`ggml-base-q8_0.bin`, 78 МБ) | huggingface.co (ggerganov/whisper.cpp), по щелчку по микрофону или `ai get speech` | MIT | с SynthOS не едет; скачивается без изменений; разбор формата и распознавание написаны заново (`assistant/whisper.h`) |
+| Qwen3-TTS-12Hz-0.6B-CustomVoice, Q4_K_M (`qwen-talker-0.6b-customvoice-Q4_K_M.gguf`, 605 МБ) и его звуковой кодек (`qwen-tokenizer-12hz-Q4_K_M.gguf`, 255 МБ) | huggingface.co (Serveurperso/Qwen3-TTS-GGUF — перевод в GGUF модели Qwen), `ai get voice` | Apache-2.0 | с SynthOS не едет; скачивается без изменений; синтез и потоковый декодер кодека написаны заново (`assistant/tts.h`). Устройство формата сверялось по qwentts.cpp (MIT) как по описанию — код оттуда не брался |
 
 ## Магазин
 

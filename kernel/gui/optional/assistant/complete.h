@@ -10,7 +10,6 @@
    The last word typed is taken back out of the prompt and the first token must continue it ("token healing"), so
    "hel" becomes "hello" and not "hel lo". */
 
-#define COMPLETE_OFF_FILE MODELS_DIR "/complete-off"
 #define ADDRESS_FILE "/home/addresses.txt"
 #define COMPLETE_DELAY_MS 150
 #define COMPLETE_BUDGET_MS 25
@@ -39,8 +38,7 @@ static struct {
 
 static bool complete_off(void)
 {
-    struct vstat st;
-    return !vfs_stat(COMPLETE_OFF_FILE, &st);
+    return !gui_ai.on || !gui_ai.complete;
 }
 
 /* the model for a kind of text: loaded the first time it is needed; NULL when it has not been downloaded */
@@ -351,7 +349,7 @@ static void complete_finish(void)
 /* gui_complete_ask: every text field calls this as it is typed into */
 static void complete_ask(const void *owner, struct window *win, int kind, const char *before, const char *after)
 {
-    if (complete_off())
+    if (complete_off() || !(gui_ai.complete & (1u << kind)))
         return;
     cq.owner = owner;
     cq.win = win;
@@ -421,10 +419,7 @@ static int complete_command(struct shell *sh, int argc, char **argv)
             return sh_error(sh, "ai", "unknown option %s", argv[i]);
     }
     if (i < argc && (!strcmp(argv[i], "on") || !strcmp(argv[i], "off")) && i == argc - 1) {
-        if (!strcmp(argv[i], "off"))
-            vfs_write_all(COMPLETE_OFF_FILE, "off\n", 4);
-        else
-            vfs_unlink(COMPLETE_OFF_FILE);
+        gui_setting("aicomplete", argv[i]);
         sh_printf(sh, "Tab completion is %s\n", argv[i]);
         return 0;
     }

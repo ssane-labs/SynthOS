@@ -4539,6 +4539,93 @@ static void forget_deferred(struct window *wm)
 static void bridge_dispatch(struct window *wm, struct gui_event *e);
 static void drop_deliver(struct window *wm);
 
+/* The agent's screen reader (gui_ax): a program keeps a list of its controls each time its window is painted, as
+   the desktop cannot read another process's windows. */
+#define AX_MAX 48
+struct w32_ax {
+    int n;
+    struct {
+        uint8_t kind, flags;
+        struct rect r;
+        char name[48], value[64];
+    } it[AX_MAX];
+};
+
+static void ax_copy(char *out, const char *s, size_t n, size_t cap)
+{
+    size_t k = 0;
+    for (size_t i = 0; s && i < n && s[i] && k + 1 < cap; i++)
+        if (s[i] != '&' || s[i + 1] == '&')
+            out[k++] = s[i] == '\t' || s[i] == '\r' || s[i] == '\n' ? ' ' : s[i];
+        else if (s[i + 1] == '&')
+            i++;
+    out[k] = 0;
+}
+
+static void ax_keep(struct w32_window *top)
+{
+    struct w32_bridge *b = top->bridge;
+    if (!b || (!b->ax && !(b->ax = kzalloc(sizeof(struct w32_ax)))))
+        return;
+    struct w32_ax *a = b->ax;
+    int n = 0;
+    for (struct w32_window *it = windows; it && n < AX_MAX; it = it->next_all) {
+        if (it == top || it->destroyed || w32_top(it) != top)
+            continue;
+        bool shown = true;
+        for (struct w32_window *p = it; p && p != top; p = p->parent)
+            shown = shown && p->visible;
+        int bs = (int)(it->style & 0xf), kind;
+        switch (it->control) {
+        case CK_BUTTON:
+            kind = bs == 2 || bs == 3 || bs == 5 || bs == 6 ? AX_CHECK : bs == 4 || bs == 9 ? AX_RADIO
+                   : bs == 7                                ? AX_TEXT
+                                                            : AX_BUTTON;
+            break;
+        case CK_STATIC:
+        case CK_STATUS:
+            kind = AX_TEXT;
+            break;
+        case CK_EDIT:
+            kind = AX_FIELD;
+            break;
+        case CK_LISTBOX:
+        case CK_COMBOBOX:
+        case CK_LISTVIEW:
+            kind = AX_LIST;
+            break;
+        case CK_TAB:
+            kind = AX_TAB;
+            break;
+        default:
+            continue;
+        }
+        if (!shown)
+            continue;
+        a->it[n].kind = (uint8_t)kind;
+        a->it[n].flags = (uint8_t)((it->checked ? AX_ON : 0) | (it->enabled ? 0 : AX_OFF) | (top->focus == it ? AX_FOCUS : 0));
+        a->it[n].r = w32_area(it);
+        bool edit = it->control == CK_EDIT;
+        ax_copy(a->it[n].name, edit ? NULL : it->text, (size_t)-1, sizeof(a->it[n].name));
+        if (edit && (it->style & 0x20))
+            str_copy(a->it[n].value, "(hidden)", sizeof(a->it[n].value));
+        else
+            ax_copy(a->it[n].value, edit ? it->edit_buf : NULL, edit ? it->edit_len : 0, sizeof(a->it[n].value));
+        n++;
+    }
+    a->n = n;
+}
+
+void w32_describe(struct window *wm, struct ax_sink *s)
+{
+    struct w32_bridge *b = wm && wm->ops == &bridge_ops ? wm->data : NULL;
+    for (int i = 0; b && b->ax && i < b->ax->n; i++) {
+        const char *name = b->ax->it[i].name, *value = b->ax->it[i].value;
+        s->note(s, b->ax->it[i].kind, b->ax->it[i].r, name, strlen(name), *value || b->ax->it[i].kind == AX_FIELD ? value : NULL,
+                b->ax->it[i].flags);
+    }
+}
+
 static void gui_replay(void)
 {
     for (unsigned i = 0; i < deferred_count;) {
@@ -4552,8 +4639,10 @@ static void gui_replay(void)
         struct w32_window *w = bridged(d.wm);
         if (!w)
             continue;
-        if ((int)d.e.type == DEFER_PAINT)
+        if ((int)d.e.type == DEFER_PAINT) {
             w32_invalidate(w, NULL, true);
+            ax_keep(w);
+        }
         else if ((int)d.e.type == DEFER_CLOSE)
             w32_post(w, WM_CLOSE, 0, 0);
         else if ((int)d.e.type == DEFER_DROP)
@@ -4571,8 +4660,10 @@ static void bridge_paint(struct window *wm, struct canvas *c)
     if (defer(wm, NULL, DEFER_PAINT))
         return;
     struct w32_window *w = bridged(wm);
-    if (w)
+    if (w) {
         w32_invalidate(w, NULL, true);
+        ax_keep(w);
+    }
 }
 
 static void bridge_event(struct window *wm, struct gui_event *e)
@@ -4669,6 +4760,8 @@ static void bridge_destroy(struct window *wm)
         b->win->wm = NULL;
         b->win->bridge = NULL;
     }
+    if (b)
+        kfree(b->ax);
     kfree(b);
 }
 

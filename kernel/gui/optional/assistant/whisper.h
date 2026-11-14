@@ -44,6 +44,7 @@ struct whisper {
     struct wh_block *enc, *dec;
     struct ai_tensor tok_emb;
     /* the decoder's state */
+    int a_used; /* audio positions the last encoding filled: fewer than a_ctx for short speech */
     float *kc, *vc, *xk, *xv; /* self-attention cache [layer][t_ctx][dim], cross keys/values [layer][a_ctx][dim] */
     int n_past;
     float *logits;
@@ -390,9 +391,8 @@ static void mel_part(void *ctx, int from, int to)
     }
 }
 
-static void log_mel(const struct whisper *w, const float *pcm, int n, float *mel)
+static void log_mel(const struct whisper *w, const float *pcm, int n, float *mel, int frames)
 {
-    int frames = 2 * w->a_ctx;
     struct mel_job j = {w, pcm, n, frames, mel};
     hal_parallel(mel_part, &j, frames, 8);
     float top = -1e30f;
@@ -483,6 +483,8 @@ struct wh_att_job {
     int nq, nk, dim, heads, q0; /* q0: the position of the first query, for the causal mask (-1: none) */
 };
 
+/* one pass over the keys with the softmax kept as it goes (the running maximum rescales what came before), so the
+   helper processors need no memory of their own: the heap is not theirs to use */
 static void wh_att_part(void *ctx, int from, int to)
 {
 #ifndef __x86_64__
@@ -491,34 +493,32 @@ static void wh_att_part(void *ctx, int from, int to)
     const struct wh_att_job *j = ctx;
     int hd = j->dim / j->heads;
     float scale = 1.0f / ai_sqrtf((float)hd);
-    float *sc = kmalloc(sizeof(float) * (size_t)j->nk);
-    if (!sc)
-        return;
     for (int item = from; item < to; item++) {
         int h = item % j->heads, t = item / j->heads;
         const float *q = j->q + (size_t)t * (size_t)j->dim + (size_t)(h * hd);
         int nk = j->q0 >= 0 ? MIN(j->nk, j->q0 + t + 1) : j->nk;
-        float best = -1e30f, sum = 0;
-        for (int s = 0; s < nk; s++) {
-            sc[s] = dot(q, j->k + (size_t)s * (size_t)j->dim + (size_t)(h * hd), hd) * scale;
-            if (sc[s] > best)
-                best = sc[s];
-        }
-        for (int s = 0; s < nk; s++) {
-            sc[s] = ai_expf(sc[s] - best);
-            sum += sc[s];
-        }
         float *o = j->out + (size_t)t * (size_t)j->dim + (size_t)(h * hd);
+        float best = -1e30f, sum = 0;
         for (int d = 0; d < hd; d++)
             o[d] = 0;
         for (int s = 0; s < nk; s++) {
-            float p = sc[s] / sum;
+            float sc = dot(q, j->k + (size_t)s * (size_t)j->dim + (size_t)(h * hd), hd) * scale;
             const float *v = j->v + (size_t)s * (size_t)j->dim + (size_t)(h * hd);
+            if (sc > best) {
+                float shrink = ai_expf(best - sc);
+                sum *= shrink;
+                for (int d = 0; d < hd; d++)
+                    o[d] *= shrink;
+                best = sc;
+            }
+            float p = ai_expf(sc - best);
+            sum += p;
             for (int d = 0; d < hd; d++)
                 o[d] += p * v[d];
         }
+        for (int d = 0; d < hd; d++)
+            o[d] /= sum;
     }
-    kfree(sc);
 }
 
 static void wh_attend(const float *q, const float *k, const float *v, float *out, int nq, int nk, int dim, int heads,
@@ -528,10 +528,11 @@ static void wh_attend(const float *q, const float *k, const float *v, float *out
     hal_parallel(wh_att_part, &j, nq * heads, 4);
 }
 
-/* the encoder: mel [n_mels][2 * a_ctx] to the keys and values every decoder block looks at */
-static int wh_encode(struct whisper *w, const float *mel)
+/* the encoder: mel [n_mels][2 * T] to the keys and values every decoder block looks at; T is at most a_ctx, and
+   short speech needs only the start of the 30 s the model was made for, which is many times quicker */
+static int wh_encode(struct whisper *w, const float *mel, int T)
 {
-    int D = w->a_dim, T = w->a_ctx, F = 2 * T;
+    int D = w->a_dim, F = 2 * T;
     float *h1 = kmalloc(sizeof(float) * (size_t)D * (size_t)F), *x = kmalloc(sizeof(float) * (size_t)D * (size_t)T),
           *xb = kmalloc(sizeof(float) * (size_t)D * (size_t)T), *q = kmalloc(sizeof(float) * (size_t)D * (size_t)T),
           *k = kmalloc(sizeof(float) * (size_t)D * (size_t)T), *v = kmalloc(sizeof(float) * (size_t)D * (size_t)T),
@@ -572,9 +573,10 @@ static int wh_encode(struct whisper *w, const float *mel)
         layernorm(x + (size_t)t * (size_t)D, x + (size_t)t * (size_t)D, w->enc_ln_w, w->enc_ln_b, D);
     for (int l = 0; l < w->t_layers; l++) {
         const struct wh_block *b = &w->dec[l];
-        wh_linear(&b->cross.k, NULL, x, w->xk + (size_t)l * (size_t)T * (size_t)D, T);
-        wh_linear(&b->cross.v, b->cross.bv, x, w->xv + (size_t)l * (size_t)T * (size_t)D, T);
+        wh_linear(&b->cross.k, NULL, x, w->xk + (size_t)l * (size_t)w->a_ctx * (size_t)D, T);
+        wh_linear(&b->cross.v, b->cross.bv, x, w->xv + (size_t)l * (size_t)w->a_ctx * (size_t)D, T);
     }
+    w->a_used = T;
     w->n_past = 0;
 out:
     kfree(h1);
@@ -611,7 +613,7 @@ static void wh_decode(struct whisper *w, int token)
         layernorm(xb, x, b->lnx_w, b->lnx_b, D);
         wh_linear(&b->cross.q, b->cross.bq, xb, q, 1);
         wh_attend(q, w->xk + (size_t)l * (size_t)w->a_ctx * (size_t)D, w->xv + (size_t)l * (size_t)w->a_ctx * (size_t)D, o,
-                  1, w->a_ctx, D, w->t_heads, -1);
+                  1, w->a_used, D, w->t_heads, -1);
         wh_linear(&b->cross.o, b->cross.bo, o, xb, 1);
         for (int c = 0; c < D; c++)
             x[c] += xb[c];
@@ -639,16 +641,29 @@ static int wh_argmax(const float *v, int from, int to)
     return best;
 }
 
+/* how many audio positions n samples need: what they fill and a margin of silence after it (the model knows the
+   end of speech by it), but never less than WH_MIN_CTX, below which the model starts to make words up */
+#define WH_MIN_CTX 256
+#define WH_CTX_MARGIN 64
+static bool wh_full_ctx; /* ai hear --full: all 30 s as the model was made, to compare */
+static int wh_ctx_for(const struct whisper *w, int n)
+{
+    if (wh_full_ctx)
+        return w->a_ctx;
+    int filled = (n / WH_HOP + 1) / 2 + 1;
+    return MIN(w->a_ctx, MAX(WH_MIN_CTX, filled + WH_CTX_MARGIN));
+}
+
 /* speech (16 kHz mono floats, at most 2 * a_ctx * 160 samples are heard) to tokens; returns how many; lang gets
    the language heard (-1 for an English-only model) */
 static int wh_transcribe(struct whisper *w, const float *pcm, int n, int *tokens, int cap, int *lang)
 {
-    int frames = 2 * w->a_ctx;
+    int T = wh_ctx_for(w, n), frames = 2 * T;
     float *mel = kmalloc(sizeof(float) * (size_t)w->n_mels * (size_t)frames);
     if (!mel)
         return E_NOMEM;
-    log_mel(w, pcm, n, mel);
-    int err = wh_encode(w, mel);
+    log_mel(w, pcm, n, mel, frames);
+    int err = wh_encode(w, mel, T);
     kfree(mel);
     if (err)
         return err;

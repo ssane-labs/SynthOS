@@ -316,7 +316,7 @@ int module_content_search(const char *query, void (*hit)(const char *path, void 
 
 const struct assistant_service *assistant(void)
 {
-    return gui_module_shown("assistant_fp") ? module_service("assistant") : NULL;
+    return gui_ai.on && gui_module_shown("assistant_fp") ? module_service("assistant") : NULL; /* Settings → AI */
 }
 
 void assistant_toggle(void)
@@ -324,7 +324,7 @@ void assistant_toggle(void)
     const struct assistant_service *a = assistant();
     if (a)
         a->toggle();
-    else
+    else if (gui_ai.on) /* AI turned off: the shortcut does nothing */
         gui_notify("Assistant", "Get the Assistant from the App Store: a chat with an AI that runs on this computer.");
 }
 

@@ -117,6 +117,68 @@ static float *get_vector(struct ai_model *m, const char *name, int n, bool optio
     return v;
 }
 
+/* the layers: prefix "blk.N." (or e.g. "talker.blk.N."), the final norm; dimensions already set */
+static int model_blocks(struct ai_model *m, const char *prefix, char *why, size_t cap)
+{
+    int qd = m->heads * m->hd, kvd = m->kv_heads * m->hd;
+    m->L = kzalloc(sizeof(struct ai_layer) * (size_t)m->layers);
+    bool sc2 = m->arch == ARCH_STARCODER2, ok = m->L != NULL;
+    char n[80];
+    ksnprintf(n, sizeof(n), "%soutput_norm.weight", prefix);
+    ok = ok && (m->out_norm = get_vector(m, n, m->dim, false, why, cap));
+    ksnprintf(n, sizeof(n), "%soutput_norm.bias", prefix);
+    if (ok && sc2)
+        ok = (m->out_norm_b = get_vector(m, n, m->dim, false, why, cap)) != NULL;
+    for (int i = 0; ok && i < m->layers; i++) {
+        struct ai_layer *l = &m->L[i];
+#define MAT(field, part, c, r) (ksnprintf(n, sizeof(n), "%sblk.%d." part ".weight", prefix, i), get_matrix(m, n, c, r, &l->field, why, cap))
+#define VEC(field, part, len, opt) (ksnprintf(n, sizeof(n), "%sblk.%d." part, prefix, i), (l->field = get_vector(m, n, len, opt, why, cap)) || opt)
+        ok = MAT(q, "attn_q", m->dim, qd) && MAT(k, "attn_k", m->dim, kvd) && MAT(v, "attn_v", m->dim, kvd) &&
+             MAT(o, "attn_output", qd, m->dim) && (sc2 || MAT(gate, "ffn_gate", m->dim, m->ffn)) &&
+             MAT(up, "ffn_up", m->dim, m->ffn) && MAT(down, "ffn_down", m->ffn, m->dim) &&
+             VEC(attn_norm, "attn_norm.weight", m->dim, false) && VEC(ffn_norm, "ffn_norm.weight", m->dim, false) &&
+             VEC(bq, "attn_q.bias", qd, true) && VEC(bk, "attn_k.bias", kvd, true) &&
+             VEC(bv, "attn_v.bias", kvd, true) && VEC(q_norm, "attn_q_norm.weight", m->hd, true) &&
+             VEC(k_norm, "attn_k_norm.weight", m->hd, true) && VEC(attn_norm_b, "attn_norm.bias", m->dim, !sc2) &&
+             VEC(ffn_norm_b, "ffn_norm.bias", m->dim, !sc2) && VEC(bo, "attn_output.bias", m->dim, true) &&
+             VEC(bup, "ffn_up.bias", m->ffn, true) && VEC(bdown, "ffn_down.bias", m->dim, true);
+#undef MAT
+#undef VEC
+    }
+    return ok ? 0 : E_INVAL;
+}
+
+/* the key and value cache for m->ctx tokens and the working space of a step */
+static int model_work(struct ai_model *m, float base, char *why, size_t cap)
+{
+    int qd = m->heads * m->hd, kvd = m->kv_heads * m->hd;
+    size_t B = AI_BATCH, wide = (size_t)MAX(MAX(qd, m->dim), kvd);
+    m->inv_freq = kmalloc(sizeof(float) * (size_t)(m->hd / 2));
+    m->kc = big_alloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
+    m->vc = big_alloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
+    m->past = kmalloc(sizeof(int) * (size_t)m->ctx);
+    m->x = kmalloc(sizeof(float) * B * (size_t)m->dim);
+    m->xb = kmalloc(sizeof(float) * B * wide);
+    m->q = kmalloc(sizeof(float) * B * (size_t)qd);
+    m->k = kmalloc(sizeof(float) * B * (size_t)kvd);
+    m->v = kmalloc(sizeof(float) * B * (size_t)kvd);
+    m->att = kmalloc(sizeof(float) * B * (size_t)qd);
+    m->hb = kmalloc(sizeof(float) * B * (size_t)m->ffn);
+    m->hb2 = kmalloc(sizeof(float) * B * (size_t)m->ffn);
+    m->scores = kmalloc(sizeof(float) * B * (size_t)m->heads * (size_t)m->ctx);
+    m->logits = kmalloc(sizeof(float) * (size_t)m->vocab);
+    m->rope_cs = kmalloc(sizeof(float) * B * (size_t)m->hd);
+    if (!m->inv_freq || !m->kc || !m->vc || !m->past || !m->x || !m->xb || !m->q || !m->k || !m->v || !m->att ||
+        !m->hb || !m->hb2 || !m->scores || !m->logits || !m->rope_cs) {
+        str_copy(why, "not enough memory for the model's working space; try a shorter context", cap);
+        return E_NOMEM;
+    }
+    for (int i = 0; i < m->hd / 2; i++)
+        m->inv_freq[i] = (float)ai_exp(-2.0 * i / m->hd * ai_log(base));
+    return 0;
+}
+
+
 /* takes over file (the whole .gguf in memory) */
 static int model_load(struct ai_model *m, uint8_t *file, size_t size, int ctx_want, char *why, size_t cap)
 {
@@ -182,64 +244,18 @@ static int model_load(struct ai_model *m, uint8_t *file, size_t size, int ctx_wa
     }
     m->vocab = m->tok.n;
     m->ctx = MIN(ctx_want, train_ctx);
-    int qd = m->heads * m->hd, kvd = m->kv_heads * m->hd;
     bool ok = get_matrix(m, "token_embd.weight", m->dim, m->vocab, &m->embd, why, cap);
     if (ok && gguf_tensor(&m->g, "output.weight"))
         ok = get_matrix(m, "output.weight", m->dim, m->vocab, &m->out, why, cap);
     else
         m->out = m->embd; /* tied embeddings */
-    m->L = kzalloc(sizeof(struct ai_layer) * (size_t)m->layers);
-    bool sc2 = m->arch == ARCH_STARCODER2;
-    ok = ok && m->L && (m->out_norm = get_vector(m, "output_norm.weight", m->dim, false, why, cap));
-    if (ok && sc2)
-        ok = (m->out_norm_b = get_vector(m, "output_norm.bias", m->dim, false, why, cap)) != NULL;
-    for (int i = 0; ok && i < m->layers; i++) {
-        struct ai_layer *l = &m->L[i];
-        char n[64];
-#define MAT(field, part, c, r) (ksnprintf(n, sizeof(n), "blk.%d." part ".weight", i), get_matrix(m, n, c, r, &l->field, why, cap))
-#define VEC(field, part, len, opt) (ksnprintf(n, sizeof(n), "blk.%d." part, i), (l->field = get_vector(m, n, len, opt, why, cap)) || opt)
-        ok = MAT(q, "attn_q", m->dim, qd) && MAT(k, "attn_k", m->dim, kvd) && MAT(v, "attn_v", m->dim, kvd) &&
-             MAT(o, "attn_output", qd, m->dim) && (sc2 || MAT(gate, "ffn_gate", m->dim, m->ffn)) &&
-             MAT(up, "ffn_up", m->dim, m->ffn) && MAT(down, "ffn_down", m->ffn, m->dim) &&
-             VEC(attn_norm, "attn_norm.weight", m->dim, false) && VEC(ffn_norm, "ffn_norm.weight", m->dim, false) &&
-             VEC(bq, "attn_q.bias", qd, true) && VEC(bk, "attn_k.bias", kvd, true) &&
-             VEC(bv, "attn_v.bias", kvd, true) && VEC(q_norm, "attn_q_norm.weight", m->hd, true) &&
-             VEC(k_norm, "attn_k_norm.weight", m->hd, true) && VEC(attn_norm_b, "attn_norm.bias", m->dim, !sc2) &&
-             VEC(ffn_norm_b, "ffn_norm.bias", m->dim, !sc2) && VEC(bo, "attn_output.bias", m->dim, true) &&
-             VEC(bup, "ffn_up.bias", m->ffn, true) && VEC(bdown, "ffn_down.bias", m->dim, true);
-#undef MAT
-#undef VEC
-    }
-    if (!ok) {
+    if (ok && (err = model_blocks(m, "", why, cap)) == 0)
+        err = model_work(m, base, why, cap);
+    if (!ok || err) {
         m->file = NULL;
         model_free(m);
-        return E_INVAL;
+        return ok ? err : E_INVAL;
     }
-    size_t B = AI_BATCH, wide = (size_t)MAX(MAX(qd, m->dim), kvd);
-    m->inv_freq = kmalloc(sizeof(float) * (size_t)(m->hd / 2));
-    m->kc = big_alloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
-    m->vc = big_alloc(sizeof(float) * (size_t)m->layers * (size_t)m->ctx * (size_t)kvd);
-    m->past = kmalloc(sizeof(int) * (size_t)m->ctx);
-    m->x = kmalloc(sizeof(float) * B * (size_t)m->dim);
-    m->xb = kmalloc(sizeof(float) * B * wide);
-    m->q = kmalloc(sizeof(float) * B * (size_t)qd);
-    m->k = kmalloc(sizeof(float) * B * (size_t)kvd);
-    m->v = kmalloc(sizeof(float) * B * (size_t)kvd);
-    m->att = kmalloc(sizeof(float) * B * (size_t)qd);
-    m->hb = kmalloc(sizeof(float) * B * (size_t)m->ffn);
-    m->hb2 = kmalloc(sizeof(float) * B * (size_t)m->ffn);
-    m->scores = kmalloc(sizeof(float) * B * (size_t)m->heads * (size_t)m->ctx);
-    m->logits = kmalloc(sizeof(float) * (size_t)m->vocab);
-    m->rope_cs = kmalloc(sizeof(float) * B * (size_t)m->hd);
-    if (!m->inv_freq || !m->kc || !m->vc || !m->past || !m->x || !m->xb || !m->q || !m->k || !m->v || !m->att ||
-        !m->hb || !m->hb2 || !m->scores || !m->logits || !m->rope_cs) {
-        str_copy(why, "not enough memory for the model's working space; try a shorter context", cap);
-        m->file = NULL;
-        model_free(m);
-        return E_NOMEM;
-    }
-    for (int i = 0; i < m->hd / 2; i++)
-        m->inv_freq[i] = (float)ai_exp(-2.0 * i / m->hd * ai_log(base));
     return 0;
 }
 
@@ -299,7 +315,7 @@ struct mm_job {
     const int32_t *as;
 };
 
-static bool qdot_on = true; /* ai exact turns it off, to compare */
+#define qdot_on (gui_ai.speed == 0) /* Settings → AI → speed, or ai exact: floats everywhere, to compare */
 static int8_t *act_q;
 static float *act_d;
 static int32_t *act_s;
@@ -431,14 +447,18 @@ static void att_part(void *ctx, int from, int to)
     }
 }
 
-/* runs batch tokens at positions n_past..; with logits, m->logits holds the scores after the last one */
+/* runs batch tokens at positions n_past..; with logits, m->logits holds the scores after the last one (and m->xb the
+   normalised state they come from). tokens NULL: m->x already holds the batch's input vectors. */
 static void forward(struct ai_model *m, const int *tokens, int batch, bool logits)
 {
     int dim = m->dim, hd = m->hd, qd = m->heads * hd, kvd = m->kv_heads * hd, pos0 = m->n_past;
     bool neox = m->arch != ARCH_LLAMA;
     for (int t = 0; t < batch; t++) {
-        int id = tokens[t] >= 0 && tokens[t] < m->vocab ? tokens[t] : 0;
-        deq_row(m->embd.type, m->embd.data + (size_t)id * m->embd.row_bytes, m->x + (size_t)t * (size_t)dim, dim);
+        if (tokens) {
+            int id = tokens[t] >= 0 && tokens[t] < m->vocab ? tokens[t] : 0;
+            deq_row(m->embd.type, m->embd.data + (size_t)id * m->embd.row_bytes, m->x + (size_t)t * (size_t)dim,
+                    dim);
+        }
         float *cs = m->rope_cs + (size_t)t * (size_t)hd;
         for (int i = 0; i < hd / 2; i++) {
             double s, c;
@@ -446,7 +466,7 @@ static void forward(struct ai_model *m, const int *tokens, int batch, bool logit
             cs[2 * i] = (float)c;
             cs[2 * i + 1] = (float)s;
         }
-        m->past[pos0 + t] = tokens[t];
+        m->past[pos0 + t] = tokens ? tokens[t] : -1;
     }
     for (int li = 0; li < m->layers; li++) {
         struct ai_layer *l = &m->L[li];

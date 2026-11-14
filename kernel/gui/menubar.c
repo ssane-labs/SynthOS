@@ -161,7 +161,7 @@ static void layout(void)
     w = extra(4) ? 32 : 0;
     status[S_SEARCH] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
     right -= w;
-    w = gui_module_shown("assistant_fp") ? 30 : 0;
+    w = gui_ai.on && gui_module_shown("assistant_fp") ? 30 : 0;
     status[S_ASSIST] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
     right -= w;
     w = keymap_multi() ? gfx_text_width(&font_sans, keymap_label()) + 14 : 0;

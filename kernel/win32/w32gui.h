@@ -184,6 +184,7 @@ struct w32_scroll {
 struct w32_bridge {
     struct w32_process *process;
     struct w32_window *win;
+    struct w32_ax *ax; /* its controls as the agent's screen reader sees them, kept by the program */
 };
 
 struct w32_window {

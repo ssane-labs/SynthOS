@@ -1301,6 +1301,9 @@ int gfx_text_n(struct canvas *c, int x, int y, const struct ui_font *f, const ch
             draw_glyph(c, x, y, f, g, color);
         x += g->advance;
     }
+    if (gui_ax_on(c) && x > start && y < c->clip.y + c->clip.h && y + f->height > c->clip.y)
+        gui_ax->note(gui_ax, AX_TEXT, rect_intersect((struct rect){start, y, x - start, f->height}, c->clip),
+                     end - n, n, NULL, 0);
     return x - start;
 }
 

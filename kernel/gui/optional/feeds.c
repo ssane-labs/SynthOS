@@ -504,7 +504,9 @@ static void paint(struct canvas *c, struct widget *w, struct rect r)
         return;
     }
     if (!f->n) {
-        ui_wrap_text(c, (struct rect){r.x, r.y + 30, r.w, r.h - 30}, &font_small, f->error, soft);
+        struct canvas in = *c; /* a long error stays inside */
+        in.clip = rect_intersect(c->clip, (struct rect){r.x, r.y + 30, r.w, r.h - 30});
+        ui_wrap_text(&in, (struct rect){r.x, r.y + 30, r.w, r.h - 30}, &font_small, f->error, soft);
         return;
     }
     int n = MIN(rows(w, r), f->n);
@@ -518,14 +520,16 @@ static void paint(struct canvas *c, struct widget *w, struct rect r)
             const char *pct = strchr(it->detail, ' ');
             char price[24];
             str_copy(price, it->detail, MIN(sizeof(price), pct ? (size_t)(pct - it->detail) + 1 : sizeof(price)));
-            gfx_text(c, b.x, b.y + 3, &font_bold, it->title, ink);
             uint32_t col = it->trend > 0 ? RGB(52, 199, 89) : it->trend < 0 ? RGB(255, 69, 58) : soft;
             int pw = pct ? gfx_text_width(&font_small, pct + 1) : 0;
+            bool show_price = b.w > 150;
+            int right = pw + (show_price ? 12 + gfx_text_width(&font_small, price) : 0);
+            fit(&font_bold, it->title, b.w - right - 10, line, sizeof(line));
+            gfx_text(c, b.x, b.y + 3, &font_bold, line, ink);
             if (pct)
                 gfx_text(c, b.x + b.w - pw, b.y + 4, &font_small, pct + 1, col);
-            if (b.w > 150)
-                gfx_text(c, b.x + b.w - pw - 12 - gfx_text_width(&font_small, price), b.y + 4, &font_small, price,
-                         soft);
+            if (show_price)
+                gfx_text(c, b.x + b.w - right, b.y + 4, &font_small, price, soft);
         } else if (w->kind == WK_SPORTS) {
             int dw = MIN(gfx_text_width(&font_small, it->detail), b.w / 2);
             fit(&font_sans, it->title, b.w - dw - 10, line, sizeof(line));
@@ -535,8 +539,10 @@ static void paint(struct canvas *c, struct widget *w, struct rect r)
         } else {
             fit(&font_sans, it->title, b.w, line, sizeof(line));
             gfx_text(c, b.x, b.y + 2, &font_sans, line, ink);
-            if (row_height(w) > 30 && it->detail[0])
-                gfx_text(c, b.x, b.y + 18, &font_small, it->detail, soft);
+            if (row_height(w) > 30 && it->detail[0]) {
+                fit(&font_small, it->detail, b.w, line, sizeof(line));
+                gfx_text(c, b.x, b.y + 18, &font_small, line, soft);
+            }
         }
     }
 }
