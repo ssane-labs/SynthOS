@@ -782,8 +782,8 @@ struct smooth_job {
     int alpha;
 };
 
-static uint16_t col_i[SMOOTH_MAX];
-static uint8_t col_f[SMOOTH_MAX];
+static uint16_t *col_i; /* from the heap on first use: 12 KB the 32-bit kernel image cannot spare */
+static uint8_t *col_f;
 
 static void smooth_rows(void *ctx, int from, int to)
 {
@@ -817,7 +817,11 @@ void gfx_scale_smooth(struct canvas *c, struct rect dst, const struct canvas *sr
 {
     if (dst.w <= 0 || dst.h <= 0 || alpha <= 0)
         return;
-    if (dst.w > SMOOTH_MAX || src->w > SMOOTH_MAX || src->w < 2 || src->h < 2 ||
+    if (!col_i && (col_i = kmalloc(sizeof(*col_i) * SMOOTH_MAX)) && !(col_f = kmalloc(SMOOTH_MAX))) {
+        kfree(col_i);
+        col_i = NULL;
+    }
+    if (!col_i || dst.w > SMOOTH_MAX || src->w > SMOOTH_MAX || src->w < 2 || src->h < 2 ||
         (dst.w == src->w && dst.h == src->h)) {
         gfx_scale_fast(c, dst, src, alpha);
         return;
