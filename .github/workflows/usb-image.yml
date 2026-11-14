@@ -39,6 +39,7 @@ jobs:
           python3 -m zipfile -c synthos-usb32.zip synthos-usb32.img synthos-usb32.img.sha256
           sha256sum synthos-windows.zip synthos-usb.zip synthos-usb32.zip synthos-update.sup synthos-update32.sup > SHA256SUMS
       - uses: actions/upload-artifact@v4
+        continue-on-error: true # the release below carries the files even when the artifact storage is full
         with:
           name: synthos-usb
           path: |
@@ -47,11 +48,13 @@ jobs:
           compression-level: 9
           retention-days: 90
       - uses: actions/upload-artifact@v4
+        continue-on-error: true # the release below carries the files even when the artifact storage is full
         with:
           name: synthos-windows
           path: build/synthos-windows/
           retention-days: 90
       - uses: actions/upload-artifact@v4
+        continue-on-error: true # the release below carries the files even when the artifact storage is full
         with:
           name: synthos-usb32
           path: |
