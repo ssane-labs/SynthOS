@@ -13,6 +13,7 @@
 static uint32_t color[W * H];
 static float depth[W * H];
 static int failures;
+int dxbc_tests(void);
 
 struct mat {
     float m[16];
@@ -254,6 +255,7 @@ int main(int argc, char **argv)
         }
         fclose(f);
     }
+    failures += dxbc_tests();
     printf("gpu: %d failed\n", failures);
     return failures != 0;
 }
