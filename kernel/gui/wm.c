@@ -280,6 +280,15 @@ static volatile int hw_x, hw_y;
 static volatile bool fb_busy, hw_dirty, hw_live;
 static struct rect hw_drawn;
 
+/* tells a display that has to be told (virtio-gpu) which part of its framebuffer changed */
+static void fb_present(struct screen *s, struct rect r)
+{
+    if (s->scale == 1 && !s->turn)
+        hal_screen_present(&s->fb, r.x - s->area.x, r.y - s->area.y, r.w, r.h);
+    else
+        hal_screen_present(&s->fb, 0, 0, (int)s->fb.width, (int)s->fb.height);
+}
+
 static void fb_compose(struct screen *s, struct rect r)
 {
     r = rect_intersect(r, s->area);
@@ -296,6 +305,7 @@ static void fb_compose(struct screen *s, struct rect r)
         }
         fb_row(s, r.x, y, row, r.w);
     }
+    fb_present(s, r);
 }
 
 /* Puts the pointer where hw_x, hw_y say: one pass over the old and new places (they overlap while it moves). */
@@ -350,6 +360,7 @@ static void flush(struct screen *s, struct rect r)
     struct rect c = rect_intersect(r, hw_drawn);
     if (!rect_empty(c))
         fb_compose(s, c);
+    fb_present(s, r);
 }
 
 static void add_dirty(struct screen *s, struct rect r)

@@ -6,6 +6,7 @@
 #include <synth/vmm.h>
 
 #include "io.h"
+#include "virtio_gpu.h"
 
 #define MAX_OUTPUTS 4
 #define DISPI_INDEX 0x1ce
@@ -33,6 +34,7 @@ enum kind {
     K_VBE,
     K_GOP,
     K_BOCHS,
+    K_VIRTIO,
 };
 
 struct output {
@@ -46,6 +48,9 @@ struct output {
     int more;
     uint16_t boot_w, boot_h;
     struct framebuffer fb;
+#ifdef __x86_64__
+    struct virtio_screen vs;
+#endif
 };
 
 static struct output outputs[MAX_OUTPUTS];
@@ -82,9 +87,36 @@ static bool is_uefi(void)
 }
 
 #ifndef CONFIG_SERIAL_CONSOLE
+static void add_output(const struct output *o)
+{
+    if (o->primary) {
+        memmove(&outputs[1], &outputs[0], sizeof(outputs[0]) * (size_t)output_count);
+        outputs[0] = *o;
+    } else {
+        outputs[output_count] = *o;
+    }
+    output_count++;
+}
+
 static void found_pci(const struct pci_device *d, void *ctx)
 {
     UNUSED(ctx);
+#ifdef __x86_64__
+    int scanouts;
+    uint16_t pw, ph;
+    if (d->vendor == 0x1af4 && d->device == 0x1050 && output_count < MAX_OUTPUTS && virtio_gpu_probe(d, &scanouts, &pw, &ph)) {
+        for (int i = 0; i < scanouts && output_count < MAX_OUTPUTS; i++) {
+            struct output o = {.kind = K_VIRTIO, .pci = *d, .primary = i == 0 && d->subclass == 0x00};
+            o.vs.gpu = virtio_gpu_last();
+            o.vs.scanout = i;
+            virtio_gpu_preferred(o.vs.gpu, i, &o.boot_w, &o.boot_h);
+            o.vram = 64u << 20;
+            ksnprintf(o.name, sizeof(o.name), scanouts > 1 ? "Virtio GPU display %d" : "Virtio GPU", i + 1);
+            add_output(&o);
+        }
+        return;
+    }
+#endif
     bool bochs = d->vendor == 0x1234 && d->device == 0x1111;
     bool vbox = d->vendor == 0x80ee && d->device == 0xbeef;
     if ((!bochs && !vbox) || d->class_code != 0x03 || output_count >= MAX_OUTPUTS)
@@ -112,13 +144,7 @@ static void found_pci(const struct pci_device *d, void *ctx)
     o.boot_w = dispi_read(&o, D_XRES);
     o.boot_h = dispi_read(&o, D_YRES);
     ksnprintf(o.name, sizeof(o.name), "%s %s", vbox ? "VirtualBox" : "QEMU", o.primary ? "VGA" : "display");
-    if (o.primary) {
-        memmove(&outputs[1], &outputs[0], sizeof(outputs[0]) * (size_t)output_count);
-        outputs[0] = o;
-    } else {
-        outputs[output_count] = o;
-    }
-    output_count++;
+    add_output(&o);
 }
 #endif
 
@@ -252,6 +278,15 @@ bool hal_screen_open(int index, int width, int height, struct framebuffer *fb)
         }
         break;
     }
+    case K_VIRTIO: {
+#ifdef __x86_64__
+        int w = width ? width : o->boot_w >= 640 ? o->boot_w : 1024, h = height ? height : o->boot_h >= 480 ? o->boot_h : 768;
+        ok = w >= 320 && h >= 200 && w <= 4096 && h <= 4096 && virtio_gpu_set(o->vs.gpu, o->vs.scanout, w, h, &o->vs, fb);
+        if (!ok && (width || height))
+            ok = virtio_gpu_set(o->vs.gpu, o->vs.scanout, 1024, 768, &o->vs, fb);
+#endif
+        break;
+    }
     case K_BOCHS: {
         int w = width, h = height;
         if (!w || !bochs_set(o, w, h, fb)) {
@@ -295,6 +330,18 @@ void hal_screen_close(int index)
     dispi_write(o, D_ENABLE, 0);
     if (o->primary)
         vbe_leave();
+}
+
+/* Shows what was drawn into a display's framebuffer, where the display needs telling (virtio-gpu) */
+void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h)
+{
+#ifdef __x86_64__
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_VIRTIO && outputs[i].active && outputs[i].vs.pixels == fb->base)
+            virtio_gpu_present(&outputs[i].vs, x, y, w, h);
+#else
+    UNUSED(fb), UNUSED(x), UNUSED(y), UNUSED(w), UNUSED(h);
+#endif
 }
 
 bool hal_graphics_enter(struct framebuffer *fb)

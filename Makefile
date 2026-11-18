@@ -89,6 +89,7 @@ endif
 # apps outside the kernel image (kernel/gui/module.c): position-independent objects linked against this kernel's
 # symbols, put in a second ramdisk (/system/apps/*.sxm) after the system files
 MOD_SRC    := $(if $(filter 0,$(CONFIG_GUI)),,$(wildcard kernel/gui/optional/*.c))
+MOD_SRC    := $(if $(X64),$(MOD_SRC),$(filter-out kernel/gui/optional/gpu3d_fp.c,$(MOD_SRC))) # the 3D pipeline is 64-bit
 KERNEL_SRC := $(filter-out kernel/gui/optional/%,$(KERNEL_SRC))
 MOD_BIN    := $(MOD_SRC:kernel/gui/optional/%.c=$(OUT)/modules/system/apps/%.sxm)
 KERNEL_ASM := arch/x86/entry.asm arch/x86/isr.asm arch/x86/win32.asm arch/x86/long.asm
@@ -124,7 +125,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-crypto clean tools programs usb windows update
+.PHONY: all run run-serial run-uefi test test-hw test-crypto test-gpu clean tools programs usb windows update
 all: $(IMAGE)
 
 ESP_LBA     := 8192
@@ -330,7 +331,7 @@ GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.
              dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o \
              sysupdate.o progress.o focus.o session.o aiconf.o)
 CORE_SMALL := $(addprefix $(OUT)/obj/kernel/,core/install.o core/update.o core/recovery.o core/store.o core/rules.o \
-              core/timeline.o core/trash.o fs/versions.o) $(OUT)/obj/arch/x86/e1000.o $(OUT)/obj/arch/x86/realtek.o $(OUT)/obj/arch/x86/acpi.o
+              core/timeline.o core/trash.o fs/versions.o) $(OUT)/obj/arch/x86/e1000.o $(OUT)/obj/arch/x86/realtek.o $(OUT)/obj/arch/x86/acpi.o $(OUT)/obj/arch/x86/virtio_gpu.o
 $(OUT)/obj/kernel/gui/apps/%.o $(OUT)/obj/kernel/cmds/%.o $(GUI_SMALL) $(CORE_SMALL): CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
@@ -503,6 +504,11 @@ run-serial:
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
 	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(SUFFIX)/synthos.img
+
+test-gpu:
+	@mkdir -p $(BUILD)/tools
+	@$(HOSTCC) -O2 -Wall -Wextra -DRS_HOST -Iinclude -o $(BUILD)/tools/gputest tests/gpu/driver.c kernel/gpu/raster_fp.c -lm
+	@$(BUILD)/tools/gputest
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools

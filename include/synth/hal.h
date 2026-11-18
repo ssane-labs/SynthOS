@@ -87,6 +87,7 @@ int hal_screen_count(void);
 const char *hal_screen_name(int index);
 int hal_screen_modes(int index, struct display_mode *out, int max);
 bool hal_screen_open(int index, int width, int height, struct framebuffer *fb);
+void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h);
 void hal_screen_close(int index);
 int hal_key_read(int timeout_ms);
 int hal_key_modifiers(void);

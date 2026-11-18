@@ -1,0 +1,471 @@
+/* The software 3D pipeline (include/synth/raster.h). Built with SSE floating point (an _fp file). */
+
+#if defined(__x86_64__) || defined(RS_HOST)
+
+#include <synth/raster.h>
+
+#ifdef RS_HOST /* tests/gpu: the same code on the build machine */
+#include <stdlib.h>
+#include <string.h>
+#define kmalloc malloc
+#define kfree free
+static void hal_parallel(void (*fn)(void *ctx, int from, int to), void *ctx, int count, int grain)
+{
+    (void)grain;
+    fn(ctx, 0, count);
+}
+#else
+#include <synth/hal.h>
+#include <synth/heap.h>
+#include <synth/string.h>
+#endif
+
+#define TILE 64
+#define SUB 16 /* subpixel steps: positions are 28.4 fixed point */
+#define FLOATS (4 + RS_MAX_VARY * 4)
+
+/* a clipped vertex: clip-space position, then the varyings */
+struct cvert {
+    float v[FLOATS];
+};
+
+/* a triangle ready to draw: fixed-point screen positions, edges, and what is interpolated */
+struct tri {
+    int64_t x[3], y[3];
+    int64_t bias[3];
+    int minx, miny, maxx, maxy;
+    float inv_area;
+    float z[3], iw[3];                     /* depth after the viewport, 1/w */
+    float attr[3][RS_MAX_VARY * 4];        /* varyings divided by w */
+};
+
+struct draw {
+    struct rs_target *t;
+    const struct rs_state *s;
+    struct tri *tris;
+    int ntris, cap;
+    int tiles_x, tiles_y;
+    int *bin_count, *bin_start, *bins;
+    int cminx, cminy, cmaxx, cmaxy; /* the clip rectangle: target, scissor */
+    float vx, vy, vw, vh, min_z, max_z;
+    uint64_t quads, pixels;
+};
+
+static struct rs_stats stats;
+
+void rs_get_stats(struct rs_stats *out)
+{
+    *out = stats;
+}
+
+static float clampf(float v, float lo, float hi)
+{
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+void rs_clear(struct rs_target *t, uint32_t color, bool clear_color, float depth, bool clear_depth)
+{
+    for (int y = 0; y < t->h; y++) {
+        if (clear_color && t->color)
+            for (int x = 0; x < t->w; x++)
+                t->color[y * t->stride + x] = color;
+        if (clear_depth && t->depth)
+            for (int x = 0; x < t->w; x++)
+                t->depth[y * t->depth_stride + x] = depth;
+    }
+}
+
+/* ---- clipping against the six planes of the clip volume (-w <= x, y <= w, 0 <= z <= w) */
+
+static float plane_dist(const float *v, int p)
+{
+    switch (p) {
+    case 0: return v[3] + v[0];
+    case 1: return v[3] - v[0];
+    case 2: return v[3] + v[1];
+    case 3: return v[3] - v[1];
+    case 4: return v[2];
+    default: return v[3] - v[2];
+    }
+}
+
+static int clip_polygon(struct cvert *in, int n, struct cvert *out, int floats)
+{
+    struct cvert buf[2][12];
+    struct cvert *src = in;
+    for (int p = 0; p < 6 && n >= 3; p++) {
+        struct cvert *dst = p == 5 ? out : buf[p & 1];
+        int m = 0;
+        for (int i = 0; i < n && m < 11; i++) {
+            const struct cvert *a = &src[i], *b = &src[(i + 1) % n];
+            float da = plane_dist(a->v, p), db = plane_dist(b->v, p);
+            if (da >= 0)
+                dst[m++] = *a;
+            if ((da >= 0) != (db >= 0) && m < 11) {
+                float k = da / (da - db);
+                for (int f = 0; f < floats; f++)
+                    dst[m].v[f] = a->v[f] + (b->v[f] - a->v[f]) * k;
+                m++;
+            }
+        }
+        n = m;
+        src = dst;
+    }
+    if (src != out)
+        for (int i = 0; i < n; i++)
+            out[i] = src[i];
+    return n >= 3 ? n : 0;
+}
+
+/* ---- triangle setup */
+
+static bool add_tri(struct draw *d, const struct cvert *a, const struct cvert *b, const struct cvert *c)
+{
+    const struct rs_state *s = d->s;
+    const struct cvert *v[3] = {a, b, c};
+    struct tri t;
+    for (int i = 0; i < 3; i++) {
+        float w = v[i]->v[3], iw = 1.0f / w;
+        float sx = d->vx + (v[i]->v[0] * iw + 1.0f) * 0.5f * d->vw;
+        float sy = d->vy + (1.0f - v[i]->v[1] * iw) * 0.5f * d->vh;
+        t.x[i] = (int64_t)(sx * SUB + (sx >= 0 ? 0.5f : -0.5f));
+        t.y[i] = (int64_t)(sy * SUB + (sy >= 0 ? 0.5f : -0.5f));
+        t.z[i] = d->min_z + clampf(v[i]->v[2] * iw, 0.0f, 1.0f) * (d->max_z - d->min_z);
+        t.iw[i] = iw;
+        for (int f = 0; f < s->nvary * 4; f++)
+            t.attr[i][f] = v[i]->v[4 + f] * iw;
+    }
+    int64_t area = (t.x[1] - t.x[0]) * (t.y[2] - t.y[0]) - (t.y[1] - t.y[0]) * (t.x[2] - t.x[0]);
+    if (area == 0)
+        return false;
+    /* y points down: a positive area turns clockwise on the screen */
+    bool cw = area > 0, front = s->front_ccw ? !cw : cw;
+    if ((s->cull == RS_CULL_BACK && !front) || (s->cull == RS_CULL_FRONT && front)) {
+        stats.culled++;
+        return false;
+    }
+    if (area < 0) { /* make it clockwise: swap the last two corners */
+        int64_t tx = t.x[1], ty = t.y[1];
+        t.x[1] = t.x[2], t.y[1] = t.y[2], t.x[2] = tx, t.y[2] = ty;
+        float tz = t.z[1], tw = t.iw[1];
+        t.z[1] = t.z[2], t.iw[1] = t.iw[2], t.z[2] = tz, t.iw[2] = tw;
+        for (int f = 0; f < s->nvary * 4; f++) {
+            float k = t.attr[1][f];
+            t.attr[1][f] = t.attr[2][f];
+            t.attr[2][f] = k;
+        }
+        area = -area;
+    }
+    t.inv_area = 1.0f / (float)area;
+    /* edge i runs from corner i+1 to corner i+2; E >= 0 inside. The top-left rule: a pixel exactly on an edge
+       belongs to the triangle only for a top or a left edge. */
+    for (int i = 0; i < 3; i++) {
+        int j = (i + 1) % 3, k = (i + 2) % 3;
+        int64_t nx = -(t.y[k] - t.y[j]), ny = t.x[k] - t.x[j]; /* points inside */
+        bool top_left = nx > 0 || (nx == 0 && ny > 0);
+        t.bias[i] = top_left ? 0 : -1;
+    }
+    int64_t minx = t.x[0], maxx = t.x[0], miny = t.y[0], maxy = t.y[0];
+    for (int i = 1; i < 3; i++) {
+        minx = t.x[i] < minx ? t.x[i] : minx;
+        maxx = t.x[i] > maxx ? t.x[i] : maxx;
+        miny = t.y[i] < miny ? t.y[i] : miny;
+        maxy = t.y[i] > maxy ? t.y[i] : maxy;
+    }
+    t.minx = (int)((minx) / SUB) - 1;
+    t.miny = (int)((miny) / SUB) - 1;
+    t.maxx = (int)((maxx + SUB - 1) / SUB) + 1;
+    t.maxy = (int)((maxy + SUB - 1) / SUB) + 1;
+    t.minx = t.minx < d->cminx ? d->cminx : t.minx;
+    t.miny = t.miny < d->cminy ? d->cminy : t.miny;
+    t.maxx = t.maxx > d->cmaxx ? d->cmaxx : t.maxx;
+    t.maxy = t.maxy > d->cmaxy ? d->cmaxy : t.maxy;
+    if (t.minx >= t.maxx || t.miny >= t.maxy)
+        return false;
+    if (d->ntris == d->cap) {
+        int cap = d->cap ? d->cap * 2 : 256;
+        struct tri *more = kmalloc(sizeof(struct tri) * (size_t)cap);
+        if (!more)
+            return false;
+        if (d->tris) {
+            memcpy(more, d->tris, sizeof(struct tri) * (size_t)d->ntris);
+            kfree(d->tris);
+        }
+        d->tris = more;
+        d->cap = cap;
+    }
+    d->tris[d->ntris++] = t;
+    stats.triangles++;
+    return true;
+}
+
+/* ---- per pixel */
+
+static int64_t edge(const struct tri *t, int i, int64_t px, int64_t py)
+{
+    int j = (i + 1) % 3, k = (i + 2) % 3;
+    return (t->x[k] - t->x[j]) * (py - t->y[j]) - (t->y[k] - t->y[j]) * (px - t->x[j]);
+}
+
+static bool depth_pass(enum rs_compare f, float z, float have)
+{
+    switch (f) {
+    case RS_NEVER: return false;
+    case RS_LESS: return z < have;
+    case RS_EQUAL: return z == have;
+    case RS_LESS_EQUAL: return z <= have;
+    case RS_GREATER: return z > have;
+    case RS_NOT_EQUAL: return z != have;
+    case RS_GREATER_EQUAL: return z >= have;
+    default: return true;
+    }
+}
+
+static uint32_t to8(float v)
+{
+    return (uint32_t)(clampf(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+}
+
+static void write_pixel(const struct rs_state *s, uint32_t *dst, const float *c)
+{
+    float r = c[0], g = c[1], b = c[2], a = c[3];
+    if (s->blend != RS_BLEND_NONE) {
+        uint32_t p = *dst;
+        float dr = (float)(p >> 16 & 255) / 255.0f, dg = (float)(p >> 8 & 255) / 255.0f, db = (float)(p & 255) / 255.0f,
+              da = (float)(p >> 24) / 255.0f;
+        float sa = clampf(a, 0.0f, 1.0f);
+        switch (s->blend) {
+        case RS_BLEND_ALPHA:
+            r = r * sa + dr * (1 - sa), g = g * sa + dg * (1 - sa), b = b * sa + db * (1 - sa), a = sa + da * (1 - sa);
+            break;
+        case RS_BLEND_ADD: r += dr, g += dg, b += db, a += da; break;
+        default: r += dr * (1 - sa), g += dg * (1 - sa), b += db * (1 - sa), a = sa + da * (1 - sa); break;
+        }
+    }
+    uint32_t out = to8(a) << 24 | to8(r) << 16 | to8(g) << 8 | to8(b);
+    unsigned m = s->write_mask ? s->write_mask : 15;
+    if (m != 15) {
+        uint32_t keep = (m & 1 ? 0 : 0xff0000u) | (m & 2 ? 0 : 0xff00u) | (m & 4 ? 0 : 0xffu) | (m & 8 ? 0 : 0xff000000u);
+        out = (out & ~keep) | (*dst & keep);
+    }
+    *dst = out;
+}
+
+static void draw_tri_in_tile(struct draw *d, const struct tri *t, int x0, int y0, int x1, int y1)
+{
+    const struct rs_state *s = d->s;
+    struct rs_target *tg = d->t;
+    int nf = s->nvary * 4;
+    x0 = (t->minx > x0 ? t->minx : x0) & ~1;
+    y0 = (t->miny > y0 ? t->miny : y0) & ~1;
+    x1 = t->maxx < x1 ? t->maxx : x1;
+    y1 = t->maxy < y1 ? t->maxy : y1;
+    struct rs_quad q;
+    float color[4][4];
+    for (int y = y0; y < y1; y += 2)
+        for (int x = x0; x < x1; x += 2) {
+            int64_t e[4][3];
+            unsigned mask = 0;
+            for (int p = 0; p < 4; p++) {
+                int px = x + (p & 1), py = y + (p >> 1);
+                int64_t cx = (int64_t)px * SUB + SUB / 2, cy = (int64_t)py * SUB + SUB / 2;
+                bool in = px < x1 && py < y1 && px >= d->cminx && py >= d->cminy; /* x1, y1: this tile's end */
+                for (int i = 0; i < 3; i++) {
+                    e[p][i] = edge(t, i, cx, cy);
+                    in = in && e[p][i] + t->bias[i] >= 0;
+                }
+                if (in)
+                    mask |= 1u << p;
+            }
+            if (!mask)
+                continue;
+            q.x = x, q.y = y;
+            for (int p = 0; p < 4; p++) {
+                float l0 = (float)e[p][0] * t->inv_area, l1 = (float)e[p][1] * t->inv_area, l2 = 1.0f - l0 - l1;
+                q.depth[p] = l0 * t->z[0] + l1 * t->z[1] + l2 * t->z[2];
+                float w = 1.0f / (l0 * t->iw[0] + l1 * t->iw[1] + l2 * t->iw[2]);
+                for (int f = 0; f < nf; f++)
+                    q.in[p][f] = (l0 * t->attr[0][f] + l1 * t->attr[1][f] + l2 * t->attr[2][f]) * w;
+            }
+            if (s->depth_test && tg->depth) /* before the shader: no shader here writes depth */
+                for (int p = 0; p < 4; p++)
+                    if (mask & (1u << p)) {
+                        int px = x + (p & 1), py = y + (p >> 1);
+                        if (!depth_pass(s->depth_func, q.depth[p], tg->depth[py * tg->depth_stride + px]))
+                            mask &= ~(1u << p);
+                    }
+            if (!mask)
+                continue;
+            d->quads++;
+            if (s->ps)
+                s->ps(s->ctx, &q, color, &mask);
+            for (int p = 0; p < 4; p++) {
+                if (!(mask & (1u << p)))
+                    continue;
+                int px = x + (p & 1), py = y + (p >> 1);
+                if (tg->depth && s->depth_write)
+                    tg->depth[py * tg->depth_stride + px] = q.depth[p];
+                if (tg->color && s->ps)
+                    write_pixel(s, &tg->color[py * tg->stride + px], color[p]);
+                d->pixels++;
+            }
+        }
+}
+
+/* the tiles are drawn in parallel: every one by one core, its triangles in the order they came */
+static void draw_tiles(void *ctx, int from, int to)
+{
+    struct draw *d = ctx;
+    uint64_t quads = 0, pixels = 0;
+    struct draw local = *d;
+    local.quads = local.pixels = 0;
+    for (int tile = from; tile < to; tile++) {
+        int tx = tile % d->tiles_x, ty = tile / d->tiles_x;
+        int x0 = tx * TILE, y0 = ty * TILE;
+        int x1 = x0 + TILE < d->cmaxx ? x0 + TILE : d->cmaxx, y1 = y0 + TILE < d->cmaxy ? y0 + TILE : d->cmaxy;
+        for (int k = 0; k < d->bin_count[tile]; k++)
+            draw_tri_in_tile(&local, &d->tris[d->bins[d->bin_start[tile] + k]], x0, y0, x1, y1);
+    }
+    quads = local.quads, pixels = local.pixels;
+    __atomic_add_fetch(&d->quads, quads, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&d->pixels, pixels, __ATOMIC_RELAXED);
+}
+
+/* ---- the draw */
+
+struct shade {
+    const struct rs_state *s;
+    float *out;
+    uint32_t first;
+    int floats;
+};
+
+static void shade_vertices(void *ctx, int from, int to)
+{
+    struct shade *sh = ctx;
+    for (int i = from; i < to; i++)
+        sh->s->vs(sh->s->ctx, sh->first + (uint32_t)i, sh->out + (size_t)i * (size_t)sh->floats);
+}
+
+int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topology, uint32_t count,
+            const uint32_t *indices, int32_t base_vertex)
+{
+    if (!s->vs || s->nvary < 0 || s->nvary > RS_MAX_VARY || count < 3)
+        return 0;
+    struct draw d = {.t = t, .s = s};
+    d.cminx = 0, d.cminy = 0, d.cmaxx = t->w, d.cmaxy = t->h;
+    if (s->scissor) {
+        d.cminx = s->sx > 0 ? s->sx : 0;
+        d.cminy = s->sy > 0 ? s->sy : 0;
+        d.cmaxx = s->sx + s->sw < t->w ? s->sx + s->sw : t->w;
+        d.cmaxy = s->sy + s->sh < t->h ? s->sy + s->sh : t->h;
+        if (d.cminx >= d.cmaxx || d.cminy >= d.cmaxy)
+            return 0;
+    }
+    d.vx = s->vw > 0 ? s->vx : 0, d.vy = s->vw > 0 ? s->vy : 0;
+    d.vw = s->vw > 0 ? s->vw : (float)t->w, d.vh = s->vw > 0 ? s->vh : (float)t->h;
+    d.min_z = s->min_z, d.max_z = s->min_z == 0 && s->max_z == 0 ? 1.0f : s->max_z; /* none given: 0..1 */
+    /* every vertex the draw uses, shaded once */
+    uint32_t lo = 0, hi = count - 1;
+    if (indices) {
+        lo = 0xffffffffu, hi = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            lo = indices[i] < lo ? indices[i] : lo;
+            hi = indices[i] > hi ? indices[i] : hi;
+        }
+    }
+    int floats = 4 + s->nvary * 4;
+    uint32_t nverts = hi - lo + 1;
+    if (nverts > (1u << 24))
+        return -1;
+    float *verts = kmalloc(sizeof(float) * (size_t)nverts * (size_t)floats);
+    if (!verts)
+        return -1;
+    struct shade sh = {s, verts, (uint32_t)((int32_t)lo + base_vertex), floats};
+    hal_parallel(shade_vertices, &sh, (int)nverts, 256);
+    /* triangles: clipped where they cross the clip volume */
+    uint32_t ntri = topology == RS_STRIP ? count - 2 : count / 3;
+    for (uint32_t i = 0; i < ntri; i++) {
+        uint32_t k[3];
+        if (topology == RS_STRIP) {
+            k[0] = i, k[1] = i + 1 + (i & 1), k[2] = i + 2 - (i & 1);
+        } else {
+            k[0] = i * 3, k[1] = i * 3 + 1, k[2] = i * 3 + 2;
+        }
+        struct cvert poly[3];
+        bool inside = true, outside = false;
+        for (int c = 0; c < 3; c++) {
+            uint32_t at = (indices ? indices[k[c]] : k[c]) - lo;
+            memcpy(poly[c].v, verts + (size_t)at * (size_t)floats, sizeof(float) * (size_t)floats);
+        }
+        for (int p = 0; p < 6; p++) {
+            int behind = 0;
+            for (int c = 0; c < 3; c++)
+                if (plane_dist(poly[c].v, p) < 0)
+                    behind++, inside = false;
+            if (behind == 3)
+                outside = true;
+        }
+        if (outside)
+            continue;
+        if (inside) {
+            add_tri(&d, &poly[0], &poly[1], &poly[2]);
+            continue;
+        }
+        struct cvert out[12];
+        int n = clip_polygon(poly, 3, out, floats);
+        stats.clipped++;
+        for (int c = 1; c + 1 < n; c++)
+            add_tri(&d, &out[0], &out[c], &out[c + 1]);
+    }
+    kfree(verts);
+    if (!d.ntris)
+        return 0;
+    /* binning: which tiles each triangle touches */
+    d.tiles_x = (t->w + TILE - 1) / TILE, d.tiles_y = (t->h + TILE - 1) / TILE;
+    int tiles = d.tiles_x * d.tiles_y;
+    d.bin_count = kmalloc(sizeof(int) * (size_t)tiles * 2);
+    if (!d.bin_count) {
+        kfree(d.tris);
+        return -1;
+    }
+    d.bin_start = d.bin_count + tiles;
+    memset(d.bin_count, 0, sizeof(int) * (size_t)tiles);
+    size_t total = 0;
+    for (int i = 0; i < d.ntris; i++) {
+        const struct tri *tr = &d.tris[i];
+        for (int ty = tr->miny / TILE; ty <= (tr->maxy - 1) / TILE; ty++)
+            for (int tx = tr->minx / TILE; tx <= (tr->maxx - 1) / TILE; tx++)
+                d.bin_count[ty * d.tiles_x + tx]++, total++;
+    }
+    d.bins = kmalloc(sizeof(int) * (total ? total : 1));
+    if (!d.bins) {
+        kfree(d.bin_count);
+        kfree(d.tris);
+        return -1;
+    }
+    int at = 0;
+    for (int i = 0; i < tiles; i++) {
+        d.bin_start[i] = at;
+        at += d.bin_count[i];
+        d.bin_count[i] = 0;
+    }
+    for (int i = 0; i < d.ntris; i++) {
+        const struct tri *tr = &d.tris[i];
+        for (int ty = tr->miny / TILE; ty <= (tr->maxy - 1) / TILE; ty++)
+            for (int tx = tr->minx / TILE; tx <= (tr->maxx - 1) / TILE; tx++) {
+                int tile = ty * d.tiles_x + tx;
+                d.bins[d.bin_start[tile] + d.bin_count[tile]++] = i;
+            }
+    }
+    hal_parallel(draw_tiles, &d, tiles, 1);
+    stats.quads += d.quads;
+    stats.pixels += d.pixels;
+    int drawn = d.ntris;
+    kfree(d.bins);
+    kfree(d.bin_count);
+    kfree(d.tris);
+    return drawn;
+}
+
+#endif
