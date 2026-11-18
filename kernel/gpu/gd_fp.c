@@ -1429,16 +1429,14 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
 {
     stats.draws++;
     struct gd_shader *vs = c->stage[DXBC_VS].shader, *ps = c->stage[DXBC_PS].shader;
-    enum rs_topology topo;
-    if (c->topology == 4)
-        topo = RS_TRIANGLES;
-    else if (c->topology == 5)
-        topo = RS_STRIP;
-    else {
-        stats.skipped++; /* points, lines, adjacency and patches: not yet */
+    static const int8_t topologies[14] = {-1, RS_POINTS, RS_LINES, RS_LINE_STRIP, RS_TRIANGLES, RS_STRIP, -1, -1, -1,
+                                          -1, RS_LINES_ADJ, RS_LINE_STRIP_ADJ, RS_TRIANGLES_ADJ, -1};
+    if (c->topology >= 14 || topologies[c->topology] < 0) {
+        stats.skipped++; /* triangle strips with adjacency and patches: not yet */
         return;
     }
-    if (!vs || vs->sh.stage != DXBC_VS || !count || !instances || c->raster.fill == 2 ||
+    enum rs_topology topo = (enum rs_topology)topologies[c->topology];
+    if (!vs || vs->sh.stage != DXBC_VS || !count || !instances ||
         c->stage[DXBC_GS].shader || c->stage[DXBC_HS].shader) {
         stats.skipped++;
         return;
@@ -1518,6 +1516,7 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     size_t a = dxbc_scratch(d->vs), b = d->ps ? dxbc_scratch(d->ps) : 0;
     s.scratch = regs + (a > b ? a : b);
     s.cull = c->raster.cull == 2 ? RS_CULL_FRONT : c->raster.cull == 3 ? RS_CULL_BACK : RS_CULL_NONE;
+    s.wireframe = c->raster.fill == 2;
     s.front_ccw = c->raster.front_ccw != 0;
     if (c->nviewports) {
         s.vx = c->viewport.x, s.vy = c->viewport.y, s.vw = c->viewport.w, s.vh = c->viewport.h;

@@ -10,7 +10,9 @@
 
 #define RS_MAX_VARY 32 /* float4 outputs of a vertex shader besides the position */
 
-enum rs_topology { RS_TRIANGLES, RS_STRIP };
+enum rs_topology {
+    RS_TRIANGLES, RS_STRIP, RS_POINTS, RS_LINES, RS_LINE_STRIP, RS_LINES_ADJ, RS_LINE_STRIP_ADJ, RS_TRIANGLES_ADJ
+};
 enum rs_cull { RS_CULL_NONE, RS_CULL_BACK, RS_CULL_FRONT };
 /* the Direct3D comparison functions */
 enum rs_compare { RS_NEVER = 1, RS_LESS, RS_EQUAL, RS_LESS_EQUAL, RS_GREATER, RS_NOT_EQUAL, RS_GREATER_EQUAL, RS_ALWAYS };
@@ -57,6 +59,7 @@ struct rs_state {
     enum rs_compare depth_func;
     enum rs_blend blend;
     unsigned write_mask; /* 1 red, 2 green, 4 blue, 8 alpha; 0 means all */
+    bool wireframe;      /* triangles: only their edges, as lines */
     bool scissor;
     int sx, sy, sw, sh;
     float vx, vy, vw, vh, min_z, max_z; /* the viewport; vw 0: the whole target */
@@ -66,7 +69,8 @@ struct rs_stats {
     uint64_t triangles, culled, clipped, quads, pixels;
 };
 
-/* Draws count vertices (or count indices, when indices is not NULL) as triangles. */
+/* Draws count vertices (or count indices, when indices is not NULL) as triangles, lines or points; lines are one
+   pixel wide. */
 int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topology, uint32_t count,
             const uint32_t *indices, int32_t base_vertex);
 void rs_clear(struct rs_target *t, uint32_t color, bool clear_color, float depth, bool clear_depth);

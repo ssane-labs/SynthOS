@@ -374,6 +374,30 @@ static void draw_tests(void)
     draw_verts(v, 6);
     expect(pixel(10, 10) == 0x00ff00 && pixel(50, 10) == 0x0000ff, "discard keeps depth unwritten");
 
+    /* lines, points and wireframe: one pixel wide, both sides drawn */
+    gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+    gd_set_depth(ctx, &(struct gd_depth){0}, 0);
+#define PX(x) (((x) + 0.5f) / W * 2 - 1)
+#define PY(y) (1 - ((y) + 0.5f) / H * 2)
+    struct vert lv[4] = {{{PX(2), PY(10), 0.5f}, {0, 1, 0, 1}}, {{PX(60), PY(10), 0.5f}, {0, 1, 0, 1}},
+                         {{PX(20), PY(20), 0.5f}, {0, 1, 0, 1}}, {{PX(20), PY(50), 0.5f}, {0, 1, 0, 1}}};
+    gd_set_topology(ctx, 2);
+    draw_verts(lv, 4);
+    expect(pixel(30, 10) == 0x00ff00 && pixel(30, 12) == 0 && pixel(30, 8) == 0 && pixel(20, 35) == 0x00ff00 &&
+               pixel(22, 35) == 0,
+           "line lists are one pixel wide");
+    struct vert pv[1] = {{{PX(5), PY(40), 0.5f}, {1, 0, 0, 1}}};
+    gd_set_topology(ctx, 1);
+    draw_verts(pv, 1);
+    expect(pixel(5, 40) == 0x0000ff && pixel(6, 40) == 0 && pixel(5, 41) == 0, "a point covers one pixel");
+    gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+    gd_set_topology(ctx, 4);
+    gd_set_raster(ctx, &(struct gd_raster){.fill = 2, .cull = 1, .depth_clip = 1});
+    quad(v, PX(10), PY(50), PX(50), PY(10), 0.5f, green);
+    draw_verts(v, 6);
+    expect(pixel(30, 10) == 0x00ff00 && pixel(10, 30) == 0x00ff00 && pixel(20, 30) == 0, "wireframe draws edges only");
+    gd_set_raster(ctx, NULL);
+
     struct gd_stats st;
     gd_get_stats(&st);
     expect(st.shader_faults == 0, "no shader faults");
