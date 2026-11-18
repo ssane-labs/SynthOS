@@ -9,6 +9,8 @@
 #include <synth/fmt.h>
 #include <synth/string.h>
 #include <synth/time.h>
+#include <synth/shell.h>
+#include <synth/config.h>
 
 #include "../internal.h"
 
@@ -707,7 +709,26 @@ static void scene(struct mini *m, struct canvas *c, struct rect s, const char *p
         if (t >= 640)
             toast(m, c, s, 0, CLAMP((t - 640) * 5, 0, 1024), ICON_SCREENSHOT, "Screenshot", "Saved to Pictures");
     } else if (!strcmp(pane, "ai")) {
-        m->orb = w;
+        int cx = s.x + s.w / 2, cy = s.y + s.h / 2 - 8, r = MIN(s.h / 4, 46);
+        int pulse = wave(ms, 1600);
+        gfx_glow(c, (struct rect){cx - r, cy - r, 2 * r, 2 * r}, r, r / 2 + pulse * r / 2048, 150,
+                 gfx_halo_tone((int)(ms / 8)));
+        for (int i = 0; i < 6; i++) { /* colors chasing each other inside the drop */
+            int a = (int)(ms / 6 + (uint32_t)i * 171) % 1024;
+            int q = a / 256, f = a % 256, sx = f * 4, co = 1024 - sx;
+            int dx = q == 0 ? sx : q == 1 ? co : q == 2 ? -sx : -co, dy = q == 0 ? -co : q == 1 ? sx : q == 2 ? co : -sx;
+            gfx_circle(c, cx + dx * r / 2048, cy + dy * r / 2048, r * 2 / 3, ALPHA(gfx_halo_tone(i * 170), 120));
+        }
+        gfx_ring(c, cx, cy, r, ALPHA(0xffffffffu, 140));
+        gfx_circle(c, cx - r / 3, cy - r / 3, r / 5, ALPHA(0xffffffffu, 110));
+        static const char *const asks[] = {"How can I help?", "Make the screen warmer", "Open my photos from May",
+                                           "What is on the calendar?"};
+        const char *ask = asks[ms / 2400 % 4];
+        int k = (int)(ms % 2400), a = k < 300 ? k * 255 / 300 : k > 2100 ? (2400 - k) * 255 / 300 : 255;
+        int bw = gfx_text_width(&font_sans, ask) + 32;
+        struct rect b = {cx - bw / 2, cy + r + 12, bw, 30};
+        glass_with(m, c, b, 15, GLASS_MENU, 0);
+        gfx_text_box(c, b, &font_sans, ask, ink_of(m, a), ALIGN_CENTER);
     } else if (!strcmp(pane, "dock") || !strcmp(pane, "displays")) {
         /* acted on the screen itself below */
     }
@@ -827,6 +848,87 @@ static void setting(struct canvas *c, struct rect r, const char *key, const char
     gfx_circle(c, r.x + r.w - 7, r.y + r.h - 7, dot / 2, k > 512 ? style.accent : RGB(200, 200, 206));
 }
 
-static const struct settings_preview service = {hero, shows, setting};
+/* ---- the first-start assistant's own pages */
+
+static bool setting_on(const char *name)
+{
+    char v[16] = "";
+    gui_setting_get(name, v, sizeof(v));
+    return !strcmp(v, "on");
+}
+
+static void put(const char *name, const char *value)
+{
+    setting_apply(shell_current(), name, value);
+}
+
+static void row_switch(struct ui *ui, struct rect g, int i, int n, const char *label, const char *detail,
+                       const char *name)
+{
+    struct rect row = {g.x, g.y + i * 36, g.w, 36};
+    ui_group_label(ui, row, label, detail ? detail : "", i == n - 1);
+    bool on = setting_on(name);
+    if (ui_switch(ui, (struct rect){row.x + row.w - 50, row.y + 7, 36, 22}, &on))
+        put(name, on ? "on" : "off");
+}
+
+static void row_choice(struct ui *ui, struct rect r, int y, const char *label, const char *name,
+                       const char *const *labels, const char *const *values, int n)
+{
+    char v[24] = "";
+    gui_setting_get(name, v, sizeof(v));
+    int sel = -1;
+    for (int i = 0; i < n; i++)
+        if (!strcmp(v, values[i]))
+            sel = i;
+    ui_label(ui, (struct rect){r.x, y + 6, 150, 20}, label, &font_sans, style.text, ALIGN_LEFT);
+    if (ui_segmented(ui, (struct rect){r.x + 160, y, r.w - 160, 30}, labels, n, &sel))
+        put(name, values[sel]);
+}
+
+static void heading(struct ui *ui, struct rect r, const char *text, const char *sub)
+{
+    ui_label(ui, (struct rect){r.x, r.y, r.w, 30}, text, &font_title, style.text, ALIGN_CENTER);
+    ui_label(ui, (struct rect){r.x, r.y + 32, r.w, 18}, sub, &font_sans, style.secondary, ALIGN_CENTER);
+}
+
+static void setup_page(struct ui *ui, struct rect r, const char *page)
+{
+    int y = r.y + 62;
+    if (!strcmp(page, "effects")) {
+        heading(ui, r, "Effects", "The glass, the menu bar and the light of the Dock.");
+        static const char *const fx[] = {"Regular", "Clear", "Tinted", "Smoky", "Prism", "Halo"};
+        static const char *const fx_values[] = {"regular", "clear", "tinted", "smoky", "prism", "halo"};
+        row_choice(ui, r, y, "Glass", "glasseffect", fx, fx_values, 6);
+        static const char *const bars[] = {"Menu bar", "Status pill", "Islands"};
+        static const char *const bar_values[] = {"menubar", "pill", "islands"};
+        row_choice(ui, r, y + 40, "Top of the screen", "statusbar", bars, bar_values, 3);
+        struct rect g = ui_group(ui, r.x, y + 84, r.w, 3, 36);
+        row_switch(ui, g, 0, 3, "Glass takes the icons' colors", NULL, "dockhalo");
+        row_switch(ui, g, 1, 3, "Glowing icons", NULL, "dockglow");
+        row_switch(ui, g, 2, 3, "Light follows the pointer", NULL, "dockspot");
+        static const char *const st[] = {"Subtle", "Normal", "Vivid"};
+        static const char *const st_values[] = {"subtle", "normal", "vivid"};
+        row_choice(ui, r, y + 84 + 3 * 36 + 12, "Dock effects", "dockfx", st, st_values, 3);
+    } else if (!strcmp(page, "ai")) {
+        heading(ui, r, "Assistant", "It runs on this computer: nothing you say or type leaves it.");
+        struct rect g = ui_group(ui, r.x, y, r.w, 3, 36);
+        row_switch(ui, g, 0, 3, "Use AI: the assistant and Tab completion", NULL, "ai");
+        row_switch(ui, g, 1, 3, "Listen for \"Hey Synth\"", NULL, "aiwake");
+        row_switch(ui, g, 2, 3, "Say answers aloud (an 860 MB voice)", NULL, "aispeak");
+        y += 3 * 36 + 14;
+        static const char *const in[] = {"Smart", "Voice", "Text", "Both"};
+        static const char *const in_values[] = {"smart", "voice", "text", "both"};
+        row_choice(ui, r, y, "Ask by", "aiinput", in, in_values, 4);
+        static const char *const st[] = {"Friendly", "Brief", "Detailed"};
+        static const char *const st_values[] = {"friendly", "brief", "detailed"};
+        row_choice(ui, r, y + 40, "Style", "aistyle", st, st_values, 3);
+        static const char *const al[] = {"Ask first", "Look around", "Anything"};
+        static const char *const al_values[] = {"ask", "look", "all"};
+        row_choice(ui, r, y + 80, "May do alone", "aiallow", al, al_values, 3);
+    }
+}
+
+static const struct settings_preview service = {hero, shows, setting, setup_page};
 static const struct module_ext ext = {NULL, 0, NULL, NULL, NULL, NULL, NULL, "settings-preview", &service};
 GUI_APP_FULL(NULL, NULL, &ext);

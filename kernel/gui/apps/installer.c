@@ -8,6 +8,8 @@
 #include <synth/parttab.h>
 #include <synth/string.h>
 
+#include <synth/module.h>
+
 #include "../internal.h"
 
 static struct window *installer_win, *pill_win;
@@ -595,7 +597,14 @@ static void confirm_page(struct ui *ui, struct installer *in)
 static void install_page(struct ui *ui, struct installer *in)
 {
     struct rect r = content(ui, in);
-    if (ui->c) {
+    const struct settings_preview *pv = module_service ? module_service("settings-preview") : NULL;
+    if (pv && r.h >= 440) { /* while it copies: what is coming, one scene after another */
+        static const char *const tour[] = {"appearance", "dock", "ai", "apps", "lock", "sound", "language", "screenshot"};
+        uint32_t ms = (uint32_t)hal_ticks_ms();
+        if (ui->c)
+            pv->hero(ui->c, (struct rect){r.x, r.y, r.w, 230}, tour[ms / 6000 % 8], ms);
+        r.y += 150;
+    } else if (ui->c) {
         struct rect logo = {r.x + (r.w - 72) / 2, r.y + 30, 72, 72};
         gfx_icon(ui->c, logo.x, logo.y, ICON_LOGO, 72);
     }

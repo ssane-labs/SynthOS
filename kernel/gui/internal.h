@@ -165,6 +165,8 @@ struct settings_preview {
     bool (*shows)(const char *key);
     void (*setting)(struct canvas *c, struct rect r, const char *key, const char *before, const char *after,
                     uint32_t ms);
+    /* the first-start assistant's pages that only the module has ("effects", "ai"): drawn into the card's body */
+    void (*setup_page)(struct ui *ui, struct rect r, const char *page);
 };
 int gui_glass_edge(void);
 int gui_glass_frost(void);

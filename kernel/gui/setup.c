@@ -6,6 +6,7 @@
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/keys.h>
+#include <synth/module.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/users.h>
@@ -36,7 +37,9 @@ enum page {
     SP_LOOK,
     SP_DESKTOP,
     SP_DOCK,
+    SP_EFFECTS, /* this one and SP_AI come from the preview module and are skipped without it */
     SP_SYSTEM,
+    SP_AI,
     SP_DONE,
 };
 
@@ -131,9 +134,21 @@ static void refresh_backdrop(struct setup *s)
     gui_blurred_wallpaper(&s->backdrop);
 }
 
+/* the moving picture over the card: the same scenes as in System Settings, one for each page */
+static const char *const page_scenes[] = {"about", "language", "keyboard", "datetime", "users", "appearance",
+                                          "general", "dock", "dock", "mouse", "ai", "about"};
+static int hero_h;
+
+static const struct settings_preview *previews(void)
+{
+    return module_service ? module_service("settings-preview") : NULL;
+}
+
 static void go(struct setup *s, enum page page)
 {
     int dir = page > s->page ? 1 : -1;
+    if ((page == SP_EFFECTS || page == SP_AI) && !(previews() && previews()->setup_page))
+        page = (enum page)(page + dir);
     s->page = page;
     s->error[0] = 0;
     s->st.focus = 0;
@@ -146,14 +161,14 @@ static void go(struct setup *s, enum page page)
 static struct rect card_rect(struct ui *ui)
 {
     int W = ui->win->surface.w, H = ui->win->surface.h;
-    return (struct rect){(W - CARD_W) / 2, (H - CARD_H) / 2, CARD_W, CARD_H};
+    return (struct rect){(W - CARD_W) / 2, (H - CARD_H - hero_h) / 2, CARD_W, CARD_H + hero_h};
 }
 
 static struct rect body(struct ui *ui, struct setup *s)
 {
     struct rect c = card_rect(ui);
     int dx = s->slide.pos * c.w / 1024 / 4;
-    return (struct rect){c.x + 44 + dx, c.y + 40, c.w - 88, c.h - 120};
+    return (struct rect){c.x + 44 + dx, c.y + 40 + hero_h, c.w - 88, c.h - 120 - hero_h};
 }
 
 static bool enter_key(struct ui *ui)
@@ -633,58 +648,11 @@ static void desktop_page(struct ui *ui, struct setup *s)
         go(s, SP_LOOK);
 }
 
-static void dock_preview(struct ui *ui, struct rect pv)
-{
-    if (!ui->c)
-        return;
-    const struct canvas *wp = desktop_wallpaper(0);
-    if (wp && wp->px) {
-        struct canvas shot;
-        if (canvas_alloc(&shot, pv.w, pv.h)) {
-            gfx_scale(&shot, (struct rect){0, 0, pv.w, pv.h}, wp, 255);
-            gfx_blit_round(ui->c, pv, &shot, 10, false);
-            canvas_free(&shot);
-        }
-    } else {
-        gfx_round(ui->c, pv, 10, style.desktop);
-    }
-    gfx_round_frame(ui->c, pv, 10, ALPHA(0, 40));
-    gfx_fill(ui->c, (struct rect){pv.x + 4, pv.y + 3, pv.w - 8, 12}, ALPHA(style.dark ? 0 : 0xffffffffu, 120));
-    char when[40];
-    ksnprintf(when, sizeof(when), "%s%s", is_on("clockdate") ? "Thu 12 Nov  " : "",
-              is_on("clock24") ? (is_on("clockseconds") ? "21:41:07" : "21:41")
-                               : (is_on("clockseconds") ? "9:41:07 PM" : "9:41 PM"));
-    gfx_text_box(ui->c, (struct rect){pv.x + 8, pv.y + 2, pv.w - 16, 14}, &font_small, when, style.text, ALIGN_RIGHT);
-    char mode[16], size[16];
-    current("dockmode", mode, sizeof(mode));
-    current("docksize", size, sizeof(size));
-    if (!strcmp(mode, "off"))
-        return;
-    int icon = !strcmp(size, "small") ? 12 : !strcmp(size, "large") ? 20 : 16, n = 7;
-    int dw = n * (icon + 4) + 10, dh = icon + 10;
-    struct rect dock = {pv.x + (pv.w - dw) / 2, pv.y + pv.h - dh - 6, dw, dh};
-    if (!strcmp(mode, "autohide")) {
-        gfx_fill(ui->c, (struct rect){pv.x + pv.w / 2 - 20, pv.y + pv.h - 4, 40, 2}, ALPHA(0xffffffffu, 160));
-        return;
-    }
-    gfx_round(ui->c, dock, dh / 3, ALPHA(style.dark ? 0 : 0xffffffffu, 140));
-    static const uint32_t colors[] = {0xff0a84ff, 0xff30d158, 0xffff9f0a, 0xffff375f, 0xffbf5af2, 0xff64d2ff,
-                                      0xff8e8e93};
-    for (int i = 0; i < n; i++) {
-        int sz = icon;
-        if (is_on("magnify") && i == 3)
-            sz = icon * 3 / 2;
-        gfx_round(ui->c, (struct rect){dock.x + 7 + i * (icon + 4) - (sz - icon) / 2, dock.y + dock.h - 5 - sz, sz, sz},
-                  sz / 4, colors[i]);
-    }
-}
-
 static void dock_page(struct ui *ui, struct setup *s)
 {
     struct rect r = body(ui, s);
     title(ui, r, "Dock and menu bar", "Where your apps wait and what the menu bar shows.");
-    dock_preview(ui, (struct rect){r.x + (r.w - 300) / 2, r.y + 60, 300, 130});
-    int y = r.y + 206;
+    int y = r.y + 64;
     static const char *const modes[] = {"Always shown", "Hide automatically", "Off"};
     static const char *const mode_values[] = {"show", "autohide", "off"};
     choice_row(ui, r, y, "Dock", "dockmode", modes, mode_values, 3);
@@ -696,9 +664,19 @@ static void dock_page(struct ui *ui, struct setup *s)
     switch_row(ui, g, 1, 2, "Show seconds in the menu bar clock", "clockseconds");
     bool back;
     if (nav(ui, s, "Continue", &back))
-        go(s, SP_SYSTEM);
+        go(s, SP_EFFECTS);
     if (back)
         go(s, SP_DESKTOP);
+}
+
+static void module_page(struct ui *ui, struct setup *s, const char *name)
+{
+    previews()->setup_page(ui, body(ui, s), name);
+    bool back;
+    if (nav(ui, s, "Continue", &back))
+        go(s, (enum page)(s->page + 1));
+    if (back)
+        go(s, (enum page)(s->page - 1));
 }
 
 static void system_page(struct ui *ui, struct setup *s)
@@ -722,9 +700,9 @@ static void system_page(struct ui *ui, struct setup *s)
     switch_row(ui, g, 3, 4, "Do Not Disturb", "dnd");
     bool back;
     if (nav(ui, s, "Continue", &back))
-        go(s, SP_DONE);
+        go(s, SP_AI);
     if (back)
-        go(s, SP_DOCK);
+        go(s, SP_EFFECTS);
 }
 
 static bool finish(struct setup *s)
@@ -815,13 +793,15 @@ static void done_page(struct ui *ui, struct setup *s)
     if (nav(ui, s, "Start", &back))
         finish(s);
     if (back)
-        go(s, SP_SYSTEM);
+        go(s, SP_AI);
 }
 
 static void frame(struct ui *ui, void *data)
 {
     struct setup *s = data;
     int W = ui->win->surface.w, H = ui->win->surface.h;
+    const struct settings_preview *pv = previews();
+    hero_h = pv && H >= CARD_H + 160 ? MIN(190, H - CARD_H - 40) : 0;
     struct rect card = card_rect(ui);
     if (ui->c) {
         if (s->backdrop.px)
@@ -831,6 +811,13 @@ static void frame(struct ui *ui, void *data)
         gfx_fill(ui->c, (struct rect){0, 0, W, H}, ALPHA(0, 40));
         gfx_drop_shadow(ui->c, card, 22, 30, 90, 10);
         gfx_round(ui->c, card, 22, style.content);
+        if (hero_h) { /* it slides with the page */
+            int dx = s->slide.pos * card.w / 1024 / 4;
+            struct canvas cl = *ui->c;
+            cl.clip = rect_intersect(cl.clip, card);
+            pv->hero(&cl, (struct rect){card.x + 12 + dx, card.y + 12, card.w - 24, hero_h - 4},
+                     page_scenes[s->page], (uint32_t)hal_ticks_ms());
+        }
     }
     switch (s->page) {
     case SP_LIVE: live_page(ui, s); break;
@@ -842,6 +829,8 @@ static void frame(struct ui *ui, void *data)
     case SP_DESKTOP: desktop_page(ui, s); break;
     case SP_DOCK: dock_page(ui, s); break;
     case SP_SYSTEM: system_page(ui, s); break;
+    case SP_EFFECTS: module_page(ui, s, "effects"); break;
+    case SP_AI: module_page(ui, s, "ai"); break;
     default: done_page(ui, s); break;
     }
 }
@@ -860,7 +849,7 @@ static void event(struct window *w, struct gui_event *e)
         int dt = (int)MIN(now - s->tick, 64u);
         s->tick = now;
         if (!spring_step(&s->slide, 300, 30, dt))
-            wm_set_timer(w, 0);
+            wm_set_timer(w, hero_h ? 40 : 0); /* the picture keeps moving */
         wm_invalidate(w);
         return;
     }
@@ -935,6 +924,7 @@ static void open_setup(enum page first)
     }
     setup_win->radius = 0;
     wm_move(setup_win, sr.x, sr.y);
+    wm_set_timer(setup_win, 40);
 }
 
 void gui_setup(void)
