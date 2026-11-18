@@ -52,6 +52,9 @@ struct mini {
     int orb;      /* 0..1024: the assistant's drop coming out */
     int hud;      /* 0..1024: the volume bubble */
     int zoom;     /* 0..1024: the magnifier */
+    bool halo, glow, spot; /* the Dock's effects */
+    int fx;       /* their strength, percent */
+    int filter;   /* 0 none, 1 grayscale, 2 inverted */
 };
 
 static int effect_named(const char *v)
@@ -107,6 +110,10 @@ static void mini_now(struct mini *m)
     m->bright = setting_number("brightness", 100);
     m->warm = 0;
     m->px = -1;
+    m->halo = !setting_is("dockhalo", "off");
+    m->glow = !setting_is("dockglow", "off");
+    m->spot = !setting_is("dockspot", "off");
+    m->fx = setting_is("dockfx", "subtle") ? 55 : setting_is("dockfx", "vivid") ? 160 : 100;
 }
 
 /* the same with one setting set to value */
@@ -140,6 +147,16 @@ static void mini_with(struct mini *m, const char *key, const char *value)
         m->bright = number_or(value, 100);
     else if (!strcmp(key, "nightshift") || !strcmp(key, "nightwarmth"))
         m->warm = !strcmp(value, "off") ? 0 : !strcmp(key, "nightwarmth") ? number_or(value, 50) : 60;
+    else if (!strcmp(key, "dockhalo"))
+        m->halo = !strcmp(value, "on");
+    else if (!strcmp(key, "dockglow"))
+        m->glow = !strcmp(value, "on");
+    else if (!strcmp(key, "dockspot"))
+        m->spot = !strcmp(value, "on");
+    else if (!strcmp(key, "dockfx"))
+        m->fx = !strcmp(value, "subtle") ? 55 : !strcmp(value, "vivid") ? 160 : 100;
+    else if (!strcmp(key, "colorfilter"))
+        m->filter = !strcmp(value, "grayscale") ? 1 : !strcmp(value, "invert") ? 2 : 0;
     else if (!strcmp(key, "animations"))
         m->window = !strcmp(value, "on") ? -1 : 1024; /* -1: animated by the caller */
 }
@@ -225,6 +242,35 @@ static void glass_with(const struct mini *m, struct canvas *c, struct rect r, in
 static const enum icon_id dock_icons[] = {ICON_FILES, ICON_BROWSER, ICON_TERMINAL, ICON_PHOTOS, ICON_MUSIC,
                                           ICON_SETTINGS};
 
+/* an icon's own color: the average of its saturated pixels, worked out once */
+static uint32_t icon_tone(enum icon_id id)
+{
+    static uint32_t tones[ICON_COUNT];
+    if ((unsigned)id >= ICON_COUNT)
+        return style.accent;
+    if (tones[id])
+        return tones[id];
+    struct canvas t;
+    uint32_t tone = style.accent;
+    if (canvas_alloc(&t, 24, 24)) {
+        t.clip = (struct rect){0, 0, 24, 24};
+        gfx_fill(&t, t.clip, 0);
+        gfx_icon(&t, 0, 0, id, 24);
+        uint32_t r = 0, g = 0, b = 0, n = 0;
+        for (int i = 0; i < 24 * 24; i++) {
+            uint32_t p = t.px[(i / 24) * t.stride + i % 24];
+            int pr = p >> 16 & 255, pg = p >> 8 & 255, pb = p & 255;
+            int hi = MAX(pr, MAX(pg, pb)), lo = MIN(pr, MIN(pg, pb));
+            if ((p >> 24) > 128 && hi - lo > 40)
+                r += (uint32_t)pr, g += (uint32_t)pg, b += (uint32_t)pb, n++;
+        }
+        if (n)
+            tone = RGB(r / n, g / n, b / n);
+        canvas_free(&t);
+    }
+    return tones[id] = tone | 0xff000000u;
+}
+
 static void draw_dock(const struct mini *m, struct canvas *c, struct rect s, uint32_t ms)
 {
     if (m->dock_show <= 0)
@@ -238,7 +284,24 @@ static void draw_dock(const struct mini *m, struct canvas *c, struct rect s, uin
                   : m->dock_at == 1 ? (struct rect){s.x + s.w - len - 6, s.y + s.h - thick - 4 + hide, len, thick}
                                     : (struct rect){s.x + (s.w - len) / 2, s.y + s.h - thick - 4 + hide, len, thick};
     glass_with(m, c, d, MIN(thick / 2, icon / 2 + gap), GLASS_DOCK, 0);
-    int under = m->magnify ? (int)(ms / 700 % (uint32_t)n) : -1;
+    int under = m->magnify || m->spot ? (int)(ms / 700 % (uint32_t)n) : -1;
+    int fx = CLAMP(m->fx, 0, 200);
+    for (int i = 0; i < n && !side; i++) { /* light from the icons, under them */
+        int cx = d.x + gap + i * (icon + gap) + icon / 2;
+        uint32_t tone = icon_tone(dock_icons[i]) & 0xffffffu;
+        if (m->halo)
+            gfx_glow(c, (struct rect){cx - icon / 3, d.y + d.h - 3, icon * 2 / 3, 2}, 1, icon / 2,
+                     MIN(255, 70 * fx / 100), tone | 0xff000000u);
+        if (m->glow)
+            gfx_glow(c, (struct rect){cx - icon / 4, d.y + gap + icon / 4, icon / 2, icon / 2}, icon / 4, icon / 2,
+                     MIN(255, 90 * fx / 100), tone | 0xff000000u);
+    }
+    if (m->spot && under >= 0 && !side) {
+        int cx = d.x + gap + under * (icon + gap) + icon / 2;
+        gfx_glow(c, (struct rect){cx - 2, d.y + d.h / 2 - 2, 4, 4}, 2, d.h, MIN(255, 80 * fx / 100), 0xffffffffu);
+    }
+    if (!m->magnify)
+        under = -1;
     for (int i = 0; i < n; i++) {
         int grow = 0;
         if (under >= 0) {
@@ -394,80 +457,313 @@ static void draw_screen(const struct mini *m, struct canvas *c, struct rect s, u
     glass_preview = saved_gp;
 }
 
-/* ---- the computer around it */
+/* ---- the scenes at the top of each pane: the desktop itself, edge to edge, and something happening on it */
 
-static void draw_computer(struct canvas *c, struct rect r, struct rect *screen)
+static uint32_t ink_of(const struct mini *m, int alpha)
 {
-    int sh = r.h * 76 / 100, sw = sh * 16 / 10;
-    if (sw > r.w - 20) {
-        sw = r.w - 20;
-        sh = sw * 10 / 16;
-    }
-    int bez = MAX(4, sh / 28);
-    struct rect body = {r.x + (r.w - sw) / 2 - bez, r.y + 6, sw + 2 * bez, sh + 2 * bez};
-    gfx_drop_shadow(c, body, 12, 18, style.dark ? 140 : 70, 6);
-    gfx_round_gradient(c, body, 12, RGB(58, 58, 64), RGB(22, 22, 26)); /* aluminium edge, black glass */
-    gfx_round(c, rect_inset(body, 2), 10, RGB(12, 12, 14));
-    gfx_round_frame_gradient(c, body, 12, ALPHA(0xffffffffu, 120), ALPHA(0xffffffffu, 20));
-    *screen = (struct rect){body.x + bez, body.y + bez, sw, sh};
-    int neck_w = sw / 6, neck_h = r.y + r.h - (body.y + body.h) - 8;
-    if (neck_h > 2) {
-        struct rect neck = {body.x + (body.w - neck_w) / 2, body.y + body.h, neck_w, neck_h};
-        gfx_round_gradient(c, neck, 2, RGB(170, 172, 180), RGB(110, 112, 120));
-        struct rect foot = {neck.x - neck_w / 3, neck.y + neck.h - 2, neck_w + neck_w * 2 / 3, 8};
-        gfx_round_gradient(c, foot, 4, RGB(200, 202, 210), RGB(130, 132, 140));
+    return ALPHA(m->dark ? 0xfff2f2f6u : 0xff1c1c22u, alpha);
+}
+
+/* a glass card with an icon, a title and a line, sliding in from the right as k goes 0..1024 */
+static void toast(const struct mini *m, struct canvas *c, struct rect s, int slot, int k, enum icon_id icon,
+                  const char *title, const char *text)
+{
+    if (k <= 0)
+        return;
+    int w = MIN(s.w * 44 / 100, 260), h = 52;
+    int x = s.x + s.w - 12 - w + (1024 - smooth(k)) * (w + 20) / 1024;
+    struct rect r = {x, s.y + 30 + slot * (h + 8), w, h};
+    glass_with(m, c, r, 16, GLASS_MENU, 0);
+    gfx_icon(c, r.x + 10, r.y + 10, icon, 32);
+    gfx_text_box(c, (struct rect){r.x + 50, r.y + 9, r.w - 58, 16}, &font_bold, title, ink_of(m, 240), ALIGN_LEFT);
+    gfx_text_box(c, (struct rect){r.x + 50, r.y + 28, r.w - 58, 16}, &font_small, text, ink_of(m, 180), ALIGN_LEFT);
+}
+
+static struct rect centered(struct rect s, int w, int h)
+{
+    return (struct rect){s.x + (s.w - w) / 2, s.y + (s.h - h) / 2, w, h};
+}
+
+static void caption(const struct mini *m, struct canvas *c, struct rect r, const char *text)
+{
+    gfx_text_box(c, r, &font_title, text, ink_of(m, 235), ALIGN_CENTER);
+}
+
+static void ripple(struct canvas *c, int cx, int cy, uint32_t ms, uint32_t period, int max_r, uint32_t color)
+{
+    for (int i = 0; i < 3; i++) {
+        int t = (int)((ms + (uint32_t)i * period / 3) % period * 1024 / period);
+        int r = max_r * t / 1024;
+        int a = (1024 - t) * ((color >> 24) & 255) / 1024;
+        if (r > 2)
+            gfx_ring(c, cx, cy, r, (color & 0xffffffu) | (uint32_t)a << 24);
     }
 }
 
-/* ---- the stories each pane tells */
+/* the screen's pixels changed in place: gray, inverted */
+static void filter_rect(struct canvas *c, struct rect r, int mode)
+{
+    struct rect a = rect_intersect(r, c->clip);
+    for (int y = a.y; y < a.y + a.h; y++) {
+        uint32_t *row = c->px + y * c->stride;
+        for (int x = a.x; x < a.x + a.w; x++) {
+            uint32_t p = row[x];
+            uint32_t rr = p >> 16 & 255, g = p >> 8 & 255, b = p & 255;
+            if (mode == 1) {
+                uint32_t l = (rr * 77 + g * 150 + b * 29) >> 8;
+                rr = g = b = l;
+            } else {
+                rr = 255 - rr, g = 255 - g, b = 255 - b;
+            }
+            row[x] = (p & 0xff000000u) | rr << 16 | g << 8 | b;
+        }
+    }
+}
 
-static void act(struct mini *m, const char *pane, uint32_t ms)
+static void scene(struct mini *m, struct canvas *c, struct rect s, const char *pane, uint32_t ms)
 {
     int w = wave(ms, 6000);
-    m->window = 1024;
-    if (!strcmp(pane, "appearance")) { /* light to dark and back, the glass changing its effect */
-        m->dark = w > 512;
-        m->effect = (int)(ms / 6000 % 6);
-    } else if (!strcmp(pane, "dock")) {
-        m->magnify = 1024;
-        m->bounce = 1024;
-        m->px = 340 + (int)(ms / 700 % 6) * 60;
-        m->py = 950;
-    } else if (!strcmp(pane, "displays")) {
-        m->bright = mix(100, 45, w);
-        m->warm = mix(0, 70, wave(ms + 3000, 6000));
-    } else if (!strcmp(pane, "lock")) {
-        m->lock = w;
-    } else if (!strcmp(pane, "ai")) {
-        m->orb = w;
-        m->window = 0;
+    uint32_t loop = ms % 6000;
+    int t = (int)(loop * 1024 / 6000);
+    if (!strcmp(pane, "network")) {
+        struct rect card = centered(s, 300, 120);
+        glass_with(m, c, card, 22, GLASS_PANEL, 0);
+        gfx_icon(c, card.x + 20, card.y + 34, ICON_COMPUTER, 52);
+        gfx_icon(c, card.x + card.w - 72, card.y + 34, ICON_NETUTIL, 52);
+        int x0 = card.x + 80, x1 = card.x + card.w - 80, y = card.y + 60;
+        gfx_thick_line(c, x0, y, x1, y, 3, ink_of(m, 60));
+        for (int i = 0; i < 4; i++) {
+            int k = (int)((ms / 3 + (uint32_t)i * 160) % 640);
+            int px = i % 2 ? x1 - (x1 - x0) * k / 640 : x0 + (x1 - x0) * k / 640;
+            gfx_circle(c, px, y, 4, i % 2 ? RGB(77, 214, 195) : style.accent);
+        }
+        ripple(c, card.x + card.w - 46, card.y + 60, ms, 1800, 70, ALPHA(style.accent, 160));
     } else if (!strcmp(pane, "sound")) {
-        m->hud = w;
-    } else if (!strcmp(pane, "accessibility")) {
-        m->zoom = w;
-        m->px = 300 + w / 3;
-        m->py = 500;
-    } else { /* a window opening, the pointer going to it */
+        struct rect hud = {s.x + 24, s.y + s.h / 2 - 34, s.w * 40 / 100, 68};
+        glass_with(m, c, hud, 26, GLASS_MENU, 0);
+        for (int i = 0; i < 18; i++) {
+            int h = 8 + (wave(ms + (uint32_t)i * 170, 900 + (uint32_t)(i % 5) * 140) * 40 / 1024);
+            int bx = hud.x + 20 + i * (hud.w - 40) / 18;
+            gfx_round(c, (struct rect){bx, hud.y + (hud.h - h) / 2, 5, h}, 2, ALPHA(gfx_halo_tone(i * 56), 230));
+        }
+        toast(m, c, s, 0, mix(0, 1024, MIN(1024, t * 4)), ICON_MUSIC, "Now playing", "Your music, on every output");
+        toast(m, c, s, 1, mix(0, 1024, CLAMP((t - 300) * 4, 0, 1024)), ICON_CLOCK, "Clock", "The timer is done");
+    } else if (!strcmp(pane, "general")) {
         m->window = MIN(1024, (int)(ms % 5000) * 1024 / 1400);
         m->px = mix(800, 520, smooth((int)(ms % 5000) * 1024 / 2500));
         m->py = mix(900, 520, smooth((int)(ms % 5000) * 1024 / 2500));
+    } else if (!strcmp(pane, "accessibility")) {
+        int mode = (int)(ms / 3000 % 3);
+        if (mode)
+            filter_rect(c, (struct rect){s.x, s.y, s.w * t / 1024 + 1, s.h}, mode);
+        m->zoom = mode ? 0 : w;
+        m->px = 300 + w / 3;
+        m->py = 500;
+    } else if (!strcmp(pane, "appearance")) {
+        struct rect half = {s.x, s.y, s.w * smooth(w) / 1024, s.h};
+        struct canvas cl = *c;
+        cl.clip = rect_intersect(c->clip, half);
+        struct mini other = *m;
+        other.dark = !m->dark;
+        other.window = 1024;
+        draw_screen(&other, &cl, s, ms);
+        gfx_fill(c, (struct rect){s.x + half.w - 1, s.y, 2, s.h}, ALPHA(0xffffffffu, 200));
+    } else if (!strcmp(pane, "lock")) {
+        toast(m, c, s, 0, CLAMP((t - 200) * 3, 0, 1024), ICON_WEATHER, "Weather", "Clear tonight, 4 degrees");
+        toast(m, c, s, 1, CLAMP((t - 450) * 3, 0, 1024), ICON_STORE, "App Store", "2 updates are ready");
+    } else if (!strcmp(pane, "privacy")) {
+        struct rect r = centered(s, 120, 140);
+        int pulse = wave(ms, 2400);
+        gfx_glow(c, r, 50, 30 + pulse / 40, 120, style.accent);
+        gfx_icon(c, r.x + 10, r.y + 10, ICON_USER, 100);
+        gfx_round(c, (struct rect){r.x + 72, r.y + 80, 44, 52}, 10, ALPHA(0xff20242c, 230));
+        gfx_ring(c, r.x + 94, r.y + 82, 12, RGB(255, 255, 255));
+        gfx_circle(c, r.x + 94, r.y + 108, 5, RGB(255, 210, 90));
+    } else if (!strcmp(pane, "users")) {
+        static const char *const names[] = {"You", "Family", "Guest"};
+        for (int i = 0; i < 3; i++) {
+            int k = CLAMP((t - i * 120) * 4, 0, 1024);
+            int cx = s.x + s.w * (i + 1) / 4, y = s.y + s.h / 2 - 50 + (1024 - smooth(k)) * 30 / 1024;
+            struct rect card = {cx - 56, y - 10, 112, 130};
+            glass_with(m, c, card, 24, GLASS_PANEL, 0);
+            gfx_icon_alpha(c, cx - 36, y, ICON_USER, 72, k * 255 / 1024);
+            gfx_text_box(c, (struct rect){card.x, y + 82, card.w, 20}, &font_bold, names[i], ink_of(m, 230 * k / 1024),
+                         ALIGN_CENTER);
+        }
+    } else if (!strcmp(pane, "devices")) {
+        int k = smooth(CLAMP(t * 3, 0, 1024));
+        int x = mix(s.x + 40, s.x + s.w / 2 - 110, k);
+        gfx_icon(c, x, s.y + s.h / 2 - 32, ICON_USB, 64);
+        gfx_icon(c, s.x + s.w / 2 - 20, s.y + s.h / 2 - 40, ICON_COMPUTER, 80);
+        toast(m, c, s, 0, CLAMP((t - 380) * 4, 0, 1024), ICON_USB, "Device Connected", "USB drive, 64 GB");
+    } else if (!strcmp(pane, "language")) {
+        static const char *const hello[] = {"Hello", "Привет", "Hola", "Bonjour", "Hallo", "Ciao", "Olá", "Merhaba"};
+        int i = (int)(ms / 1200 % ARRAY_SIZE(hello)), k = (int)(ms % 1200);
+        int a = k < 200 ? k * 255 / 200 : k > 1000 ? (1200 - k) * 255 / 200 : 255;
+        struct rect b = centered(s, 260, 90);
+        glass_with(m, c, b, 45, GLASS_MENU, 0);
+        gfx_text_box(c, (struct rect){b.x, b.y + 22 - (255 - a) / 20, b.w, 46}, &font_display, hello[i],
+                     ink_of(m, a), ALIGN_CENTER);
+    } else if (!strcmp(pane, "apps")) {
+        static const enum icon_id grid[] = {ICON_FILES, ICON_BROWSER, ICON_PHOTOS, ICON_MUSIC, ICON_VIDEO, ICON_NOTES,
+                                            ICON_CALC, ICON_CLOCK, ICON_WEATHER, ICON_STORE, ICON_CODE, ICON_GAMES};
+        int cols = 6, size = MIN(56, s.h / 3 - 18), gap = size / 2;
+        int gw = cols * size + (cols - 1) * gap, x0 = s.x + (s.w - gw) / 2, y0 = s.y + (s.h - 2 * size - gap) / 2;
+        gfx_fill(c, s, ALPHA(0, 70));
+        for (int i = 0; i < 12; i++) {
+            int k = smooth(CLAMP((t - i * 30) * 5, 0, 1024));
+            int sz = size * (600 + k * 424 / 1024) / 1024;
+            int x = x0 + (i % cols) * (size + gap) + (size - sz) / 2, y = y0 + (i / cols) * (size + gap) + (size - sz) / 2;
+            gfx_icon_alpha(c, x, y, grid[i], sz, k * 255 / 1024);
+        }
+    } else if (!strcmp(pane, "about")) {
+        struct rect r = centered(s, 110, 110);
+        gfx_glow(c, r, 40, 26 + wave(ms, 3000) / 64, 120, RGB(255, 160, 100));
+        gfx_icon(c, r.x, r.y - 14, ICON_LOGO, 110);
+        caption(m, c, (struct rect){s.x, r.y + r.h, s.w, 30}, "SynthOS");
+    } else if (!strcmp(pane, "storage")) {
+        struct rect bar = {s.x + 40, s.y + s.h / 2 - 14, s.w - 80, 28};
+        glass_with(m, c, rect_inset(bar, -8), 22, GLASS_PANEL, 0);
+        static const uint32_t parts[] = {0xff6a8dff, 0xff4dd6c3, 0xffffb347, 0xffff6b9a, 0xffa78bfa};
+        static const int share[] = {26, 18, 12, 9, 7};
+        int x = bar.x, k = smooth(CLAMP(t * 2, 0, 1024));
+        for (int i = 0; i < 5; i++) {
+            int wpart = bar.w * share[i] / 100 * k / 1024;
+            gfx_round(c, (struct rect){x, bar.y, wpart, bar.h}, 6, parts[i]);
+            x += wpart;
+        }
+        gfx_round_frame(c, bar, 8, ink_of(m, 80));
+    } else if (!strcmp(pane, "datetime")) {
+        struct rtc_time tm;
+        time_local(&tm);
+        int r = s.h * 36 / 100, cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+        glass_with(m, c, (struct rect){cx - r - 10, cy - r - 10, 2 * r + 20, 2 * r + 20}, r + 10, GLASS_PANEL, 0);
+        int sec = (int)(ms / 1000 % 60);
+        for (int i = 0; i <= sec; i++) { /* the seconds go round as dots */
+            static const int sin60[15] = {0, 107, 213, 316, 416, 512, 602, 685, 761, 828, 887, 935, 974, 1002, 1018};
+            int q = i % 15, quad = i / 15 % 4;
+            int sx = q ? sin60[q] : 0, cxq = q ? sin60[15 - q] : 1024;
+            int dx = quad == 0 ? sx : quad == 1 ? cxq : quad == 2 ? -sx : -cxq;
+            int dy = quad == 0 ? -cxq : quad == 1 ? sx : quad == 2 ? cxq : -sx;
+            gfx_circle(c, cx + dx * (r - 6) / 1024, cy + dy * (r - 6) / 1024, i == sec ? 4 : 2,
+                       i == sec ? style.accent : ink_of(m, 120));
+        }
+        char hm[8];
+        ksnprintf(hm, sizeof(hm), "%u:%02u", tm.hour, tm.minute);
+        gfx_text_box(c, (struct rect){cx - r, cy - 24, 2 * r, 48}, &font_display, hm, ink_of(m, 240), ALIGN_CENTER);
+    } else if (!strcmp(pane, "update")) {
+        int cx = s.x + s.w / 2, cy = s.y + s.h / 2, r = s.h / 4;
+        glass_with(m, c, (struct rect){cx - r - 18, cy - r - 18, 2 * r + 36, 2 * r + 36}, r + 18, GLASS_PANEL, 0);
+        int k = smooth(t);
+        for (int i = 0; i < 48 * k / 1024; i++) {
+            static const int sin12[13] = {0, 133, 265, 392, 512, 623, 724, 812, 887, 946, 989, 1015, 1024};
+            int q = i % 12, quad = i / 12 % 4, sx = sin12[q], co = sin12[12 - q];
+            int dx = quad == 0 ? sx : quad == 1 ? co : quad == 2 ? -sx : -co;
+            int dy = quad == 0 ? -co : quad == 1 ? sx : quad == 2 ? co : -sx;
+            gfx_circle(c, cx + dx * r / 1024, cy + dy * r / 1024, 4, gfx_halo_tone(i * 21));
+        }
+        gfx_icon(c, cx - 26, cy - 26, ICON_INSTALLER, 52);
+    } else if (!strcmp(pane, "keyboard")) {
+        static const char *const rows[] = {"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+        static const char typed[] = "SYNTHOS";
+        char lit = typed[ms / 450 % (sizeof(typed) - 1)];
+        int key = MIN(34, (s.w - 60) / 11), y = s.y + (s.h - 3 * key - 16) / 2;
+        for (int rI = 0; rI < 3; rI++) {
+            int n = (int)strlen(rows[rI]), x = s.x + (s.w - n * (key + 6)) / 2;
+            for (int i = 0; i < n; i++) {
+                struct rect k = {x + i * (key + 6), y + rI * (key + 8), key, key};
+                bool on = rows[rI][i] == lit;
+                glass_control(c, on ? rect_inset(k, 1) : k, 8, GLASS_CONTROL, on ? style.accent : 0, on ? 0 : 1);
+                char ch[2] = {rows[rI][i], 0};
+                gfx_text_box(c, k, &font_bold, ch, on ? RGB(255, 255, 255) : ink_of(m, 220), ALIGN_CENTER);
+            }
+        }
+    } else if (!strcmp(pane, "mouse")) {
+        static const int path[][2] = {{200, 300}, {700, 260}, {820, 620}, {380, 720}, {200, 300}};
+        int seg = (int)(ms / 1200 % 4), k = smooth((int)(ms % 1200) * 1024 / 1200);
+        m->px = mix(path[seg][0], path[seg + 1][0], k);
+        m->py = mix(path[seg][1], path[seg + 1][1], k);
+        if (k > 900)
+            ripple(c, s.x + m->px * s.w / 1024, s.y + m->py * s.h / 1024, ms, 600, 26, ALPHA(style.accent, 200));
+    } else if (!strcmp(pane, "terminal")) {
+        struct rect win = centered(s, s.w * 70 / 100, s.h * 70 / 100);
+        gfx_drop_shadow(c, win, 14, 16, 90, 6);
+        gfx_round(c, win, 14, ALPHA(0xff10131a, 240));
+        static const char *const lines[] = {"root@synth ~ > uname", "SynthOS 1.2 Nebula x86-64", "root@synth ~ > ls /mnt",
+                                            "hdcp1/  hdcp2/", "root@synth ~ > _"};
+        int shown = (int)(ms / 700 % 7);
+        for (int i = 0; i < 5 && i < shown; i++)
+            gfx_text(c, win.x + 16, win.y + 18 + i * 22, &font_mono, lines[i],
+                     i % 2 ? RGB(200, 206, 220) : RGB(77, 255, 176));
+    } else if (!strcmp(pane, "screenshot")) {
+        int k = smooth(CLAMP(t * 2, 0, 1024));
+        struct rect sel = {s.x + s.w / 5, s.y + s.h / 5, (s.w * 3 / 5) * k / 1024, (s.h * 3 / 5) * k / 1024};
+        gfx_fill(c, s, ALPHA(0, 80));
+        gfx_frame(c, sel, RGB(255, 255, 255));
+        m->px = (sel.x + sel.w - s.x) * 1024 / MAX(1, s.w);
+        m->py = (sel.y + sel.h - s.y) * 1024 / MAX(1, s.h);
+        if (t > 560 && t < 640)
+            gfx_fill(c, sel, ALPHA(0xffffffffu, 160));
+        if (t >= 640)
+            toast(m, c, s, 0, CLAMP((t - 640) * 5, 0, 1024), ICON_SCREENSHOT, "Screenshot", "Saved to Pictures");
+    } else if (!strcmp(pane, "ai")) {
+        m->orb = w;
+    } else if (!strcmp(pane, "dock") || !strcmp(pane, "displays")) {
+        /* acted on the screen itself below */
     }
 }
 
 static void hero(struct canvas *c, struct rect r, const char *pane, uint32_t ms)
 {
-    /* a stage: soft light from above on the group's colour */
-    gfx_round_gradient(c, r, 10, color_shade(style.group, style.dark ? 10 : 6), style.group);
-    struct rect screen;
-    draw_computer(c, rect_inset(r, 8), &screen);
     struct mini m;
     mini_now(&m);
-    act(&m, pane, ms);
-    draw_screen(&m, c, screen, ms);
-    gfx_round_frame_gradient(c, screen, 2, ALPHA(0xffffffffu, 40), ALPHA(0xffffffffu, 0)); /* the glass of the panel */
+    m.window = 1024;
+    bool quiet = strcmp(pane, "general") && strcmp(pane, "appearance");
+    if (quiet) /* the scene is the subject: no window in front of it */
+        m.window = 0;
+    struct rect s = r;
+    if (!strcmp(pane, "dock")) { /* closer to the Dock, the pointer running along it */
+        m.magnify = 1024;
+        m.bounce = 1024;
+        m.px = 340 + (int)(ms / 700 % 6) * 60;
+        m.py = 950;
+        s = (struct rect){r.x - r.w / 2, r.y - r.h * 3 / 2, r.w * 2, r.h * 5 / 2};
+    } else if (!strcmp(pane, "displays")) {
+        m.bright = mix(100, 45, wave(ms, 6000));
+        m.warm = mix(0, 70, wave(ms + 3000, 6000));
+    } else if (!strcmp(pane, "lock")) {
+        m.lock = 1024;
+    }
+    struct canvas cl = *c;
+    cl.clip = rect_intersect(c->clip, r);
+    struct canvas tile;
+    if (!canvas_alloc(&tile, r.w, r.h))
+        return;
+    tile.clip = (struct rect){0, 0, r.w, r.h};
+    gfx_fill(&tile, tile.clip, RGB(0, 0, 0));
+    struct rect local = {s.x - r.x, s.y - r.y, s.w, s.h};
+    struct rect whole = {0, 0, r.w, r.h};
+    /* the scene's own pointer is drawn after it */
+    int px = m.px, py = m.py;
+    m.px = -1;
+    draw_screen(&m, &tile, local, ms);
+    scene(&m, &tile, whole, pane, ms);
+    if (m.zoom > 0 || m.orb > 0 || m.window > 0 || m.px >= 0) { /* what the scene asked of the screen */
+        if (m.px < 0)
+            m.px = px, m.py = py;
+        if (m.zoom > 0 || m.orb > 0 || (m.window > 0 && m.window < 1024))
+            draw_screen(&m, &tile, local, ms);
+        else if (m.px >= 0)
+            pointer(&tile, m.px * r.w / 1024, m.py * r.h / 1024, MAX(8, r.h / 14));
+    } else if (px >= 0) {
+        pointer(&tile, (local.x + px * local.w / 1024), (local.y + py * local.h / 1024), MAX(8, r.h / 14));
+    }
+    gfx_blit_round(&cl, r, &tile, 16, false);
+    canvas_free(&tile);
+    gfx_round_frame(c, r, 16, ALPHA(0xffffffffu, style.dark ? 30 : 60));
 }
 
-static const char *const shown_keys[] = {"appearance", "glass", "glasseffect", "glassstrength", "glassedge",
+static const char *const shown_keys[] = {"dockhalo", "dockglow", "dockspot", "dockfx", "colorfilter", "appearance", "glass", "glasseffect", "glassstrength", "glassedge",
                                          "glassfrost", "docksize", "dockstyle", "dockmode", "magnify",
                                          "dockbounce", "dockdots", "brightness", "nightshift", "nightwarmth",
                                          "animations"};
@@ -484,7 +780,7 @@ static bool shows(const char *key)
 static bool zoomed(const char *key)
 {
     return !strncmp(key, "glass", 5) || !strcmp(key, "docksize") || !strcmp(key, "magnify") ||
-           !strcmp(key, "dockbounce") || !strcmp(key, "dockdots");
+           !strcmp(key, "dockbounce") || !strcmp(key, "dockdots") || !strncmp(key, "dock", 4);
 }
 
 /* before, then after, then back: 1.4 s each with a crossfade between */
@@ -508,12 +804,14 @@ static void setting(struct canvas *c, struct rect r, const char *key, const char
         mini_with(&m, key, pass ? after : before);
         if (m.window < 0) /* animations on: the window grows */
             m.window = (int)(ms % 2000) * 1024 / 900;
-        if (!strcmp(key, "magnify") || !strcmp(key, "dockbounce"))
+        if (!strcmp(key, "magnify") || !strcmp(key, "dockbounce") || !strcmp(key, "dockspot"))
             m.px = 360 + (int)(ms / 700 % 6) * 56, m.py = 940;
         draw_screen(&m, &tile, zoomed(key) ? (struct rect){-r.w * 3 / 4, -r.h * 3 / 2, r.w * 5 / 2, r.h * 5 / 2} : local,
                     ms);
         struct canvas out = *c;
         out.clip = rect_intersect(c->clip, r);
+        if (m.filter)
+            filter_rect(&tile, local, m.filter);
         int alpha = pass ? k * 255 / 1024 : 255;
         if (alpha >= 255)
             gfx_blit(&out, r.x, r.y, &tile, local);
