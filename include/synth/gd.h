@@ -128,6 +128,8 @@ struct gd_box {
 /* copies from the caller's memory into a subresource; box NULL: all of it */
 void gd_update(struct gd_resource *r, uint32_t sub, const struct gd_box *box, const void *src, uint32_t row_pitch,
                uint32_t slice_pitch);
+size_t gd_update_size(struct gd_resource *r, uint32_t sub, const struct gd_box *box, uint32_t row_pitch,
+                      uint32_t slice_pitch);
 void gd_copy_resource(struct gd_resource *dst, struct gd_resource *src);
 void gd_copy_region(struct gd_resource *dst, uint32_t dst_sub, uint32_t x, uint32_t y, uint32_t z,
                     struct gd_resource *src, uint32_t src_sub, const struct gd_box *box);

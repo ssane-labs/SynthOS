@@ -78,6 +78,7 @@ static const uint8_t IID_Depth[16] = GUID(0x03823efb, 0x8d8f, 0x4e1c, 0x9a, 0xa2
 static const uint8_t IID_Raster[16] = GUID(0x9bb4ab81, 0xab1a, 0x4d8f, 0xb5, 0x06, 0xfc, 0x04, 0x20, 0x0b, 0x6e, 0xe7);
 static const uint8_t IID_Sampler[16] = GUID(0xda6fea51, 0x564c, 0x4487, 0x98, 0x10, 0xf0, 0xd0, 0xf9, 0xb4, 0xe3, 0xa5);
 static const uint8_t IID_Async[16] = GUID(0x4b35d0cd, 0x1e15, 0x4258, 0x9c, 0x98, 0x1b, 0x13, 0x33, 0xf6, 0xdd, 0x3b);
+static const uint8_t IID_CommandList[16] = GUID(0xa24bc4d1, 0x769e, 0x43f7, 0x80, 0x13, 0x98, 0xff, 0x56, 0x6c, 0x18, 0xe2);
 static const uint8_t IID_Query[16] = GUID(0xd6c00747, 0x87b7, 0x425e, 0xb8, 0x4d, 0x44, 0xd1, 0x08, 0x56, 0x0a, 0xfd);
 static const uint8_t IID_Predicate[16] =
     GUID(0x9eb576dd, 0x9f77, 0x4d86, 0x81, 0xaa, 0x8b, 0xab, 0x5f, 0xe4, 0x90, 0xe2);
@@ -138,7 +139,7 @@ enum kind {
     K_DEVICE, K_CONTEXT, K_BUFFER, K_TEX1D, K_TEX2D, K_TEX3D, K_SRV, K_RTV, K_DSV, K_UAV, K_LAYOUT,
     K_PS, K_VS, K_GS, K_HS, K_DS, K_CS, /* the DXBC program types, in order from K_PS */
     K_BLEND, K_DEPTH, K_RASTER, K_SAMPLER, K_QUERY, K_PREDICATE, K_FACTORY, K_ADAPTER, K_OUTPUT, K_SWAPCHAIN,
-    K_CLASSLINKAGE,
+    K_CLASSLINKAGE, K_CMDLIST,
 };
 
 struct pdata {
@@ -151,6 +152,7 @@ struct pdata {
 
 struct context;
 struct swapchain;
+struct call;
 
 /* A COM object as the program sees it: up to three interface pointers (this points at one of vt[]), then ours.
    It lives in the program's memory; what it stands for lives in the kernel's. */
@@ -191,6 +193,7 @@ struct cobj {
         } query;
         struct context *ctx;
         struct swapchain *sc;
+        struct call *calls; /* a command list */
         struct {
             uint32_t level, flags;
             struct cobj *context;
@@ -256,8 +259,11 @@ static const struct vspec *spec_of(int s);
 enum {
     SP_DEVICE, SP_DXGIDEVICE, SP_CONTEXT, SP_BUFFER, SP_TEX1D, SP_TEX2D, SP_TEX3D, SP_SURFACE, SP_DXGIRES, SP_SRV,
     SP_RTV, SP_DSV, SP_UAV, SP_CHILD, SP_BLEND, SP_DEPTH, SP_RASTER, SP_SAMPLER, SP_QUERY, SP_FACTORY, SP_ADAPTER,
-    SP_OUTPUT, SP_SWAPCHAIN, SP_COUNT
+    SP_OUTPUT, SP_SWAPCHAIN, SP_CMDLIST, SP_COUNT
 };
+
+static bool deferred(const struct cobj *o);
+static uint64_t defer(struct cobj *o, uint32_t slot, method fn, uint64_t *a, const uint64_t *f);
 
 static W32_STATE uint64_t *vtables[SP_COUNT];
 static W32_STATE uint8_t missing_seen[SP_COUNT][32];
@@ -275,6 +281,8 @@ static uint64_t h_slot(uint64_t *a, const uint64_t *f, void *t)
         return E_NOTIMPL;
     }
     struct cobj *o = (struct cobj *)(uintptr_t)(a[0] - (uint64_t)v->index * 8);
+    if (s == SP_CONTEXT && deferred(o))
+        return defer(o, slot, fn, a, f);
     return fn(o, a, f);
 }
 
@@ -359,6 +367,7 @@ static void addref_guest(uint64_t iface_ptr)
 }
 
 static void destroy(struct cobj *o);
+static void calls_free(struct call *c, bool release);
 
 static void hold(struct cobj *o)
 {
@@ -575,6 +584,8 @@ struct context {
     uint32_t nvp, nsc;
     struct cobj *predicate;
     uint32_t predicate_value;
+    bool deferred;            /* a deferred context: it keeps its calls for a command list */
+    struct call *first, *last; /* what it kept so far */
 };
 
 struct swapchain {
@@ -643,10 +654,14 @@ static void destroy(struct cobj *o)
     switch (o->kind) {
     case K_CONTEXT:
         if (o->ctx) {
+            calls_free(o->ctx->first, true);
             context_unbind_all(o->ctx);
             gd_context_destroy(o->ctx->gd);
             kfree(o->ctx);
         }
+        break;
+    case K_CMDLIST:
+        calls_free(o->calls, true);
         break;
     case K_BUFFER:
     case K_TEX1D:
@@ -705,9 +720,13 @@ void w32_d3d_cleanup(void)
         switch (o->kind) {
         case K_CONTEXT:
             if (o->ctx) {
+                calls_free(o->ctx->first, false);
                 gd_context_destroy(o->ctx->gd);
                 kfree(o->ctx);
             }
+            break;
+        case K_CMDLIST:
+            calls_free(o->calls, false);
             break;
         case K_BUFFER:
         case K_TEX1D:
@@ -1567,11 +1586,7 @@ static uint64_t m_immediate_context(struct cobj *dev, uint64_t *a, const uint64_
     return 0;
 }
 
-static uint64_t m_deferred_context(struct cobj *dev, uint64_t *a, const uint64_t *f)
-{
-    put64(a[2], 0);
-    return DXGI_ERROR_INVALID_CALL;
-}
+static uint64_t m_deferred_context(struct cobj *dev, uint64_t *a, const uint64_t *f);
 
 /* the device's GetPrivateData comes first, SetPrivateData second */
 static const method device_fns[] = {
@@ -2261,6 +2276,347 @@ static uint64_t m_so_get_targets(struct cobj *o, uint64_t *a, const uint64_t *f)
 }
 
 /* D3D11_DEVICE_CONTEXT_IMMEDIATE */
+static void drop_program_ref(struct cobj *o);
+
+static bool deferred(const struct cobj *o)
+{
+    return o->ctx && o->ctx->deferred;
+}
+
+/* ---- deferred contexts
+
+   A deferred context keeps every call that draws, clears, copies or sets state, with a copy of what its pointers
+   point at and a reference on every object it names; the state calls also change its own state, so its Get calls
+   answer as they should. FinishCommandList hands the calls over as a command list; ExecuteCommandList makes them
+   again, in order, on the immediate context, starting from the default state and then putting the immediate
+   context's own state back (or leaving the default state). */
+
+struct call {
+    struct call *next;
+    uint16_t slot, nheld;
+    uint64_t a[10], f[8];
+    struct cobj **held;
+    uint8_t *guest;  /* Map on a deferred context: the program wrote here (its memory) */
+    uint32_t guest_size;
+    uint8_t data[]; /* the copies the pointers in a[] point at, then held[] */
+};
+
+enum { P_END, P_OBJ, P_OBJS, P_BYTES, P_ARR, P_NONE, P_UPDATE };
+
+struct pdesc {
+    uint8_t type, arg, count, size; /* count: the argument giving how many; size: of one element or in all */
+};
+
+#define OBJ(i) {P_OBJ, i, 0, 0}
+#define OBJS(i, n) {P_OBJS, i, n, 8}
+#define BYTES(i, n) {P_BYTES, i, 0, n}
+#define ARR(i, n, sz) {P_ARR, i, n, sz}
+#define NONE(i) {P_NONE, i, 0, 0}
+
+/* what each kept call points at; KEEP: recorded only, STATE: recorded and made on the deferred context too */
+enum { DIRECT, KEEP, STATE };
+
+struct dcall {
+    uint8_t how;
+    struct pdesc p[4];
+};
+
+#define SLOTS3 {STATE, {OBJS(3, 2)}}
+#define SHADER {STATE, {OBJ(1), NONE(2)}}
+#define CBS1 {STATE, {OBJS(3, 2), ARR(4, 2, 4), ARR(5, 2, 4)}}
+
+static const struct dcall dcalls[134] = {
+    [7] = SLOTS3, [8] = SLOTS3, [9] = SHADER, [10] = SLOTS3, [11] = SHADER, [12] = {KEEP, {{0}}},
+    [13] = {KEEP, {{0}}}, [16] = SLOTS3, [17] = {STATE, {OBJ(1)}},
+    [18] = {STATE, {OBJS(3, 2), ARR(4, 2, 4), ARR(5, 2, 4)}}, [19] = {STATE, {OBJ(1)}}, [20] = {KEEP, {{0}}},
+    [21] = {KEEP, {{0}}}, [22] = SLOTS3, [23] = SHADER, [24] = {STATE, {{0}}}, [25] = SLOTS3, [26] = SLOTS3,
+    [27] = {KEEP, {OBJ(1)}}, [28] = {KEEP, {OBJ(1)}}, [30] = {STATE, {OBJ(1)}}, [31] = SLOTS3, [32] = SLOTS3,
+    [33] = {STATE, {OBJS(2, 1), OBJ(3)}}, [34] = {STATE, {OBJS(2, 1), OBJ(3), OBJS(6, 5), ARR(7, 5, 4)}},
+    [35] = {STATE, {OBJ(1), BYTES(2, 16)}}, [36] = {STATE, {OBJ(1)}}, [37] = {STATE, {OBJS(2, 1), ARR(3, 1, 4)}},
+    [38] = {KEEP, {{0}}}, [39] = {KEEP, {OBJ(1)}}, [40] = {KEEP, {OBJ(1)}}, [41] = {KEEP, {{0}}},
+    [42] = {KEEP, {OBJ(1)}}, [43] = {STATE, {OBJ(1)}}, [44] = {STATE, {ARR(2, 1, 24)}},
+    [45] = {STATE, {ARR(2, 1, 16)}}, [46] = {KEEP, {OBJ(1), OBJ(6), BYTES(7, 24)}}, [47] = {KEEP, {OBJ(1), OBJ(2)}},
+    [48] = {KEEP, {OBJ(1), BYTES(3, 24), {P_UPDATE, 4, 0, 0}}}, [49] = {KEEP, {OBJ(1), OBJ(3)}},
+    [50] = {KEEP, {OBJ(1), BYTES(2, 16)}}, [51] = {KEEP, {OBJ(1), BYTES(2, 16)}},
+    [52] = {KEEP, {OBJ(1), BYTES(2, 16)}}, [53] = {KEEP, {OBJ(1)}}, [54] = {KEEP, {OBJ(1)}},
+    [55] = {KEEP, {OBJ(1)}}, [57] = {KEEP, {OBJ(1), OBJ(3)}}, [58] = {KEEP, {OBJ(1)}}, [59] = SLOTS3,
+    [60] = SHADER, [61] = SLOTS3, [62] = SLOTS3, [63] = SLOTS3, [64] = SHADER, [65] = SLOTS3, [66] = SLOTS3,
+    [67] = SLOTS3, [68] = {STATE, {OBJS(3, 2), ARR(4, 2, 4)}}, [69] = SHADER, [70] = SLOTS3, [71] = SLOTS3,
+    [110] = {STATE, {{0}}}, [115] = {KEEP, {OBJ(1), OBJ(6), BYTES(7, 24)}},
+    [116] = {KEEP, {OBJ(1), BYTES(3, 24), {P_UPDATE, 4, 0, 0}}}, [117] = {KEEP, {OBJ(1)}}, [118] = {KEEP, {OBJ(1)}},
+    [119] = CBS1, [120] = CBS1, [121] = CBS1, [122] = CBS1, [123] = CBS1, [124] = CBS1,
+    [132] = {KEEP, {OBJ(1), BYTES(2, 16), ARR(3, 4, 16)}}, [133] = {KEEP, {OBJ(1), ARR(2, 3, 16)}},
+};
+
+/* how many elements an array argument has: none for D3D11_KEEP_* (0xffffffff) and the like */
+static uint32_t elements(const uint64_t *a, const struct pdesc *p)
+{
+    uint32_t n = (uint32_t)a[p->count];
+    return n > 4096 ? 0 : n;
+}
+
+static size_t payload(const struct pdesc *p, const uint64_t *a, uint32_t *objs)
+{
+    if (!a[p->arg])
+        return 0;
+    switch (p->type) {
+    case P_OBJ:
+        (*objs)++;
+        return 0;
+    case P_OBJS:
+        *objs += elements(a, p);
+        return (size_t)elements(a, p) * 8;
+    case P_BYTES:
+        return p->size;
+    case P_ARR:
+        return (size_t)elements(a, p) * p->size;
+    case P_UPDATE: {
+        struct cobj *r = unwrap(a[1]);
+        struct gd_box box;
+        if (a[3])
+            memcpy(&box, w64_ptr(a[3]), sizeof(box));
+        return is_resource(r) ? gd_update_size(r->res.r, (uint32_t)a[2], a[3] ? &box : NULL, (uint32_t)a[5],
+                                               (uint32_t)a[6])
+                              : 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+static void keep_obj(struct call *c, uint64_t p)
+{
+    struct cobj *o = unwrap(p);
+    if (o) {
+        hold(o);
+        c->held[c->nheld++] = o;
+    }
+}
+
+static struct call *keep(struct context *ctx, uint32_t slot, const uint64_t *a, const uint64_t *f)
+{
+    const struct dcall *d = &dcalls[slot];
+    size_t bytes = 0;
+    uint32_t objs = 0;
+    for (const struct pdesc *p = d->p; p < d->p + 4 && p->type; p++)
+        bytes += (payload(p, a, &objs) + 7) & ~(size_t)7;
+    struct call *c = kzalloc(sizeof(*c) + bytes + objs * sizeof(struct cobj *));
+    if (!c)
+        return NULL;
+    c->slot = (uint16_t)slot;
+    memcpy(c->a, a, sizeof(c->a));
+    memcpy(c->f, f, sizeof(c->f));
+    c->held = (struct cobj **)(c->data + bytes);
+    uint8_t *at = c->data;
+    for (const struct pdesc *p = d->p; p < d->p + 4 && p->type; p++) {
+        uint64_t src = a[p->arg];
+        if (!src)
+            continue;
+        if (p->type == P_NONE) {
+            c->a[p->arg] = 0;
+            continue;
+        }
+        if (p->type == P_OBJ) {
+            keep_obj(c, src);
+            continue;
+        }
+        size_t n = payload(p, a, &(uint32_t){0});
+        if (n)
+            memcpy(at, w64_ptr(src), n);
+        if (p->type == P_OBJS)
+            for (uint32_t i = 0; i < elements(a, p); i++)
+                keep_obj(c, get64((uintptr_t)at + i * 8ull));
+        c->a[p->arg] = (uintptr_t)at;
+        at += (n + 7) & ~(size_t)7;
+    }
+    if (ctx->last)
+        ctx->last->next = c;
+    else
+        ctx->first = c;
+    ctx->last = c;
+    return c;
+}
+
+static void calls_free(struct call *c, bool release)
+{
+    while (c) {
+        struct call *next = c->next;
+        if (release)
+            for (uint32_t i = 0; i < c->nheld; i++)
+                drop(c->held[i]);
+        if (c->guest)
+            w32_free(c->guest);
+        kfree(c);
+        c = next;
+    }
+}
+
+/* Map on a deferred context (WRITE_DISCARD, or NO_OVERWRITE on a buffer): the program writes into memory of its
+   own; Unmap keeps it as a call that copies it into the resource. NO_OVERWRITE starts from what the resource will
+   hold by then: the last copy kept for it, else what it holds now. */
+#define SLOT_FILL 255
+
+static struct call *pending_map(struct context *ctx, struct cobj *r, uint32_t sub)
+{
+    for (struct call *c = ctx->first; c; c = c->next)
+        if (c->slot == SLOT_FILL && c->held[0] == r && (uint32_t)c->a[2] == sub && c->a[3])
+            return c;
+    return NULL;
+}
+
+static uint64_t deferred_map(struct context *ctx, uint64_t *a)
+{
+    struct cobj *r = unwrap(a[1]);
+    uint32_t sub = (uint32_t)a[2], type = (uint32_t)a[3];
+    struct gd_layout l;
+    uint8_t *now = is_resource(r) ? gd_subresource(r->res.r, sub, &l) : NULL;
+    if (!now || (type != 4 && type != 5) || !a[5])
+        return E_INVALIDARG;
+    struct call *c = kzalloc(sizeof(*c) + sizeof(struct cobj *));
+    uint8_t *mem = c ? w32_zalloc(l.size) : NULL;
+    if (!mem) {
+        kfree(c);
+        return E_OUTOFMEMORY;
+    }
+    if (type == 5) { /* NO_OVERWRITE */
+        struct call *last = NULL;
+        for (struct call *k = ctx->first; k; k = k->next)
+            if (k->slot == SLOT_FILL && k->held[0] == r && (uint32_t)k->a[2] == sub)
+                last = k;
+        memcpy(mem, last ? last->guest : now, l.size);
+    }
+    c->slot = SLOT_FILL;
+    c->held = (struct cobj **)c->data;
+    c->held[0] = r;
+    c->nheld = 1;
+    hold(r);
+    c->a[2] = sub;
+    c->a[3] = 1; /* still mapped */
+    c->guest = mem;
+    c->guest_size = l.size;
+    if (ctx->last)
+        ctx->last->next = c;
+    else
+        ctx->first = c;
+    ctx->last = c;
+    put64(a[5], (uintptr_t)mem);
+    put32(a[5] + 8, l.row_pitch);
+    put32(a[5] + 12, l.slice_pitch);
+    return S_OK;
+}
+
+static uint64_t deferred_unmap(struct context *ctx, uint64_t *a)
+{
+    struct cobj *r = unwrap(a[1]);
+    struct call *c = r ? pending_map(ctx, r, (uint32_t)a[2]) : NULL;
+    if (c)
+        c->a[3] = 0;
+    return 0;
+}
+
+static uint64_t m_context_type(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    return o->ctx->deferred ? 1 : 0; /* D3D11_DEVICE_CONTEXT_DEFERRED */
+}
+
+/* FinishCommandList(restore state, ID3D11CommandList **) */
+static uint64_t m_finish(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct context *ctx = o->ctx;
+    if (!ctx->deferred)
+        return DXGI_ERROR_INVALID_CALL;
+    struct cobj *l = child(K_CMDLIST, o->device, SP_CMDLIST, -1, -1);
+    if (!l)
+        return E_OUTOFMEMORY;
+    l->calls = ctx->first;
+    ctx->first = ctx->last = NULL;
+    if (!(uint32_t)a[1]) {
+        context_unbind_all(ctx);
+        gd_context_clear(ctx->gd);
+    }
+    if (a[2])
+        put64(a[2], iface(l, 0));
+    else
+        drop_program_ref(l);
+    return S_OK;
+}
+
+static uint64_t defer(struct cobj *o, uint32_t slot, method fn, uint64_t *a, const uint64_t *f)
+{
+    struct context *ctx = o->ctx;
+    if (slot == 14)
+        return deferred_map(ctx, a);
+    if (slot == 15)
+        return deferred_unmap(ctx, a);
+    if (slot == 29) /* GetData */
+        return DXGI_ERROR_INVALID_CALL;
+    uint8_t how = slot < ARRAY_SIZE(dcalls) ? dcalls[slot].how : DIRECT;
+    if (how == DIRECT)
+        return fn(o, a, f);
+    keep(ctx, slot, a, f);
+    return how == STATE ? fn(o, a, f) : 0;
+}
+
+/* the immediate context's state, kept while a command list runs */
+static void context_hold_all(struct context *c, bool take)
+{
+    struct cobj **one[] = {&c->ib, &c->layout, &c->dsv, &c->blend, &c->depth, &c->raster, &c->predicate};
+    for (size_t i = 0; i < ARRAY_SIZE(one); i++)
+        if (*one[i])
+            take ? hold(*one[i]) : drop(*one[i]);
+    for (int s = 0; s < STAGES; s++) {
+        struct cobj **lists[] = {&c->shader[s], c->cb[s], c->srv[s], c->sampler[s]};
+        int counts[] = {1, GD_SLOTS_CB, GD_SLOTS_SRV, GD_SLOTS_SAMPLER};
+        for (int k = 0; k < 4; k++)
+            for (int i = 0; i < counts[k]; i++)
+                if (lists[k][i])
+                    take ? hold(lists[k][i]) : drop(lists[k][i]);
+    }
+    for (int i = 0; i < GD_SLOTS_VB; i++)
+        if (c->vb[i])
+            take ? hold(c->vb[i]) : drop(c->vb[i]);
+    for (int i = 0; i < 8; i++) {
+        if (c->rtv[i])
+            take ? hold(c->rtv[i]) : drop(c->rtv[i]);
+        if (c->uav[i])
+            take ? hold(c->uav[i]) : drop(c->uav[i]);
+    }
+}
+
+/* every binding of c told to its graphics context again */
+static void context_push(struct context *c)
+{
+    gd_context_clear(c->gd);
+    for (int s = 0; s < STAGES; s++) {
+        gd_set_shader(c->gd, (uint32_t)s, c->shader[s] ? c->shader[s]->shader : NULL);
+        for (uint32_t i = 0; i < GD_SLOTS_CB; i++)
+            if (c->cb[s][i])
+                gd_set_constant_buffer(c->gd, (uint32_t)s, i, c->cb[s][i]->res.r, c->cb_first[s][i], c->cb_count[s][i]);
+        for (uint32_t i = 0; i < GD_SLOTS_SRV; i++)
+            if (c->srv[s][i])
+                gd_set_shader_resource(c->gd, (uint32_t)s, i, c->srv[s][i]->view.v);
+        for (uint32_t i = 0; i < GD_SLOTS_SAMPLER; i++)
+            if (c->sampler[s][i])
+                gd_set_sampler(c->gd, (uint32_t)s, i, &c->sampler[s][i]->state.s.sampler);
+    }
+    for (uint32_t i = 0; i < GD_SLOTS_VB; i++)
+        if (c->vb[i])
+            gd_set_vertex_buffer(c->gd, i, c->vb[i]->res.r, c->vb_stride[i], c->vb_offset[i]);
+    gd_set_index_buffer(c->gd, c->ib ? c->ib->res.r : NULL, c->ib_format, c->ib_offset);
+    gd_set_input_layout(c->gd, c->layout ? c->layout->layout : NULL);
+    gd_set_topology(c->gd, c->topology);
+    for (uint32_t i = 0; i < 8; i++)
+        gd_set_render_target(c->gd, i, c->rtv[i] ? c->rtv[i]->view.v : NULL);
+    gd_set_depth_target(c->gd, c->dsv ? c->dsv->view.v : NULL);
+    gd_set_blend(c->gd, c->blend ? &c->blend->state.s.blend : NULL, c->blend_factor, c->sample_mask);
+    gd_set_depth(c->gd, c->depth ? &c->depth->state.s.depth : NULL, c->stencil_ref);
+    gd_set_raster(c->gd, c->raster ? &c->raster->state.s.raster : NULL);
+    gd_set_viewports(c->gd, c->nvp, c->vp);
+    gd_set_scissors(c->gd, c->nsc, c->sc);
+}
+
+static uint64_t m_execute(struct cobj *o, uint64_t *a, const uint64_t *f);
+
 static const method context_fns[] = {
     IUNKNOWN, [3] = m_get_device, m_get_private, m_set_private, m_set_private_iface,
     [7] = m_vs_set_cbs, m_ps_set_srvs, m_ps_set_shader, m_ps_set_samplers, m_vs_set_shader, m_draw_indexed, m_draw,
@@ -2272,7 +2628,7 @@ static const method context_fns[] = {
     m_rs_set_state, m_rs_set_viewports, m_rs_set_scissors, m_copy_region, m_copy_resource, m_update,
     m_zero /* CopyStructureCount */, m_clear_rtv, m_zero /* ClearUnorderedAccessViewUint */,
     m_zero /* ClearUnorderedAccessViewFloat */, m_clear_dsv, m_generate_mips, m_zero /* SetResourceMinLOD */,
-    m_get_min_lod, m_resolve, m_zero /* ExecuteCommandList */, m_hs_set_srvs, m_hs_set_shader, m_hs_set_samplers,
+    m_get_min_lod, m_resolve, m_execute, m_hs_set_srvs, m_hs_set_shader, m_hs_set_samplers,
     m_hs_set_cbs, m_ds_set_srvs, m_ds_set_shader, m_ds_set_samplers, m_ds_set_cbs, m_cs_set_srvs,
     m_zero /* CSSetUnorderedAccessViews */, m_cs_set_shader, m_cs_set_samplers, m_cs_set_cbs,
     [72] = m_vs_get_cbs, m_ps_get_srvs, m_ps_get_shader, m_ps_get_samplers, m_vs_get_shader, m_ps_get_cbs,
@@ -2282,8 +2638,7 @@ static const method context_fns[] = {
     m_rs_get_scissors, m_hs_get_srvs, m_hs_get_shader, m_hs_get_samplers, m_hs_get_cbs, m_ds_get_srvs,
     m_ds_get_shader, m_ds_get_samplers, m_ds_get_cbs, m_cs_get_srvs, m_so_get_targets /* CSGetUnorderedAccessViews */,
     m_cs_get_shader, m_cs_get_samplers, m_cs_get_cbs,
-    [110] = m_clear_state, m_zero /* Flush */, m_zero /* GetType: immediate */, m_zero /* GetContextFlags */,
-    m_notimpl /* FinishCommandList */,
+    [110] = m_clear_state, m_zero /* Flush */, m_context_type, m_zero /* GetContextFlags */, m_finish,
     /* ID3D11DeviceContext1 */
     [115] = m_copy_region, m_update, m_zero /* DiscardResource */, m_zero /* DiscardView */, m_vs_set_cbs1,
     m_hs_set_cbs1, m_ds_set_cbs1, m_gs_set_cbs1, m_ps_set_cbs1, m_cs_set_cbs1, m_vs_get_cbs1, m_hs_get_cbs1,
@@ -2293,6 +2648,89 @@ static const method context_fns[] = {
     [134] = m_notimpl, m_notimpl, m_zero, m_zero, m_notimpl, m_zero, m_zero /* IsAnnotationEnabled */, m_zero,
     m_zero, m_zero,
 };
+
+static void drop_program_ref(struct cobj *o)
+{
+    o->refs = 1;
+    m_release(o, NULL, NULL);
+}
+
+static void replay(struct cobj *o, struct call *list)
+{
+    for (struct call *c = list; c; c = c->next) {
+        if (c->slot == SLOT_FILL) {
+            struct gd_layout l;
+            uint8_t *dst = gd_subresource(c->held[0]->res.r, (uint32_t)c->a[2], &l);
+            if (dst && c->guest)
+                memcpy(dst, c->guest, MIN(l.size, c->guest_size));
+            continue;
+        }
+        method fn = c->slot < ARRAY_SIZE(context_fns) ? context_fns[c->slot] : NULL;
+        if (!fn)
+            continue;
+        uint64_t a[10];
+        memcpy(a, c->a, sizeof(a));
+        a[0] = iface(o, 0);
+        fn(o, a, c->f);
+    }
+}
+
+/* ExecuteCommandList(list, restore context state) */
+static uint64_t m_execute(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct cobj *l = unwrap_kind(a[1], K_CMDLIST);
+    if (!l)
+        return 0;
+    struct context *c = o->ctx;
+    struct context *saved = (uint32_t)a[2] ? kmalloc(sizeof(*saved)) : NULL;
+    if (saved) {
+        memcpy(saved, c, sizeof(*saved));
+        context_hold_all(saved, true);
+    }
+    context_unbind_all(c);
+    gd_context_clear(c->gd);
+    replay(o, l->calls);
+    context_unbind_all(c);
+    if (saved) {
+        struct gd_context *gd = c->gd;
+        struct call *first = c->first, *last = c->last;
+        memcpy(c, saved, sizeof(*c)); /* the references saved are the context's again */
+        c->gd = gd;
+        c->first = first;
+        c->last = last;
+        kfree(saved);
+        context_push(c);
+    } else {
+        gd_context_clear(c->gd);
+    }
+    return 0;
+}
+
+static uint64_t m_deferred_context(struct cobj *dev, uint64_t *a, const uint64_t *f)
+{
+    if (!a[2])
+        return E_INVALIDARG;
+    put64(a[2], 0);
+    struct cobj *o = child(K_CONTEXT, dev, SP_CONTEXT, -1, -1);
+    struct context *c = o ? kzalloc(sizeof(*c)) : NULL;
+    if (c && !(c->gd = gd_context_create())) {
+        kfree(c);
+        c = NULL;
+    }
+    if (!c) {
+        if (o)
+            drop_program_ref(o);
+        return E_OUTOFMEMORY;
+    }
+    context_unbind_all(c);
+    c->deferred = true;
+    o->ctx = c;
+    put64(a[2], iface(o, 0));
+    return S_OK;
+}
+
+static const method cmdlist_fns[] = {DEVICE_CHILD, [7] = m_zero /* GetContextFlags */};
+
 
 /* ---- who asks: Chromium keeps a PC without a graphics driver */
 
@@ -3098,6 +3536,7 @@ static const struct vspec specs[SP_COUNT] = {
     [SP_ADAPTER] = SPEC("IDXGIAdapter", 0, adapter_fns),
     [SP_OUTPUT] = SPEC("IDXGIOutput", 0, output_fns),
     [SP_SWAPCHAIN] = SPEC("IDXGISwapChain", 0, swapchain_fns),
+    [SP_CMDLIST] = SPEC("ID3D11CommandList", 0, cmdlist_fns),
 };
 
 static const struct vspec *spec_of(int s)
@@ -3160,6 +3599,7 @@ static const struct iid_map swapchain_iids[] = {
     {IID_SwapChain2, 0}, {IID_SwapChain3, 0}, {NULL, 0},
 };
 static const struct iid_map plain_iids[] = {CHILD_IIDS, {NULL, 0}};
+static const struct iid_map cmdlist_iids[] = {CHILD_IIDS, {IID_CommandList, 0}, {NULL, 0}};
 
 static const struct iid_map *iids_of(uint32_t kind)
 {
@@ -3173,7 +3613,7 @@ static const struct iid_map *iids_of(uint32_t kind)
         [K_DEPTH] = depth_iids,     [K_RASTER] = raster_iids,   [K_SAMPLER] = sampler_iids,
         [K_QUERY] = query_iids,     [K_PREDICATE] = predicate_iids, [K_FACTORY] = factory_iids,
         [K_ADAPTER] = adapter_iids, [K_OUTPUT] = output_iids,   [K_SWAPCHAIN] = swapchain_iids,
-        [K_CLASSLINKAGE] = plain_iids,
+        [K_CLASSLINKAGE] = plain_iids, [K_CMDLIST] = cmdlist_iids,
     };
     return kind < ARRAY_SIZE(by_kind) ? by_kind[kind] : NULL;
 }

@@ -18,6 +18,28 @@ struct vertex {
     float pos[4], color[4];
 };
 
+/* the pixel at (x, y) of a 2D texture, read through a staging copy */
+static unsigned pixel(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *tex, int x, int y)
+{
+    D3D11_TEXTURE2D_DESC td;
+    tex->GetDesc(&td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *staging = NULL;
+    unsigned v = 0;
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    if (SUCCEEDED(dev->CreateTexture2D(&td, NULL, &staging))) {
+        ctx->CopyResource(staging, tex);
+        if (SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+            memcpy(&v, (const unsigned char *)m.pData + y * m.RowPitch + x * 4, 4);
+            ctx->Unmap(staging, 0);
+        }
+        staging->Release();
+    }
+    return v & 0xffffff;
+}
+
 int main(int argc, char **argv)
 {
     WNDCLASSA wc = {};
@@ -153,12 +175,53 @@ int main(int argc, char **argv)
     ID3D11RenderTargetView *bound = NULL;
     ctx->OMGetRenderTargets(1, &bound, NULL);
 
+    /* a deferred context: a clear and a draw kept in a command list, made on the immediate context later */
+    ID3D11DeviceContext *def = NULL;
+    unsigned before = 1, after = 0;
+    int deferred = 0;
+    D3D11_TEXTURE2D_DESC sd2 = {16, 16, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                D3D11_BIND_RENDER_TARGET, 0, 0};
+    ID3D11Texture2D *side = NULL;
+    ID3D11RenderTargetView *side_rtv = NULL;
+    if (SUCCEEDED(dev->CreateDeferredContext(0, &def)) && SUCCEEDED(dev->CreateTexture2D(&sd2, NULL, &side)) &&
+        SUCCEEDED(dev->CreateRenderTargetView(side, NULL, &side_rtv))) {
+        const float green[4] = {0, 1, 0, 1};
+        def->ClearRenderTargetView(side_rtv, green);
+        def->OMSetRenderTargets(1, &side_rtv, NULL);
+        D3D11_VIEWPORT vp2 = {0, 0, 8, 16, 0, 1};
+        def->RSSetViewports(1, &vp2);
+        def->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+        def->IASetInputLayout(layout);
+        def->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        def->VSSetShader(vs, NULL, 0);
+        def->PSSetShader(ps, NULL, 0);
+        def->PSSetConstantBuffers(0, 1, &cb);
+        if (SUCCEEDED(def->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            const float tint[4] = {0.25f, 1.0f, 0.0f, 1.0f};
+            memcpy(m.pData, tint, sizeof(tint));
+            def->Unmap(cb, 0);
+        }
+        def->Draw(3, 0);
+        ID3D11CommandList *list = NULL;
+        if (SUCCEEDED(def->FinishCommandList(FALSE, &list))) {
+            before = pixel(dev, ctx, side, 4, 8);
+            ctx->ExecuteCommandList(list, TRUE);
+            after = pixel(dev, ctx, side, 4, 8) << 0;
+            unsigned right_half = pixel(dev, ctx, side, 12, 8);
+            ID3D11RenderTargetView *still = NULL;
+            ctx->OMGetRenderTargets(1, &still, NULL);
+            deferred = def->GetType() == D3D11_DEVICE_CONTEXT_DEFERRED && before == 0 && right_half == 0x00ff00 &&
+                       still == rtv;
+            list->Release();
+        }
+    }
+
     char name[64] = "";
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name), NULL, NULL);
     printf("d3d11 level=%x adapter=%s modes=%d shaders=%d map=%d samples=%llu left=%06x right=%06x present=%d "
-           "get=%d\n",
+           "get=%d deferred=%d drawn=%06x\n",
            (unsigned)level, name, modes > 0, SUCCEEDED(shaders), mapped, (unsigned long long)samples,
-           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv);
+           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after);
     /* d3d64 show: the triangle stays on screen, its tint changing every frame */
     for (int frame = 0; chain && argc > 1 && !strcmp(argv[1], "show") && frame < 600; frame++) {
         MSG msg;

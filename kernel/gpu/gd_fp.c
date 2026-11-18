@@ -237,6 +237,30 @@ void gd_update(struct gd_resource *r, uint32_t sub, const struct gd_box *box, co
                    (const uint8_t *)src + (size_t)(z - b.front) * slice_pitch + (size_t)(y - by0) * row_pitch, row);
 }
 
+/* how many bytes gd_update reads from src for this box and these pitches */
+size_t gd_update_size(struct gd_resource *r, uint32_t sub, const struct gd_box *box, uint32_t row_pitch,
+                      uint32_t slice_pitch)
+{
+    if (!r || sub >= r->subs)
+        return 0;
+    const struct gd_layout *l = &r->lay[sub];
+    if (r->d.dim == GD_BUFFER) {
+        uint32_t from = box ? box->left : 0, to = box ? box->right : l->width;
+        return to > l->width ? (from < l->width ? l->width - from : 0) : (from < to ? to - from : 0);
+    }
+    uint32_t bytes, block = res_block(r, &bytes);
+    struct gd_box b = box ? *box : (struct gd_box){0, 0, 0, l->width, l->height, l->depth};
+    b.right = MIN(b.right, l->width);
+    b.bottom = MIN(b.bottom, l->height);
+    b.back = MIN(b.back, l->depth);
+    if (b.left >= b.right || b.top >= b.bottom || b.front >= b.back)
+        return 0;
+    uint32_t bx0 = b.left / block, bx1 = (b.right + block - 1) / block;
+    uint32_t by0 = b.top / block, by1 = (b.bottom + block - 1) / block;
+    return (size_t)(b.back - b.front - 1) * slice_pitch + (size_t)(by1 - by0 - 1) * row_pitch +
+           (size_t)(bx1 - bx0) * bytes;
+}
+
 void gd_copy_resource(struct gd_resource *dst, struct gd_resource *src)
 {
     if (!dst || !src || dst == src)
