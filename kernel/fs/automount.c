@@ -5,14 +5,28 @@
 #include <synth/string.h>
 #include <synth/vfs.h>
 
+static const char *volume_type(struct blockdev *dev)
+{
+    if (fat_detect(dev))
+        return "fat";
+#ifdef __x86_64__
+    if (exfat_detect(dev))
+        return "exfat";
+    if (ntfs_detect(dev))
+        return "ntfs";
+#endif
+    return NULL;
+}
+
 static void mount_volume(struct blockdev *dev)
 {
-    if (!fat_detect(dev))
+    const char *type = volume_type(dev);
+    if (!type)
         return;
     char path[PATH_MAX_LEN];
     ksnprintf(path, sizeof(path), "/mnt/%s", dev->name);
     vfs_mkdirs(path);
-    int err = vfs_mount("fat", dev->name, path);
+    int err = vfs_mount(type, dev->name, path);
     if (err)
         klog("automount: %s: %s", dev->name, err_str(err));
 }
@@ -73,7 +87,7 @@ static void scan(struct blockdev *dev)
     static uint8_t mbr[BLOCK_SIZE];
     if (dev->parent || has_children(dev))
         return;
-    if (fat_detect(dev)) {
+    if (volume_type(dev)) {
         mount_volume(dev);
         return;
     }

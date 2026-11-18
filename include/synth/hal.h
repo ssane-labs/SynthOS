@@ -76,6 +76,8 @@ uint32_t hal_irq_save(void);
 void hal_irq_restore(uint32_t flags);
 bool hal_graphics_enter(struct framebuffer *fb);
 void hal_graphics_leave(void);
+/* the built-in panel's backlight in percent; false when the kernel cannot drive it (dim in software then) */
+bool hal_backlight(int percent);
 
 struct display_mode {
     uint16_t width, height;

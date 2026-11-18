@@ -13,6 +13,7 @@
 static int brightness = 100, warmth = 50;
 static enum { NIGHT_OFF, NIGHT_ON, NIGHT_AUTO } night;
 static bool warm_now;
+static int backlight = -1; /* the level last given to the panel's backlight, or -1 */
 
 static void update(void)
 {
@@ -23,7 +24,9 @@ static void update(void)
     } else {
         warm_now = night == NIGHT_ON;
     }
-    wm_set_tint(brightness, warm_now ? MAX(warmth, 5) : 0);
+    if (backlight != brightness)
+        backlight = hal_backlight(brightness) ? brightness : -1;
+    wm_set_tint(backlight >= 0 ? 100 : brightness, warm_now ? MAX(warmth, 5) : 0);
 }
 
 void display_tick(void)
@@ -93,6 +96,30 @@ static int set_warmth(struct shell *sh, const char *value)
     update();
     return 0;
 }
+
+static const char *const filters[] = {"none", "grayscale", "invert", "contrast"};
+static int color_filter;
+
+static void get_filter(char *buf, size_t cap)
+{
+    str_copy(buf, filters[color_filter], cap);
+}
+
+static int set_filter(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    for (int i = 0; i < 4; i++)
+        if (!strcmp(value, filters[i])) {
+            color_filter = i;
+            wm_set_filter(i);
+            return 0;
+        }
+    return E_INVAL;
+}
+
+static const struct setting s_filter = {"colorfilter", "none|grayscale|invert|contrast",
+                                        "color filter for the whole screen (Accessibility)", get_filter, set_filter};
+SETTING(s_filter);
 
 static const struct setting s_brightness = {"brightness", "10..100", "display brightness", get_brightness,
                                             set_brightness};

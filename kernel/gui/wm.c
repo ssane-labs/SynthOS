@@ -98,18 +98,31 @@ static uint32_t pack(const struct framebuffer *fb, uint32_t c)
 static uint8_t tint[3][256];
 static volatile bool tinted;
 
+/* color filters for the eyes (Accessibility): 1 grayscale, 2 inverted, 3 more contrast */
+static int filter, last_brightness = 100, last_warmth;
+
+void wm_set_filter(int f)
+{
+    filter = CLAMP(f, 0, 3);
+    wm_set_tint(last_brightness, last_warmth);
+}
+
 void wm_set_tint(int brightness, int warmth)
 {
     brightness = CLAMP(brightness, 10, 100);
     warmth = CLAMP(warmth, 0, 100);
+    last_brightness = brightness;
+    last_warmth = warmth;
     static const int keep[3] = {100, 78, 42};
     for (int ch = 0; ch < 3; ch++) {
         int scale = brightness * (10000 - warmth * (100 - keep[ch])) / 10000;
-        for (int v = 0; v < 256; v++)
-            tint[ch][v] = (uint8_t)(v * scale / 100);
+        for (int v = 0; v < 256; v++) {
+            int b = filter == 2 ? 255 - v : filter == 3 ? CLAMP((v - 128) * 8 / 5 + 128, 0, 255) : v;
+            tint[ch][v] = (uint8_t)(b * scale / 100);
+        }
     }
     bool was = tinted;
-    tinted = brightness < 100 || warmth > 0;
+    tinted = brightness < 100 || warmth > 0 || filter;
     if (tinted || was)
         wm_damage_all();
 }
@@ -127,6 +140,10 @@ static void fb_row(struct screen *s, int x, int y, const uint32_t *src, int w)
         int n = MIN(128, w - i);
         for (int k = 0; k < n; k++) {
             uint32_t p = src[i + k];
+            if (filter == 1) {
+                uint32_t y = ((p >> 16 & 0xff) * 77 + (p >> 8 & 0xff) * 150 + (p & 0xff) * 29) >> 8;
+                p = y << 16 | y << 8 | y;
+            }
             row[k] = (uint32_t)tint[0][p >> 16 & 0xff] << 16 | (uint32_t)tint[1][p >> 8 & 0xff] << 8 |
                      tint[2][p & 0xff];
         }

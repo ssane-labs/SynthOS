@@ -46,7 +46,7 @@ static bool active, do_not_disturb;
 static int quit_action = -1;
 static struct shell *session;
 static char wallpaper_setting[PATH_MAX_LEN] = "auto";
-static char appearance_setting[8] = "auto";
+static char appearance_setting[10] = "auto";
 static char accent_setting[12] = "auto";
 static char glass_setting[10] = "liquid";
 static bool autostart = true;
@@ -216,12 +216,19 @@ static uint32_t palette_color(int index)
     return 0xff000000u | theme_current()->palette[index & 15];
 }
 
+static void refresh_all(void);
+
 static bool want_dark(void)
 {
     if (!strcmp(appearance_setting, "dark"))
         return true;
     if (!strcmp(appearance_setting, "light"))
         return false;
+    if (!strcmp(appearance_setting, "schedule")) { /* dark from 19:00 to 7:00 local time */
+        struct rtc_time t;
+        time_local(&t);
+        return t.hour >= 19 || t.hour < 7;
+    }
     return look_current()->dark;
 }
 
@@ -1979,6 +1986,8 @@ static void pump(int timeout_ms)
         chrome_changed();
         display_tick();
         focus_tick();
+        if (!strcmp(appearance_setting, "schedule") && want_dark() != style.dark)
+            refresh_all();
         static int rule_minute = -1;
         if (t.minute != rule_minute) {
             char hm[10];
@@ -2252,14 +2261,15 @@ static void get_appearance(char *buf, size_t cap)
 static int set_appearance(struct shell *sh, const char *value)
 {
     UNUSED(sh);
-    if (strcmp(value, "light") && strcmp(value, "dark") && strcmp(value, "auto"))
+    if (strcmp(value, "light") && strcmp(value, "dark") && strcmp(value, "auto") && strcmp(value, "schedule"))
         return E_INVAL;
     str_copy(appearance_setting, value, sizeof(appearance_setting));
     refresh_all();
     return 0;
 }
 
-static const struct setting s_appearance = {"appearance", "auto|light|dark", "light or dark mode (auto follows the look)",
+static const struct setting s_appearance = {"appearance", "auto|light|dark|schedule",
+                                            "light or dark mode (auto follows the look, schedule is dark 19:00-7:00)",
                                             get_appearance, set_appearance};
 SETTING(s_appearance);
 

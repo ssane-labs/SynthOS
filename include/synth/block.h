@@ -29,6 +29,10 @@ void block_set_listener(void (*listener)(struct blockdev *dev, bool added));
 
 int sfs_format(struct blockdev *dev);
 bool fat_detect(struct blockdev *dev);
+#ifdef __x86_64__
+bool exfat_detect(struct blockdev *dev); /* read-only exFAT and NTFS (kernel/fs/foreign.c) */
+bool ntfs_detect(struct blockdev *dev);
+#endif
 void automount_init(void);
 bool sfs_detect(struct blockdev *dev);
 

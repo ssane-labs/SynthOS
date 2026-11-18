@@ -30,6 +30,10 @@ python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DE
 python3 -I tests/msix.py "$work" &&
     for f in tool.msix uwp.msix tool.msixbundle; do mcopy -i "$work/fat.img" "$work/$f" ::/$f; done
 mcopy -i "$work/fat.img" tests/fonts/InterSubset.otf ::/inter.otf
+# exFAT and NTFS partitions on a third drive (tests/foreignfs.py), read by the 64-bit kernel
+foreign=""
+[ "$KERNEL64" = 1 ] && python3 -I tests/foreignfs.py "$work/foreign.img" &&
+    foreign="-drive format=raw,file=$work/foreign.img,index=2"
 python3 -I tests/photos.py "$work" &&
     for f in face face2 red tall; do mcopy -i "$work/fat.img" "$work/$f.png" ::/$f.png; done
 
@@ -439,6 +443,10 @@ config dockhalo off; config dockhalo; config dockhalo on
 dockhalo = off
 config statusbar islands; config statusbar; config statusbar menubar
 statusbar = islands
+config appearance schedule; config appearance; config appearance auto
+appearance = schedule
+config colorfilter invert; config colorfilter; config colorfilter none
+colorfilter = invert
 config shortcuts windows; config shortcuts; config shortcuts both
 shortcuts = windows
 config filesmode windows; config filesmode; config filesmode synthos
@@ -1552,6 +1560,24 @@ fi
 # AFD socket polling (tokio/mio programs) is in the 64-bit kernel's native calls only
 if [ "$KERNEL64" = 1 ]; then
     sed -i -e 's/^Paging  PAE$/Paging  4-level/' -e 's/ afd=AFD$/ afd=1/' "$work/cases"
+    cat >> "$work/cases" <<'EOF'
+ls /mnt/hdcp1; cat /mnt/hdcp1/README.txt
+hello from exfat
+ls /mnt/hdcp1/docs | grep -c Report
+1
+sha256sum /mnt/hdcp1/big.bin
+c0ee3d75b5c48bca2bad6910a1425b61759d186b275a800729e9a4e0a1988228
+cat /mnt/hdcp2/readme.txt
+hello from ntfs!
+ls /mnt/hdcp2/Docs | grep -c Report
+1
+sha256sum /mnt/hdcp2/big.bin
+c0ee3d75b5c48bca2bad6910a1425b61759d186b275a800729e9a4e0a1988228
+df | grep hdcp
+/mnt/hdcp2 ntfs
+echo x > /mnt/hdcp2/new.txt
+permission denied
+EOF
 else
     sed -i 's/ afd=AFD$/ afd=0/' "$work/cases"
 fi
@@ -1704,7 +1730,7 @@ python3 -I tests/v6peer.py "$v6port" "$((v6port + 1))" >/dev/null 2>&1 &
 v6peer=$!
 python3 -I tests/wgpeer.py "$wgport" >/dev/null 2>&1 &
 v6peer="$v6peer $!"
-timeout 240 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" -m 64 \
+timeout 240 "$qemu" -drive format=raw,file="$work/disk.img" -drive format=raw,file="$work/fat.img" $foreign -m 64 \
     -device qemu-xhci,id=usb -device usb-kbd,bus=usb.0 -nic user,model=e1000 -display none -serial stdio \
     -netdev socket,id=v6,udp=127.0.0.1:$v6port,localaddr=127.0.0.1:$((v6port + 1)) \
     -device e1000,netdev=v6,mac=52:54:00:12:34:57 < "$work/input" > "$work/output" 2>&1

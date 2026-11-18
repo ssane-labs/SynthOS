@@ -1165,9 +1165,10 @@ static void pane_appearance(struct page *p)
     }
     end(p, look_current()->description);
     section(p, NULL);
-    static const char *const modes[] = {"Auto", "Light", "Dark"};
-    static const char *const mode_values[] = {"auto", "light", "dark"};
-    choice(p, "Appearance", "Auto follows the look", "appearance", modes, mode_values, 3, 240);
+    static const char *const modes[] = {"Auto", "Light", "Dark", "Timed"};
+    static const char *const mode_values[] = {"auto", "light", "dark", "schedule"};
+    choice(p, "Appearance", "Auto follows the look; Timed is dark from 19:00 to 7:00", "appearance", modes,
+           mode_values, 4, 320);
     static const char *const accents[] = {"auto", "blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"};
     static const uint32_t swatches[] = {0, RGB(0, 122, 255), RGB(149, 61, 150), RGB(247, 79, 158), RGB(224, 56, 62),
                                         RGB(247, 130, 27), RGB(230, 168, 0), RGB(98, 186, 70), RGB(140, 140, 140)};
@@ -1247,6 +1248,10 @@ static void pane_access(struct page *p)
     bool solid = !strcmp(glass, "solid");
     if (toggle(p, "Reduce transparency", "Solid colors instead of glass behind menus, the Dock and sidebars", &solid))
         apply("glass", solid ? "solid" : "liquid");
+    static const char *const filter_labels[] = {"None", "Grayscale", "Inverted", "Contrast"};
+    static const char *const filter_values[] = {"none", "grayscale", "invert", "contrast"};
+    choice(p, "Color filter", "Change the colors of the whole screen", "colorfilter", filter_labels, filter_values, 4,
+           340);
     end(p, NULL);
     section(p, "Motor");
     if (link(p, panes[P_MOUSE].sym, panes[P_MOUSE].color, "Pointer speed and buttons", "Mouse"))

@@ -148,6 +148,7 @@ void wm_close_popups_except(struct window *keep);
 struct window *wm_top_popup(void);
 void wm_damage_all(void);
 void wm_set_tint(int brightness, int warmth);
+void wm_set_filter(int filter);
 int gui_glass_strength(void);
 enum glass_effect { GLASS_FX_REGULAR, GLASS_FX_CLEAR, GLASS_FX_TINTED, GLASS_FX_SMOKY, GLASS_FX_PRISM, GLASS_FX_HALO };
 int gui_glass_effect(void);

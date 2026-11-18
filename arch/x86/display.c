@@ -307,3 +307,40 @@ void hal_graphics_leave(void)
     for (int i = output_count - 1; i >= 0; i--)
         hal_screen_close(i);
 }
+
+/* The backlight of a laptop's built-in panel on Intel graphics: the PWM the firmware set up is left running at its
+   frequency and only its duty cycle changes. Two register layouts: Haswell to Kaby Lake keep the period and the duty
+   in the high and low halves of one register, Broxton and Cannon Point onwards in two registers. */
+static volatile uint32_t *intel_mmio;
+static bool intel_probed;
+
+static void find_intel(const struct pci_device *d, void *ctx)
+{
+    (void)ctx;
+    uint64_t base;
+    if (intel_mmio || d->vendor != 0x8086 || d->class_code != 0x03 || !pci_bar_base(d, 0x10, &base) || !base)
+        return;
+    intel_mmio = vmm_map_uncached(base + 0xc8000, 0x1000);
+}
+
+bool hal_backlight(int percent)
+{
+    if (!intel_probed) {
+        intel_probed = true;
+        pci_foreach(find_intel, NULL);
+    }
+    if (!intel_mmio || !(intel_mmio[0x250 / 4] & 0x80000000u))
+        return false;
+    percent = percent < 5 ? 5 : percent > 100 ? 100 : percent;
+    uint32_t ctl2 = intel_mmio[0x254 / 4], duty = intel_mmio[0x258 / 4];
+    uint32_t max = ctl2 >> 16;
+    if (max && (ctl2 & 0xffff) <= max && !duty) {
+        intel_mmio[0x254 / 4] = (max << 16) | (max * (uint32_t)percent / 100);
+        return true;
+    }
+    if (ctl2 && duty <= ctl2) {
+        intel_mmio[0x258 / 4] = (uint32_t)((uint64_t)ctl2 * (uint32_t)percent / 100);
+        return true;
+    }
+    return false;
+}
