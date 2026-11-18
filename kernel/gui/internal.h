@@ -230,6 +230,8 @@ const char *panel_month_name(int i);
 void calendar_toggle(int right, int y);
 void calendar_draw(struct canvas *c, struct rect at);
 void notify_record(const char *title, const char *text);
+int notify_icon_for(const char *title);
+int notify_history_icon(int i);
 int notify_unseen(void);
 bool notify_history(int i, const char **title, const char **text, uint64_t *when);
 void notification_center_toggle(void);

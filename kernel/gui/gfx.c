@@ -909,33 +909,33 @@ static int icon_variant_of(enum icon_id id)
     return style.dark && has_tile(id) ? 1 : 0;
 }
 
-/* The squircle (|x|^5 + |y|^5 <= 1) over the tile's box, 4x4 samples per pixel, and the background under the icon's
-   own layer: a top-to-bottom blend with a soft light from the top edge. */
+/* The SynthOS tile ("leaf") over the tile's box: wide round corners, a tight one at the bottom right; 4x4 samples per
+   pixel. Under the icon's own layer: a diagonal blend, top left to bottom right, with a soft light at the top left. */
 static void paint_tile(uint32_t *px, int size, const struct icon_tile *t)
 {
-    int64_t a = size * 39 * 4 / 96, c = size * 48 * 4 / 96, one = (int64_t)1 << 40;
-    int gx = size * 48 * 16 / 96, gy = size * 9 * 16 / 96, gr = size * 702 * 16 / 960;
+    int64_t half = size * 39 * 8 / 96, mid = size * 4;
+    int64_t wide = half * 62 / 100, tight = half * 22 / 100;
+    int gx = size * 70 * 16 / 256, gy = size * 50 * 16 / 256, gr = size * 702 * 16 / 960;
     for (int y = 0; y < size; y++) {
-        uint32_t base = color_mix(t->top | 0xff000000u, t->bottom | 0xff000000u, (y * 2 + 1) * 255 / (size * 2));
         for (int x = 0; x < size; x++) {
             int cover = 0;
             for (int sy = 0; sy < 4; sy++)
                 for (int sx = 0; sx < 4; sx++) {
-                    int64_t u = (x * 4 + sx) * 2 + 1 - c * 2, v = (y * 4 + sy) * 2 + 1 - c * 2;
-                    u = u < 0 ? -u : u;
-                    v = v < 0 ? -v : v;
-                    int64_t a2 = a * 2;
-                    if (u >= a2 || v >= a2)
+                    int64_t dx = x * 8 + sx * 2 + 1 - mid, dy = y * 8 + sy * 2 + 1 - mid;
+                    int64_t r = dx > 0 && dy > 0 ? tight : wide;
+                    int64_t ux = dx < 0 ? -dx : dx, uy = dy < 0 ? -dy : dy;
+                    if (ux >= half || uy >= half)
                         continue;
-                    int64_t uu = (u << 8) / a2, vv = (v << 8) / a2;
-                    if (uu * uu * uu * uu * uu + vv * vv * vv * vv * vv < one)
-                        cover++;
+                    int64_t ex = ux - (half - r), ey = uy - (half - r);
+                    if (ex > 0 && ey > 0 && ex * ex + ey * ey > r * r)
+                        continue;
+                    cover++;
                 }
             uint32_t *dst = &px[y * size + x];
             uint32_t fg = *dst;
             if (!cover)
                 continue;
-            uint32_t p = base;
+            uint32_t p = color_mix(t->top | 0xff000000u, t->bottom | 0xff000000u, (x + y + 1) * 255 / (size * 2));
             if (t->glow) {
                 int d = gfx_dist16(x * 16 + 8 - gx, y * 16 + 8 - gy);
                 if (d < gr)

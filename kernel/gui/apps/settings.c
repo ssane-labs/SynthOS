@@ -1332,6 +1332,16 @@ static void pane_dock(struct page *p)
     if (button(p, title, "Each look keeps its own Dock and menu bar", "Reset Layout"))
         look_reset();
     end(p, NULL);
+    section(p, "Dock Effects");
+    toggle_setting(p, "Glass takes the icons' colors", "Each icon pours its color into the glass under it",
+                   "dockhalo");
+    toggle_setting(p, "Glowing icons", "A soft glow of each icon's color behind it, brighter under the pointer",
+                   "dockglow");
+    toggle_setting(p, "Light follows the pointer", "A light moves along the glass with the pointer", "dockspot");
+    static const char *const fx[] = {"Subtle", "Normal", "Vivid"};
+    static const char *const fx_values[] = {"subtle", "normal", "vivid"};
+    choice(p, "Strength", "How strong these effects are", "dockfx", fx, fx_values, 3, 260);
+    end(p, "When the Dock sleeps the effects fade with it.");
     section(p, "Desktop");
     toggle_setting(p, "Show SynthOS HD", NULL, "desktopdisk");
     toggle_setting(p, "Show other disks and USB drives", NULL, "desktopdrives");

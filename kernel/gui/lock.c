@@ -150,11 +150,12 @@ static int draw_notes(struct canvas *c, int W, int y, int max_h)
             char t[16];
             ago(when, t, sizeof(t));
             int tw = gfx_text_width(&font_small, t);
-            gfx_text_box(c, (struct rect){r.x + 16, r.y + 9, r.w - tw - 44, 18}, &font_bold, title,
+            gfx_icon(c, r.x + 12, r.y + 13, (enum icon_id)notify_history_icon(i), 32);
+            gfx_text_box(c, (struct rect){r.x + 52, r.y + 9, r.w - tw - 80, 18}, &font_bold, title,
                          RGB(255, 255, 255), ALIGN_LEFT);
             gfx_text_box(c, (struct rect){r.x + r.w - tw - 16, r.y + 9, tw, 18}, &font_small, t,
                          ALPHA(0xffffffffu, 170), ALIGN_RIGHT);
-            gfx_text_box(c, (struct rect){r.x + 16, r.y + 30, r.w - 32, 18}, &font_sans, text,
+            gfx_text_box(c, (struct rect){r.x + 52, r.y + 30, r.w - 68, 18}, &font_sans, text,
                          ALPHA(0xffffffffu, 210), ALIGN_LEFT);
         }
         used += 66;

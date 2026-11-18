@@ -302,7 +302,7 @@ desktopdrives = off
 config minbutton
 minbutton = off
 config magnify
-magnify = off
+magnify = on
 config glasseffect prism; config glasseffect
 glasseffect = prism
 config glasseffect fog
@@ -441,6 +441,8 @@ config docksleep 5; config docksleep; config docksleep 30
 docksleep = 5
 config dockhalo off; config dockhalo; config dockhalo on
 dockhalo = off
+config dockfx vivid; config dockglow off; config dockfx; config dockglow; config dockglow on; config dockfx normal
+dockfx = vivid
 config statusbar islands; config statusbar; config statusbar menubar
 statusbar = islands
 config appearance schedule; config appearance; config appearance auto

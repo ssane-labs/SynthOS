@@ -17,6 +17,7 @@ struct past_note {
     char title[64];
     char text[160];
     uint64_t when;
+    int icon;
 };
 
 static struct past_note *history;
@@ -24,6 +25,43 @@ static int history_count, unseen;
 static struct window *center;
 static struct ui_state center_st;
 static int center_scroll;
+
+/* Whose notification it is, by its title: an app of that name, or the part of the system the words belong to, or else
+   the app in front; the SynthOS mark when nothing fits. */
+static const struct {
+    const char *word;
+    enum icon_id icon;
+} senders[] = {
+    {"VPN", ICON_NETUTIL}, {"Software Update", ICON_INSTALLER}, {"Installer", ICON_INSTALLER},
+    {"Assistant", ICON_ASSISTANT}, {"Widget", ICON_LAUNCHPAD}, {"Weather", ICON_WEATHER},
+    {"Screen", ICON_SCREENSHOT}, {"Language", ICON_SETTINGS}, {"Console", ICON_CONSOLE}, {"Clock", ICON_CLOCK},
+    {"Focus", ICON_CLOCK}, {"Store", ICON_STORE}, {"Reader", ICON_READER}, {"Download", ICON_BROWSER},
+    {"Bookmark", ICON_BROWSER}, {"Chrome", ICON_BROWSER}, {"Obscura", ICON_BROWSER}, {"Device", ICON_USB},
+    {"Eject", ICON_USB}, {"allpaper", ICON_PHOTOS}, {"Password", ICON_USER}, {"Certificate", ICON_SETTINGS},
+    {"Setting", ICON_SETTINGS}, {"undo", ICON_TIMELINE}, {"Safe mode", ICON_WARNING}, {"Notification", ICON_INFO},
+    {"Tip", ICON_INFO}, {"closed", ICON_WARNING}, {"Music", ICON_MUSIC}, {"Photo", ICON_PHOTOS},
+    {"Video", ICON_VIDEO}, {"Disk", ICON_DISKUTIL}, {"Network", ICON_NETUTIL}, {"Wi-Fi", ICON_NETUTIL},
+    {"Restore", ICON_TIMELINE}, {"Backup", ICON_TIMELINE}, {"Game", ICON_GAMES}, {"Terminal", ICON_TERMINAL},
+};
+
+int notify_icon_for(const char *title)
+{
+    const struct gui_app *app = gui_app_find(title);
+    if (app && app->icon)
+        return app->icon;
+    for (size_t i = 0; i < ARRAY_SIZE(senders); i++)
+        if (strstr(title, senders[i].word))
+            return senders[i].icon;
+    struct window *f = wm_focused();
+    if (f && f->app && f->app->icon)
+        return f->app->icon;
+    return ICON_LOGO;
+}
+
+int notify_history_icon(int i)
+{
+    return i >= 0 && i < history_count ? history[history_count - 1 - i].icon : ICON_LOGO;
+}
 
 void notify_record(const char *title, const char *text)
 {
@@ -35,6 +73,7 @@ void notify_record(const char *title, const char *text)
     str_copy(n->title, title, sizeof(n->title));
     str_copy(n->text, text, sizeof(n->text));
     n->when = hal_ticks_ms();
+    n->icon = notify_icon_for(title);
     unseen++;
     if (center && wm_window_alive(center))
         wm_invalidate(center);
@@ -107,7 +146,7 @@ static void center_frame(struct ui *ui, void *data)
             char when[16];
             ago(n->when, when, sizeof(when));
             gfx_round(ui->c, r, 16, card);
-            gfx_icon(ui->c, r.x + 12, r.y + 17, ICON_LOGO, 36);
+            gfx_icon(ui->c, r.x + 12, r.y + 17, (enum icon_id)n->icon, 36);
             gfx_text_box(ui->c, (struct rect){r.x + 58, r.y + 10, r.w - 130, 18}, &font_bold, n->title, style.text,
                          ALIGN_LEFT);
             gfx_text_box(ui->c, (struct rect){r.x + r.w - 72, r.y + 10, 60, 18}, &font_small, when, style.secondary,

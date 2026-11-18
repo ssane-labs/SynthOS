@@ -1600,13 +1600,14 @@ struct note {
     char title[64];
     char text[160];
     uint64_t until;
+    int icon;
 };
 
 static void note_paint(struct window *w, struct canvas *c)
 {
     struct note *n = w->data;
     gfx_clear(c, (struct rect){0, 0, c->w, c->h}, 0);
-    gfx_icon(c, 12, (c->h - 36) / 2, ICON_LOGO, 36);
+    gfx_icon(c, 12, (c->h - 40) / 2, (enum icon_id)n->icon, 40);
     gfx_text_box(c, (struct rect){58, 12, c->w - 70, 18}, &font_bold, n->title, style.text, ALIGN_LEFT);
     ui_wrap_text(c, (struct rect){58, 32, c->w - 70, c->h - 36}, &font_sans, n->text, style.text);
 }
@@ -1649,6 +1650,7 @@ void gui_notify(const char *title, const char *text)
         return;
     str_copy(n->title, title, sizeof(n->title));
     str_copy(n->text, text, sizeof(n->text));
+    n->icon = notify_icon_for(title);
     n->until = hal_ticks_ms() + 6000;
     struct rect s = wm_screen_rect(0);
     int y = s.y + menubar_height() + 10;
