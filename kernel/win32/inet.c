@@ -149,6 +149,15 @@ static DWORD map_error(int err)
     }
 }
 
+static void turn(void *ctx, const char *stage, size_t done, size_t total)
+{
+    UNUSED(ctx);
+    UNUSED(stage);
+    UNUSED(done);
+    UNUSED(total);
+    w32_desktop_turn();
+}
+
 static BOOL perform(struct inet *h)
 {
     if (h->done)
@@ -160,6 +169,7 @@ static BOOL perform(struct inet *h)
         .body = h->body,
         .body_len = h->body_len,
         .flags = (h->flags & FLAG_IGNORE_CERT) ? HTTP_INSECURE : 0,
+        .progress = turn,
     };
     int err = http_fetch(&req, &h->resp);
     if (err) {
@@ -793,7 +803,7 @@ W32_EXPORTS(winhttp_module, "winhttp.dll", winhttp_exports);
 
 static int download(const char *url, const char *file)
 {
-    struct http_request req = {.url = url};
+    struct http_request req = {.url = url, .progress = turn};
     struct http_response resp;
     if (http_fetch(&req, &resp) != 0)
         return -1;

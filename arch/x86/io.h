@@ -164,6 +164,7 @@ struct x86_bootinfo {
         uint32_t addr, addr_high, width, height, pitch, bpp;
         uint8_t shift[4];
     } more[3];
+    uint32_t acpi_rsdp, acpi_rsdp_high;
 };
 
 #define BOOT_UEFI 0x1u
@@ -171,6 +172,7 @@ struct x86_bootinfo {
 #define BOOT_FB_HIGH 0x4u
 #define BOOT_SAFE 0x8u
 #define BOOT_MORE_FB 0x10u
+#define BOOT_ACPI 0x20u
 
 static inline uint64_t x86_fb_phys(const struct x86_bootinfo *bi)
 {
@@ -283,6 +285,9 @@ struct display *vga_display(void);
 struct display *serial_display(void);
 int serial_key(void);
 const struct x86_bootinfo *x86_boot_info(void);
+void acpi_init(void);
+void acpi_poweroff(void);
+void acpi_reset(void);
 void ata_init(void);
 void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size);
 

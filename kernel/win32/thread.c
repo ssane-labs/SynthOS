@@ -542,6 +542,18 @@ void w32_input_boost(void)
     switch_to(h);
 }
 
+/* Long work inside the system for a program (a download through WinINet, a big copy) lets the desktop draw and
+   take input every 30 ms, as the timer does while the program's own code runs. */
+void w32_desktop_turn(void)
+{
+    struct w32_thread *h = w32_host_thread();
+    uint64_t now = hal_ticks_ms();
+    if (!h || !w32 || !w32->current || w32->current == h || now - host_ran < 30)
+        return;
+    host_ran = now;
+    switch_to(h);
+}
+
 void w32_preempt(void)
 {
     static unsigned turn;

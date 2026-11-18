@@ -370,7 +370,9 @@ const char *hal_machine(void)
 void hal_reboot(void)
 {
     ahci_flush_all();
+    acpi_init();
     cpu_cli();
+    acpi_reset();
     for (int i = 0; i < 100000 && (inb(0x64) & 2); i++)
         ;
     outb(0x64, 0xfe);
@@ -386,6 +388,9 @@ void hal_reboot(void)
 void hal_poweroff(void)
 {
     ahci_flush_all();
+    acpi_init();
+    cpu_cli();
+    acpi_poweroff();
     outw(0x604, 0x2000);
     outw(0xb004, 0x2000);
     outw(0x4004, 0x3400);

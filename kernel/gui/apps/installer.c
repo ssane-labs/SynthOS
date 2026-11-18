@@ -10,6 +10,9 @@
 
 #include "../internal.h"
 
+static struct window *installer_win, *pill_win;
+static void put_away(void);
+
 /* The installer walks through: welcome, disk, where on the disk (free space, a partition to replace or the whole
    disk), how much space, the boot menu, a summary, the copy and the restart. Nothing is written before the
    summary's button. */
@@ -160,13 +163,21 @@ static void build_choices(struct installer *in)
         in->choice = 0;
 }
 
+/* The installer covers the whole screen; its pages sit in a column in the middle. */
+static struct rect panel(struct ui *ui)
+{
+    int W = ui->win->surface.w, H = ui->win->surface.h;
+    int pw = MIN(W, 760), ph = MIN(H - 60, 620);
+    return (struct rect){(W - pw) / 2, MAX(60, (H - ph) / 2), pw, ph};
+}
+
 /* Everything above the buttons; on a small screen the margins shrink first. */
 static struct rect content(struct ui *ui, struct installer *in)
 {
-    int W = ui->win->surface.w, H = ui->win->surface.h;
-    int pad = W < 600 ? 24 : 40, top = H < 480 ? 18 : 30;
-    int dx = in->slide.pos * W / 1024 / 3;
-    return (struct rect){pad + dx, top, W - 2 * pad, MAX(H - top - NAV_H, 40)};
+    struct rect p = panel(ui);
+    int pad = p.w < 600 ? 24 : 40, top = p.h < 480 ? 18 : 30;
+    int dx = in->slide.pos * p.w / 1024 / 3;
+    return (struct rect){p.x + pad + dx, p.y + top, p.w - 2 * pad, MAX(p.h - top - NAV_H, 40)};
 }
 
 /* A list of cards that scrolls when the window is too short for all of them. */
@@ -220,7 +231,8 @@ static void list_show(struct installer *in, struct card_list *l, int top, int h)
 
 static bool nav(struct ui *ui, const char *back, const char *next, bool next_enabled, bool *went_back)
 {
-    int W = ui->win->surface.w, H = ui->win->surface.h;
+    struct rect p = panel(ui);
+    int W = p.x + p.w, H = p.y + p.h;
     *went_back = back && ui_button(ui, (struct rect){W - 40 - 290, H - 58, 120, 32}, back);
     if (!next)
         return false;
@@ -651,6 +663,12 @@ static void frame(struct ui *ui, void *data)
     case PAGE_DONE: done_page(ui, in, true); break;
     default: done_page(ui, in, false); break;
     }
+    /* no window buttons: "Try SynthOS" puts the installer away, the Install widget brings it back */
+    if (in->page != PAGE_INSTALL && ui->win) {
+        int W = ui->win->surface.w;
+        if (ui_button(ui, (struct rect){W - 196, 18, 176, 32}, hal_installed() ? "Hide" : "Try SynthOS"))
+            put_away();
+    }
 }
 
 static void paint(struct window *w, struct canvas *c)
@@ -696,13 +714,68 @@ static bool on_close(struct window *w)
 static void destroy(struct window *w)
 {
     kfree(w->data);
+    if (w == installer_win)
+        installer_win = NULL;
+    if (pill_win) {
+        wm_destroy(pill_win);
+        pill_win = NULL;
+    }
 }
 
 static const struct window_ops ops = {paint, event, on_close, destroy};
 
+/* The Install widget: a glass pill in the top right corner while the installer is put away. */
+#define PILL_W 196
+#define PILL_H 44
+
+static void pill_paint(struct window *w, struct canvas *c)
+{
+    struct rect r = {0, 0, w->surface.w, w->surface.h};
+    gfx_clear(c, r, 0);
+    gfx_round(c, r, PILL_H / 2, ALPHA(style.accent, 230));
+    gfx_icon(c, 10, (PILL_H - 28) / 2, ICON_INSTALLER, 28);
+    gfx_text_box(c, (struct rect){46, 0, PILL_W - 56, PILL_H}, &font_bold, "Install SynthOS", RGB(255, 255, 255),
+                 ALIGN_LEFT);
+}
+
+static void pill_event(struct window *w, struct gui_event *e)
+{
+    UNUSED(w);
+    if (e->type == EV_MOUSE_DOWN && installer_win) {
+        wm_hide(pill_win);
+        wm_show(installer_win);
+    }
+}
+
+static const struct window_ops pill_ops = {pill_paint, pill_event, NULL, NULL};
+
+static void put_away(void)
+{
+    if (!installer_win)
+        return;
+    wm_hide(installer_win);
+    if (!pill_win) {
+        struct rect sr = wm_screen_rect(0);
+        pill_win = wm_popup(sr.x + sr.w - PILL_W - 16, sr.y + 44, PILL_W, PILL_H, &pill_ops, NULL, NULL);
+        if (!pill_win)
+            return;
+        pill_win->flags &= ~WIN_POPUP;
+        pill_win->flags |= WIN_OVERLAY;
+        pill_win->radius = PILL_H / 2;
+    }
+    wm_show(pill_win);
+    wm_invalidate(pill_win);
+}
+
 /* "launch 'Install SynthOS' /dev/sda" opens straight on the choices for that disk. */
 static void launch(const char *arg)
 {
+    if (installer_win) {
+        if (pill_win)
+            wm_hide(pill_win);
+        wm_show(installer_win);
+        return;
+    }
     struct installer *in = kzalloc(sizeof(*in));
     if (!in)
         return;
@@ -710,12 +783,28 @@ static void launch(const char *arg)
     in->boot_wait = 1;
     in->copy_home = !hal_installed();
     in->tick = hal_ticks_ms();
-    struct window *w = wm_open("Install SynthOS", ICON_INSTALLER, 680, 560, &ops, in, 0);
+    wm_close_popups();
+    struct rect sr = wm_screen_rect(0);
+    struct window *w = wm_popup(sr.x, sr.y, sr.w, sr.h, &ops, in, NULL);
     if (!w) {
         kfree(in);
         return;
     }
+    installer_win = w;
+    w->flags &= ~WIN_POPUP;
+    w->flags |= WIN_OVERLAY | WIN_NOSHADOW;
+    if (w->glass) {
+        glass_unregister(w->glass);
+        kfree(w->glass);
+        w->glass = NULL;
+    }
+    w->radius = 0;
+    wm_move(w, sr.x, sr.y);
     wm_set_timer(w, 16);
+    if (arg && !strcmp(arg, "hidden")) { /* "Try SynthOS" at the first start: only the widget shows */
+        put_away();
+        return;
+    }
     if (arg && str_starts(arg, "/dev/")) {
         scan(in);
         for (int i = 0; i < in->disk_count; i++)

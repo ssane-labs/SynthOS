@@ -1,7 +1,3 @@
-/* the 32-bit kernel has to fit below 3.5 MiB: the network drivers are built for size there */
-#if !defined(__x86_64__) && defined(__GNUC__) && !defined(__clang__)
-#pragma GCC optimize("Os")
-#endif
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/heap.h>

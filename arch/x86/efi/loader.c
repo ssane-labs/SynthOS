@@ -19,6 +19,11 @@ struct guid {
     u8 d[8];
 };
 
+struct config_table {
+    struct guid guid;
+    void *table;
+};
+
 struct table_header {
     u64 signature;
     u32 revision, size, crc, reserved;
@@ -101,6 +106,8 @@ struct system_table {
     void *stderr_handle, *stderr;
     struct runtime_services *runtime;
     struct boot_services *boot;
+    uintn table_count;
+    struct config_table *tables;
 };
 
 struct loaded_image {
@@ -161,6 +168,7 @@ struct bootinfo {
         u32 addr, addr_high, width, height, pitch, bpp;
         u8 shift[4];
     } more[3];
+    u32 acpi_rsdp, acpi_rsdp_high;
 };
 
 struct e820 {
@@ -179,6 +187,7 @@ struct e820 {
 #define BOOT_FB_HIGH 4
 #define BOOT_SAFE 8
 #define BOOT_MORE_FB 16
+#define BOOT_ACPI 32
 #define BY_PROTOCOL 2
 #define NOT_FOUND 0x800000000000000eull
 #define VAR_ATTRS 7
@@ -196,6 +205,8 @@ struct e820 {
 static const struct guid loaded_image_guid = {0x5b1b31a1, 0x9562, 0x11d2, {0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
 static const struct guid simple_fs_guid = {0x964e5b22, 0x6459, 0x11d2, {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
 static const struct guid device_path_guid = {0x09576e91, 0x6d3f, 0x11d2, {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
+static const struct guid acpi2_guid = {0x8868e871, 0xe4f1, 0x11d3, {0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81}};
+static const struct guid acpi1_guid = {0xeb9d2d30, 0x2d88, 0x11d3, {0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d}};
 static const struct guid global_guid = {0x8be4df61, 0x93ca, 0x11d2, {0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c}};
 static const struct guid gop_guid = {0x9042a9de, 0x23dc, 0x4a38, {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a}};
 
@@ -1203,10 +1214,20 @@ status EFIAPI efi_main(void *image, struct system_table *table)
         return fail("Secure Boot: \\SYNTHOS\\KERNEL.BIN is not the kernel this loader was signed with");
 
     fill(bi, 0, sizeof(*bi));
+    /* the ACPI tables: the kernel turns the computer off and restarts it the way its firmware describes */
+    for (int pass = 0; pass < 2 && !(bi->flags & BOOT_ACPI); pass++)
+        for (uintn i = 0; i < st->table_count; i++)
+            if (same(&st->tables[i].guid, pass ? &acpi1_guid : &acpi2_guid, sizeof(struct guid))) {
+                u64 at = (u64)(uintn)st->tables[i].table;
+                bi->acpi_rsdp = (u32)at;
+                bi->acpi_rsdp_high = (u32)(at >> 32);
+                bi->flags |= BOOT_ACPI;
+                break;
+            }
     bi->magic = BOOT_MAGIC;
     bi->kernel_sectors = *(u32 *)(kernel + 12);
     bi->kernel_lba = KERNEL_LBA;
-    bi->flags = BOOT_UEFI | BOOT_SYSTEM | (safe ? BOOT_SAFE : 0);
+    bi->flags |= BOOT_UEFI | BOOT_SYSTEM | (safe ? BOOT_SAFE : 0);
     bi->boot_nonce = nonce;
     bi->system_lba = (u32)cfg.system;
     bi->system_sectors = (u32)cfg.sectors;

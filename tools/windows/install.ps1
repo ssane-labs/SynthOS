@@ -2,8 +2,9 @@
 #   - уменьшает диск C: и создаёт в освободившемся месте раздел SynthOS (система, Chromium, ваши файлы);
 #   - кладёт загрузчик в раздел EFI Windows (\EFI\SynthOS) рядом с ядром (\SYNTHOS);
 #   - добавляет «SynthOS» в меню загрузки компьютера и один раз запускает его при следующей перезагрузке.
-# Параметры: -SizeGB N (сколько гигабайт отдать SynthOS), -Yes (не задавать вопросов), -NoRestart.
-param([int]$SizeGB = 0, [switch]$Yes, [switch]$NoRestart)
+# Параметры: -SizeGB N (сколько гигабайт отдать SynthOS), -Target D (какой том уменьшить: буква, или free1 —
+# свободное место на диске 1), -Yes (не задавать вопросов), -NoRestart.
+param([int]$SizeGB = 0, [string]$Target = '', [switch]$Yes, [switch]$NoRestart)
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -85,11 +86,9 @@ foreach ($f in $files) {
 $shim = Test-Path (Join-Path $here 'EFI\shimx64.efi')
 Get-ChildItem -Path $here -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
 
-$letter = $env:SystemDrive.Substring(0, 1)
-$cpart = Get-Partition -DriveLetter $letter
-$disk = Get-Disk -Number $cpart.DiskNumber
-if ($disk.PartitionStyle -ne 'GPT') { Fail 'диск с Windows размечен как MBR, а не GPT.' }
-if ($disk.LogicalSectorSize -ne 512) { Fail "у диска сектор $($disk.LogicalSectorSize) байт; SynthOS пока работает только с 512." }
+$sysLetter = $env:SystemDrive.Substring(0, 1)
+$sysDisk = Get-Disk -Number (Get-Partition -DriveLetter $sysLetter).DiskNumber
+if ($sysDisk.PartitionStyle -ne 'GPT') { Fail 'диск с Windows размечен как MBR, а не GPT.' }
 
 $secure = $false
 try { $secure = Confirm-SecureBootUEFI } catch { $secure = $false }
@@ -107,17 +106,52 @@ $bundle = 0
 if ([Text.Encoding]::ASCII.GetString($head, 0, 8) -eq 'SYNTHBDL') { $bundle = [BitConverter]::ToUInt32($head, 12) }
 if ($img.Length -lt ([long]$systemSectors + $bundle) * 512) { Fail 'system.img обрезан — скачайте архив заново.' }
 
-# 3. Сколько места отдать
+# 3. Куда ставить: любой том на диске GPT (он уменьшится) или свободное место на любом диске GPT
 $need = [long]($systemSectors + $bundle + $MinData) * 512
 $minGB = [int][Math]::Ceiling($need / 1GB) + 1
-$range = Get-PartitionSupportedSize -DriveLetter $letter
-$volume = Get-Volume -DriveLetter $letter
-$canShrink = [Math]::Min($cpart.Size - $range.SizeMin, $volume.SizeRemaining - 15GB)
-$maxGB = [int][Math]::Floor($canShrink / 1GB)
-if ($maxGB -lt $minGB) {
-    Fail ("на диске $($letter): можно освободить только $maxGB ГБ, а нужно хотя бы $minGB ГБ (и 15 ГБ остаются Windows). " +
-          'Освободите место или сожмите том вручную: Win+X → «Управление дисками» → C: → «Сжать том».')
+$places = @()
+foreach ($d in (Get-Disk | Where-Object { $_.PartitionStyle -eq 'GPT' -and $_.LogicalSectorSize -eq 512 -and -not $_.IsReadOnly -and -not $_.IsOffline })) {
+    foreach ($p in (Get-Partition -DiskNumber $d.Number -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter })) {
+        $l = [string]$p.DriveLetter
+        try {
+            $v = Get-Volume -DriveLetter $l -ErrorAction Stop
+            if ($v.FileSystem -ne 'NTFS') { continue }
+            $range = Get-PartitionSupportedSize -DriveLetter $l -ErrorAction Stop
+        } catch { continue }
+        $keep = if ($l -eq $sysLetter) { 15GB } else { 1GB }
+        $max = [int][Math]::Floor([Math]::Min($p.Size - $range.SizeMin, $v.SizeRemaining - $keep) / 1GB)
+        if ($max -ge $minGB) {
+            $label = if ($v.FileSystemLabel) { " «$($v.FileSystemLabel)»" } else { '' }
+            $places += [pscustomobject]@{ Key = $l.ToUpper(); Text = "том $($l):$label на диске $($d.Number) ($($d.FriendlyName)), можно отдать до $max ГБ"; Disk = $d; Letter = $l; Max = $max }
+        }
+    }
+    $free = [int][Math]::Floor($d.LargestFreeExtent / 1GB)
+    if ($free -ge $minGB) {
+        $places += [pscustomobject]@{ Key = "FREE$($d.Number)"; Text = "свободное место на диске $($d.Number) ($($d.FriendlyName)): $free ГБ, ничего не уменьшается"; Disk = $d; Letter = $null; Max = $free }
+    }
 }
+if (-not $places) {
+    Fail ("нигде нет $minGB ГБ: ни один том NTFS на дисках GPT нельзя уменьшить настолько, и свободного места нет. " +
+          'Освободите место на любом диске и запустите установку снова.')
+}
+$place = $null
+if ($Target) { $place = $places | Where-Object { $_.Key -eq $Target.TrimEnd(':').ToUpper() } | Select-Object -First 1 }
+if (-not $place) {
+    $place = $places | Where-Object { $_.Letter -eq $sysLetter } | Select-Object -First 1
+    if (-not $place) { $place = $places[0] }
+    if (-not $Yes -and $places.Count -gt 1) {
+        Say ''
+        Say 'Куда поставить SynthOS:'
+        for ($i = 0; $i -lt $places.Count; $i++) { Say ("  {0}. {1}" -f ($i + 1), $places[$i].Text) }
+        $default = [array]::IndexOf($places, $place) + 1
+        $answer = Read-Host "Номер (Enter — $default)"
+        if ($answer -match '^\d+$' -and [int]$answer -ge 1 -and [int]$answer -le $places.Count) { $place = $places[[int]$answer - 1] }
+        elseif ($answer -ne '') { Fail 'нужен номер из списка.' }
+    }
+}
+$disk = $place.Disk
+$letter = $place.Letter
+$maxGB = $place.Max
 if ($SizeGB -le 0) {
     $default = [Math]::Min(32, $maxGB)
     if ($Yes) { $SizeGB = $default } else {
@@ -130,7 +164,8 @@ $bytes = [long]$SizeGB * 1GB
 
 Say ''
 Say "Диск:      $($disk.FriendlyName) (диск $($disk.Number))"
-Say "Windows:   $($letter): уменьшится на $SizeGB ГБ, ваши файлы не трогаются"
+if ($letter) { Say "Том:       $($letter): уменьшится на $SizeGB ГБ, ваши файлы не трогаются" }
+else { Say "Место:     свободное место на диске $($disk.Number), $SizeGB ГБ" }
 Say "SynthOS:   новый раздел $SizeGB ГБ, загрузчик в разделе EFI Windows (\EFI\SynthOS)"
 if ($secure) {
     if ($shim) {
@@ -144,28 +179,36 @@ if (-not (Ask 'Продолжить?')) { Fail 'отменено.' }
 
 # 4. BitLocker: меню загрузки меняется, поэтому защита приостанавливается на две перезагрузки
 try {
-    $bl = Get-BitLockerVolume -MountPoint "$($letter):" -ErrorAction Stop
+    $bl = Get-BitLockerVolume -MountPoint "$($sysLetter):" -ErrorAction Stop
     if ($bl.ProtectionStatus -eq 'On') {
         Step 'BitLocker: защита приостанавливается на 2 перезагрузки'
-        Suspend-BitLocker -MountPoint "$($letter):" -RebootCount 2 | Out-Null
+        Suspend-BitLocker -MountPoint "$($sysLetter):" -RebootCount 2 | Out-Null
     }
 } catch { }
 
 # 5. Место для SynthOS
-Step "Уменьшение $($letter): на $SizeGB ГБ"
-$oldEnd = $cpart.Offset + $cpart.Size
-try { Resize-Partition -DriveLetter $letter -Size ($cpart.Size - $bytes) } catch { Fail "Windows не смогла сжать $($letter): $($_.Exception.Message)" }
-$cpart = Get-Partition -DriveLetter $letter
-$start = $cpart.Offset + $cpart.Size
-$start = [long][Math]::Ceiling($start / 1MB) * 1MB
-$size = [long][Math]::Floor(($oldEnd - $start) / 1MB) * 1MB
 $part = $null
-try {
-    $part = New-Partition -DiskNumber $disk.Number -Offset $start -Size $size -GptType $SynthType
-} catch {
-    Resize-Partition -DriveLetter $letter -Size (Get-PartitionSupportedSize -DriveLetter $letter).SizeMax -ErrorAction SilentlyContinue
-    Fail "не удалось создать раздел: $($_.Exception.Message)"
+if ($letter) {
+    Step "Уменьшение $($letter): на $SizeGB ГБ"
+    $cpart = Get-Partition -DriveLetter $letter
+    $oldEnd = $cpart.Offset + $cpart.Size
+    try { Resize-Partition -DriveLetter $letter -Size ($cpart.Size - $bytes) } catch { Fail "Windows не смогла сжать $($letter): $($_.Exception.Message)" }
+    $cpart = Get-Partition -DriveLetter $letter
+    $start = $cpart.Offset + $cpart.Size
+    $start = [long][Math]::Ceiling($start / 1MB) * 1MB
+    $size = [long][Math]::Floor(($oldEnd - $start) / 1MB) * 1MB
+    try {
+        $part = New-Partition -DiskNumber $disk.Number -Offset $start -Size $size -GptType $SynthType
+    } catch {
+        Resize-Partition -DriveLetter $letter -Size (Get-PartitionSupportedSize -DriveLetter $letter).SizeMax -ErrorAction SilentlyContinue
+        Fail "не удалось создать раздел: $($_.Exception.Message)"
+    }
+} else {
+    Step "Новый раздел $SizeGB ГБ на диске $($disk.Number)"
+    try { $part = New-Partition -DiskNumber $disk.Number -Size $bytes -GptType $SynthType }
+    catch { Fail "не удалось создать раздел: $($_.Exception.Message)" }
 }
+if ($part.Offset / 512 -ge 4294967296) { Remove-Partition -DiskNumber $disk.Number -PartitionNumber $part.PartitionNumber -Confirm:$false; Fail 'раздел оказался дальше 2 ТБ от начала диска; выберите другое место.' }
 $lba = [long]($part.Offset / 512)
 $sectors = [long]($part.Size / 512)
 

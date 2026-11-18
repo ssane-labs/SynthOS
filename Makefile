@@ -330,8 +330,8 @@ GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.
              dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o \
              sysupdate.o progress.o focus.o session.o aiconf.o)
 CORE_SMALL := $(addprefix $(OUT)/obj/kernel/,core/install.o core/update.o core/recovery.o core/store.o core/rules.o \
-              core/timeline.o core/trash.o fs/versions.o)
-$(OUT)/obj/kernel/gui/apps/%.o $(GUI_SMALL) $(CORE_SMALL): CFLAGS += -Os
+              core/timeline.o core/trash.o fs/versions.o) $(OUT)/obj/arch/x86/e1000.o $(OUT)/obj/arch/x86/realtek.o $(OUT)/obj/arch/x86/acpi.o
+$(OUT)/obj/kernel/gui/apps/%.o $(OUT)/obj/kernel/cmds/%.o $(GUI_SMALL) $(CORE_SMALL): CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
 

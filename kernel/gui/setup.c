@@ -192,8 +192,7 @@ static void finish_live(struct setup *s, bool install)
     UNUSED(s);
     vfs_write_all(LIVE_DONE, "1\n", 2);
     wm_destroy(setup_win);
-    if (install)
-        gui_app_launch(gui_app_find("Install SynthOS"), NULL);
+    gui_app_launch(gui_app_find("Install SynthOS"), install ? NULL : "hidden");
 }
 
 static bool app_card(struct ui *ui, struct rect r, const struct gui_app *app, enum icon_id icon, const char *head,
