@@ -576,6 +576,7 @@ struct context {
     struct cobj *layout;
     uint32_t topology;
     struct cobj *rtv[8], *dsv, *uav[8], *csuav[8];
+    struct cobj *so[GD_SLOTS_SO]; /* stream output buffers */
     struct cobj *blend, *depth, *raster;
     float blend_factor[4];
     uint32_t sample_mask, stencil_ref;
@@ -614,6 +615,8 @@ static void context_unbind_all(struct context *c)
         bind(&c->uav[i], NULL);
         bind(&c->csuav[i], NULL);
     }
+    for (int i = 0; i < GD_SLOTS_SO; i++)
+        bind(&c->so[i], NULL);
     bind(&c->ib, NULL);
     bind(&c->layout, NULL);
     bind(&c->dsv, NULL);
@@ -1223,15 +1226,61 @@ static uint64_t m_create_gs(struct cobj *dev, uint64_t *a, const uint64_t *f)
     return create_shader(dev, K_GS, a[1], a[2], a[4]);
 }
 
-/* CreateGeometryShaderWithStreamOutput(bytecode, length, entries, count, strides, n, stream, linkage, out) */
+/* CreateGeometryShaderWithStreamOutput(bytecode, length, entries, count, strides, n, stream, linkage, out): the
+   bytecode is a geometry shader, or a vertex shader whose outputs are streamed out with no geometry shader */
 static uint64_t m_create_gs_so(struct cobj *dev, uint64_t *a, const uint64_t *f)
 {
+    put64(a[9], 0);
+    uint32_t count = (uint32_t)a[4], nstrides = (uint32_t)a[6];
+    if (count > 64 || (count && !a[3]) || nstrides > GD_SLOTS_SO || (nstrides && !a[5]))
+        return E_INVALIDARG;
     if (!a[1]) { /* stream output alone, without a shader */
         struct cobj *o = child(K_GS, dev, SP_CHILD, -1, -1);
         put64(a[9], iface(o, 0));
         return o ? S_OK : E_OUTOFMEMORY;
     }
-    return create_shader(dev, K_GS, a[1], a[2], a[9]);
+    char error[64] = "";
+    struct gd_shader *s = gd_shader_create(w64_ptr(a[1]), (uint32_t)a[2], error);
+    if (!s || (gd_shader_stage(s) != 2 && gd_shader_stage(s) != 1)) { /* geometry or vertex */
+        klog("d3d11: stream output shader not taken: %s", error);
+        gd_shader_unref(s);
+        return E_INVALIDARG;
+    }
+    struct gd_so_entry *e = kzalloc(sizeof(*e) * (count ? count : 1));
+    uint32_t strides[GD_SLOTS_SO];
+    if (!e) {
+        gd_shader_unref(s);
+        return E_OUTOFMEMORY;
+    }
+    for (uint32_t i = 0; i < count; i++) { /* D3D11_SO_DECLARATION_ENTRY: 24 bytes */
+        uint64_t p = a[3] + i * 24ull, name = get64(p + 8);
+        e[i].stream = get32(p);
+        str_copy(e[i].name, name ? w64_ptr(name) : "", sizeof(e[i].name));
+        e[i].index = get32(p + 16);
+        uint32_t packed = get32(p + 20);
+        e[i].start = (uint8_t)packed, e[i].count = (uint8_t)(packed >> 8), e[i].slot = (uint8_t)(packed >> 16);
+    }
+    for (uint32_t i = 0; i < nstrides; i++)
+        strides[i] = get32(a[5] + i * 4ull);
+    bool ok = gd_shader_set_so(s, e, count, strides, nstrides, (uint32_t)a[7]);
+    kfree(e);
+    if (!ok) {
+        klog("d3d11: stream output declaration not taken");
+        gd_shader_unref(s);
+        return E_INVALIDARG;
+    }
+    if (!a[9]) {
+        gd_shader_unref(s);
+        return S_FALSE;
+    }
+    struct cobj *o = child(K_GS, dev, SP_CHILD, -1, -1);
+    if (!o) {
+        gd_shader_unref(s);
+        return E_OUTOFMEMORY;
+    }
+    o->shader = s;
+    put64(a[9], iface(o, 0));
+    return S_OK;
 }
 
 static uint64_t m_create_ps(struct cobj *dev, uint64_t *a, const uint64_t *f)
@@ -2340,10 +2389,31 @@ static uint64_t m_get_min_lod(struct cobj *o, uint64_t *a, const uint64_t *f)
     return 0; /* 0.0f */
 }
 
+/* SOGetTargets(count, buffers) */
 static uint64_t m_so_get_targets(struct cobj *o, uint64_t *a, const uint64_t *f)
 {
     for (uint32_t i = 0; i < (uint32_t)a[1] && a[2]; i++)
-        put64(a[2] + i * 8ull, 0);
+        put_obj(a[2] + i * 8ull, i < GD_SLOTS_SO ? o->ctx->so[i] : NULL);
+    return 0;
+}
+
+/* SOSetTargets(count, buffers, offsets): the slots after count are unbound */
+static uint64_t m_so_set_targets(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct context *c = o->ctx;
+    for (uint32_t i = 0; i < GD_SLOTS_SO; i++) {
+        struct cobj *b = i < (uint32_t)a[1] && a[2] ? arg_obj(a[2], i, K_BUFFER) : NULL;
+        uint32_t off = b && a[3] ? get32(a[3] + i * 4ull) : 0xffffffffu;
+        bind(&c->so[i], b);
+        gd_set_so_target(c->gd, i, b ? b->res.r : NULL, off);
+    }
+    return 0;
+}
+
+static uint64_t m_draw_auto(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    if (!predicated_off(o->ctx))
+        gd_draw_auto(o->ctx->gd);
     return 0;
 }
 
@@ -2655,6 +2725,9 @@ static void context_hold_all(struct context *c, bool take)
         if (c->csuav[i])
             take ? hold(c->csuav[i]) : drop(c->csuav[i]);
     }
+    for (int i = 0; i < GD_SLOTS_SO; i++)
+        if (c->so[i])
+            take ? hold(c->so[i]) : drop(c->so[i]);
 }
 
 /* every binding of c told to its graphics context again */
@@ -2684,6 +2757,8 @@ static void context_push(struct context *c)
         gd_set_uav(c->gd, 0, i, c->uav[i] ? c->uav[i]->view.v : NULL, 0xffffffffu);
         gd_set_uav(c->gd, 5, i, c->csuav[i] ? c->csuav[i]->view.v : NULL, 0xffffffffu);
     }
+    for (uint32_t i = 0; i < GD_SLOTS_SO; i++) /* where the buffers were filled to stays */
+        gd_set_so_target(c->gd, i, c->so[i] ? c->so[i]->res.r : NULL, 0xffffffffu);
     gd_set_depth_target(c->gd, c->dsv ? c->dsv->view.v : NULL);
     gd_set_blend(c->gd, c->blend ? &c->blend->state.s.blend : NULL, c->blend_factor, c->sample_mask);
     gd_set_depth(c->gd, c->depth ? &c->depth->state.s.depth : NULL, c->stencil_ref);
@@ -2700,7 +2775,7 @@ static const method context_fns[] = {
     m_map, m_zero, m_ps_set_cbs, m_ia_set_layout, m_ia_set_vbs, m_ia_set_ib, m_draw_indexed_instanced,
     m_draw_instanced, m_gs_set_cbs, m_gs_set_shader, m_ia_set_topology, m_vs_set_srvs, m_vs_set_samplers, m_begin,
     m_end, m_get_data, m_set_predication, m_gs_set_srvs, m_gs_set_samplers, m_om_set_targets,
-    m_om_set_targets_uavs, m_om_set_blend, m_om_set_depth, m_zero /* SOSetTargets */, m_zero /* DrawAuto */,
+    m_om_set_targets_uavs, m_om_set_blend, m_om_set_depth, m_so_set_targets, m_draw_auto,
     m_draw_indexed_indirect, m_draw_indirect, m_dispatch, m_dispatch_indirect,
     m_rs_set_state, m_rs_set_viewports, m_rs_set_scissors, m_copy_region, m_copy_resource, m_update,
     m_copy_structure_count, m_clear_rtv, m_clear_uav_uint, m_clear_uav_float, m_clear_dsv, m_generate_mips, m_zero /* SetResourceMinLOD */,

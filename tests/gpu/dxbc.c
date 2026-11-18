@@ -48,6 +48,12 @@ static int run(int stage, int temps, const struct dxbc_env *env, unsigned live)
     return ok ? (int)(l.live | 0x100) : 0;
 }
 
+static void load(void *ctx, int texture, const int32_t coord[4], const int offset[3], uint32_t out[4])
+{
+    (void)ctx, (void)offset;
+    out[0] = (uint32_t)(coord[0] * 100 + coord[1]), out[1] = (uint32_t)texture, out[2] = out[3] = 0;
+}
+
 static int near(float a, float b)
 {
     float d = a - b;
@@ -176,6 +182,26 @@ int dxbc_tests(void)
     expect(r && near(of(0, 0, 0), 8) && near(of(0, 0, 1), -3) && near(of(0, 0, 2), 1.5f) && near(of(1, 0, 0), 0.479426f) &&
                near(of(2, 0, 0), 0.877583f) && near(of(3, 0, 0), 2) && near(of(3, 0, 1), 4),
            "exp, log, sqrt, sincos, round_ne");
+
+    /* multisampling, drawn with one sample: ld_ms loads it whatever the sample index, sample_info says 1,
+       sample_pos is the centre, eval_centroid is the input, and a coverage mask without bit 0 drops the pixel */
+    env.load = load;
+    for (int l = 0; l < 4; l++) {
+        setv(0, l, 0.25f * (float)l, 2, 0, 1);
+        uint32_t addr[4] = {(uint32_t)l, 7, 0, 0}, cover[4] = {l == 1 ? 6u : 1u, 0, 0, 0};
+        memcpy(v[1][l], addr, 16), memcpy(v[2][l], cover, 16);
+    }
+    op(46, 0), dst(OUT, 0, 15), src(IN, 1, XYZW), src(RES, 2, XYZW), immu(3), end();
+    op(111, 1 << 11), dst(OUT, 1, 1), code[n++] = 14u << 12, end();
+    op(110, 0), dst(OUT, 2, 3), src(RES, 2, XYZW), immu(1), end();
+    op(205, 0), dst(OUT, 3, 15), src(IN, 0, XYZW), end();
+    op(54, 0), code[n++] = 1u | 15u << 12, sel(IN, 2, 0), end();
+    op(62, 0), end();
+    r = run(0, 1, &env, 15);
+    expect(r == (0xd | 0x100) && o[0][2][0] == 207 && o[0][3][1] == 2 && o[1][0][0] == 1 && near(of(2, 2, 0), 0) &&
+               near(of(3, 3, 0), 0.75f) && near(of(3, 3, 1), 2),
+           "ld_ms, sample_info, sample_pos, eval_centroid, oMask");
+    env.load = NULL;
 
     /* bad input is refused, not run */
     struct dxbc_shader sh;

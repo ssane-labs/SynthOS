@@ -515,9 +515,21 @@ void gd_generate_mips(struct gd_view *v)
 
 /* ---- shaders */
 
+#define SO_MAX_ENTRIES 64
+
+/* a stream output declaration, resolved: component comp .. comp + ncomp - 1 of output register reg (-1: a gap) */
+struct so_decl {
+    uint32_t n, stride[GD_SLOTS_SO], rasterized;
+    struct {
+        int16_t reg;
+        uint8_t comp, ncomp, slot;
+    } e[SO_MAX_ENTRIES];
+};
+
 struct gd_shader {
     int refs;
     struct dxbc_shader sh;
+    struct so_decl *so;
 };
 
 struct gd_shader *gd_shader_create(const void *blob, uint32_t size, char error[64])
@@ -548,6 +560,7 @@ void gd_shader_unref(struct gd_shader *s)
     if (!s || __atomic_sub_fetch(&s->refs, 1, __ATOMIC_ACQ_REL))
         return;
     dxbc_free(&s->sh);
+    kfree(s->so);
     kfree(s);
 }
 
@@ -589,6 +602,7 @@ struct gd_context {
     uint32_t stencil_ref;
     struct gd_view *rtv[8];
     struct gd_view *dsv;
+    struct gd_resource *so[GD_SLOTS_SO];
 };
 
 static const struct gd_raster default_raster = {.fill = 3, .cull = 3, .depth_clip = 1};
@@ -633,6 +647,8 @@ void gd_context_clear(struct gd_context *c)
     for (int i = 0; i < 8; i++)
         gd_view_unref(c->rtv[i]);
     gd_view_unref(c->dsv);
+    for (int i = 0; i < GD_SLOTS_SO; i++)
+        gd_resource_unref(c->so[i]);
     memset(c, 0, sizeof(*c));
     c->raster = default_raster;
     c->depth = default_depth;
@@ -764,6 +780,24 @@ void gd_set_depth_target(struct gd_context *c, struct gd_view *dsv)
     gd_view_ref(dsv);
     gd_view_unref(c->dsv);
     c->dsv = dsv;
+}
+
+void gd_set_so_target(struct gd_context *c, uint32_t slot, struct gd_resource *r, uint32_t offset)
+{
+    if (slot >= GD_SLOTS_SO)
+        return;
+    if (r && r->d.dim != GD_BUFFER)
+        r = NULL;
+    gd_resource_ref(r);
+    gd_resource_unref(c->so[slot]);
+    c->so[slot] = r;
+    if (r && offset != 0xffffffffu)
+        r->so_filled = offset < r->size ? offset : (uint32_t)r->size;
+}
+
+uint32_t gd_so_filled(const struct gd_resource *r)
+{
+    return r ? r->so_filled : 0;
 }
 
 void gd_set_uav(struct gd_context *c, uint32_t stage, uint32_t slot, struct gd_view *v, uint32_t count)
@@ -923,6 +957,7 @@ struct draw {
     const struct dxbc_shader *gs, *last; /* the geometry shader, or NULL; the stage before the rasterizer */
     int out_n, out_pos;                  /* what vs_run gives: registers 0 .. out_n - 1 and the position's */
     struct gs_out *gso;                  /* the geometry shader's vertices */
+    const struct so_decl *so;            /* while stream output runs: written, not drawn */
     struct dxbc_env gs_env;
     struct vs_input in[MAX_REGS];
     int pos_reg, nvary;
@@ -1056,6 +1091,53 @@ static void make_env(struct dxbc_env *e, const struct stage *st)
         e->cb[i] = (const float *)(r->data + (size_t)first * 16);
         e->cb_vec4[i] = st->cb_count[i] && st->cb_count[i] < vec4 - first ? st->cb_count[i] : vec4 - first;
     }
+}
+
+static bool same_name(const char *a, const char *b);
+
+bool gd_shader_set_so(struct gd_shader *s, const struct gd_so_entry *e, uint32_t n, const uint32_t *strides,
+                      uint32_t nstrides, uint32_t rasterized)
+{
+    if (!s || n > SO_MAX_ENTRIES || nstrides > GD_SLOTS_SO)
+        return false;
+    struct so_decl *so = kzalloc(sizeof(*so));
+    if (!so)
+        return false;
+    so->rasterized = rasterized;
+    uint32_t packed[GD_SLOTS_SO] = {0};
+    for (uint32_t i = 0; i < n; i++) {
+        if (e[i].slot >= GD_SLOTS_SO || !e[i].count || e[i].start + e[i].count > 4)
+            goto bad;
+        packed[e[i].slot] += e[i].count * 4u;
+        if (e[i].stream)
+            continue; /* streams 1 .. 3: not written */
+        int reg = -1, comp = e[i].start;
+        if (e[i].name[0]) {
+            for (int k = 0; k < s->sh.nout && reg < 0; k++) {
+                const struct dxbc_sig_elem *o = &s->sh.out[k];
+                if (same_name(o->name, e[i].name) && o->index == e[i].index && o->reg < 32) {
+                    reg = (int)o->reg;
+                    comp += o->mask ? __builtin_ctz(o->mask) : 0;
+                }
+            }
+            if (reg < 0 || comp + e[i].count > 4)
+                goto bad;
+        }
+        so->e[so->n].reg = (int16_t)reg, so->e[so->n].comp = (uint8_t)comp, so->e[so->n].ncomp = e[i].count;
+        so->e[so->n].slot = e[i].slot;
+        so->n++;
+    }
+    for (int b = 0; b < GD_SLOTS_SO; b++) {
+        so->stride[b] = (uint32_t)b < nstrides ? strides[b] : packed[b];
+        if (so->stride[b] && so->stride[b] < packed[b])
+            goto bad;
+    }
+    kfree(s->so);
+    s->so = so;
+    return true;
+bad:
+    kfree(so);
+    return false;
 }
 
 static bool same_name(const char *a, const char *b)
@@ -1494,6 +1576,116 @@ static void gs_fetch(const void *ctx, uint32_t first, int n, float *out, void *s
     memcpy(out, g->verts + (size_t)first * (size_t)g->floats, sizeof(float) * (size_t)g->floats * (size_t)n);
 }
 
+/* stream output: primitives (per vertices each, ind into verts: the position, then the output registers) written to
+   the buffers while each one fits in all of them */
+static void so_write(struct draw *d, const float *verts, int floats, const uint32_t *ind, uint32_t ni, uint32_t per)
+{
+    struct gd_context *c = d->c;
+    const struct so_decl *so = d->so;
+    int regs = (floats - 4) / 4;
+    for (uint32_t p = 0; p + per <= ni; p += per) {
+        for (int b = 0; b < GD_SLOTS_SO; b++)
+            if (c->so[b] && so->stride[b] && (size_t)c->so[b]->so_filled + (size_t)per * so->stride[b] > c->so[b]->size)
+                return; /* full: nothing more is written */
+        for (uint32_t v = 0; v < per; v++) {
+            const float *src = verts + (size_t)ind[p + v] * (size_t)floats;
+            uint32_t at[GD_SLOTS_SO] = {0};
+            for (uint32_t k = 0; k < so->n; k++) {
+                int b = so->e[k].slot, bytes = so->e[k].ncomp * 4;
+                struct gd_resource *r = c->so[b];
+                if (r && so->stride[b]) {
+                    uint8_t *dst = r->data + r->so_filled + (size_t)v * so->stride[b] + at[b];
+                    if (so->e[k].reg >= 0 && so->e[k].reg < regs)
+                        memcpy(dst, src + 4 + so->e[k].reg * 4 + so->e[k].comp, (size_t)bytes);
+                }
+                at[b] += (uint32_t)bytes;
+            }
+        }
+        for (int b = 0; b < GD_SLOTS_SO; b++)
+            if (c->so[b] && so->stride[b])
+                c->so[b]->so_filled += per * so->stride[b];
+    }
+}
+
+/* stream output of the vertex shader: its vertices in the draw's order, strips cut into lists */
+static void so_vertex(struct draw *d, enum rs_topology topo, uint32_t count, uint32_t start, const uint32_t *idx,
+                      int32_t base_vertex)
+{
+    uint32_t lo = 0xffffffffu, hi = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t v = idx ? idx[i] : start + i;
+        if (idx && v == 0xffffffffu)
+            continue;
+        v = idx ? v + (uint32_t)base_vertex : v;
+        lo = v < lo ? v : lo, hi = v > hi ? v : hi;
+    }
+    if (lo > hi || hi - lo >= (1u << 20))
+        return;
+    uint32_t nverts = hi - lo + 1;
+    int floats = 4 + d->out_n * 4;
+    size_t regs = sizeof(uint32_t[MAX_REGS][4][4]) * 2;
+    float *verts = kmalloc(sizeof(float) * (size_t)floats * nverts);
+    uint8_t *scratch = kmalloc(regs + dxbc_scratch(d->vs));
+    uint32_t *ind = kmalloc(sizeof(uint32_t) * 3 * (size_t)(count + 1));
+    if (!verts || !scratch || !ind)
+        goto done;
+    for (uint32_t v = 0; v < nverts; v += 4)
+        vs_run(d, lo + v, nverts - v < 4 ? (int)(nverts - v) : 4, verts + (size_t)v * (size_t)floats, scratch);
+    bool strip = topo == RS_LINE_STRIP || topo == RS_STRIP || topo == RS_LINE_STRIP_ADJ;
+    uint32_t per = topo == RS_POINTS ? 1 : topo == RS_LINES || topo == RS_LINE_STRIP || topo == RS_LINES_ADJ ||
+                                                   topo == RS_LINE_STRIP_ADJ
+                                               ? 2
+                                               : 3;
+    uint32_t ni = 0, from = 0;
+#define AT(k) ((idx ? idx[k] + (uint32_t)base_vertex : start + (k)) - lo)
+    for (uint32_t i = 0; i <= count; i++) {
+        if (i < count && !(strip && idx && idx[i] == 0xffffffffu))
+            continue;
+        uint32_t n = i - from;
+        switch (topo) {
+        case RS_POINTS:
+            for (uint32_t k = 0; k < n; k++)
+                ind[ni++] = AT(from + k);
+            break;
+        case RS_LINES:
+            for (uint32_t k = 0; k + 1 < n; k += 2)
+                ind[ni++] = AT(from + k), ind[ni++] = AT(from + k + 1);
+            break;
+        case RS_LINE_STRIP:
+            for (uint32_t k = 0; k + 1 < n; k++)
+                ind[ni++] = AT(from + k), ind[ni++] = AT(from + k + 1);
+            break;
+        case RS_TRIANGLES:
+            for (uint32_t k = 0; k + 2 < n; k += 3)
+                ind[ni++] = AT(from + k), ind[ni++] = AT(from + k + 1), ind[ni++] = AT(from + k + 2);
+            break;
+        case RS_STRIP: /* odd triangles keep the turn of the others */
+            for (uint32_t k = 0; k + 2 < n; k++)
+                ind[ni++] = AT(from + k + (k & 1)), ind[ni++] = AT(from + k + 1 - (k & 1)), ind[ni++] = AT(from + k + 2);
+            break;
+        case RS_LINES_ADJ: /* adjacency without a geometry shader: the primitive itself */
+            for (uint32_t k = 0; k + 3 < n; k += 4)
+                ind[ni++] = AT(from + k + 1), ind[ni++] = AT(from + k + 2);
+            break;
+        case RS_LINE_STRIP_ADJ:
+            for (uint32_t k = 1; k + 2 < n; k++)
+                ind[ni++] = AT(from + k), ind[ni++] = AT(from + k + 1);
+            break;
+        case RS_TRIANGLES_ADJ:
+            for (uint32_t k = 0; k + 5 < n; k += 6)
+                ind[ni++] = AT(from + k), ind[ni++] = AT(from + k + 2), ind[ni++] = AT(from + k + 4);
+            break;
+        }
+        from = i + 1;
+    }
+#undef AT
+    so_write(d, verts, floats, ind, ni, per);
+done:
+    kfree(verts);
+    kfree(scratch);
+    kfree(ind);
+}
+
 static void gs_draw(struct draw *d, struct rs_target *t, struct rs_state *s, enum rs_topology topo, uint32_t count,
                     uint32_t start, const uint32_t *idx, int32_t base_vertex)
 {
@@ -1573,7 +1765,10 @@ static void gs_draw(struct draw *d, struct rs_target *t, struct rs_state *s, enu
         from = i + 1;
     }
 draw:
-    if (g.ni) {
+    if (d->so) {
+        static const uint8_t per[6] = {3, 1, 2, 2, 3, 3};
+        so_write(d, g.verts, g.floats, g.ind, g.ni, per[gs->gs_out < 6 ? gs->gs_out : 5]);
+    } else if (g.ni) {
         static const enum rs_topology out_topo[6] = {RS_TRIANGLES, RS_POINTS, RS_LINES, RS_LINES, RS_TRIANGLES,
                                                      RS_TRIANGLES};
         struct rs_state gs_state = *s;
@@ -1589,6 +1784,71 @@ done:
     kfree(gsv);
     kfree(g.verts);
     kfree(g.ind);
+}
+
+/* the indices from start on, as 32-bit numbers (the 16-bit restart index as 0xffffffff); count: as many as there are */
+static uint32_t *read_indices(struct gd_context *c, uint32_t start, uint32_t *count)
+{
+    if (!c->ib) {
+        stats.skipped++;
+        return NULL;
+    }
+    bool wide = c->ib_format == GD_R32_UINT;
+    size_t isize = wide ? 4 : 2, at = (size_t)c->ib_offset + (size_t)start * isize;
+    if (at >= c->ib->size)
+        return NULL;
+    size_t avail = (c->ib->size - at) / isize;
+    if (*count > avail)
+        *count = (uint32_t)avail;
+    uint32_t *idx = kmalloc(sizeof(uint32_t) * (*count ? *count : 1));
+    if (!idx)
+        return NULL;
+    const uint8_t *src = c->ib->data + at;
+    for (uint32_t i = 0; i < *count; i++) {
+        uint32_t v;
+        if (wide)
+            memcpy(&v, src + i * 4, 4);
+        else
+            v = (uint32_t)src[i * 2] | (uint32_t)src[i * 2 + 1] << 8, v = v == 0xffff ? 0xffffffffu : v;
+        idx[i] = v;
+    }
+    return idx;
+}
+
+/* stream output of a draw, when the shader in the geometry slot (a geometry shader, or a vertex shader made for
+   stream output) declares it; false: the draw is not rasterized as well */
+static bool stream_out(struct draw *d, enum rs_topology topo, bool indexed, uint32_t count, uint32_t start,
+                       int32_t base_vertex, uint32_t instances)
+{
+    struct gd_context *c = d->c;
+    struct gd_shader *so = c->stage[DXBC_GS].shader;
+    if (!so || !so->so || (so->sh.stage != DXBC_GS && so->sh.stage != DXBC_VS))
+        return true;
+    bool any = false;
+    for (int b = 0; b < GD_SLOTS_SO; b++)
+        any |= c->so[b] != NULL;
+    uint32_t *idx = NULL;
+    if (any && (!indexed || (idx = read_indices(c, start, &count)))) {
+        d->so = so->so;
+        for (uint32_t inst = 0; inst < instances; inst++) {
+            d->instance = inst;
+            if (d->gs)
+                gs_draw(d, NULL, NULL, topo, count, start, idx, base_vertex);
+            else
+                so_vertex(d, topo, count, start, idx, base_vertex);
+        }
+        d->so = NULL;
+        kfree(idx);
+    }
+    return so->so->rasterized == 0; /* everything goes to stream 0 */
+}
+
+void gd_draw_auto(struct gd_context *c)
+{
+    struct gd_resource *r = c->vb[0];
+    uint32_t stride = c->vb_stride[0], off = c->vb_offset[0];
+    if (r && stride && r->so_filled > off)
+        gd_draw(c, false, (r->so_filled - off) / stride, 0, 0, 1, 0);
 }
 
 void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base_vertex,
@@ -1645,6 +1905,11 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     link_varyings(d, &flat, &nopersp);
     make_env(&d->vs_env, &c->stage[DXBC_VS]);
     make_env(&d->ps_env, &c->stage[DXBC_PS]);
+    d->first_instance = start_instance;
+    if (!stream_out(d, topo, indexed, count, start, base_vertex, instances)) {
+        kfree(d);
+        return;
+    }
     /* the targets: they decide the size of the drawing */
     int w = 0, h = 0;
     for (int i = 0; i < 8; i++) {
@@ -1726,35 +1991,9 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     struct rs_target t = {NULL, 0, NULL, 0, w, h};
     /* the indices, as 32-bit numbers; strips are cut at the restart index */
     uint32_t *idx = NULL;
-    if (indexed) {
-        if (!c->ib) {
-            stats.skipped++;
-            kfree(d);
-            return;
-        }
-        bool wide = c->ib_format == GD_R32_UINT;
-        size_t isize = wide ? 4 : 2, at = (size_t)c->ib_offset + (size_t)start * isize;
-        if (at >= c->ib->size) {
-            kfree(d);
-            return;
-        }
-        size_t avail = (c->ib->size - at) / isize;
-        if (count > avail)
-            count = (uint32_t)avail;
-        idx = kmalloc(sizeof(uint32_t) * (count ? count : 1));
-        if (!idx) {
-            kfree(d);
-            return;
-        }
-        const uint8_t *src = c->ib->data + at;
-        for (uint32_t i = 0; i < count; i++) {
-            uint32_t v;
-            if (wide)
-                memcpy(&v, src + i * 4, 4);
-            else
-                v = (uint32_t)src[i * 2] | (uint32_t)src[i * 2 + 1] << 8, v = v == 0xffff ? 0xffffffffu : v;
-            idx[i] = v;
-        }
+    if (indexed && !(idx = read_indices(c, start, &count))) {
+        kfree(d);
+        return;
     }
     d->first_instance = start_instance;
     if (d->gs) {

@@ -43,13 +43,14 @@ enum {
     OP_ATOMIC_UMAX, OP_ATOMIC_UMIN, OP_IMM_ATOMIC_ALLOC, OP_IMM_ATOMIC_CONSUME, OP_IMM_ATOMIC_IADD, OP_IMM_ATOMIC_AND,
     OP_IMM_ATOMIC_OR, OP_IMM_ATOMIC_XOR, OP_IMM_ATOMIC_EXCH, OP_IMM_ATOMIC_CMP_EXCH, OP_IMM_ATOMIC_IMAX,
     OP_IMM_ATOMIC_IMIN, OP_IMM_ATOMIC_UMAX, OP_IMM_ATOMIC_UMIN, OP_SYNC, /* 190 */
+    OP_EVAL_SNAPPED = 203, OP_EVAL_SAMPLE_INDEX, OP_EVAL_CENTROID,
     OP_COUNT = 256
 };
 
 enum {
     T_TEMP, T_INPUT, T_OUTPUT, T_XTEMP, T_IMM32, T_IMM64, T_SAMPLER, T_RESOURCE, T_CB, T_ICB, T_LABEL, T_PRIMID,
     T_ODEPTH, T_NULL, T_RASTERIZER, T_OMASK,
-    T_UAV = 30, T_TGSM, T_TID, T_GID, T_GTID, T_FLAT = 36, T_GSINST = 37,
+    T_UAV = 30, T_TGSM, T_TID, T_GID, T_GTID, T_COVERAGE, T_FLAT = 36, T_GSINST = 37,
     T_ODEPTH_GE = 38, T_ODEPTH_LE = 39,
 };
 
@@ -179,8 +180,7 @@ static const uint32_t *operand(const uint32_t *p, const uint32_t *end, struct op
 static bool is_decl(int op)
 {
     return (op >= OP_DCL_RESOURCE && op <= OP_DCL_GLOBAL_FLAGS) || (op >= 143 && op <= 162) || op == 113 ||
-           op == 114 || op == 115 || op == 116 || op == OP_CUSTOMDATA || op == OP_LABEL || op == 203 || op == 204 ||
-           op == 206;
+           op == 114 || op == 115 || op == 116 || op == OP_CUSTOMDATA || op == OP_LABEL || op == 206;
 }
 
 static bool link_flow(struct dxbc_shader *sh)
@@ -512,6 +512,9 @@ static void read_src(struct machine *m, const struct opd *o, int lane, bool inte
     case T_FLAT:
         raw[0] = raw[1] = raw[2] = raw[3] = m->lanes->flat[lane];
         break;
+    case T_COVERAGE: /* multisampling is drawn with one sample: it is covered */
+        raw[0] = raw[1] = raw[2] = raw[3] = 1;
+        break;
     case T_ICB: {
         int32_t i = index_of(m, &o->idx[0], lane);
         if (m->sh->icb && i >= 0 && i < m->sh->icb_vec4)
@@ -571,6 +574,11 @@ static void write_dst(struct machine *m, const struct dxbc_ins *in, const struct
         if (o->type == T_ODEPTH || o->type == T_ODEPTH_GE || o->type == T_ODEPTH_LE) {
             float f = F(val[l][0]);
             m->lanes->depth[l] = in->sat ? (f < 0 ? 0 : f > 1 ? 1 : f) : f;
+            continue;
+        }
+        if (o->type == T_OMASK) { /* the one sample there is: without it the pixel is not written */
+            if (!(val[l][0] & 1))
+                m->alive &= ~(1u << l), m->lanes->live &= ~(1u << l);
             continue;
         }
         uint32_t *d = dst_ptr(m, o, l);
@@ -725,13 +733,13 @@ static void texture_op(struct machine *m, const struct dxbc_ins *in, unsigned ma
     int tex = res ? res->idx[0].imm : 0, s = smp ? smp->idx[0].imm : 0;
     uint32_t a[4][4];
     for (int l = 0; l < 4; l++)
-        read_src(m, &in->o[1], l, in->op == OP_LD || in->op == OP_RESINFO, a[l]);
+        read_src(m, &in->o[1], l, in->op == OP_LD || in->op == OP_LD_MS || in->op == OP_RESINFO, a[l]);
     int offset[3] = {in->offset[0], in->offset[1], in->offset[2]};
     for (int l = 0; l < 4; l++) {
         uint32_t raw[4] = {0, 0, 0, 0};
         if (!(mask & (1u << l)))
             continue;
-        if (in->op == OP_LD) {
+        if (in->op == OP_LD || in->op == OP_LD_MS) { /* one sample: every sample index loads it */
             if (env->load)
                 env->load(env->ctx, tex, (const int32_t *)a[l], offset, raw);
         } else if (in->op == OP_GATHER4 || in->op == OP_GATHER4_C) {
@@ -1395,10 +1403,26 @@ bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct d
         case OP_SAMPLE_D:
         case OP_SAMPLE_B:
         case OP_LD:
+        case OP_LD_MS:
         case OP_RESINFO:
         case OP_GATHER4:
         case OP_GATHER4_C:
             texture_op(&m, in, mask, val);
+            write_dst(&m, in, &in->o[0], mask, val);
+            break;
+        case OP_SAMPLE_INFO: /* samples per pixel: one (float, or uint with _uint) */
+        case OP_SAMPLE_POS:  /* where a sample lies from the pixel centre: on it */
+            for (int l = 0; l < 4; l++)
+                for (int c = 0; c < 4; c++)
+                    val[l][c] = op == OP_SAMPLE_POS || c ? 0 : (in->ret_type & 1) ? 1 : U(1.0f);
+            write_dst(&m, in, &in->o[0], mask, val);
+            break;
+        case OP_EVAL_SNAPPED: /* the input at a sample, an offset or the centroid: with one sample, the pixel's */
+        case OP_EVAL_SAMPLE_INDEX:
+        case OP_EVAL_CENTROID:
+            for (int l = 0; l < 4; l++)
+                if (mask & (1u << l))
+                    read_src(&m, &in->o[1], l, false, val[l]);
             write_dst(&m, in, &in->o[0], mask, val);
             break;
         default: {

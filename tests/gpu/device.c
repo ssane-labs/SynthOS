@@ -436,6 +436,41 @@ static void draw_tests(void)
         gd_shader_unref(gsh);
     }
 
+    /* stream output: the vertex shader's outputs written to a buffer while each triangle fits, not drawn; DrawAuto
+       draws what was written */
+    {
+        struct gd_so_entry so[2] = {{0, "SV_Position", 0, 0, 4, 0}, {0, "COLOR", 0, 0, 4, 0}};
+        uint32_t stride = 32;
+        static uint8_t zero[3 * 32 + 50];
+        struct gd_resource *sob = buffer(zero, sizeof(zero), GD_BIND_STREAM_OUTPUT | GD_BIND_VERTEX);
+        expect(gd_shader_set_so(vs_color, so, 2, &stride, 1, GD_SO_NO_RASTER), "a stream output declaration");
+        gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+        gd_clear_dsv(dsv, 3, 1.0f, 0);
+        gd_set_shader(ctx, 2, vs_color);
+        gd_set_so_target(ctx, 0, sob, 0);
+        struct vert q[6];
+        quad(q, -1, -1, 1, 1, 0.5f, red);
+        draw_verts(q, 6);
+        gd_set_so_target(ctx, 0, sob, 0xffffffffu);
+        draw_verts(q, 3);
+        float got[8];
+        memcpy(got, sob->data, sizeof(got));
+        expect(gd_so_filled(sob) == 96 && got[0] == -1 && got[1] == 1 && got[2] == 0.5f && got[3] == 1 && got[4] == 1 &&
+                   got[5] == 0 && got[7] == 1 && pixel(60, 4) == 0,
+               "stream output writes whole triangles while they fit, and draws nothing");
+        gd_set_shader(ctx, 2, NULL);
+        gd_set_so_target(ctx, 0, NULL, 0);
+        struct gd_input_layout auto_il = {2, {{"POSITION", 0, GD_R32G32B32_FLOAT, 0, 0, 0, 0},
+                                              {"COLOR", 0, GD_R32G32B32A32_FLOAT, 0, 16, 0, 0}}};
+        gd_set_input_layout(ctx, &auto_il);
+        gd_set_vertex_buffer(ctx, 0, sob, 32, 0);
+        gd_draw_auto(ctx);
+        expect(pixel(60, 4) == 0x0000ff && pixel(4, 60) == 0, "DrawAuto draws what stream output wrote");
+        gd_set_vertex_buffer(ctx, 0, NULL, 0, 0);
+        gd_set_input_layout(ctx, &il);
+        gd_resource_unref(sob);
+    }
+
     struct gd_stats st;
     gd_get_stats(&st);
     expect(st.shader_faults == 0, "no shader faults");

@@ -14,6 +14,7 @@ struct gd_resource {
     size_t *off;
     uint8_t *data;
     size_t size, alloc; /* the subresources' bytes; the pages they are in */
+    uint32_t so_filled;  /* buffers: the bytes stream output wrote */
 };
 
 /* what a view looks at, as the shader sees it */

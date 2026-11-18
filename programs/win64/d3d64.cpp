@@ -216,12 +216,50 @@ int main(int argc, char **argv)
         }
     }
 
+    /* stream output: the vertex shader's colours and positions written to a buffer, nothing drawn */
+    int streamed = 0;
+    {
+        D3D11_SO_DECLARATION_ENTRY so[2] = {{0, "COLOR", 0, 0, 4, 0}, {0, "SV_Position", 0, 0, 2, 0}};
+        UINT so_stride = 24, so_off = 0;
+        D3D11_BUFFER_DESC sbd = {72, D3D11_USAGE_DEFAULT, D3D11_BIND_STREAM_OUTPUT, 0, 0, 0};
+        D3D11_BUFFER_DESC rbd = {72, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0};
+        ID3D11GeometryShader *sogs = NULL;
+        ID3D11Buffer *sob = NULL, *sor = NULL;
+        if (SUCCEEDED(dev->CreateGeometryShaderWithStreamOutput(vs_blob, sizeof(vs_blob), so, 2, &so_stride, 1,
+                                                                D3D11_SO_NO_RASTERIZED_STREAM, NULL, &sogs)) &&
+            SUCCEEDED(dev->CreateBuffer(&sbd, NULL, &sob)) && SUCCEEDED(dev->CreateBuffer(&rbd, NULL, &sor))) {
+            ctx->GSSetShader(sogs, NULL, 0);
+            ctx->SOSetTargets(1, &sob, &so_off);
+            ctx->Draw(3, 0);
+            ID3D11Buffer *got = NULL;
+            ctx->SOGetTargets(1, &got);
+            ctx->GSSetShader(NULL, NULL, 0);
+            ctx->SOSetTargets(0, NULL, NULL);
+            ctx->CopyResource(sor, sob);
+            D3D11_MAPPED_SUBRESOURCE sm = {};
+            if (SUCCEEDED(ctx->Map(sor, 0, D3D11_MAP_READ, 0, &sm))) {
+                const float *f = (const float *)sm.pData;
+                streamed = got == sob && f[0] == 1 && f[3] == 1 && f[4] == -1 && f[5] == -1 && f[10] == -1 && f[11] == 3 &&
+                           f[16] == 3 && f[17] == -1;
+                ctx->Unmap(sor, 0);
+            }
+            if (got)
+                got->Release();
+        }
+        if (sogs)
+            sogs->Release();
+        if (sob)
+            sob->Release();
+        if (sor)
+            sor->Release();
+    }
+
     char name[64] = "";
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name), NULL, NULL);
     printf("d3d11 level=%x adapter=%s modes=%d shaders=%d map=%d samples=%llu left=%06x right=%06x present=%d "
-           "get=%d deferred=%d drawn=%06x\n",
+           "get=%d deferred=%d drawn=%06x so=%d\n",
            (unsigned)level, name, modes > 0, SUCCEEDED(shaders), mapped, (unsigned long long)samples,
-           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after);
+           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after, streamed);
     /* d3d64 show: the triangle stays on screen, its tint changing every frame */
     for (int frame = 0; chain && argc > 1 && !strcmp(argv[1], "show") && frame < 600; frame++) {
         MSG msg;

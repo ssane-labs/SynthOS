@@ -83,6 +83,7 @@ enum { GD_BUFFER = 1, GD_TEX1D, GD_TEX2D, GD_TEX3D };
 #define GD_BIND_INDEX 0x2u
 #define GD_BIND_CONSTANT 0x4u
 #define GD_BIND_SHADER_RESOURCE 0x8u
+#define GD_BIND_STREAM_OUTPUT 0x10u
 #define GD_BIND_RENDER_TARGET 0x20u
 #define GD_BIND_DEPTH_STENCIL 0x40u
 #define GD_MISC_GENERATE_MIPS 0x1u
@@ -179,6 +180,20 @@ void gd_shader_ref(struct gd_shader *s);
 void gd_shader_unref(struct gd_shader *s);
 int gd_shader_stage(const struct gd_shader *s);
 
+/* stream output: which of the shader's outputs (by semantic) go to which of the 4 buffers, written as lists of
+   points, lines or triangles. name "" (or NULL in D3D) is a gap of count components. strides: of each buffer, or
+   none (n 0: the entries packed); rasterized: the stream drawn too, or GD_SO_NO_RASTER. Only stream 0 is written. */
+#define GD_SLOTS_SO 4
+#define GD_SO_NO_RASTER 0xffffffffu
+struct gd_so_entry {
+    uint32_t stream;
+    char name[24];
+    uint32_t index;
+    uint8_t start, count, slot;
+};
+bool gd_shader_set_so(struct gd_shader *s, const struct gd_so_entry *e, uint32_t n, const uint32_t *strides,
+                      uint32_t nstrides, uint32_t rasterized);
+
 /* ---- input layouts */
 
 #define GD_MAX_ELEMENTS 32
@@ -273,6 +288,13 @@ void gd_set_depth_target(struct gd_context *c, struct gd_view *dsv);
 /* the unordered access views of the compute stage (5) or of the pixel stage (0); count 0xffffffff keeps the hidden
    counter, anything else sets it */
 void gd_set_uav(struct gd_context *c, uint32_t stage, uint32_t slot, struct gd_view *v, uint32_t count);
+
+/* SOSetTargets: offset in bytes, or 0xffffffff: after what the buffer already holds */
+void gd_set_so_target(struct gd_context *c, uint32_t slot, struct gd_resource *r, uint32_t offset);
+/* how many bytes stream output has put in a buffer */
+uint32_t gd_so_filled(const struct gd_resource *r);
+/* DrawAuto: the vertices stream output wrote to the buffer in input slot 0 */
+void gd_draw_auto(struct gd_context *c);
 
 /* Dispatch: x * y * z groups of the compute shader's threads */
 void gd_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z);
