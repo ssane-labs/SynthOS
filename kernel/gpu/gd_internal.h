@@ -25,6 +25,7 @@ struct gd_view {
     struct gd_view_desc d; /* with the defaults filled in */
     uint32_t format;
     int vdim;
+    uint32_t counter; /* append and counter buffers */
 };
 
 /* format classes */

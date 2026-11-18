@@ -575,7 +575,7 @@ struct context {
     uint32_t ib_format, ib_offset;
     struct cobj *layout;
     uint32_t topology;
-    struct cobj *rtv[8], *dsv, *uav[8];
+    struct cobj *rtv[8], *dsv, *uav[8], *csuav[8];
     struct cobj *blend, *depth, *raster;
     float blend_factor[4];
     uint32_t sample_mask, stencil_ref;
@@ -612,6 +612,7 @@ static void context_unbind_all(struct context *c)
     for (int i = 0; i < 8; i++) {
         bind(&c->rtv[i], NULL);
         bind(&c->uav[i], NULL);
+        bind(&c->csuav[i], NULL);
     }
     bind(&c->ib, NULL);
     bind(&c->layout, NULL);
@@ -1820,6 +1821,21 @@ static uint64_t m_draw_indirect(struct cobj *o, uint64_t *a, const uint64_t *f)
     return 0;
 }
 
+static uint64_t m_dispatch(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    if (!predicated_off(o->ctx))
+        gd_dispatch(o->ctx->gd, (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3]);
+    return 0;
+}
+
+static uint64_t m_dispatch_indirect(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    uint32_t v[3];
+    if (indirect_args(a[1], (uint32_t)a[2], v, 3) && !predicated_off(o->ctx))
+        gd_dispatch(o->ctx->gd, v[0], v[1], v[2]);
+    return 0;
+}
+
 /* Map(resource, subresource, type, flags, D3D11_MAPPED_SUBRESOURCE *): the resource's own pages */
 static uint64_t m_map(struct cobj *o, uint64_t *a, const uint64_t *f)
 {
@@ -2043,8 +2059,35 @@ static uint64_t m_om_set_targets_uavs(struct cobj *o, uint64_t *a, const uint64_
     if ((uint32_t)a[5] != 0xffffffffu)
         for (uint32_t i = 0; i < 8; i++) {
             uint32_t start = (uint32_t)a[4];
-            bind(&c->uav[i], i >= start && i - start < (uint32_t)a[5] ? arg_obj(a[6], i - start, K_UAV) : NULL);
+            bool in = i >= start && i - start < (uint32_t)a[5];
+            bind(&c->uav[i], in ? arg_obj(a[6], i - start, K_UAV) : NULL);
+            uint32_t count = in && a[7] ? ((const uint32_t *)w64_ptr(a[7]))[i - start] : 0xffffffffu;
+            gd_set_uav(c->gd, 0, i, c->uav[i] ? c->uav[i]->view.v : NULL, count);
         }
+    return 0;
+}
+
+/* CSSetUnorderedAccessViews(start, count, uavs, initial counts) */
+static uint64_t m_cs_set_uavs(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct context *c = o->ctx;
+    for (uint32_t i = 0; i < (uint32_t)a[2]; i++) {
+        uint32_t slot = (uint32_t)a[1] + i;
+        if (slot >= 8)
+            break;
+        bind(&c->csuav[slot], a[3] ? arg_obj(a[3], i, K_UAV) : NULL);
+        uint32_t count = a[4] ? ((const uint32_t *)w64_ptr(a[4]))[i] : 0xffffffffu;
+        gd_set_uav(c->gd, 5, slot, c->csuav[slot] ? c->csuav[slot]->view.v : NULL, count);
+    }
+    return 0;
+}
+
+static uint64_t m_cs_get_uavs(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    for (uint32_t i = 0; i < (uint32_t)a[2] && a[3]; i++) {
+        uint32_t slot = (uint32_t)a[1] + i;
+        put_obj(a[3] + i * 8ull, slot < 8 ? o->ctx->csuav[slot] : NULL);
+    }
     return 0;
 }
 
@@ -2216,6 +2259,35 @@ static uint64_t m_clear_rtv(struct cobj *o, uint64_t *a, const uint64_t *f)
         memcpy(c, w64_ptr(a[2]), 16);
         gd_clear_rtv(v->view.v, c);
     }
+    return 0;
+}
+
+/* ClearUnorderedAccessViewUint and ...Float(view, values[4]) */
+static uint64_t m_clear_uav_uint(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct cobj *v = unwrap_kind(a[1], K_UAV);
+    if (v && a[2])
+        gd_clear_uav(v->view.v, w64_ptr(a[2]), false);
+    return 0;
+}
+
+static uint64_t m_clear_uav_float(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct cobj *v = unwrap_kind(a[1], K_UAV);
+    if (v && a[2])
+        gd_clear_uav(v->view.v, w64_ptr(a[2]), true);
+    return 0;
+}
+
+/* CopyStructureCount(buffer, offset, view): the view's hidden counter into the buffer */
+static uint64_t m_copy_structure_count(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct cobj *b = unwrap_kind(a[1], K_BUFFER), *v = unwrap_kind(a[3], K_UAV);
+    struct gd_layout l;
+    uint8_t *p = b && v ? gd_subresource(b->res.r, 0, &l) : NULL;
+    uint32_t n = v ? gd_uav_counter(v->view.v) : 0;
+    if (p && (uint32_t)a[2] + 4 <= l.size)
+        memcpy(p + (uint32_t)a[2], &n, 4);
     return 0;
 }
 
@@ -2580,6 +2652,8 @@ static void context_hold_all(struct context *c, bool take)
             take ? hold(c->rtv[i]) : drop(c->rtv[i]);
         if (c->uav[i])
             take ? hold(c->uav[i]) : drop(c->uav[i]);
+        if (c->csuav[i])
+            take ? hold(c->csuav[i]) : drop(c->csuav[i]);
     }
 }
 
@@ -2605,8 +2679,11 @@ static void context_push(struct context *c)
     gd_set_index_buffer(c->gd, c->ib ? c->ib->res.r : NULL, c->ib_format, c->ib_offset);
     gd_set_input_layout(c->gd, c->layout ? c->layout->layout : NULL);
     gd_set_topology(c->gd, c->topology);
-    for (uint32_t i = 0; i < 8; i++)
+    for (uint32_t i = 0; i < 8; i++) {
         gd_set_render_target(c->gd, i, c->rtv[i] ? c->rtv[i]->view.v : NULL);
+        gd_set_uav(c->gd, 0, i, c->uav[i] ? c->uav[i]->view.v : NULL, 0xffffffffu);
+        gd_set_uav(c->gd, 5, i, c->csuav[i] ? c->csuav[i]->view.v : NULL, 0xffffffffu);
+    }
     gd_set_depth_target(c->gd, c->dsv ? c->dsv->view.v : NULL);
     gd_set_blend(c->gd, c->blend ? &c->blend->state.s.blend : NULL, c->blend_factor, c->sample_mask);
     gd_set_depth(c->gd, c->depth ? &c->depth->state.s.depth : NULL, c->stencil_ref);
@@ -2624,19 +2701,18 @@ static const method context_fns[] = {
     m_draw_instanced, m_gs_set_cbs, m_gs_set_shader, m_ia_set_topology, m_vs_set_srvs, m_vs_set_samplers, m_begin,
     m_end, m_get_data, m_set_predication, m_gs_set_srvs, m_gs_set_samplers, m_om_set_targets,
     m_om_set_targets_uavs, m_om_set_blend, m_om_set_depth, m_zero /* SOSetTargets */, m_zero /* DrawAuto */,
-    m_draw_indexed_indirect, m_draw_indirect, m_zero /* Dispatch */, m_zero /* DispatchIndirect */,
+    m_draw_indexed_indirect, m_draw_indirect, m_dispatch, m_dispatch_indirect,
     m_rs_set_state, m_rs_set_viewports, m_rs_set_scissors, m_copy_region, m_copy_resource, m_update,
-    m_zero /* CopyStructureCount */, m_clear_rtv, m_zero /* ClearUnorderedAccessViewUint */,
-    m_zero /* ClearUnorderedAccessViewFloat */, m_clear_dsv, m_generate_mips, m_zero /* SetResourceMinLOD */,
+    m_copy_structure_count, m_clear_rtv, m_clear_uav_uint, m_clear_uav_float, m_clear_dsv, m_generate_mips, m_zero /* SetResourceMinLOD */,
     m_get_min_lod, m_resolve, m_execute, m_hs_set_srvs, m_hs_set_shader, m_hs_set_samplers,
     m_hs_set_cbs, m_ds_set_srvs, m_ds_set_shader, m_ds_set_samplers, m_ds_set_cbs, m_cs_set_srvs,
-    m_zero /* CSSetUnorderedAccessViews */, m_cs_set_shader, m_cs_set_samplers, m_cs_set_cbs,
+    m_cs_set_uavs, m_cs_set_shader, m_cs_set_samplers, m_cs_set_cbs,
     [72] = m_vs_get_cbs, m_ps_get_srvs, m_ps_get_shader, m_ps_get_samplers, m_vs_get_shader, m_ps_get_cbs,
     m_ia_get_layout, m_ia_get_vbs, m_ia_get_ib, m_gs_get_cbs, m_gs_get_shader, m_ia_get_topology, m_vs_get_srvs,
     m_vs_get_samplers, m_get_predication, m_gs_get_srvs, m_gs_get_samplers, m_om_get_targets,
     m_om_get_targets_uavs, m_om_get_blend, m_om_get_depth, m_so_get_targets, m_rs_get_state, m_rs_get_viewports,
     m_rs_get_scissors, m_hs_get_srvs, m_hs_get_shader, m_hs_get_samplers, m_hs_get_cbs, m_ds_get_srvs,
-    m_ds_get_shader, m_ds_get_samplers, m_ds_get_cbs, m_cs_get_srvs, m_so_get_targets /* CSGetUnorderedAccessViews */,
+    m_ds_get_shader, m_ds_get_samplers, m_ds_get_cbs, m_cs_get_srvs, m_cs_get_uavs,
     m_cs_get_shader, m_cs_get_samplers, m_cs_get_cbs,
     [110] = m_clear_state, m_zero /* Flush */, m_context_type, m_zero /* GetContextFlags */, m_finish,
     /* ID3D11DeviceContext1 */

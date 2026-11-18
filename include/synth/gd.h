@@ -87,6 +87,8 @@ enum { GD_BUFFER = 1, GD_TEX1D, GD_TEX2D, GD_TEX3D };
 #define GD_BIND_DEPTH_STENCIL 0x40u
 #define GD_MISC_GENERATE_MIPS 0x1u
 #define GD_MISC_TEXTURECUBE 0x4u
+#define GD_BIND_UNORDERED_ACCESS 0x80u
+#define GD_MISC_BUFFER_RAW 0x20u
 #define GD_MISC_BUFFER_STRUCTURED 0x40u
 
 struct gd_res_desc {
@@ -146,7 +148,8 @@ struct gd_view_desc {
     uint32_t first_element, elements; /* buffer views */
     uint32_t dim;        /* D3D11_SRV_DIMENSION numbering (2 1D, 3 1D array, 4 2D, 5 2D array, 8 3D, 9 cube...);
                             0: from the resource */
-    uint32_t flags;      /* depth views: 1 read-only depth, 2 read-only stencil */
+    uint32_t flags;      /* depth views: 1 read-only depth, 2 read-only stencil; buffer views: 1 raw (and for
+                            unordered access, 2 append, 4 counter) */
 };
 
 struct gd_view;
@@ -161,6 +164,10 @@ void gd_clear_rtv(struct gd_view *v, const float color[4]);
 /* flags: 1 depth, 2 stencil */
 void gd_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil);
 void gd_generate_mips(struct gd_view *v);
+/* ClearUnorderedAccessViewUint (floats false) and ...Float: every element of the view */
+void gd_clear_uav(struct gd_view *v, const uint32_t value[4], bool floats);
+/* the hidden counter of an append or counter buffer view (CopyStructureCount) */
+uint32_t gd_uav_counter(struct gd_view *v);
 
 /* ---- shaders */
 
@@ -236,6 +243,7 @@ struct gd_rect {
 #define GD_SLOTS_CB 14
 #define GD_SLOTS_SRV 128
 #define GD_SLOTS_SAMPLER 16
+#define GD_SLOTS_UAV 8
 #define GD_STAGES 6 /* the DXBC program types: pixel, vertex, geometry, hull, domain, compute */
 
 struct gd_context;
@@ -262,6 +270,12 @@ void gd_set_blend(struct gd_context *c, const struct gd_blend *b, const float fa
 void gd_set_depth(struct gd_context *c, const struct gd_depth *d, uint32_t stencil_ref);
 void gd_set_render_target(struct gd_context *c, uint32_t slot, struct gd_view *rtv);
 void gd_set_depth_target(struct gd_context *c, struct gd_view *dsv);
+/* the unordered access views of the compute stage (5) or of the pixel stage (0); count 0xffffffff keeps the hidden
+   counter, anything else sets it */
+void gd_set_uav(struct gd_context *c, uint32_t stage, uint32_t slot, struct gd_view *v, uint32_t count);
+
+/* Dispatch: x * y * z groups of the compute shader's threads */
+void gd_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z);
 
 /* Draw, DrawIndexed, DrawInstanced, DrawIndexedInstanced */
 void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base_vertex,
@@ -272,7 +286,7 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
 void gd_present(struct gd_resource *r, uint32_t sub, uint32_t *dst, int stride, int dx, int dy, int dw, int dh,
                 int cx, int cy, int cw, int ch);
 struct gd_stats {
-    uint64_t draws, skipped, triangles, pixels, shader_faults;
+    uint64_t draws, skipped, triangles, pixels, shader_faults, dispatches;
     char last_fault[64];
 };
 

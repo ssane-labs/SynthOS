@@ -30,6 +30,10 @@ static void hal_parallel(void (*fn)(void *ctx, int from, int to), void *ctx, int
     (void)grain;
     fn(ctx, 0, count);
 }
+static int hal_parallel_cpus(void)
+{
+    return 1;
+}
 #else
 #include <synth/hal.h>
 #include <synth/heap.h>
@@ -561,6 +565,7 @@ struct stage {
     struct gd_view *srv[GD_SLOTS_SRV];
     struct gd_sampler sampler[GD_SLOTS_SAMPLER];
     bool sampler_set[GD_SLOTS_SAMPLER];
+    struct gd_view *uav[GD_SLOTS_UAV];
 };
 
 struct gd_context {
@@ -619,6 +624,8 @@ void gd_context_clear(struct gd_context *c)
             gd_resource_unref(st->cb[i]);
         for (int i = 0; i < GD_SLOTS_SRV; i++)
             gd_view_unref(st->srv[i]);
+        for (int i = 0; i < GD_SLOTS_UAV; i++)
+            gd_view_unref(st->uav[i]);
     }
     for (int i = 0; i < GD_SLOTS_VB; i++)
         gd_resource_unref(c->vb[i]);
@@ -759,6 +766,123 @@ void gd_set_depth_target(struct gd_context *c, struct gd_view *dsv)
     c->dsv = dsv;
 }
 
+void gd_set_uav(struct gd_context *c, uint32_t stage, uint32_t slot, struct gd_view *v, uint32_t count)
+{
+    if (stage >= GD_STAGES || slot >= GD_SLOTS_UAV)
+        return;
+    if (v && v->d.kind != GD_VIEW_UAV)
+        v = NULL;
+    gd_view_ref(v);
+    gd_view_unref(c->stage[stage].uav[slot]);
+    c->stage[stage].uav[slot] = v;
+    if (v && count != 0xffffffffu)
+        v->counter = count;
+}
+
+/* ---- unordered access views */
+
+/* the element of a typed view at coord: x, then y or the slice, then z or the slice */
+static uint8_t *uav_elem(const struct gd_view *v, const uint32_t co[4], uint32_t *bytes_out)
+{
+    if (!v || !v->r)
+        return NULL;
+    struct gd_resource *r = v->r;
+    uint32_t block, bytes = gd_format_bytes(v->format, &block);
+    *bytes_out = bytes;
+    if (!bytes || block != 1)
+        return NULL;
+    if (v->vdim == VD_BUFFER) {
+        if (co[0] >= v->d.elements)
+            return NULL;
+        size_t at = ((size_t)v->d.first_element + co[0]) * bytes;
+        return at + bytes <= r->size ? r->data + at : NULL;
+    }
+    uint32_t x = co[0], y = 0, z = 0, slice = 0;
+    switch (v->vdim) {
+    case VD_1D_ARRAY: slice = co[1]; break;
+    case VD_2D: y = co[1]; break;
+    case VD_2D_ARRAY: case VD_CUBE: case VD_CUBE_ARRAY: y = co[1], slice = co[2]; break;
+    case VD_3D: y = co[1], z = co[2]; break;
+    default: break;
+    }
+    struct gd_layout l;
+    uint8_t *p;
+    if (v->vdim == VD_3D) {
+        if (z >= (v->d.slices ? v->d.slices : 1))
+            return NULL;
+        z += v->d.first_slice;
+        p = gd_subresource(r, v->d.first_mip, &l);
+    } else {
+        if (slice >= (v->d.slices ? v->d.slices : 1))
+            return NULL;
+        p = gd_subresource(r, v->d.first_mip + (v->d.first_slice + slice) * r->d.mips, &l);
+    }
+    if (!p || x >= l.width || y >= l.height || z >= l.depth)
+        return NULL;
+    return p + (size_t)z * l.slice_pitch + (size_t)y * l.row_pitch + (size_t)x * bytes;
+}
+
+/* a raw or structured buffer view's bytes */
+static uint8_t *view_bytes(const struct gd_view *v, uint32_t *size)
+{
+    *size = 0;
+    if (!v || !v->r || v->vdim != VD_BUFFER)
+        return NULL;
+    const struct gd_resource *r = v->r;
+    size_t bytes = (r->d.misc & GD_MISC_BUFFER_STRUCTURED) && r->d.stride ? r->d.stride : 4;
+    size_t at = (size_t)v->d.first_element * bytes, n = (size_t)v->d.elements * bytes;
+    if (at >= r->size)
+        return NULL;
+    if (at + n > r->size)
+        n = r->size - at;
+    *size = (uint32_t)(n > 0xffffffffu ? 0xffffffffu : n);
+    return r->data + at;
+}
+
+void gd_clear_uav(struct gd_view *v, const uint32_t value[4], bool floats)
+{
+    if (!v || !v->r || v->d.kind != GD_VIEW_UAV)
+        return;
+    bool raw = v->vdim == VD_BUFFER && ((v->d.flags & 1) || (v->r->d.misc & GD_MISC_BUFFER_STRUCTURED));
+    if (raw) {
+        uint32_t size;
+        uint32_t *p = (uint32_t *)view_bytes(v, &size);
+        for (uint32_t i = 0; p && i < size / 4; i++)
+            p[i] = value[0];
+        return;
+    }
+    uint32_t vals[4];
+    int cls = gd_format_class(v->format);
+    bool f32 = v->format == GD_R32_FLOAT || v->format == GD_R32G32_FLOAT || v->format == GD_R32G32B32_FLOAT ||
+               v->format == GD_R32G32B32A32_FLOAT;
+    for (int i = 0; i < 4; i++) {
+        float f = (float)value[i] / 255.0f;
+        vals[i] = floats || cls == FC_UINT || cls == FC_SINT || f32 ? value[i] : U(f);
+    }
+    uint32_t size[4];
+    gd_view_size(v, 0, size);
+    uint32_t w = size[0] ? size[0] : 1, h = 1, d = 1;
+    if (v->vdim == VD_1D_ARRAY)
+        h = v->d.slices;
+    else if (v->vdim != VD_BUFFER && v->vdim != VD_1D)
+        h = size[1] ? size[1] : 1;
+    if (v->vdim == VD_2D_ARRAY || v->vdim == VD_CUBE || v->vdim == VD_CUBE_ARRAY || v->vdim == VD_3D)
+        d = v->d.slices ? v->d.slices : 1;
+    for (uint32_t z = 0; z < d; z++)
+        for (uint32_t y = 0; y < h; y++)
+            for (uint32_t x = 0; x < w; x++) {
+                uint32_t co[4] = {x, y, z, 0}, bytes;
+                uint8_t *p = uav_elem(v, co, &bytes);
+                if (p)
+                    gd_texel_store(v->format, p, vals, 15);
+            }
+}
+
+uint32_t gd_uav_counter(struct gd_view *v)
+{
+    return v ? __atomic_load_n(&v->counter, __ATOMIC_ACQUIRE) : 0;
+}
+
 /* ---- drawing */
 
 #define MAX_REGS 32
@@ -851,6 +975,57 @@ static void env_info(void *ctx, int texture, uint32_t mip, uint32_t out[4])
     gd_view_size(texture >= 0 && texture < GD_SLOTS_SRV ? st->srv[texture] : NULL, mip, out);
 }
 
+static uint8_t *env_buffer(void *ctx, bool uav, int slot, uint32_t *size)
+{
+    const struct stage *st = ctx;
+    const struct gd_view *v = uav ? (slot >= 0 && slot < GD_SLOTS_UAV ? st->uav[slot] : NULL)
+                                  : (slot >= 0 && slot < GD_SLOTS_SRV ? st->srv[slot] : NULL);
+    return view_bytes(v, size);
+}
+
+static const struct gd_view *env_uav(void *ctx, int uav)
+{
+    const struct stage *st = ctx;
+    return uav >= 0 && uav < GD_SLOTS_UAV ? st->uav[uav] : NULL;
+}
+
+static void env_uav_load(void *ctx, int uav, const uint32_t coord[4], uint32_t out[4])
+{
+    const struct gd_view *v = env_uav(ctx, uav);
+    uint32_t bytes;
+    uint8_t *p = uav_elem(v, coord, &bytes);
+    out[0] = out[1] = out[2] = out[3] = 0;
+    if (p)
+        gd_texel_load(v->format, p, 0, 0, out);
+}
+
+static void env_uav_store(void *ctx, int uav, const uint32_t coord[4], const uint32_t val[4], unsigned mask)
+{
+    const struct gd_view *v = env_uav(ctx, uav);
+    uint32_t bytes;
+    uint8_t *p = uav_elem(v, coord, &bytes);
+    if (p)
+        gd_texel_store(v->format, p, val, mask);
+}
+
+static uint32_t *env_uav_ptr(void *ctx, int uav, const uint32_t coord[4])
+{
+    uint32_t bytes;
+    uint8_t *p = uav_elem(env_uav(ctx, uav), coord, &bytes);
+    return p && bytes == 4 ? (uint32_t *)p : NULL;
+}
+
+static void env_uav_info(void *ctx, int uav, uint32_t out[4])
+{
+    gd_view_size(env_uav(ctx, uav), 0, out);
+}
+
+static uint32_t *env_uav_counter(void *ctx, int uav)
+{
+    struct gd_view *v = (struct gd_view *)env_uav(ctx, uav);
+    return v ? &v->counter : NULL;
+}
+
 static void make_env(struct dxbc_env *e, const struct stage *st)
 {
     memset(e, 0, sizeof(*e));
@@ -859,6 +1034,12 @@ static void make_env(struct dxbc_env *e, const struct stage *st)
     e->gather = env_gather;
     e->load = env_load;
     e->info = env_info;
+    e->buffer = env_buffer;
+    e->uav_load = env_uav_load;
+    e->uav_store = env_uav_store;
+    e->uav_ptr = env_uav_ptr;
+    e->uav_info = env_uav_info;
+    e->uav_counter = env_uav_counter;
     for (int i = 0; i < GD_SLOTS_CB && i < DXBC_MAX_CB; i++) {
         struct gd_resource *r = st->cb[i];
         if (!r)
@@ -1420,6 +1601,113 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     }
     kfree(idx);
     kfree(d);
+}
+
+/* ---- compute: groups of threads, four lanes at a time; a group's batches take turns between syncs */
+
+struct cs_job {
+    const struct dxbc_shader *sh;
+    struct dxbc_env env;
+    uint32_t gx, gy, threads, batches;
+    size_t per_batch, slot_bytes;
+    uint8_t *scratch;
+    uint64_t slots_free;
+};
+
+static void cs_groups(void *ctx, int from, int to)
+{
+    struct cs_job *j = ctx;
+    int slot = -1;
+    for (;;) {
+        uint64_t f = __atomic_load_n(&j->slots_free, __ATOMIC_ACQUIRE);
+        if (!f) {
+#ifndef RS_HOST
+            __asm__ volatile("pause");
+#endif
+            continue;
+        }
+        int i = __builtin_ctzll(f);
+        if (__atomic_compare_exchange_n(&j->slots_free, &f, f & ~(1ull << i), false, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_RELAXED)) {
+            slot = i;
+            break;
+        }
+    }
+    const struct dxbc_shader *sh = j->sh;
+    uint8_t *mem = j->scratch + (size_t)slot * j->slot_bytes;
+    size_t tgsm = (sh->tgsm_bytes + 63) & ~(size_t)63;
+    uint32_t(*regs)[4][4] = (uint32_t(*)[4][4])(mem + tgsm);
+    uint8_t *batch_mem = mem + tgsm + sizeof(uint32_t[MAX_REGS][4][4]);
+    struct dxbc_env env = j->env;
+    env.tgsm = sh->tgsm_bytes ? mem : NULL;
+    uint32_t X = sh->group[0] ? sh->group[0] : 1, Y = sh->group[1] ? sh->group[1] : 1;
+    uint8_t done[256];
+    for (int g = from; g < to; g++) {
+        uint32_t gid[3] = {(uint32_t)g % j->gx, ((uint32_t)g / j->gx) % j->gy, (uint32_t)g / (j->gx * j->gy)};
+        if (sh->tgsm_bytes)
+            memset(mem, 0, sh->tgsm_bytes);
+        memset(done, 0, j->batches);
+        uint32_t left = j->batches;
+        for (int round = 0; left && round < 1 << 16; round++)
+            for (uint32_t b = 0; b < j->batches; b++) {
+                if (done[b])
+                    continue;
+                struct dxbc_lanes lanes = {.v = regs, .o = regs, .scratch = batch_mem + b * j->per_batch,
+                                           .resume = round > 0};
+                lanes.gid[0] = gid[0], lanes.gid[1] = gid[1], lanes.gid[2] = gid[2];
+                for (int k = 0; k < 4; k++) {
+                    uint32_t t = b * 4 + (uint32_t)k;
+                    if (t >= j->threads)
+                        continue;
+                    lanes.live |= 1u << k;
+                    uint32_t gt[3] = {t % X, (t / X) % Y, t / (X * Y)};
+                    for (int c = 0; c < 3; c++) {
+                        lanes.gtid[k][c] = gt[c];
+                        lanes.tid[k][c] = gid[c] * (sh->group[c] ? sh->group[c] : 1) + gt[c];
+                    }
+                    lanes.flat[k] = t;
+                }
+                bool ok = dxbc_run(sh, &env, &lanes);
+                if (!ok)
+                    note_fault(lanes.error);
+                if (!ok || !lanes.paused)
+                    done[b] = 1, left--;
+            }
+    }
+    __atomic_or_fetch(&j->slots_free, 1ull << slot, __ATOMIC_RELEASE);
+}
+
+void gd_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)
+{
+    struct stage *st = &c->stage[DXBC_CS];
+    if (!st->shader || st->shader->sh.stage != DXBC_CS || !x || !y || !z)
+        return;
+    const struct dxbc_shader *sh = &st->shader->sh;
+    uint64_t groups = (uint64_t)x * y * z;
+    uint32_t threads = (sh->group[0] ? sh->group[0] : 1) * (sh->group[1] ? sh->group[1] : 1) *
+                       (sh->group[2] ? sh->group[2] : 1);
+    if (groups > 0x7fffffff || threads > 1024) {
+        __atomic_add_fetch(&stats.skipped, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    gd_texture_init();
+    struct cs_job j = {.sh = sh, .gx = x, .gy = y, .threads = threads, .batches = (threads + 3) / 4};
+    make_env(&j.env, st);
+    j.per_batch = (dxbc_scratch(sh) + 63) & ~(size_t)63;
+    j.slot_bytes = ((sh->tgsm_bytes + 63) & ~(size_t)63) + sizeof(uint32_t[MAX_REGS][4][4]) +
+                   j.per_batch * j.batches;
+    int cpus = hal_parallel_cpus(), slots = cpus < 64 ? cpus : 64;
+    if (slots < 1)
+        slots = 1;
+    j.scratch = kzalloc(j.slot_bytes * (size_t)slots);
+    if (!j.scratch) {
+        note_fault("out of memory for a dispatch");
+        return;
+    }
+    j.slots_free = slots == 64 ? ~0ull : (1ull << slots) - 1;
+    __atomic_add_fetch(&stats.dispatches, 1, __ATOMIC_RELAXED);
+    hal_parallel(cs_groups, &j, (int)groups, 1);
+    kfree(j.scratch);
 }
 
 /* ---- presenting: a swap chain's buffer into a window */

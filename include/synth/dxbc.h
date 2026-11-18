@@ -9,6 +9,8 @@
 #define DXBC_MAX_SIG 32
 #define DXBC_MAX_CB 15
 #define DXBC_MAX_RES 32
+#define DXBC_MAX_UAV 8
+#define DXBC_MAX_TGSM 16
 
 enum dxbc_stage { DXBC_PS, DXBC_VS, DXBC_GS, DXBC_HS, DXBC_DS, DXBC_CS };
 
@@ -35,6 +37,12 @@ struct dxbc_shader {
     int depth_out;             /* writes oDepth */
     uint8_t interp[32];        /* pixel shader inputs: D3D_INTERPOLATION_MODE (1 constant, 2 linear, 4 noperspective...) */
     bool discards;
+    /* compute shaders */
+    uint32_t group[3];                           /* threads per group */
+    uint32_t tgsm_off[DXBC_MAX_TGSM], tgsm_size[DXBC_MAX_TGSM], tgsm_stride[DXBC_MAX_TGSM], tgsm_bytes;
+    uint8_t uav_kind[DXBC_MAX_UAV];              /* 0 typed, 1 raw, 2 structured */
+    uint32_t uav_stride[DXBC_MAX_UAV], srv_stride[DXBC_MAX_RES];
+    bool syncs;                                  /* has sync instructions that wait for the group */
     char error[64];
 };
 
@@ -52,6 +60,15 @@ struct dxbc_env {
                    const float *ref, float out[4]);
     void (*load)(void *ctx, int texture, const int32_t coord[4], const int offset[3], uint32_t out[4]);
     void (*info)(void *ctx, int texture, uint32_t mip, uint32_t out[4]); /* width, height, depth, mips */
+    /* raw and structured buffers: the bytes a view looks at (uav false: t#, true: u#), or NULL */
+    uint8_t *(*buffer)(void *ctx, bool uav, int slot, uint32_t *size);
+    /* typed unordered access views: one element at coord (x, y, z/slice); ptr: its 32 bits for atomics, or NULL */
+    void (*uav_load)(void *ctx, int uav, const uint32_t coord[4], uint32_t out[4]);
+    void (*uav_store)(void *ctx, int uav, const uint32_t coord[4], const uint32_t v[4], unsigned mask);
+    uint32_t *(*uav_ptr)(void *ctx, int uav, const uint32_t coord[4]);
+    void (*uav_info)(void *ctx, int uav, uint32_t out[4]);
+    uint32_t *(*uav_counter)(void *ctx, int uav); /* the hidden counter of append and consume buffers */
+    uint8_t *tgsm;                                /* the group's shared memory: shader->tgsm_bytes */
 };
 
 /* registers of four lanes: [register][lane][component], 32-bit values that are floats or integers */
@@ -62,6 +79,11 @@ struct dxbc_lanes {
     float depth[4];
     void *scratch;       /* dxbc_scratch(shader) bytes for the registers, or NULL: allocated (not on helper CPUs) */
     char error[48];      /* why it stopped, when dxbc_run says false */
+    /* compute shaders: SV_DispatchThreadID, SV_GroupID, SV_GroupThreadID, SV_GroupIndex of each lane */
+    uint32_t tid[4][4], gid[4], gtid[4][4], flat[4];
+    /* resume: carry on where a sync stopped the last run (same scratch); paused: this run stopped at a sync and
+       waits for the rest of the group. Without scratch, syncs do not stop. */
+    bool resume, paused;
 };
 
 bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size);

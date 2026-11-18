@@ -390,10 +390,86 @@ static void draw_tests(void)
     gd_shader_unref(ps_discard);
 }
 
+/* ---- compute: group shared memory with a sync, raw and typed unordered access views, an atomic */
+
+static void opd(int type, int reg, int ncomp) /* u#, g#: one index, no components (declarations) */
+{
+    code[n++] = (uint32_t)ncomp | (uint32_t)type << 12 | 1u << 20;
+    code[n++] = (uint32_t)reg;
+}
+
+static void compute_tests(void)
+{
+    enum { UAV = 30, TGSM = 31, FLAT = 36 };
+    op(155, 0), code[n++] = 8, code[n++] = 1, code[n++] = 1, end(); /* dcl_thread_group 8, 1, 1 */
+    op(159, 0), opd(TGSM, 0, 0), code[n++] = 32, end();                /* dcl_tgsm_raw g0, 32 */
+    op(157, 0), opd(UAV, 0, 0), end();                                 /* dcl_uav_raw u0 */
+    op(156, 1 << 11), opd(UAV, 1, 0), code[n++] = 0x4444, end();       /* dcl_uav_typed_buffer (uint) u1 */
+    /* g0[t] = t, then every thread reads its neighbour after the sync */
+    op(41, 0), dst(TEMP, 0, 1), code[n++] = 1u | FLAT << 12, immu(2), end(); /* ishl r0.x, vFlat, 2 */
+    op(166, 0), dst(TGSM, 0, 1), sel(TEMP, 0, 0), code[n++] = 1u | FLAT << 12, end();
+    op(190, 0x1800), end(); /* sync_g_t */
+    op(30, 0), dst(TEMP, 0, 2), code[n++] = 1u | FLAT << 12, immu(1), end(); /* iadd r0.y, vFlat, 1 */
+    op(1, 0), dst(TEMP, 0, 2), sel(TEMP, 0, 1), immu(7), end();               /* and r0.y, r0.y, 7 */
+    op(41, 0), dst(TEMP, 0, 2), sel(TEMP, 0, 1), immu(2), end();              /* ishl r0.y, r0.y, 2 */
+    op(165, 0), dst(TEMP, 1, 1), sel(TEMP, 0, 1), src(TGSM, 0, XXXX), end();  /* ld_raw r1.x, r0.y, g0.x */
+    /* u0[SV_DispatchThreadID.x] = the neighbour's number; u1[0] += 1 */
+    op(41, 0), dst(TEMP, 0, 4), code[n++] = 2u | 2u << 2 | 32u << 12, immu(2), end(); /* ishl r0.z, vThreadID.x, 2 */
+    op(166, 0), dst(UAV, 0, 1), sel(TEMP, 0, 2), sel(TEMP, 1, 0), end();
+    op(173, 0), dst(UAV, 1, 1), immu(0), immu(1), end(); /* atomic_iadd u1, 0, 1 */
+    op(62, 0), end();
+    char err[64];
+    size_t size = container(5, 2);
+    struct gd_shader *cs = gd_shader_create(blob, (uint32_t)size, err);
+    expect(cs != NULL, "compute shader parses");
+    if (!cs) {
+        printf("  %s\n", err);
+        return;
+    }
+    uint32_t e;
+    struct gd_res_desc rd = {.dim = GD_BUFFER, .width = 96, .height = 1, .depth = 1, .mips = 1, .array = 1,
+                             .bind = GD_BIND_UNORDERED_ACCESS, .misc = GD_MISC_BUFFER_RAW};
+    struct gd_resource *out = gd_resource_create(&rd, NULL, &e);
+    rd.width = 4, rd.misc = 0;
+    struct gd_resource *count = gd_resource_create(&rd, NULL, &e);
+    struct gd_view_desc vd = {.kind = GD_VIEW_UAV, .format = GD_R32_TYPELESS, .dim = 1, .flags = 1};
+    struct gd_view *v0 = gd_view_create(out, &vd, &e);
+    vd.format = GD_R32_UINT, vd.flags = 0;
+    struct gd_view *v1 = gd_view_create(count, &vd, &e);
+    expect(v0 && v1, "unordered access views");
+    gd_clear_uav(v0, (const uint32_t[4]){0xdead, 0, 0, 0}, false);
+    expect(((uint32_t *)out->data)[23] == 0xdead, "ClearUnorderedAccessViewUint fills a raw buffer");
+    struct gd_context *c = gd_context_create();
+    gd_set_shader(c, 5, cs);
+    gd_set_uav(c, 5, 0, v0, 0xffffffffu);
+    gd_set_uav(c, 5, 1, v1, 0xffffffffu);
+    gd_dispatch(c, 3, 1, 1);
+    int good = 1;
+    for (int i = 0; i < 24; i++)
+        good &= ((uint32_t *)out->data)[i] == (uint32_t)((i % 8 + 1) % 8);
+    expect(good, "threads see the group's shared memory after a sync");
+    expect(*(uint32_t *)count->data == 24, "atomic add from every thread");
+    if (!good || *(uint32_t *)count->data != 24)
+        printf("  out[0..8] %u %u %u %u %u %u %u %u count %u\n", ((uint32_t *)out->data)[0], ((uint32_t *)out->data)[1],
+               ((uint32_t *)out->data)[2], ((uint32_t *)out->data)[3], ((uint32_t *)out->data)[4],
+               ((uint32_t *)out->data)[5], ((uint32_t *)out->data)[6], ((uint32_t *)out->data)[7],
+               *(uint32_t *)count->data);
+    struct gd_stats st;
+    gd_get_stats(&st);
+    expect(st.dispatches == 1, "one dispatch");
+    gd_context_destroy(c);
+    gd_view_unref(v0);
+    gd_view_unref(v1);
+    gd_resource_unref(out);
+    gd_resource_unref(count);
+    gd_shader_unref(cs);
+}
+
 int device_tests(void)
 {
     format_tests();
     sample_tests();
     draw_tests();
+    compute_tests();
     return failures;
 }
