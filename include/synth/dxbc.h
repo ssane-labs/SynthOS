@@ -11,6 +11,8 @@
 #define DXBC_MAX_RES 32
 #define DXBC_MAX_UAV 8
 #define DXBC_MAX_TGSM 16
+#define DXBC_MAX_PHASES 16
+#define DXBC_MAX_CP 32
 
 enum dxbc_stage { DXBC_PS, DXBC_VS, DXBC_GS, DXBC_HS, DXBC_DS, DXBC_CS };
 
@@ -46,6 +48,20 @@ struct dxbc_shader {
     /* geometry shaders: input primitive (1 point, 2 line, 3 triangle, 6 line_adj, 7 triangle_adj), output topology
        (1 points, 3 line strip, 5 triangle strip), most vertices emitted, instances */
     uint32_t gs_in, gs_out, gs_max, gs_instances;
+    /* hull and domain shaders: the patch constants' signature; the hull shader's phases (0 control point, 1 fork,
+       2 join: where in code each starts, how many instances); control points in and out; domain (1 isoline,
+       2 triangle, 3 quad), partitioning (1 integer, 2 pow2, 3 fractional odd, 4 fractional even), output primitive
+       (1 point, 2 line, 3 triangle cw, 4 triangle ccw), the largest tessellation factor */
+    struct dxbc_sig_elem pc[DXBC_MAX_SIG];
+    int npc;
+    struct {
+        uint8_t kind;
+        int start;
+        uint32_t instances;
+    } phase[DXBC_MAX_PHASES];
+    int nphase;
+    uint32_t cp_in, cp_out, domain, partitioning, out_prim;
+    float max_tess;
     char error[64];
 };
 
@@ -94,6 +110,14 @@ struct dxbc_lanes {
     uint32_t prim_id, gs_instance;
     void (*emit)(void *user, struct dxbc_lanes *l, int lane, bool emit, bool cut);
     void *user;
+    /* hull and domain shaders: where the run starts (a hull shader phase); vicp[point][reg] comes from gsv,
+       vocp[point][reg] from ocp, vpc[reg] from pc (registers of four 32-bit values); each lane's vDomain,
+       vOutputControlPointID and fork or join instance */
+    int entry;
+    const uint32_t *ocp, *pc;
+    int ocp_regs;
+    float domain[4][4];
+    uint32_t cp_id[4], phase_id[4];
 };
 
 bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size);

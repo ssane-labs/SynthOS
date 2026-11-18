@@ -50,6 +50,7 @@ enum {
 enum {
     T_TEMP, T_INPUT, T_OUTPUT, T_XTEMP, T_IMM32, T_IMM64, T_SAMPLER, T_RESOURCE, T_CB, T_ICB, T_LABEL, T_PRIMID,
     T_ODEPTH, T_NULL, T_RASTERIZER, T_OMASK,
+    T_OCPID = 22, T_FORKID, T_JOINID, T_ICP, T_OCP, T_PC, T_DOMAIN,
     T_UAV = 30, T_TGSM, T_TID, T_GID, T_GTID, T_COVERAGE, T_FLAT = 36, T_GSINST = 37,
     T_ODEPTH_GE = 38, T_ODEPTH_LE = 39,
 };
@@ -272,6 +273,8 @@ bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size)
             sh->nout = read_sig(c + 8, len, sh->out, 24, 0);
         else if (!memcmp(c, "OSG5", 4))
             sh->nout = read_sig(c + 8, len, sh->out, 28, 4);
+        else if (!memcmp(c, "PCSG", 4))
+            sh->npc = read_sig(c + 8, len, sh->pc, 24, 0);
         else if (!memcmp(c, "SHDR", 4) || !memcmp(c, "SHEX", 4)) {
             code = (const uint32_t *)(c + 8);
             code_words = len / 4;
@@ -305,11 +308,30 @@ bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size)
         if (!len || p + len > end)
             return fail(sh, "bad instruction length");
         const uint32_t *next = p + len;
-        if (op == OP_DCL_TEMPS) {
-            sh->temps = (int)p[1];
+        if (op == OP_DCL_TEMPS) { /* a hull shader's phases each have their own: the most of them */
+            sh->temps = (int)p[1] > sh->temps ? (int)p[1] : sh->temps;
+        } else if (op >= 114 && op <= 116) { /* a hull shader phase begins */
+            if (sh->nphase == DXBC_MAX_PHASES)
+                return fail(sh, "too many hull shader phases");
+            sh->phase[sh->nphase].kind = (uint8_t)(op - 114), sh->phase[sh->nphase].start = sh->ncode;
+            sh->phase[sh->nphase++].instances = 1;
+        } else if ((op == 153 || op == 154) && len >= 2 && sh->nphase) {
+            sh->phase[sh->nphase - 1].instances = p[1];
+        } else if (op == 147) {
+            sh->cp_in = (t >> 11) & 0x3f;
+        } else if (op == 148) {
+            sh->cp_out = (t >> 11) & 0x3f;
+        } else if (op == 149) {
+            sh->domain = (t >> 11) & 3;
+        } else if (op == 150) {
+            sh->partitioning = (t >> 11) & 7;
+        } else if (op == 151) {
+            sh->out_prim = (t >> 11) & 7;
+        } else if (op == 152 && len >= 2) {
+            memcpy(&sh->max_tess, &p[1], 4);
         } else if (op == OP_DCL_INDEXABLE_TEMP && len >= 4) {
             uint32_t r = p[1];
-            if (r < 8)
+            if (r < 8 && (!sh->xtemps[r] || (int)p[2] > sh->xsize[r])) /* hull shader phases: the largest */
                 sh->xtemps[r] = 1, sh->xsize[r] = (int)p[2];
         } else if (op == OP_DCL_INPUT_PS_SIV || op == OP_DCL_INPUT_SIV || op == OP_DCL_INPUT_SGV ||
                    op == OP_DCL_INPUT_PS_SGV || op == OP_DCL_INPUT || op == OP_DCL_INPUT_PS) {
@@ -512,6 +534,28 @@ static void read_src(struct machine *m, const struct opd *o, int lane, bool inte
     case T_FLAT:
         raw[0] = raw[1] = raw[2] = raw[3] = m->lanes->flat[lane];
         break;
+    case T_ICP: { /* vicp[point][register]: the patch's input control points */
+        int32_t cp = index_of(m, &o->idx[0], lane), i = index_of(m, &o->idx[o->ndim > 1 ? 1 : 0], lane);
+        if (o->ndim > 1 && m->lanes->gsv && cp >= 0 && cp < DXBC_MAX_CP && i >= 0 && i < m->lanes->gsv_regs)
+            src = m->lanes->gsv + ((size_t)cp * (size_t)m->lanes->gsv_regs + (size_t)i) * 4;
+        break;
+    }
+    case T_OCP: { /* vocp[point][register]: the hull shader's output control points */
+        int32_t cp = index_of(m, &o->idx[0], lane), i = index_of(m, &o->idx[o->ndim > 1 ? 1 : 0], lane);
+        if (o->ndim > 1 && m->lanes->ocp && cp >= 0 && cp < DXBC_MAX_CP && i >= 0 && i < m->lanes->ocp_regs)
+            src = m->lanes->ocp + ((size_t)cp * (size_t)m->lanes->ocp_regs + (size_t)i) * 4;
+        break;
+    }
+    case T_PC: { /* vpc[register]: the patch constants */
+        int32_t i = index_of(m, &o->idx[0], lane);
+        if (m->lanes->pc && i >= 0 && i < 32)
+            src = m->lanes->pc + (size_t)i * 4;
+        break;
+    }
+    case T_DOMAIN: memcpy(raw, m->lanes->domain[lane], 16); break;
+    case T_OCPID: raw[0] = raw[1] = raw[2] = raw[3] = m->lanes->cp_id[lane]; break;
+    case T_FORKID:
+    case T_JOINID: raw[0] = raw[1] = raw[2] = raw[3] = m->lanes->phase_id[lane]; break;
     case T_COVERAGE: /* multisampling is drawn with one sample: it is covered */
         raw[0] = raw[1] = raw[2] = raw[3] = 1;
         break;
@@ -1105,7 +1149,7 @@ bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct d
             }
     }
     struct frame stack[64];
-    int depth = 0, steps = 0, start = 0;
+    int depth = 0, steps = 0, start = lanes->entry > 0 && lanes->entry < sh->ncode ? lanes->entry : 0;
     unsigned mask = m.alive;
     lanes->error[0] = 0;
     lanes->paused = false;

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <synth/gd.h>
+#include <synth/tess.h>
 
 #include "../../kernel/gpu/gd_internal.h"
 #include "asm.h"
@@ -436,6 +437,69 @@ static void draw_tests(void)
         gd_shader_unref(gsh);
     }
 
+    /* tessellation: a triangle patch whose hull shader asks for factor 4 everywhere (16 triangles), the domain shader
+       placing each point between the control points */
+    {
+        enum { ICP = 25, DOM = 28 };
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Position", 0, 1, 0, 15), out_sig("COLOR", 0, 0, 1, 15);
+        for (uint32_t i = 0; i < 3; i++)
+            pc_sig("SV_TessFactor", i, 13, i, 1);
+        pc_sig("SV_InsideTessFactor", 0, 14, 3, 1);
+        op(113, 0), end();           /* hs_decls */
+        op(147, 3 << 11), end();     /* dcl_input_control_point_count 3 */
+        op(148, 3 << 11), end();     /* dcl_output_control_point_count 3 */
+        op(149, 2 << 11), end();     /* dcl_tessellator_domain tri */
+        op(150, 1 << 11), end();     /* dcl_tessellator_partitioning integer */
+        op(151, 3 << 11), end();     /* dcl_tessellator_output_primitive triangle_cw */
+        op(115, 0), end();           /* hs_fork_phase */
+        for (int r = 0; r < 4; r++)
+            op(54, 0), dst(OUT, r, 1), immf(4), end();
+        op(62, 0), end();
+        char terr[64];
+        size_t size = container(3, 1);
+        struct gd_shader *hsh = gd_shader_create(blob, (uint32_t)size, terr);
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Position", 0, 1, 0, 15), out_sig("COLOR", 0, 0, 1, 15);
+        op(149, 2 << 11), end();
+        /* o0 = vicp[0][0] * u + vicp[1][0] * v + vicp[2][0] * w, o1 = vicp[0][1] */
+        const int comp[3] = {0, 1, 2};
+        for (int k = 0; k < 3; k++) {
+            op(k ? 50 : 56, 0), dst(k == 2 ? OUT : TEMP, 0, 15);
+            code[n++] = 2u | 1u << 2 | (uint32_t)SW(comp[k], comp[k], comp[k], comp[k]) << 4 | (uint32_t)DOM << 12;
+            code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | (uint32_t)ICP << 12 | 2u << 20, code[n++] = (uint32_t)k,
+            code[n++] = 0;
+            if (k)
+                src(TEMP, 0, XYZW);
+            end();
+        }
+        op(54, 0), dst(OUT, 1, 15);
+        code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | (uint32_t)ICP << 12 | 2u << 20, code[n++] = 0, code[n++] = 1;
+        end();
+        op(62, 0), end();
+        size = container(4, 1);
+        struct gd_shader *dsh = gd_shader_create(blob, (uint32_t)size, terr);
+        expect(hsh && dsh, "hull and domain shaders parse");
+        gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+        gd_clear_dsv(dsv, 3, 1.0f, 0);
+        gd_set_shader(ctx, 3, hsh);
+        gd_set_shader(ctx, 4, dsh);
+        gd_set_topology(ctx, 35); /* 3 control point patches */
+        struct gd_stats before, after;
+        gd_get_stats(&before);
+        struct vert tp[3] = {{{-1, 1, 0.5f}, {0, 1, 0, 1}}, {{1, 1, 0.5f}, {0, 1, 0, 1}}, {{1, -1, 0.5f}, {0, 1, 0, 1}}};
+        draw_verts(tp, 3);
+        gd_get_stats(&after);
+        expect(after.triangles - before.triangles == 16 && after.shader_faults == before.shader_faults &&
+                   pixel(60, 4) == 0x00ff00 && pixel(40, 20) == 0x00ff00 && pixel(4, 60) == 0,
+               "a tessellated patch is drawn as 16 triangles");
+        gd_set_shader(ctx, 3, NULL);
+        gd_set_shader(ctx, 4, NULL);
+        gd_set_topology(ctx, 4);
+        gd_shader_unref(hsh);
+        gd_shader_unref(dsh);
+    }
+
     /* stream output: the vertex shader's outputs written to a buffer while each triangle fits, not drawn; DrawAuto
        draws what was written */
     {
@@ -562,8 +626,61 @@ static void compute_tests(void)
     gd_shader_unref(cs);
 }
 
+/* ---- the tessellator: every triangle the same way round, the patch covered once, edges split by their factors */
+
+static int mesh_ok(const struct tess_mesh *m, bool tri, float want_area, uint32_t want_tris)
+{
+    float total = 0;
+    for (uint32_t i = 0; i + 3 <= m->nind; i += 3) {
+        const float *a = m->pt[m->ind[i]], *b = m->pt[m->ind[i + 1]], *c = m->pt[m->ind[i + 2]];
+        int x = tri ? 1 : 0, y = tri ? 2 : 1;
+        float area = ((b[x] - a[x]) * (c[y] - a[y]) - (c[x] - a[x]) * (b[y] - a[y])) / 2;
+        if (!(area > 0))
+            return 0;
+        total += area;
+    }
+    return near(total, want_area, 1e-4f) && (!want_tris || m->nind / 3 == want_tris) && !m->full;
+}
+
+static uint32_t on_edge(const struct tess_mesh *m, int coord, float value)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < m->npt; i++)
+        n += m->pt[i][coord] == value;
+    return n;
+}
+
+static void tess_tests(void)
+{
+    struct tess_mesh m = {0};
+    const float ones[4] = {1, 1, 1, 1}, fours[4] = {4, 4, 4, 4};
+    expect(tess_patch(&m, 3, 1, 3, ones, ones, 64) && m.npt == 4 && mesh_ok(&m, false, 1, 2), "a quad of factor 1");
+    expect(tess_patch(&m, 3, 1, 3, fours, fours, 64) && m.npt == 25 && mesh_ok(&m, false, 1, 32),
+           "a quad of factor 4: a 4 x 4 grid");
+    const float mixed[4] = {2, 5, 3, 7}, in[2] = {3, 6};
+    expect(tess_patch(&m, 3, 1, 3, mixed, in, 64) && mesh_ok(&m, false, 1, 0) && on_edge(&m, 0, 0) == 3 &&
+               on_edge(&m, 1, 0) == 6 && on_edge(&m, 0, 1) == 4 && on_edge(&m, 1, 1) == 8,
+           "a quad's edges are split by their own factors, the inside by its own");
+    const float tri3[3] = {3, 3, 3}, tri_mixed[3] = {1, 4, 6};
+    expect(tess_patch(&m, 2, 1, 3, tri3, tri3, 64) && m.npt == 10 && mesh_ok(&m, true, 0.5f, 9),
+           "a triangle of factor 3");
+    expect(tess_patch(&m, 2, 1, 3, tri_mixed, (const float[1]){5}, 64) && mesh_ok(&m, true, 0.5f, 0) &&
+               on_edge(&m, 0, 0) == 2 && on_edge(&m, 1, 0) == 5 && on_edge(&m, 2, 0) == 7,
+           "a triangle's edges are split by their own factors");
+    expect(tess_patch(&m, 3, 3, 3, (const float[4]){1.5f, 2, 2, 2}, (const float[2]){2, 2}, 64) &&
+               on_edge(&m, 0, 0) == 4 && mesh_ok(&m, false, 1, 0),
+           "fractional odd partitioning rounds up to odd");
+    expect(!tess_patch(&m, 3, 1, 3, (const float[4]){0, 4, 4, 4}, fours, 64), "a zero factor culls the patch");
+    expect(tess_patch(&m, 1, 1, 2, (const float[2]){3, 4}, NULL, 64) && m.per == 2 && m.nind == 3 * 4 * 2,
+           "isolines: 3 lines of 4 segments");
+    expect(tess_patch(&m, 3, 1, 4, fours, fours, 64) && m.nind == 96 && !mesh_ok(&m, false, 1, 32),
+           "counter-clockwise output turns the other way");
+    tess_free(&m);
+}
+
 int device_tests(void)
 {
+    tess_tests();
     format_tests();
     sample_tests();
     draw_tests();

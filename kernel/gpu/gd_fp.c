@@ -4,6 +4,7 @@
 #if defined(__x86_64__) || defined(RS_HOST)
 
 #include <synth/raster.h>
+#include <synth/tess.h>
 
 #include "gd_internal.h"
 #include "gmath.h"
@@ -958,6 +959,8 @@ struct draw {
     int out_n, out_pos;                  /* what vs_run gives: registers 0 .. out_n - 1 and the position's */
     struct gs_out *gso;                  /* the geometry shader's vertices */
     const struct so_decl *so;            /* while stream output runs: written, not drawn */
+    const struct dxbc_shader *hs, *ds;   /* tessellation, or NULL */
+    struct dxbc_env hs_env, ds_env;
     struct dxbc_env gs_env;
     struct vs_input in[MAX_REGS];
     int pos_reg, nvary;
@@ -1786,6 +1789,198 @@ done:
     kfree(g.ind);
 }
 
+/* a vertex of the tessellated mesh, from the domain shader's outputs, onto the end of g */
+static bool tess_vertex(struct gs_out *g, struct draw *d, uint32_t (*o)[4][4], int lane)
+{
+    if (g->nv == g->cap) {
+        uint32_t cap = g->cap ? g->cap * 2 : 256;
+        float *v = cap <= (1u << 22) ? kmalloc(sizeof(float) * (size_t)g->floats * cap) : NULL;
+        if (!v)
+            return false;
+        if (g->verts)
+            memcpy(v, g->verts, sizeof(float) * (size_t)g->floats * g->nv);
+        kfree(g->verts);
+        g->verts = v, g->cap = cap;
+    }
+    float *dst = g->verts + (size_t)g->nv++ * (size_t)g->floats;
+    if (d->pos_reg >= 0)
+        memcpy(dst, o[d->pos_reg][lane], 16);
+    else
+        memset(dst, 0, 16);
+    for (int k = 0; k < d->nvary; k++)
+        memcpy(dst + 4 + k * 4, o[k][lane], 16);
+    return true;
+}
+
+static bool tess_index(struct gs_out *g, uint32_t v)
+{
+    if (g->ni == g->icap) {
+        uint32_t cap = g->icap ? g->icap * 2 : 768;
+        uint32_t *ind = cap <= (1u << 24) ? kmalloc(sizeof(uint32_t) * cap) : NULL;
+        if (!ind)
+            return false;
+        if (g->ind)
+            memcpy(ind, g->ind, sizeof(uint32_t) * g->ni);
+        kfree(g->ind);
+        g->ind = ind, g->icap = cap;
+    }
+    g->ind[g->ni++] = v;
+    return true;
+}
+
+/* the tessellation factors from the patch constants, by their system values in the hull shader's signature */
+static void tess_factors(const struct dxbc_shader *hs, const uint32_t (*pc)[4], float edge[4], float inside[2])
+{
+    for (int i = 0; i < 4; i++)
+        edge[i] = 0;
+    inside[0] = inside[1] = 0;
+    for (int i = 0; i < hs->npc; i++) {
+        const struct dxbc_sig_elem *e = &hs->pc[i];
+        if (e->reg >= 32 || !e->mask)
+            continue;
+        float f;
+        memcpy(&f, &pc[e->reg][__builtin_ctz(e->mask)], 4);
+        uint32_t k = e->index;
+        switch (e->system_value) {
+        case 11: case 13: if (k < 4) edge[k] = f; break;   /* quad and triangle edges */
+        case 12: case 14: if (k < 2) inside[k] = f; break; /* quad and triangle insides */
+        case 15: edge[0] = f; break;                       /* isoline detail: how many lines */
+        case 16: edge[1] = f; break;                       /* isoline density: segments in each */
+        }
+    }
+}
+
+/* a draw of patches: the vertex shader on every vertex, then each patch through the hull shader's phases, the
+   tessellator and the domain shader; what comes out is rasterized like a geometry shader's output */
+static void tess_draw(struct draw *d, struct rs_target *t, struct rs_state *s, uint32_t count, uint32_t start,
+                      const uint32_t *idx, int32_t base_vertex, uint32_t cps)
+{
+    const struct dxbc_shader *hs = d->hs, *ds = d->ds;
+    uint32_t patches = count / cps, lo = 0xffffffffu, hi = 0;
+    for (uint32_t i = 0; i < patches * cps; i++) {
+        uint32_t v = idx ? idx[i] + (uint32_t)base_vertex : start + i;
+        lo = v < lo ? v : lo, hi = v > hi ? v : hi;
+    }
+    if (!patches || lo > hi || hi - lo >= (1u << 20))
+        return;
+    uint32_t nverts = hi - lo + 1, cp_out = hs->cp_out ? hs->cp_out : cps;
+    if (cp_out > DXBC_MAX_CP)
+        return;
+    int vfloats = 4 + d->out_n * 4;
+    size_t regs = sizeof(uint32_t[MAX_REGS][4][4]) * 2, most = dxbc_scratch(d->vs);
+    most = dxbc_scratch(hs) > most ? dxbc_scratch(hs) : most;
+    most = dxbc_scratch(ds) > most ? dxbc_scratch(ds) : most;
+    size_t cp_bytes = sizeof(uint32_t) * 4 * MAX_REGS * DXBC_MAX_CP;
+    float *verts = kmalloc(sizeof(float) * (size_t)vfloats * nverts);
+    uint8_t *scratch = kmalloc(regs + most);
+    uint32_t *icp = kzalloc(cp_bytes), *ocp = kzalloc(cp_bytes);
+    uint32_t(*pcv)[4][4] = kmalloc(sizeof(uint32_t[32][4][4])), (*pc)[4] = kmalloc(sizeof(uint32_t[32][4]));
+    struct gs_out g = {.d = d, .floats = 4 + d->nvary * 4};
+    struct tess_mesh mesh = {0};
+    if (!verts || !scratch || !icp || !ocp || !pcv || !pc)
+        goto done;
+    for (uint32_t v = 0; v < nverts; v += 4)
+        vs_run(d, lo + v, nverts - v < 4 ? (int)(nverts - v) : 4, verts + (size_t)v * (size_t)vfloats, scratch);
+    uint32_t(*in)[4][4] = (uint32_t(*)[4][4])scratch, (*o)[4][4] = (uint32_t(*)[4][4])(scratch + regs / 2);
+    int cp_phase = -1;
+    for (int i = 0; i < hs->nphase; i++)
+        if (hs->phase[i].kind == 0)
+            cp_phase = i;
+    for (uint32_t p = 0; p < patches; p++) {
+        /* the patch's control points, as the vertex shader left them */
+        for (uint32_t k = 0; k < cps; k++) {
+            uint32_t v = idx ? idx[p * cps + k] + (uint32_t)base_vertex : start + p * cps + k;
+            memcpy(icp + (size_t)k * MAX_REGS * 4, verts + (size_t)(v - lo) * (size_t)vfloats + 4,
+                   sizeof(float) * 4 * (size_t)d->out_n);
+        }
+        /* the hull shader: its control points (or the patch's, passed through), then the patch constants */
+        if (cp_phase < 0) {
+            memcpy(ocp, icp, cp_bytes);
+        } else {
+            for (uint32_t k = 0; k < cp_out; k += 4) {
+                int n = cp_out - k < 4 ? (int)(cp_out - k) : 4;
+                memset(scratch, 0, regs);
+                struct dxbc_lanes l = {.v = in, .o = o, .live = (1u << n) - 1, .scratch = scratch + regs, .gsv = icp,
+                                       .gsv_regs = MAX_REGS, .prim_id = p, .entry = hs->phase[cp_phase].start};
+                for (int q = 0; q < 4; q++)
+                    l.cp_id[q] = k + (uint32_t)q;
+                if (!dxbc_run(hs, &d->hs_env, &l)) {
+                    note_fault(l.error);
+                    goto draw;
+                }
+                for (int q = 0; q < n; q++)
+                    for (int r = 0; r < MAX_REGS; r++)
+                        memcpy(ocp + ((size_t)(k + (uint32_t)q) * MAX_REGS + (size_t)r) * 4, o[r][q], 16);
+            }
+        }
+        memset(pcv, 0, sizeof(uint32_t[32][4][4]));
+        memset(pc, 0, sizeof(uint32_t[32][4]));
+        for (int ph = 0; ph < hs->nphase; ph++) {
+            if (hs->phase[ph].kind == 0)
+                continue;
+            for (uint32_t inst = 0; inst < hs->phase[ph].instances && inst < 256; inst++) {
+                memset(in, 0, regs / 2);
+                struct dxbc_lanes l = {.v = in, .o = pcv, .live = 1, .scratch = scratch + regs, .gsv = icp,
+                                       .gsv_regs = MAX_REGS, .ocp = ocp, .ocp_regs = MAX_REGS, .pc = pc[0],
+                                       .prim_id = p, .entry = hs->phase[ph].start};
+                l.phase_id[0] = inst;
+                if (!dxbc_run(hs, &d->hs_env, &l)) {
+                    note_fault(l.error);
+                    goto draw;
+                }
+                for (int r = 0; r < 32; r++) /* what the join phases read as vpc */
+                    memcpy(pc[r], pcv[r][0], 16);
+            }
+        }
+        float edge[4], inside[2];
+        tess_factors(hs, (const uint32_t(*)[4])pc, edge, inside);
+        uint32_t domain = hs->domain ? hs->domain : ds->domain;
+        if (!tess_patch(&mesh, domain, hs->partitioning, hs->out_prim ? hs->out_prim : 3, edge, inside, hs->max_tess))
+            continue; /* culled */
+        /* the domain shader on every point of the patch */
+        uint32_t base = g.nv;
+        for (uint32_t k = 0; k < mesh.npt; k += 4) {
+            int n = mesh.npt - k < 4 ? (int)(mesh.npt - k) : 4;
+            memset(scratch, 0, regs);
+            struct dxbc_lanes l = {.v = in, .o = o, .live = (1u << n) - 1, .scratch = scratch + regs, .gsv = ocp,
+                                   .gsv_regs = MAX_REGS, .pc = pc[0], .prim_id = p};
+            for (int q = 0; q < n; q++)
+                l.domain[q][0] = mesh.pt[k + (uint32_t)q][0], l.domain[q][1] = mesh.pt[k + (uint32_t)q][1],
+                l.domain[q][2] = mesh.pt[k + (uint32_t)q][2];
+            if (!dxbc_run(ds, &d->ds_env, &l)) {
+                note_fault(l.error);
+                goto draw;
+            }
+            for (int q = 0; q < n; q++)
+                if (!tess_vertex(&g, d, o, q))
+                    goto draw;
+        }
+        for (uint32_t k = 0; k < mesh.nind; k++)
+            if (!tess_index(&g, base + mesh.ind[k]))
+                goto draw;
+    }
+draw:
+    if (g.ni) {
+        struct rs_state ts = *s;
+        ts.vs = gs_fetch;
+        d->gso = &g;
+        enum rs_topology topo = mesh.per == 1 ? RS_POINTS : mesh.per == 2 ? RS_LINES : RS_TRIANGLES;
+        int n = rs_draw(t, &ts, topo, g.ni, g.ind, 0);
+        stats.triangles += n > 0 ? (uint64_t)n : 0;
+        d->gso = NULL;
+    }
+done:
+    tess_free(&mesh);
+    kfree(verts);
+    kfree(scratch);
+    kfree(icp);
+    kfree(ocp);
+    kfree(pcv);
+    kfree(pc);
+    kfree(g.verts);
+    kfree(g.ind);
+}
+
 /* the indices from start on, as 32-bit numbers (the 16-bit restart index as 0xffffffff); count: as many as there are */
 static uint32_t *read_indices(struct gd_context *c, uint32_t start, uint32_t *count)
 {
@@ -1858,12 +2053,17 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     struct gd_shader *vs = c->stage[DXBC_VS].shader, *ps = c->stage[DXBC_PS].shader;
     static const int8_t topologies[14] = {-1, RS_POINTS, RS_LINES, RS_LINE_STRIP, RS_TRIANGLES, RS_STRIP, -1, -1, -1,
                                           -1, RS_LINES_ADJ, RS_LINE_STRIP_ADJ, RS_TRIANGLES_ADJ, -1};
-    if (c->topology >= 14 || topologies[c->topology] < 0) {
-        stats.skipped++; /* triangle strips with adjacency and patches: not yet */
+    /* patches of 1 to 32 control points: through the hull shader, the tessellator and the domain shader */
+    struct gd_shader *hs = c->stage[DXBC_HS].shader, *ds = c->stage[DXBC_DS].shader;
+    uint32_t cps = c->topology >= 33 && c->topology <= 64 ? c->topology - 32 : 0;
+    bool tess = cps && hs && ds && hs->sh.stage == DXBC_HS && ds->sh.stage == DXBC_DS &&
+                (!hs->sh.cp_in || hs->sh.cp_in == cps);
+    if (!tess && (c->topology >= 14 || topologies[c->topology] < 0)) {
+        stats.skipped++; /* triangle strips with adjacency, and patches without both tessellation shaders */
         return;
     }
-    enum rs_topology topo = (enum rs_topology)topologies[c->topology];
-    if (!vs || vs->sh.stage != DXBC_VS || !count || !instances || c->stage[DXBC_HS].shader) {
+    enum rs_topology topo = tess ? RS_TRIANGLES : (enum rs_topology)topologies[c->topology];
+    if (!vs || vs->sh.stage != DXBC_VS || !count || !instances || (hs && !tess)) {
         stats.skipped++;
         return;
     }
@@ -1875,7 +2075,17 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     d->ps = ps && ps->sh.stage == DXBC_PS ? &ps->sh : NULL;
     struct gd_shader *gs = c->stage[DXBC_GS].shader;
     d->gs = gs && gs->sh.stage == DXBC_GS ? &gs->sh : NULL;
-    d->last = d->gs ? d->gs : d->vs;
+    if (tess) {
+        if (d->gs) { /* a geometry shader after the domain shader: not yet */
+            stats.skipped++;
+            kfree(d);
+            return;
+        }
+        d->hs = &hs->sh, d->ds = &ds->sh;
+        make_env(&d->hs_env, &c->stage[DXBC_HS]);
+        make_env(&d->ds_env, &c->stage[DXBC_DS]);
+    }
+    d->last = d->gs ? d->gs : d->ds ? d->ds : d->vs;
     d->pos_reg = -1;
     for (int i = 0; i < d->last->nout; i++)
         if (d->last->out[i].system_value == 1 && d->last->out[i].reg < MAX_REGS)
@@ -1889,7 +2099,7 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     if (d->nvary < 0)
         d->nvary = 0;
     d->out_n = d->nvary, d->out_pos = d->pos_reg;
-    if (d->gs) { /* the vertex shader's every output register goes to the geometry shader */
+    if (d->gs || d->ds) { /* the vertex shader's every output register goes to the next shader */
         d->out_n = d->vs->max_out_reg + 1, d->out_pos = -1;
         for (int i = 0; i < d->vs->nout; i++)
             if ((int)d->vs->out[i].reg + 1 > d->out_n && d->vs->out[i].reg < MAX_REGS)
@@ -1898,7 +2108,8 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
             d->out_n = MAX_REGS;
         if (d->out_n < 0)
             d->out_n = 0;
-        make_env(&d->gs_env, &c->stage[DXBC_GS]);
+        if (d->gs)
+            make_env(&d->gs_env, &c->stage[DXBC_GS]);
     }
     link_inputs(d);
     uint32_t flat, nopersp;
@@ -1906,7 +2117,7 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     make_env(&d->vs_env, &c->stage[DXBC_VS]);
     make_env(&d->ps_env, &c->stage[DXBC_PS]);
     d->first_instance = start_instance;
-    if (!stream_out(d, topo, indexed, count, start, base_vertex, instances)) {
+    if (!tess && !stream_out(d, topo, indexed, count, start, base_vertex, instances)) {
         kfree(d);
         return;
     }
@@ -1996,6 +2207,15 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
         return;
     }
     d->first_instance = start_instance;
+    if (tess) {
+        for (uint32_t inst = 0; inst < instances; inst++) {
+            d->instance = inst;
+            tess_draw(d, &t, &s, count, start, idx, base_vertex, cps);
+        }
+        kfree(idx);
+        kfree(d);
+        return;
+    }
     if (d->gs) {
         for (uint32_t inst = 0; inst < instances; inst++) {
             d->instance = inst;

@@ -89,8 +89,8 @@ struct sig {
     const char *name;
     uint32_t index, sv, reg, mask;
 };
-static struct sig sig_in[16], sig_out[16];
-static int nsig_in, nsig_out;
+static struct sig sig_in[16], sig_out[16], sig_pc[16];
+static int nsig_in, nsig_out, nsig_pc;
 
 static __attribute__((unused)) void in_sig(const char *name, uint32_t index, uint32_t sv, uint32_t reg, uint32_t mask)
 {
@@ -100,6 +100,12 @@ static __attribute__((unused)) void in_sig(const char *name, uint32_t index, uin
 static __attribute__((unused)) void out_sig(const char *name, uint32_t index, uint32_t sv, uint32_t reg, uint32_t mask)
 {
     sig_out[nsig_out++] = (struct sig){name, index, sv, reg, mask};
+}
+
+/* a hull or domain shader's patch constants */
+static __attribute__((unused)) void pc_sig(const char *name, uint32_t index, uint32_t sv, uint32_t reg, uint32_t mask)
+{
+    sig_pc[nsig_pc++] = (struct sig){name, index, sv, reg, mask};
 }
 
 static size_t put_sig(uint8_t *at, const char *tag, const struct sig *s, int count)
@@ -140,13 +146,17 @@ static __attribute__((unused)) size_t container(int stage, int temps)
     body[1] = (uint32_t)m;
     memset(blob, 0, sizeof(blob));
     memcpy(blob, "DXBC", 4);
-    uint32_t chunks = 3, one = 1;
+    uint32_t chunks = nsig_pc ? 4 : 3, one = 1;
     size_t at = 32 + 4 * chunks;
-    uint32_t offs[3];
+    uint32_t offs[4];
     offs[0] = (uint32_t)at;
     at += put_sig(blob + at, "ISGN", sig_in, nsig_in);
     offs[1] = (uint32_t)at;
     at += put_sig(blob + at, "OSGN", sig_out, nsig_out);
+    if (nsig_pc) {
+        offs[3] = (uint32_t)at;
+        at += put_sig(blob + at, "PCSG", sig_pc, nsig_pc);
+    }
     offs[2] = (uint32_t)at;
     uint32_t len = (uint32_t)m * 4;
     memcpy(blob + at, "SHDR", 4);
@@ -157,8 +167,8 @@ static __attribute__((unused)) size_t container(int stage, int temps)
     memcpy(blob + 20, &one, 4);
     memcpy(blob + 24, &total, 4);
     memcpy(blob + 28, &chunks, 4);
-    memcpy(blob + 32, offs, sizeof(offs));
-    n = 0, nsig_in = nsig_out = 0;
+    memcpy(blob + 32, offs, 4 * chunks);
+    n = 0, nsig_in = nsig_out = nsig_pc = 0;
     return total;
 }
 
