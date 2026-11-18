@@ -737,7 +737,7 @@ static int register_boot(const u8 *path, uintn path_len)
     if (ERROR(st->runtime->get_variable(u"BootOrder", &global_guid, &attrs, &order_size, order)))
         order_size = 0;
     uintn count = order_size / 2;
-    int number = -1, free_number = -1;
+    int number = -1, free_number = -1, unchanged = 0;
     for (u32 n = 0; n < 0x1000 && number < 0; n++) {
         char16 name[9];
         static u8 data[1024];
@@ -751,16 +751,22 @@ static int register_boot(const u8 *path, uintn path_len)
                 break;
             continue;
         }
-        if (!ERROR(r) && data_size > 6 + desc_size && same(data + 6, desc, desc_size))
+        if (!ERROR(r) && data_size > 6 + desc_size && same(data + 6, desc, desc_size)) {
             number = (int)n;
+            unchanged = data_size == size && same(data, option, size);
+        }
     }
     if (number < 0)
         number = free_number;
     if (number < 0)
         return 0;
+    /* already there and first: nothing to write (the menu is checked on every start, since Windows puts its own
+       entry back in front after its updates) */
+    if (unchanged && count && order[0] == number)
+        return 1;
     char16 name[9];
     boot_name(name, (u16)number);
-    if (ERROR(st->runtime->set_variable(name, &global_guid, VAR_ATTRS, size, option)))
+    if (!unchanged && ERROR(st->runtime->set_variable(name, &global_guid, VAR_ATTRS, size, option)))
         return 0;
     u16 next[129];
     uintn k = 0;
@@ -1175,7 +1181,8 @@ status EFIAPI efi_main(void *image, struct system_table *table)
     struct config cfg;
     int tries = read_tries(root), safe = tries >= 2;
     if (read_config(root, &cfg)) {
-        if (cfg.reg && register_self(image, root))
+        /* every start keeps SynthOS first in the firmware's boot order, so its menu (SynthOS / Windows) comes up */
+        if (register_self(image, root) && cfg.reg)
             clear_register(root, &cfg);
         safe = boot_menu(root, &cfg, safe);
     } else {

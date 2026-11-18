@@ -1,5 +1,6 @@
 #include <synth/block.h>
 #include <synth/console.h>
+#include <synth/fmt.h>
 #include <synth/fbcon.h>
 #include <synth/hal.h>
 #include <synth/keys.h>
@@ -43,10 +44,34 @@ void hal_debug_write(const char *s, size_t n)
     serial_write(s, n);
 }
 
+static char net_unknown[128];
+
+/* network controllers that no driver took, for Settings > Network: "8086:15f3 Ethernet" */
+static void unclaimed(const struct pci_device *d, void *ctx)
+{
+    UNUSED(ctx);
+    if (d->class_code != 0x02)
+        return;
+    bool ours = d->vendor == 0x8086 ? e1000_supports(d->device) : realtek_supports(d->vendor, d->device);
+    size_t n = strlen(net_unknown);
+    if (ours || n + 24 >= sizeof(net_unknown))
+        return;
+    ksnprintf(net_unknown + n, sizeof(net_unknown) - n, "%s%04x:%04x %s", n ? ", " : "", d->vendor, d->device,
+              d->subclass == 0x00 ? "Ethernet" : d->subclass == 0x80 ? "Wi-Fi" : "network");
+}
+
 void hal_net_init(void)
 {
     e1000_init();
     realtek_init();
+    pci_foreach(unclaimed, NULL);
+    if (net_unknown[0])
+        klog("net: no driver for %s", net_unknown);
+}
+
+const char *hal_net_unsupported(void)
+{
+    return net_unknown;
 }
 
 bool hal_safe_mode(void)

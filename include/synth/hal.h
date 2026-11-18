@@ -102,6 +102,8 @@ struct usb_info {
 
 int hal_usb_devices(struct usb_info *out, int max);
 void hal_net_init(void);
+/* network controllers found without a driver ("8086:15f3 Ethernet, ..."), empty when there are none */
+const char *hal_net_unsupported(void);
 void hal_debug_write(const char *s, size_t n);
 void hal_set_idle(void (*fn)(void));
 uint64_t hal_ticks_ms(void);

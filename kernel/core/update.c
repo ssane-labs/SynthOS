@@ -590,16 +590,43 @@ static int apply_bytes(struct shell *sh, uint8_t *data, size_t size, bool dry)
     return err;
 }
 
-COMMAND(update, "softwareupdate", "system", "update [check | install | verify <file.sup> | apply <file.sup>]",
-        "update SynthOS without a reinstall: from the update server or a package file")
+/* a package someone brought on a stick, for computers whose network does not work yet */
+static bool find_package(char *out, size_t cap)
+{
+    static const char *const names[] = {"synthos-update.sup", "SYNTHOS-UPDATE.SUP"};
+    struct vdir dir;
+    if (vfs_opendir("/mnt", &dir))
+        return false;
+    struct vfs_dirent e;
+    bool found = false;
+    while (!found && vfs_readdir(&dir, &e) == 0)
+        for (size_t i = 0; i < ARRAY_SIZE(names) && !found; i++) {
+            ksnprintf(out, cap, "/mnt/%s/%s", e.name, names[i]);
+            found = vfs_exists(out);
+        }
+    vfs_closedir(&dir);
+    return found;
+}
+
+COMMAND(update, "softwareupdate", "system", "update [check | install | verify <file.sup> | apply [file.sup]]",
+        "update SynthOS without a reinstall: from the update server or a package file (apply alone: from a stick)")
 {
     const char *op = argc > 1 ? argv[1] : "check";
-    if ((!strcmp(op, "verify") || !strcmp(op, "apply")) && argc == 3) {
+    char found_path[PATH_MAX_LEN];
+    if (!strcmp(op, "apply") && argc == 2) {
+        if (!find_package(found_path, sizeof(found_path)))
+            return sh_error(sh, "update", "no synthos-update.sup in the root of a stick or disk");
+        sh_printf(sh, "Installing %s\n", found_path);
+    }
+    if ((!strcmp(op, "verify") || !strcmp(op, "apply")) && argc <= 3) {
+        const char *file = argc == 3 ? argv[2] : found_path;
+        if (argc == 2 && strcmp(op, "apply"))
+            return command_usage(sh, command_find("update"));
         char *data;
         size_t size;
-        int err = vfs_read_all(argv[2], &data, &size);
+        int err = vfs_read_all(file, &data, &size);
         if (err)
-            return sh_error(sh, "update", "%s: %s", argv[2], err_str(err));
+            return sh_error(sh, "update", "%s: %s", file, err_str(err));
         err = apply_bytes(sh, (uint8_t *)data, size, !strcmp(op, "verify"));
         kfree(data);
         return err;

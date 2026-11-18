@@ -236,7 +236,14 @@ $out = (& bcdedit.exe /copy '{bootmgr}' /d 'SynthOS') -join ' '
 $entry = [regex]::Match($out, '\{[0-9a-fA-F-]{36}\}').Value
 if (-not $entry) { Fail "bcdedit: $out" }
 & bcdedit.exe /set $entry path $loader | Out-Null
-& bcdedit.exe /set '{fwbootmgr}' displayorder $entry /addlast | Out-Null
+& bcdedit.exe /set '{fwbootmgr}' displayorder $entry /addfirst | Out-Null
+# Windows puts its own entry back in front after its updates: a task puts SynthOS first again at every start
+try {
+    $action = New-ScheduledTaskAction -Execute 'bcdedit.exe' -Argument "/set {fwbootmgr} displayorder $entry /addfirst"
+    $who = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName 'SynthOS boot menu' -Action $action -Trigger (New-ScheduledTaskTrigger -AtStartup) `
+        -Principal $who -Force | Out-Null
+} catch { }
 & bcdedit.exe /set '{fwbootmgr}' bootsequence $entry | Out-Null
 
 Write-Host ''

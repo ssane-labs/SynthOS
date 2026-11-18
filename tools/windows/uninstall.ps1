@@ -26,6 +26,7 @@ if (-not $Yes) {
     if ($answer -notmatch '^(y|yes|д|да)$') { Fail 'отменено.' }
 }
 
+Unregister-ScheduledTask -TaskName 'SynthOS boot menu' -Confirm:$false -ErrorAction SilentlyContinue
 $text = (& bcdedit.exe /enum firmware) -join "`n"
 foreach ($block in ($text -split "`n\s*`n")) {
     if ($block -match '(?m)\sSynthOS\s*$') {

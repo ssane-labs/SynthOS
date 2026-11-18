@@ -1,3 +1,7 @@
+/* the 32-bit kernel has to fit below 3.5 MiB: the network drivers are built for size there */
+#if !defined(__x86_64__) && defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize("Os")
+#endif
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
@@ -26,9 +30,14 @@ struct desc {
     uint32_t opts1, opts2, addr_lo, addr_hi;
 };
 
+/* The gigabit chips are reached through their memory BAR when the firmware gave them one: on many newer boards the
+   bridges have no I/O window and the I/O BAR is left empty. */
 struct rtl8169 {
     struct netdev dev;
     uint16_t io;
+    volatile uint8_t *mmio;
+    uint32_t xid;
+    bool rtl8125, pll;
     volatile struct desc *rx, *tx;
     uint8_t *rx_buf, *tx_buf;
     int rx_next, tx_next;
@@ -37,6 +46,56 @@ struct rtl8169 {
 static struct rtl8139 small[MAX_NICS];
 static struct rtl8169 big[MAX_NICS];
 static int small_count, big_count;
+
+static uint8_t r8(struct rtl8169 *n, uint16_t reg)
+{
+    return n->mmio ? n->mmio[reg] : inb((uint16_t)(n->io + reg));
+}
+
+static uint32_t r32(struct rtl8169 *n, uint16_t reg)
+{
+    return n->mmio ? *(volatile uint32_t *)(n->mmio + reg) : inl((uint16_t)(n->io + reg));
+}
+
+static void w8(struct rtl8169 *n, uint16_t reg, uint8_t v)
+{
+    if (n->mmio)
+        n->mmio[reg] = v;
+    else
+        outb((uint16_t)(n->io + reg), v);
+}
+
+static void w16(struct rtl8169 *n, uint16_t reg, uint16_t v)
+{
+    if (n->mmio)
+        *(volatile uint16_t *)(n->mmio + reg) = v;
+    else
+        outw((uint16_t)(n->io + reg), v);
+}
+
+static void w32(struct rtl8169 *n, uint16_t reg, uint32_t v)
+{
+    if (n->mmio)
+        *(volatile uint32_t *)(n->mmio + reg) = v;
+    else
+        outl((uint16_t)(n->io + reg), v);
+}
+
+/* PHY registers: through PHYAR on the older chips, through the PHY's OCP window (0xa400 + 2 * reg) from the
+   RTL8168G on, the RTL8125 included. */
+static void phy_write(struct rtl8169 *n, int reg, uint16_t value)
+{
+    bool ocp = n->xid >= 0x4c0;
+    if (ocp)
+        w32(n, 0xb8, 0x80000000u | (uint32_t)(0xa400 + reg * 2) << 15 | value);
+    else
+        w32(n, 0x60, 0x80000000u | (uint32_t)(reg & 0x1f) << 16 | value);
+    for (int i = 0; i < 100; i++) {
+        hal_sleep_ms(1);
+        if (!(r32(n, ocp ? 0xb8 : 0x60) & 0x80000000u))
+            break;
+    }
+}
 
 static int rtl8139_send(struct netdev *dev, const void *frame, size_t length)
 {
@@ -122,7 +181,10 @@ static int rtl8169_send(struct netdev *dev, const void *frame, size_t length)
     d->opts1 = (1u << 31) | (1u << 29) | (1u << 28) | (n->tx_next == RING - 1 ? 1u << 30 : 0) | (uint32_t)length;
     n->tx_next = (n->tx_next + 1) % RING;
     cpu_barrier();
-    outb((uint16_t)(n->io + 0x38), 0x40);
+    if (n->rtl8125)
+        w16(n, 0x90, 1);
+    else
+        w8(n, 0x38, 0x40);
     return 0;
 }
 
@@ -157,16 +219,17 @@ static int rtl8169_receive(struct netdev *dev, void *frame, size_t cap)
 static bool rtl8169_link(struct netdev *dev)
 {
     struct rtl8169 *n = dev->priv;
-    return inb((uint16_t)(n->io + 0x6c)) & 2;
+    return r8(n, 0x6c) & 2;
 }
 
 static bool rtl8169_setup(struct rtl8169 *n)
 {
-    outb((uint16_t)(n->io + 0x37), 0x10);
-    for (int i = 0; i < 1000 && (inb((uint16_t)(n->io + 0x37)) & 0x10); i++)
+    n->xid = r32(n, 0x40) >> 20 & 0x7cf;
+    w8(n, 0x37, 0x10);
+    for (int i = 0; i < 1000 && (r8(n, 0x37) & 0x10); i++)
         hal_sleep_ms(1);
     for (int i = 0; i < 6; i++)
-        n->dev.mac[i] = inb((uint16_t)(n->io + i));
+        n->dev.mac[i] = r8(n, (uint16_t)i);
     n->rx = kmalloc_pages(4096);
     n->tx = kmalloc_pages(4096);
     n->rx_buf = kmalloc_pages(RING * BUFFER);
@@ -177,21 +240,32 @@ static bool rtl8169_setup(struct rtl8169 *n)
     for (int i = 0; i < RING; i++)
         rearm(n, i);
     n->tx[RING - 1].opts1 = 1u << 30;
-    outb((uint16_t)(n->io + 0x50), 0xc0);
-    outw((uint16_t)(n->io + 0xe0), 0x0008);
-    outw((uint16_t)(n->io + 0xda), 1536);
-    outb((uint16_t)(n->io + 0xec), 0x3b);
-    outl((uint16_t)(n->io + 0x20), vmm_phys((const void *)n->tx));
-    outl((uint16_t)(n->io + 0x24), 0);
-    outl((uint16_t)(n->io + 0xe4), vmm_phys((const void *)n->rx));
-    outl((uint16_t)(n->io + 0xe8), 0);
-    outb((uint16_t)(n->io + 0x37), 0x0c);
-    outl((uint16_t)(n->io + 0x08), 0xffffffffu);
-    outl((uint16_t)(n->io + 0x0c), 0xffffffffu);
-    outl((uint16_t)(n->io + 0x44), 0x0000e70eu);
-    outl((uint16_t)(n->io + 0x40), 0x03000700u);
-    outw((uint16_t)(n->io + 0x3c), 0);
-    outb((uint16_t)(n->io + 0x50), 0x00);
+    w8(n, 0x50, 0xc0);
+    /* The PHY may still be powered down by the system that ran before (Windows turns it off on shutdown): power
+       the PLL up, wake the PHY and let it negotiate the link again. */
+    if (n->pll)
+        w8(n, 0x6f, r8(n, 0x6f) | (n->xid >= 0x4c0 ? 0xc0 : 0x80));
+    phy_write(n, 0x1f, 0);
+    phy_write(n, 0x00, 0x1200);
+    if (n->rtl8125) {
+        w32(n, 0x38, 0);
+        w32(n, 0x3c, 0xffffffffu);
+    }
+    w16(n, 0xe0, 0x0008);
+    w16(n, 0xda, 1536);
+    w8(n, 0xec, 0x3b);
+    w32(n, 0x20, vmm_phys((const void *)n->tx));
+    w32(n, 0x24, 0);
+    w32(n, 0xe4, vmm_phys((const void *)n->rx));
+    w32(n, 0xe8, 0);
+    w8(n, 0x37, 0x0c);
+    w32(n, 0x08, 0xffffffffu);
+    w32(n, 0x0c, 0xffffffffu);
+    w32(n, 0x44, n->rtl8125 ? (8u << 27 | 7u << 8 | 0x0e) : 0x0000e70eu);
+    w32(n, 0x40, 0x03000700u);
+    if (!n->rtl8125)
+        w16(n, 0x3c, 0);
+    w8(n, 0x50, 0x00);
     return true;
 }
 
@@ -205,6 +279,21 @@ static uint16_t io_bar(const struct pci_device *d)
     return 0;
 }
 
+static const uint16_t gigabit[] = {0x8161, 0x8162, 0x8168, 0x8169, 0x8167, 0x8136, 0x8125, 0x3000, 0x2502,
+                                   0x2600, 0x4300, 0xc107};
+
+bool realtek_supports(uint16_t vendor, uint16_t device)
+{
+    if (vendor == 0x10ec && (device == 0x8139 || device == 0x8138))
+        return true;
+    if (vendor != 0x10ec && !(vendor == 0x1186 && device == 0x4300) && !(vendor == 0x1259 && device == 0xc107))
+        return false;
+    for (size_t i = 0; i < ARRAY_SIZE(gigabit); i++)
+        if (gigabit[i] == device)
+            return true;
+    return false;
+}
+
 static void found(const struct pci_device *d, void *ctx)
 {
     UNUSED(ctx);
@@ -213,12 +302,10 @@ static void found(const struct pci_device *d, void *ctx)
     if (!realtek || d->class_code != 0x02)
         return;
     uint16_t io = io_bar(d);
-    if (!io)
-        return;
-    pci_write(d, 0x04, pci_read(d, 0x04) | 0x05);
     if (d->vendor == 0x10ec && (d->device == 0x8139 || d->device == 0x8138)) {
-        if (small_count == MAX_NICS)
+        if (small_count == MAX_NICS || !io)
             return;
+        pci_write(d, 0x04, pci_read(d, 0x04) | 0x05);
         struct rtl8139 *n = &small[small_count];
         n->io = io;
         if (!rtl8139_setup(n))
@@ -232,18 +319,30 @@ static void found(const struct pci_device *d, void *ctx)
         net_register(&n->dev);
         return;
     }
-    static const uint16_t gigabit[] = {0x8161, 0x8168, 0x8169, 0x8167, 0x8136, 0x8125, 0x2502, 0x2600, 0x4300,
-                                       0xc107};
-    bool known = false;
-    for (size_t i = 0; i < ARRAY_SIZE(gigabit); i++)
-        known |= gigabit[i] == d->device;
-    if (!known || big_count == MAX_NICS)
+    if (!realtek_supports(d->vendor, d->device) || big_count == MAX_NICS)
         return;
     struct rtl8169 *n = &big[big_count];
+    memset(n, 0, sizeof(*n));
     n->io = io;
-    if (!rtl8169_setup(n))
+    n->rtl8125 = d->device == 0x8125 || d->device == 0x3000;
+    n->pll = d->device != 0x8169 && d->device != 0x8167 && d->device != 0x8136 && d->vendor == 0x10ec;
+    uint64_t base = 0;
+    for (uint8_t bar = 0x18; bar >= 0x14 && !n->mmio; bar = (uint8_t)(bar - 4)) {
+        uint32_t low = pci_read(d, bar);
+        if (!(low & 1) && pci_bar_base(d, bar, &base))
+            n->mmio = vmm_map_phys64(base, 0x1000);
+    }
+    if (!n->mmio && !io) {
+        klog("realtek: %04x has neither memory nor I/O registers", d->device);
         return;
-    n->dev.driver = d->device == 0x8136 ? "rtl8101" : "rtl8169";
+    }
+    pci_write(d, 0x04, pci_read(d, 0x04) | (n->mmio ? 0x06u : 0u) | (io ? 0x05u : 0u));
+    if (!rtl8169_setup(n)) {
+        klog("realtek: %04x did not initialize", d->device);
+        return;
+    }
+    klog("realtek: %04x (chip %03x) through %s", d->device, (unsigned)n->xid, n->mmio ? "memory" : "I/O ports");
+    n->dev.driver = d->device == 0x8136 ? "rtl8101" : n->rtl8125 ? "rtl8125" : "rtl8169";
     n->dev.send = rtl8169_send;
     n->dev.receive = rtl8169_receive;
     n->dev.link = rtl8169_link;

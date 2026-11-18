@@ -586,6 +586,22 @@ static void header(struct page *p, enum symbol_id sym, uint32_t color, const cha
     end(p, NULL);
 }
 
+/* words that must be read even under the moving picture: a title and a paragraph in a box of their own */
+static void notice(struct page *p, const char *title, const char *text)
+{
+    section(p, NULL);
+    int lines = wrap(NULL, (struct rect){0, 0, p->w - 48, 0}, &font_small, text, 0, ALIGN_LEFT);
+    struct rect r = row(p, NULL, NULL, 44 + lines * (font_small.height + 3), 0);
+    if (p->query && (found(p->query, title) || found(p->query, text)))
+        p->hits += p->measure;
+    if (!p->measure && p->ui->c) {
+        gfx_text_box(p->ui->c, (struct rect){r.x + 24, r.y + 12, r.w - 48, 22}, &font_sans, title, style.text,
+                     ALIGN_LEFT);
+        wrap(p->ui->c, (struct rect){r.x + 24, r.y + 38, r.w - 48, 0}, &font_small, text, style.secondary, ALIGN_LEFT);
+    }
+    end(p, NULL);
+}
+
 /* The top of every pane: a computer acting out what the pane is for */
 #define HERO_H 260
 
@@ -693,9 +709,18 @@ static void vpn_section(struct page *p)
 static void pane_network(struct page *p)
 {
     if (!net_interface_count()) {
-        header(p, SYM_WIFI, panes[P_NETWORK].color, "Network",
-               "No network hardware was found. SynthOS works with Intel e1000/e1000e and Realtek RTL8139/RTL8169 "
-               "cards (QEMU's default card is an e1000).");
+        const char *unknown = hal_net_unsupported();
+        char text[320];
+        if (unknown[0])
+            ksnprintf(text, sizeof(text),
+                      "This computer has %s, and SynthOS has no driver for it yet. Wired networks work with Intel "
+                      "(e1000, e1000e, I210/I211, I217-I219, I225/I226) and Realtek (RTL8139, RTL8111/8168, RTL8125) "
+                      "cards.", unknown);
+        else
+            ksnprintf(text, sizeof(text),
+                      "No network hardware was found. Wired networks work with Intel (e1000, e1000e, I210/I211, "
+                      "I217-I219, I225/I226) and Realtek (RTL8139, RTL8111/8168, RTL8125) cards.");
+        notice(p, "No network adapter", text);
         return;
     }
     section(p, NULL);

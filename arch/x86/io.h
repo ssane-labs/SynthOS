@@ -259,6 +259,8 @@ void nvme_init(void);
 bool xhci_attach(const struct pci_device *d);
 void e1000_init(void);
 void realtek_init(void);
+bool e1000_supports(uint16_t device);
+bool realtek_supports(uint16_t vendor, uint16_t device);
 void irq_install(int irq, irq_handler handler);
 void pit_init(uint32_t hz);
 void keyboard_init(void);

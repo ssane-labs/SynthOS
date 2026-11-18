@@ -86,12 +86,12 @@ COMMAND(ifconfig, "ip", "system", "ifconfig [iface [address netmask gateway [dns
         "show or set network interfaces")
 {
     if (argc == 1) {
-        if (!net_interface_count()) {
+        if (!net_interface_count())
             sh_puts(sh, "no network interfaces (loopback 127.0.0.1 only)\n");
-            return 0;
-        }
         for (int i = 0; i < net_interface_count(); i++)
             print_iface(sh, net_interface(i));
+        if (hal_net_unsupported()[0])
+            sh_printf(sh, "no driver for: %s\n", hal_net_unsupported());
         return 0;
     }
     struct net_iface *ifc = find_iface(argv[1]);
