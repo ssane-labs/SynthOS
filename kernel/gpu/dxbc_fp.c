@@ -995,6 +995,60 @@ static bool memory_op(struct machine *m, const struct dxbc_ins *in, unsigned mas
     return false;
 }
 
+/* the common operations on whole registers at once: four components in one SSE register; false: not one of them */
+typedef float v4f __attribute__((vector_size(16)));
+typedef uint32_t v4u __attribute__((vector_size(16)));
+typedef int32_t v4i __attribute__((vector_size(16)));
+
+static bool alu_vec(int op, uint32_t a[4][4], uint32_t b[4][4], uint32_t c[4][4], uint32_t val[4][4], unsigned mask)
+{
+#define EACH for (int l = 0; l < 4; l++) if (mask & (1u << l))
+#define LOAD(v, t, src) t v; memcpy(&v, src[l], 16)
+#define STORE(v) memcpy(val[l], &v, 16)
+    switch (op) {
+    case OP_ADD: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); v4f r = x + y; STORE(r); } return true;
+    case OP_MUL: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); v4f r = x * y; STORE(r); } return true;
+    case OP_MAD: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); LOAD(z, v4f, c); v4f r = x * y + z; STORE(r); } return true;
+    case OP_DIV: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); v4f r = x / y; STORE(r); } return true;
+    case OP_RCP: EACH { LOAD(x, v4f, a); v4f one = {1, 1, 1, 1}; v4f r = one / x; STORE(r); } return true;
+    case OP_MOV: EACH memcpy(val[l], a[l], 16); return true;
+    case OP_MOVC:
+        EACH {
+            LOAD(k, v4u, a); LOAD(y, v4u, b); LOAD(z, v4u, c);
+            v4u m = (v4u)(k != 0), r = (y & m) | (z & ~m);
+            STORE(r);
+        }
+        return true;
+    case OP_MIN:
+    case OP_MAX: /* the other operand when one is NaN */
+        EACH {
+            LOAD(x, v4f, a); LOAD(y, v4f, b);
+            v4u m = (v4u)(op == OP_MIN ? x < y : x > y) | (v4u)(y != y), ux, uy;
+            memcpy(&ux, &x, 16), memcpy(&uy, &y, 16);
+            v4u r = (ux & m) | (uy & ~m);
+            STORE(r);
+        }
+        return true;
+    case OP_LT: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); v4i r = x < y; STORE(r); } return true;
+    case OP_GE: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); v4i r = x >= y; STORE(r); } return true;
+    case OP_EQ: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); v4i r = x == y; STORE(r); } return true;
+    case OP_NE: EACH { LOAD(x, v4f, a); LOAD(y, v4f, b); v4i r = x != y; STORE(r); } return true;
+    case OP_IADD: EACH { LOAD(x, v4u, a); LOAD(y, v4u, b); v4u r = x + y; STORE(r); } return true;
+    case OP_AND: EACH { LOAD(x, v4u, a); LOAD(y, v4u, b); v4u r = x & y; STORE(r); } return true;
+    case OP_OR: EACH { LOAD(x, v4u, a); LOAD(y, v4u, b); v4u r = x | y; STORE(r); } return true;
+    case OP_XOR: EACH { LOAD(x, v4u, a); LOAD(y, v4u, b); v4u r = x ^ y; STORE(r); } return true;
+    case OP_IEQ: EACH { LOAD(x, v4u, a); LOAD(y, v4u, b); v4i r = (v4i)(x == y); STORE(r); } return true;
+    case OP_INE: EACH { LOAD(x, v4u, a); LOAD(y, v4u, b); v4i r = (v4i)(x != y); STORE(r); } return true;
+    case OP_ILT: EACH { LOAD(x, v4i, a); LOAD(y, v4i, b); v4i r = x < y; STORE(r); } return true;
+    case OP_IGE: EACH { LOAD(x, v4i, a); LOAD(y, v4i, b); v4i r = x >= y; STORE(r); } return true;
+    case OP_ITOF: EACH { LOAD(x, v4i, a); v4f r = __builtin_convertvector(x, v4f); STORE(r); } return true;
+    default: return false;
+    }
+#undef EACH
+#undef LOAD
+#undef STORE
+}
+
 enum { F_IF, F_LOOP, F_SWITCH };
 
 struct frame {
@@ -1379,9 +1433,12 @@ bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct d
                     read_src(&m, &in->o[2], l, integer, b[l]);
                 if (nsrc > 2)
                     read_src(&m, &in->o[3], l, integer, c[l]);
-                for (int k = 0; k < 4; k++)
-                    val[l][k] = alu(op, a[l], nsrc > 1 ? b[l] : NULL, nsrc > 2 ? c[l] : NULL, k);
             }
+            if (!alu_vec(op, a, b, c, val, mask))
+                for (int l = 0; l < 4; l++)
+                    if (mask & (1u << l))
+                        for (int k = 0; k < 4; k++)
+                            val[l][k] = alu(op, a[l], nsrc > 1 ? b[l] : NULL, nsrc > 2 ? c[l] : NULL, k);
             write_dst(&m, in, &in->o[0], mask, val);
             break;
         }

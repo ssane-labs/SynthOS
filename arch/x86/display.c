@@ -344,6 +344,31 @@ void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h
 #endif
 }
 
+bool hal_cursor_image(const struct framebuffer *fb, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x,
+                      int y)
+{
+#ifdef __x86_64__
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_VIRTIO && outputs[i].active && outputs[i].vs.pixels == fb->base)
+            return virtio_gpu_cursor_image(outputs[i].vs.gpu, outputs[i].vs.scanout, argb, w, h, hot_x, hot_y, x, y);
+#else
+    UNUSED(fb), UNUSED(argb), UNUSED(w), UNUSED(h), UNUSED(hot_x), UNUSED(hot_y), UNUSED(x), UNUSED(y);
+#endif
+    return false;
+}
+
+bool hal_cursor_move(const struct framebuffer *fb, int x, int y, bool show)
+{
+#ifdef __x86_64__
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_VIRTIO && outputs[i].active && outputs[i].vs.pixels == fb->base)
+            return virtio_gpu_cursor_move(outputs[i].vs.gpu, outputs[i].vs.scanout, x, y, show);
+#else
+    UNUSED(fb), UNUSED(x), UNUSED(y), UNUSED(show);
+#endif
+    return false;
+}
+
 bool hal_graphics_enter(struct framebuffer *fb)
 {
     return hal_screen_open(0, 0, 0, fb);

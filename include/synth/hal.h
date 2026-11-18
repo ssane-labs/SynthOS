@@ -88,6 +88,11 @@ const char *hal_screen_name(int index);
 int hal_screen_modes(int index, struct display_mode *out, int max);
 bool hal_screen_open(int index, int width, int height, struct framebuffer *fb);
 void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h);
+/* a pointer the display hardware draws over the screen (virtio-gpu): its picture and hot spot, then where it is;
+   false: this screen has none, the pointer is drawn into the picture */
+bool hal_cursor_image(const struct framebuffer *fb, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x,
+                      int y);
+bool hal_cursor_move(const struct framebuffer *fb, int x, int y, bool show);
 void hal_screen_close(int index);
 int hal_key_read(int timeout_ms);
 int hal_key_modifiers(void);

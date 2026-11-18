@@ -308,9 +308,47 @@ static void fb_compose(struct screen *s, struct rect r)
     fb_present(s, r);
 }
 
+/* A pointer the display draws itself (virtio-gpu, one screen at scale 1): only its place and picture are sent.
+   hw_kind: the picture the display has (-1: none, or hidden); hw_none: this display has no such pointer. */
+static int hw_kind = -1;
+static bool hw_none;
+
+static bool hw_hardware(void)
+{
+    if (hw_none || screen_count != 1 || screens[0].scale != 1 || screens[0].turn)
+        return false;
+    struct screen *s = &screens[0];
+    bool show = hw_live && cursor_visible && cursor_px[cursor_kind];
+    int x = hw_x - s->area.x, y = hw_y - s->area.y;
+    if (show && hw_kind != cursor_kind) {
+        if (!hal_cursor_image(&s->fb, cursor_px[cursor_kind], CURSOR_SIZE, CURSOR_SIZE, cursor_hot[cursor_kind][0],
+                              cursor_hot[cursor_kind][1], x, y)) {
+            hw_none = true;
+            return false;
+        }
+        hw_kind = cursor_kind;
+        return true;
+    }
+    if (hw_kind < 0)
+        return true;
+    hal_cursor_move(&s->fb, x, y, show);
+    if (!show)
+        hw_kind = -1; /* hidden: the picture is sent again to show it */
+    return true;
+}
+
 /* Puts the pointer where hw_x, hw_y say: one pass over the old and new places (they overlap while it moves). */
 static void hw_cursor_move(void)
 {
+    if (hw_hardware()) {
+        if (!rect_empty(hw_drawn)) { /* drawn by us before: put back what it covered */
+            struct rect was = hw_drawn;
+            hw_drawn = (struct rect){0, 0, 0, 0};
+            for (int i = 0; i < screen_count; i++)
+                fb_compose(&screens[i], was);
+        }
+        return;
+    }
     struct rect old = hw_drawn;
     hw_drawn = hw_live && cursor_visible && cursor_px[cursor_kind]
                    ? (struct rect){hw_x - cursor_hot[cursor_kind][0], hw_y - cursor_hot[cursor_kind][1], CURSOR_SIZE,
@@ -3117,6 +3155,7 @@ bool wm_start(const struct framebuffer *fbs, const struct rect *origins, int cou
     hw_x = mouse_x;
     hw_y = mouse_y;
     hw_drawn = (struct rect){0, 0, 0, 0};
+    hw_kind = -1, hw_none = false;
     hw_live = true;
     hw_dirty = true;
     hal_pointer_hook(pointer_irq);
@@ -3129,6 +3168,9 @@ static void hw_cursor_off(void)
     uint32_t flags = hal_irq_save();
     hw_live = false;
     hw_drawn = (struct rect){0, 0, 0, 0};
+    if (hw_kind >= 0 && screen_count)
+        hal_cursor_move(&screens[0].fb, 0, 0, false);
+    hw_kind = -1;
     hal_irq_restore(flags);
 }
 

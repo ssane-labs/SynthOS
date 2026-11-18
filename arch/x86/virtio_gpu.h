@@ -19,5 +19,8 @@ int virtio_gpu_last(void);
 void virtio_gpu_preferred(int gpu, int scanout, uint16_t *w, uint16_t *h);
 bool virtio_gpu_set(int gpu, int scanout, int w, int h, struct virtio_screen *vs, struct framebuffer *fb);
 void virtio_gpu_present(struct virtio_screen *vs, int x, int y, int w, int h);
+bool virtio_gpu_cursor_image(int gpu, int scanout, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x,
+                             int y);
+bool virtio_gpu_cursor_move(int gpu, int scanout, int x, int y, bool show);
 
 #endif

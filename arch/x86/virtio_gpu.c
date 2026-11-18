@@ -28,8 +28,11 @@ enum {
     CMD_TRANSFER_TO_HOST_2D,
     CMD_RESOURCE_ATTACH_BACKING,
     CMD_RESOURCE_DETACH_BACKING,
+    CMD_UPDATE_CURSOR = 0x0300,
+    CMD_MOVE_CURSOR,
     RESP_OK_NODATA = 0x1100,
     RESP_OK_DISPLAY_INFO,
+    FORMAT_B8G8R8A8 = 1,
     FORMAT_B8G8R8X8 = 2,
 };
 
@@ -65,6 +68,13 @@ struct vgpu {
     volatile uint8_t *notify_base;
     uint32_t notify_mul;
     struct vq ctrl;
+    /* the cursor queue: one device-readable buffer per command, no answers */
+    struct desc *cdesc;
+    volatile uint16_t *cavail, *cused, *cnotify;
+    uint16_t csize, cnext;
+    uint8_t *cbuf;
+    uint32_t cursor_res;
+    uint32_t *cursor_px; /* 64 x 64 */
     uint32_t scanouts;
     struct vrect info[16];
     uint32_t next_resource;
@@ -146,6 +156,51 @@ static int submit(struct vgpu *g, const void *req, uint32_t req_len, const void 
     return slot;
 }
 
+/* the cursor queue: smaller than the control queue on most hosts */
+static bool cursor_queue_init(struct vgpu *g)
+{
+    C16(22) = 1;
+    uint16_t size = C16(24);
+    if (!size)
+        return false;
+    g->csize = size < 16 ? size : 16;
+    C16(24) = g->csize;
+    uint8_t *mem = kmalloc_pages(4096);
+    g->cbuf = kmalloc_pages(4096);
+    if (!mem || !g->cbuf)
+        return false;
+    g->cdesc = (struct desc *)mem;
+    g->cavail = (volatile uint16_t *)(mem + 1024);
+    g->cused = (volatile uint16_t *)(mem + 2048);
+    C64(32) = vmm_phys(g->cdesc);
+    C64(40) = vmm_phys((const void *)g->cavail);
+    C64(48) = vmm_phys((const void *)g->cused);
+    g->cnotify = (volatile uint16_t *)(g->notify_base + (uint32_t)C16(30) * g->notify_mul);
+    C16(28) = 1;
+    return true;
+}
+
+static bool cursor_submit(struct vgpu *g, const void *cmd, uint32_t len)
+{
+    if (!g->csize)
+        return false;
+    uint64_t until = hal_ticks_ms() + 100;
+    while ((uint16_t)(g->cnext - g->cused[1]) >= g->csize)
+        if (hal_ticks_ms() > until)
+            return false;
+    uint16_t slot = (uint16_t)(g->cnext % g->csize);
+    uint8_t *buf = g->cbuf + slot * 128;
+    memcpy(buf, cmd, MIN(len, 128u));
+    g->cdesc[slot] = (struct desc){vmm_phys(buf), len, 0, 0};
+    g->cavail[2 + g->cnext % g->csize] = slot;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    g->cnext++;
+    g->cavail[1] = g->cnext;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    *g->cnotify = 1;
+    return true;
+}
+
 static bool wait_all(struct vgpu *g)
 {
     struct vq *q = &g->ctrl;
@@ -224,6 +279,8 @@ bool virtio_gpu_probe(const struct pci_device *d, int *scanouts, uint16_t *w, ui
         C8(20) = 0x80;
         return false;
     }
+    if (!cursor_queue_init(g)) /* the pointer is then drawn on the screen itself */
+        g->csize = 0;
     C8(20) |= 4;
     display_info(g);
     if (!g->scanouts) {
@@ -345,4 +402,88 @@ void virtio_gpu_present(struct virtio_screen *vs, int x, int y, int w, int h)
     hal_irq_restore(flags);
 }
 
+#endif
+
+#ifdef __x86_64__
+struct cursor_cmd {
+    struct hdr h;
+    uint32_t scanout, x, y, pad;
+    uint32_t id, hot_x, hot_y, pad2;
+};
+
+/* The pointer's picture (w, h up to 64; 0xAARRGGBB, not premultiplied) and where it is, shown by the host over the
+   screen: no pixels of the screen change when it moves. */
+bool virtio_gpu_cursor_image(int gpu, int scanout, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x, int y)
+{
+    struct vgpu *g = &gpus[gpu];
+    if (gpu < 0 || gpu >= gpu_count || !g->csize || w > 64 || h > 64)
+        return false;
+    uint32_t flags = hal_irq_save();
+    bool ok = true;
+    if (!g->cursor_res) {
+        g->cursor_px = kmalloc_pages(64 * 64 * 4);
+        struct {
+            uint64_t addr;
+            uint32_t len, pad;
+        } *ents = kmalloc_pages(4096);
+        ok = g->cursor_px && ents;
+        int n = 0;
+        for (int off = 0; ok && off < 64 * 64 * 4; off += 4096) {
+            uint64_t p = vmm_phys((uint8_t *)g->cursor_px + off);
+            if (n && ents[n - 1].addr + ents[n - 1].len == p)
+                ents[n - 1].len += 4096;
+            else
+                ents[n++] = (typeof(*ents)){p, 4096, 0};
+        }
+        uint32_t id = g->next_resource++;
+        struct {
+            struct hdr h;
+            uint32_t id, format, w, h2;
+        } create = {{.type = CMD_RESOURCE_CREATE_2D}, id, FORMAT_B8G8R8A8, 64, 64};
+        struct {
+            struct hdr h;
+            uint32_t id, count;
+        } attach = {{.type = CMD_RESOURCE_ATTACH_BACKING}, id, (uint32_t)n};
+        ok = ok && call(g, &create, sizeof(create), NULL, 0, NULL, 0, RESP_OK_NODATA) &&
+             call(g, &attach, sizeof(attach), ents, (uint32_t)n * 16, NULL, 0, RESP_OK_NODATA);
+        kfree_pages(ents);
+        if (ok)
+            g->cursor_res = id;
+    }
+    if (ok) {
+        memset(g->cursor_px, 0, 64 * 64 * 4);
+        for (int j = 0; j < h; j++)
+            memcpy(g->cursor_px + j * 64, argb + j * w, (size_t)w * 4);
+        struct {
+            struct hdr h;
+            struct vrect r;
+            uint64_t offset;
+            uint32_t id, pad;
+        } transfer = {{.type = CMD_TRANSFER_TO_HOST_2D}, {0, 0, 64, 64}, 0, g->cursor_res, 0};
+        ok = call(g, &transfer, sizeof(transfer), NULL, 0, NULL, 0, RESP_OK_NODATA);
+    }
+    if (ok) {
+        struct cursor_cmd c = {{.type = CMD_UPDATE_CURSOR}, (uint32_t)scanout, (uint32_t)x, (uint32_t)y, 0,
+                               g->cursor_res, (uint32_t)hot_x, (uint32_t)hot_y, 0};
+        ok = cursor_submit(g, &c, sizeof(c));
+    }
+    hal_irq_restore(flags);
+    return ok;
+}
+
+/* moves the pointer, or hides it (show false) */
+bool virtio_gpu_cursor_move(int gpu, int scanout, int x, int y, bool show)
+{
+    struct vgpu *g = &gpus[gpu];
+    if (gpu < 0 || gpu >= gpu_count || !g->cursor_res)
+        return false;
+    uint32_t flags = hal_irq_save();
+    struct cursor_cmd c = {{.type = show ? CMD_MOVE_CURSOR : CMD_UPDATE_CURSOR}, (uint32_t)scanout,
+                           (uint32_t)(x < 0 ? 0 : x), (uint32_t)(y < 0 ? 0 : y), 0, 0, 0, 0, 0};
+    if (show)
+        c.id = g->cursor_res;
+    bool ok = cursor_submit(g, &c, sizeof(c));
+    hal_irq_restore(flags);
+    return ok;
+}
 #endif
