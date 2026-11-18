@@ -14,6 +14,7 @@ static uint32_t color[W * H];
 static float depth[W * H];
 static int failures;
 int dxbc_tests(void);
+int device_tests(void);
 
 struct mat {
     float m[16];
@@ -102,7 +103,7 @@ struct scene {
     struct mat world, wvp;
 };
 
-static void cube_vs(const void *ctx, uint32_t i, float *out)
+static void cube_vs1(const void *ctx, uint32_t i, float *out)
 {
     const struct scene *s = ctx;
     const struct vtx *v = &cube[i];
@@ -113,9 +114,16 @@ static void cube_vs(const void *ctx, uint32_t i, float *out)
     out[8] = v->uv[0], out[9] = v->uv[1], out[10] = 0, out[11] = 0;
 }
 
-static void cube_ps(const void *ctx, const struct rs_quad *q, float c[4][4], unsigned *mask)
+static void cube_vs(const void *ctx, uint32_t first, int n, float *out, void *scratch)
 {
-    (void)ctx, (void)mask;
+    (void)scratch;
+    for (int i = 0; i < n; i++)
+        cube_vs1(ctx, first + (uint32_t)i, out + i * 12);
+}
+
+static void cube_ps(const void *ctx, const struct rs_quad *q, float c[4][4], unsigned *mask, void *scratch)
+{
+    (void)ctx, (void)mask, (void)scratch;
     static const float light[3] = {0.4f, 0.7f, -0.6f};
     for (int p = 0; p < 4; p++) {
         const float *in = q->in[p];
@@ -134,15 +142,16 @@ static void cube_ps(const void *ctx, const struct rs_quad *q, float c[4][4], uns
 static float flat[3][4];
 static float flat_color[4];
 
-static void flat_vs(const void *ctx, uint32_t i, float *out)
+static void flat_vs(const void *ctx, uint32_t first, int n, float *out, void *scratch)
 {
-    (void)ctx;
-    memcpy(out, flat[i], sizeof(flat[i]));
+    (void)ctx, (void)scratch;
+    for (int i = 0; i < n; i++)
+        memcpy(out + i * 4, flat[first + (uint32_t)i], sizeof(flat[0]));
 }
 
-static void flat_ps(const void *ctx, const struct rs_quad *q, float c[4][4], unsigned *mask)
+static void flat_ps(const void *ctx, const struct rs_quad *q, float c[4][4], unsigned *mask, void *scratch)
 {
-    (void)ctx, (void)q, (void)mask;
+    (void)ctx, (void)q, (void)mask, (void)scratch;
     for (int p = 0; p < 4; p++)
         memcpy(c[p], flat_color, sizeof(flat_color));
 }
@@ -256,6 +265,7 @@ int main(int argc, char **argv)
         fclose(f);
     }
     failures += dxbc_tests();
+    failures += device_tests();
     printf("gpu: %d failed\n", failures);
     return failures != 0;
 }

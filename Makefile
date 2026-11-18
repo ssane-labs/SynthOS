@@ -507,7 +507,8 @@ test:
 
 test-gpu:
 	@mkdir -p $(BUILD)/tools
-	@$(HOSTCC) -O2 -Wall -Wextra -DRS_HOST -Iinclude -o $(BUILD)/tools/gputest tests/gpu/driver.c tests/gpu/dxbc.c kernel/gpu/raster_fp.c kernel/gpu/dxbc_fp.c -lm
+	@$(HOSTCC) -O2 -Wall -Wextra -DRS_HOST -Iinclude -o $(BUILD)/tools/gputest tests/gpu/driver.c tests/gpu/dxbc.c tests/gpu/device.c kernel/gpu/raster_fp.c kernel/gpu/dxbc_fp.c \
+		kernel/gpu/gd_fp.c kernel/gpu/texture_fp.c kernel/gpu/bc_fp.c -lm
 	@$(BUILD)/tools/gputest
 
 test-crypto:

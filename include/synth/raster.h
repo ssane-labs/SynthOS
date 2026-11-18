@@ -8,7 +8,7 @@
 
 #include <synth/types.h>
 
-#define RS_MAX_VARY 16 /* float4 outputs of a vertex shader besides the position */
+#define RS_MAX_VARY 32 /* float4 outputs of a vertex shader besides the position */
 
 enum rs_topology { RS_TRIANGLES, RS_STRIP };
 enum rs_cull { RS_CULL_NONE, RS_CULL_BACK, RS_CULL_FRONT };
@@ -28,20 +28,29 @@ struct rs_target {
    the shader can take differences across the quad (ddx, ddy, the mip level) */
 struct rs_quad {
     int x, y;
+    bool front; /* the triangle faces the viewer */
     float depth[4];
+    float w[4]; /* the clip-space w */
     float in[4][RS_MAX_VARY * 4];
 };
 
-/* out: the clip-space position (x, y, z, w), then nvary float4s */
-typedef void (*rs_vertex_fn)(const void *ctx, uint32_t index, float *out);
+/* shades vertices first .. first + n - 1 (n is 1 to 4); for each: the clip-space position (x, y, z, w), then nvary
+   float4s, at out + i * (4 + nvary * 4). scratch: rs_state.scratch bytes of this processor's own. */
+typedef void (*rs_vertex_fn)(const void *ctx, uint32_t first, int n, float *out, void *scratch);
 /* writes four colors (r, g, b, a in 0..1); clears bits of *mask to discard pixels */
-typedef void (*rs_pixel_fn)(const void *ctx, const struct rs_quad *q, float color[4][4], unsigned *mask);
+typedef void (*rs_pixel_fn)(const void *ctx, const struct rs_quad *q, float color[4][4], unsigned *mask, void *scratch);
+/* instead of ps and the built-in depth test and output: does everything for the covered pixels in mask */
+typedef void (*rs_quad_fn)(const void *ctx, const struct rs_quad *q, unsigned mask, void *scratch);
 
 struct rs_state {
     rs_vertex_fn vs;
     rs_pixel_fn ps;
+    rs_quad_fn quad;
     const void *ctx;
+    size_t scratch; /* bytes of scratch memory each processor's shader calls get */
     int nvary;
+    uint32_t flat;          /* varyings (bit per float4) taken from the first vertex, not interpolated */
+    uint32_t noperspective; /* varyings interpolated in screen space */
     enum rs_cull cull;
     bool front_ccw;
     bool depth_test, depth_write;

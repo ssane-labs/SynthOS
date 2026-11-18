@@ -15,107 +15,7 @@ static void expect(int ok, const char *what)
     failures += !ok;
 }
 
-/* ---- an assembler for the few forms the tests need */
-
-static uint32_t code[512];
-static int n;
-
-enum { TEMP = 0, IN = 1, OUT = 2, IMM = 4, SAMP = 6, RES = 7, CB = 8, NUL = 13 };
-#define SW(a, b, c, d) ((a) | (b) << 2 | (c) << 4 | (d) << 6)
-#define XYZW SW(0, 1, 2, 3)
-#define XXXX SW(0, 0, 0, 0)
-
-static int at;
-
-static void op(int opcode, int extra)
-{
-    at = n;
-    code[n++] = (uint32_t)opcode | (uint32_t)extra;
-}
-
-static void end(void)
-{
-    code[at] |= (uint32_t)(n - at) << 24;
-}
-
-static void dst(int type, int reg, int mask)
-{
-    code[n++] = 2u | (uint32_t)mask << 4 | (uint32_t)type << 12 | 1u << 20;
-    code[n++] = (uint32_t)reg;
-}
-
-static void src(int type, int reg, int swz)
-{
-    code[n++] = 2u | 1u << 2 | (uint32_t)swz << 4 | (uint32_t)type << 12 | 1u << 20;
-    code[n++] = (uint32_t)reg;
-}
-
-static void srcmod(int type, int reg, int swz, int mod)
-{
-    code[n++] = 2u | 1u << 2 | (uint32_t)swz << 4 | (uint32_t)type << 12 | 1u << 20 | 0x80000000u;
-    code[n++] = 1u | (uint32_t)mod << 6;
-    code[n++] = (uint32_t)reg;
-}
-
-static void cbsrc(int slot, int reg, int swz)
-{
-    code[n++] = 2u | 1u << 2 | (uint32_t)swz << 4 | (uint32_t)CB << 12 | 2u << 20;
-    code[n++] = (uint32_t)slot;
-    code[n++] = (uint32_t)reg;
-}
-
-static void sel(int type, int reg, int comp) /* r#.x as a scalar */
-{
-    code[n++] = 2u | 2u << 2 | (uint32_t)comp << 4 | (uint32_t)type << 12 | 1u << 20;
-    code[n++] = (uint32_t)reg;
-}
-
-static void imm4(float a, float b, float c, float d)
-{
-    code[n++] = 2u | (uint32_t)IMM << 12;
-    memcpy(&code[n], (float[4]){a, b, c, d}, 16);
-    n += 4;
-}
-
-static void immu(uint32_t v)
-{
-    code[n++] = 1u | (uint32_t)IMM << 12;
-    code[n++] = v;
-}
-
-static void immf(float f)
-{
-    code[n++] = 1u | (uint32_t)IMM << 12;
-    memcpy(&code[n++], &f, 4);
-}
-
-static uint8_t blob[4096];
-
-static size_t container(int stage, int temps)
-{
-    /* dcl_temps goes first in the body */
-    uint32_t body[520];
-    int m = 0;
-    body[m++] = (uint32_t)stage << 16 | 4u << 4;
-    body[m++] = 0;
-    body[m++] = 104u | 2u << 24;
-    body[m++] = (uint32_t)temps;
-    memcpy(&body[m], code, (size_t)n * 4);
-    m += n;
-    body[1] = (uint32_t)m;
-    memset(blob, 0, sizeof(blob));
-    memcpy(blob, "DXBC", 4);
-    uint32_t total = 32 + 4 + 8 + (uint32_t)m * 4, one = 1, off = 36, len = (uint32_t)m * 4;
-    memcpy(blob + 20, &one, 4);
-    memcpy(blob + 24, &total, 4);
-    memcpy(blob + 28, &one, 4);
-    memcpy(blob + 32, &off, 4);
-    memcpy(blob + 36, "SHDR", 4);
-    memcpy(blob + 40, &len, 4);
-    memcpy(blob + 44, body, len);
-    n = 0;
-    return total;
-}
+#include "asm.h"
 
 static uint32_t v[8][4][4], o[8][4][4];
 
@@ -139,7 +39,7 @@ static int run(int stage, int temps, const struct dxbc_env *env, unsigned live)
         printf("  parse: %s\n", sh.error);
         return 0;
     }
-    struct dxbc_lanes l = {v, o, live, {0}, ""};
+    struct dxbc_lanes l = {.v = v, .o = o, .live = live};
     memset(o, 0, sizeof(o));
     bool ok = dxbc_run(&sh, env, &l);
     if (!ok)
@@ -155,9 +55,9 @@ static int near(float a, float b)
 }
 
 static void sample(void *ctx, int texture, int sampler, const float coord[4], const float ddx[4], const float ddy[4],
-                   float lod, float bias, const int offset[3], float out[4])
+                   float lod, float bias, const int offset[3], const float *ref, float out[4])
 {
-    (void)ctx, (void)sampler, (void)ddy, (void)lod, (void)bias, (void)offset;
+    (void)ctx, (void)sampler, (void)ddy, (void)lod, (void)bias, (void)offset, (void)ref;
     out[0] = coord[0] * 10, out[1] = coord[1] * 10, out[2] = (float)texture, out[3] = ddx[0];
 }
 

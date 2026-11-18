@@ -14,6 +14,10 @@ static void hal_parallel(void (*fn)(void *ctx, int from, int to), void *ctx, int
     (void)grain;
     fn(ctx, 0, count);
 }
+static int hal_parallel_cpus(void)
+{
+    return 1;
+}
 #else
 #include <synth/hal.h>
 #include <synth/heap.h>
@@ -36,7 +40,8 @@ struct tri {
     int minx, miny, maxx, maxy;
     float inv_area;
     float z[3], iw[3];                     /* depth after the viewport, 1/w */
-    float attr[3][RS_MAX_VARY * 4];        /* varyings divided by w */
+    bool front;
+    float attr[3][RS_MAX_VARY * 4];        /* varyings divided by w (screen-space ones as they are) */
 };
 
 struct draw {
@@ -49,7 +54,36 @@ struct draw {
     int cminx, cminy, cmaxx, cmaxy; /* the clip rectangle: target, scissor */
     float vx, vy, vw, vh, min_z, max_z;
     uint64_t quads, pixels;
+    /* scratch memory for the shaders: one slot per processor at work, taken from a bitmap */
+    uint8_t *scratch;
+    size_t slot_bytes;
+    uint64_t slots_free;
 };
+
+static void *take_slot(struct draw *d, int *slot)
+{
+    *slot = -1;
+    if (!d->scratch)
+        return NULL;
+    for (;;) {
+        uint64_t f = __atomic_load_n(&d->slots_free, __ATOMIC_ACQUIRE);
+        if (!f) {
+            __asm__ volatile("pause");
+            continue;
+        }
+        int i = __builtin_ctzll(f);
+        if (__atomic_compare_exchange_n(&d->slots_free, &f, f & ~(1ull << i), false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            *slot = i;
+            return d->scratch + (size_t)i * d->slot_bytes;
+        }
+    }
+}
+
+static void give_slot(struct draw *d, int slot)
+{
+    if (slot >= 0)
+        __atomic_or_fetch(&d->slots_free, 1ull << slot, __ATOMIC_RELEASE);
+}
 
 static struct rs_stats stats;
 
@@ -119,7 +153,8 @@ static int clip_polygon(struct cvert *in, int n, struct cvert *out, int floats)
 
 /* ---- triangle setup */
 
-static bool add_tri(struct draw *d, const struct cvert *a, const struct cvert *b, const struct cvert *c)
+static bool add_tri(struct draw *d, const struct cvert *a, const struct cvert *b, const struct cvert *c,
+                    const float *flat)
 {
     const struct rs_state *s = d->s;
     const struct cvert *v[3] = {a, b, c};
@@ -132,14 +167,17 @@ static bool add_tri(struct draw *d, const struct cvert *a, const struct cvert *b
         t.y[i] = (int64_t)(sy * SUB + (sy >= 0 ? 0.5f : -0.5f));
         t.z[i] = d->min_z + clampf(v[i]->v[2] * iw, 0.0f, 1.0f) * (d->max_z - d->min_z);
         t.iw[i] = iw;
-        for (int f = 0; f < s->nvary * 4; f++)
-            t.attr[i][f] = v[i]->v[4 + f] * iw;
+        for (int f = 0; f < s->nvary * 4; f++) {
+            uint32_t bit = 1u << (f >> 2);
+            t.attr[i][f] = s->flat & bit ? flat[f] : s->noperspective & bit ? v[i]->v[4 + f] : v[i]->v[4 + f] * iw;
+        }
     }
     int64_t area = (t.x[1] - t.x[0]) * (t.y[2] - t.y[0]) - (t.y[1] - t.y[0]) * (t.x[2] - t.x[0]);
     if (area == 0)
         return false;
     /* y points down: a positive area turns clockwise on the screen */
     bool cw = area > 0, front = s->front_ccw ? !cw : cw;
+    t.front = front;
     if ((s->cull == RS_CULL_BACK && !front) || (s->cull == RS_CULL_FRONT && front)) {
         stats.culled++;
         return false;
@@ -251,7 +289,7 @@ static void write_pixel(const struct rs_state *s, uint32_t *dst, const float *c)
     *dst = out;
 }
 
-static void draw_tri_in_tile(struct draw *d, const struct tri *t, int x0, int y0, int x1, int y1)
+static void draw_tri_in_tile(struct draw *d, const struct tri *t, int x0, int y0, int x1, int y1, void *scratch)
 {
     const struct rs_state *s = d->s;
     struct rs_target *tg = d->t;
@@ -280,12 +318,23 @@ static void draw_tri_in_tile(struct draw *d, const struct tri *t, int x0, int y0
             if (!mask)
                 continue;
             q.x = x, q.y = y;
+            q.front = t->front;
             for (int p = 0; p < 4; p++) {
                 float l0 = (float)e[p][0] * t->inv_area, l1 = (float)e[p][1] * t->inv_area, l2 = 1.0f - l0 - l1;
                 q.depth[p] = l0 * t->z[0] + l1 * t->z[1] + l2 * t->z[2];
                 float w = 1.0f / (l0 * t->iw[0] + l1 * t->iw[1] + l2 * t->iw[2]);
-                for (int f = 0; f < nf; f++)
-                    q.in[p][f] = (l0 * t->attr[0][f] + l1 * t->attr[1][f] + l2 * t->attr[2][f]) * w;
+                q.w[p] = w;
+                for (int f = 0; f < nf; f++) {
+                    uint32_t bit = 1u << (f >> 2);
+                    float v = l0 * t->attr[0][f] + l1 * t->attr[1][f] + l2 * t->attr[2][f];
+                    q.in[p][f] = s->flat & bit ? t->attr[0][f] : s->noperspective & bit ? v : v * w;
+                }
+            }
+            if (s->quad) {
+                d->quads++;
+                s->quad(s->ctx, &q, mask, scratch);
+                d->pixels += (uint64_t)__builtin_popcount(mask);
+                continue;
             }
             if (s->depth_test && tg->depth) /* before the shader: no shader here writes depth */
                 for (int p = 0; p < 4; p++)
@@ -298,7 +347,7 @@ static void draw_tri_in_tile(struct draw *d, const struct tri *t, int x0, int y0
                 continue;
             d->quads++;
             if (s->ps)
-                s->ps(s->ctx, &q, color, &mask);
+                s->ps(s->ctx, &q, color, &mask, scratch);
             for (int p = 0; p < 4; p++) {
                 if (!(mask & (1u << p)))
                     continue;
@@ -319,13 +368,16 @@ static void draw_tiles(void *ctx, int from, int to)
     uint64_t quads = 0, pixels = 0;
     struct draw local = *d;
     local.quads = local.pixels = 0;
+    int slot;
+    void *scratch = take_slot(d, &slot);
     for (int tile = from; tile < to; tile++) {
         int tx = tile % d->tiles_x, ty = tile / d->tiles_x;
         int x0 = tx * TILE, y0 = ty * TILE;
         int x1 = x0 + TILE < d->cmaxx ? x0 + TILE : d->cmaxx, y1 = y0 + TILE < d->cmaxy ? y0 + TILE : d->cmaxy;
         for (int k = 0; k < d->bin_count[tile]; k++)
-            draw_tri_in_tile(&local, &d->tris[d->bins[d->bin_start[tile] + k]], x0, y0, x1, y1);
+            draw_tri_in_tile(&local, &d->tris[d->bins[d->bin_start[tile] + k]], x0, y0, x1, y1, scratch);
     }
+    give_slot(d, slot);
     quads = local.quads, pixels = local.pixels;
     __atomic_add_fetch(&d->quads, quads, __ATOMIC_RELAXED);
     __atomic_add_fetch(&d->pixels, pixels, __ATOMIC_RELAXED);
@@ -335,16 +387,23 @@ static void draw_tiles(void *ctx, int from, int to)
 
 struct shade {
     const struct rs_state *s;
+    struct draw *d;
     float *out;
     uint32_t first;
-    int floats;
+    int floats, count;
 };
 
+/* in groups of four vertices */
 static void shade_vertices(void *ctx, int from, int to)
 {
     struct shade *sh = ctx;
-    for (int i = from; i < to; i++)
-        sh->s->vs(sh->s->ctx, sh->first + (uint32_t)i, sh->out + (size_t)i * (size_t)sh->floats);
+    int slot;
+    void *scratch = take_slot(sh->d, &slot);
+    for (int g = from; g < to; g++) {
+        int i = g * 4, n = sh->count - i < 4 ? sh->count - i : 4;
+        sh->s->vs(sh->s->ctx, sh->first + (uint32_t)i, n, sh->out + (size_t)i * (size_t)sh->floats, scratch);
+    }
+    give_slot(sh->d, slot);
 }
 
 int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topology, uint32_t count,
@@ -381,8 +440,18 @@ int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topo
     float *verts = kmalloc(sizeof(float) * (size_t)nverts * (size_t)floats);
     if (!verts)
         return -1;
-    struct shade sh = {s, verts, (uint32_t)((int32_t)lo + base_vertex), floats};
-    hal_parallel(shade_vertices, &sh, (int)nverts, 256);
+    if (s->scratch) {
+        int slots = hal_parallel_cpus() < 64 ? hal_parallel_cpus() : 64;
+        d.slot_bytes = (s->scratch + 63) & ~(size_t)63;
+        d.scratch = kmalloc(d.slot_bytes * (size_t)slots);
+        if (!d.scratch) {
+            kfree(verts);
+            return -1;
+        }
+        d.slots_free = slots == 64 ? ~0ull : (1ull << slots) - 1;
+    }
+    struct shade sh = {s, &d, verts, (uint32_t)((int32_t)lo + base_vertex), floats, (int)nverts};
+    hal_parallel(shade_vertices, &sh, (int)(nverts + 3) / 4, 64);
     /* triangles: clipped where they cross the clip volume */
     uint32_t ntri = topology == RS_STRIP ? count - 2 : count / 3;
     for (uint32_t i = 0; i < ntri; i++) {
@@ -408,25 +477,31 @@ int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topo
         }
         if (outside)
             continue;
+        float flat[RS_MAX_VARY * 4];
+        if (s->flat) /* the first vertex of the triangle gives the flat varyings, also after clipping */
+            memcpy(flat, poly[0].v + 4, sizeof(float) * (size_t)s->nvary * 4);
         if (inside) {
-            add_tri(&d, &poly[0], &poly[1], &poly[2]);
+            add_tri(&d, &poly[0], &poly[1], &poly[2], flat);
             continue;
         }
         struct cvert out[12];
         int n = clip_polygon(poly, 3, out, floats);
         stats.clipped++;
         for (int c = 1; c + 1 < n; c++)
-            add_tri(&d, &out[0], &out[c], &out[c + 1]);
+            add_tri(&d, &out[0], &out[c], &out[c + 1], flat);
     }
     kfree(verts);
-    if (!d.ntris)
+    if (!d.ntris) {
+        kfree(d.scratch);
         return 0;
+    }
     /* binning: which tiles each triangle touches */
     d.tiles_x = (t->w + TILE - 1) / TILE, d.tiles_y = (t->h + TILE - 1) / TILE;
     int tiles = d.tiles_x * d.tiles_y;
     d.bin_count = kmalloc(sizeof(int) * (size_t)tiles * 2);
     if (!d.bin_count) {
         kfree(d.tris);
+        kfree(d.scratch);
         return -1;
     }
     d.bin_start = d.bin_count + tiles;
@@ -442,6 +517,7 @@ int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topo
     if (!d.bins) {
         kfree(d.bin_count);
         kfree(d.tris);
+        kfree(d.scratch);
         return -1;
     }
     int at = 0;
@@ -465,6 +541,7 @@ int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topo
     kfree(d.bins);
     kfree(d.bin_count);
     kfree(d.tris);
+    kfree(d.scratch);
     return drawn;
 }
 

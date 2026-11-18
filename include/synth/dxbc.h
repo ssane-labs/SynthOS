@@ -33,6 +33,7 @@ struct dxbc_shader {
     int max_in_reg, max_out_reg;
     int pos_in_reg;            /* the pixel shader's SV_Position input, or -1 */
     int depth_out;             /* writes oDepth */
+    uint8_t interp[32];        /* pixel shader inputs: D3D_INTERPOLATION_MODE (1 constant, 2 linear, 4 noperspective...) */
     bool discards;
     char error[64];
 };
@@ -42,9 +43,13 @@ struct dxbc_env {
     const float *cb[DXBC_MAX_CB];
     uint32_t cb_vec4[DXBC_MAX_CB];
     void *ctx;
-    /* lod < -1e30: from the derivatives; ddx, ddy: of the coordinates across the quad */
+    /* lod < -1e30: from the derivatives; ddx, ddy: of the coordinates across the quad; ref: the value a comparison
+       sampler compares every texel with (sample_c), or NULL */
     void (*sample)(void *ctx, int texture, int sampler, const float coord[4], const float ddx[4], const float ddy[4],
-                   float lod, float bias, const int offset[3], float out[4]);
+                   float lod, float bias, const int offset[3], const float *ref, float out[4]);
+    /* the four texels bilinear filtering would use, one component of each (gather4) */
+    void (*gather)(void *ctx, int texture, int sampler, const float coord[4], const int offset[3], int component,
+                   const float *ref, float out[4]);
     void (*load)(void *ctx, int texture, const int32_t coord[4], const int offset[3], uint32_t out[4]);
     void (*info)(void *ctx, int texture, uint32_t mip, uint32_t out[4]); /* width, height, depth, mips */
 };
@@ -55,11 +60,14 @@ struct dxbc_lanes {
     uint32_t (*o)[4][4]; /* outputs */
     unsigned live;       /* lanes that run (bit per lane); pixel shaders: discarded lanes are cleared */
     float depth[4];
+    void *scratch;       /* dxbc_scratch(shader) bytes for the registers, or NULL: allocated (not on helper CPUs) */
     char error[48];      /* why it stopped, when dxbc_run says false */
 };
 
 bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size);
 void dxbc_free(struct dxbc_shader *sh);
+/* the memory one run needs for its temporary registers */
+size_t dxbc_scratch(const struct dxbc_shader *sh);
 /* runs the shader on the live lanes; false and lanes->error on a fault */
 bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct dxbc_lanes *lanes);
 
