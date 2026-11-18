@@ -100,10 +100,10 @@ static enum dock_kind kind;
    back; the panel itself fades out and only the icons stay. Halo: every icon casts its own color into the glass
    under it. */
 static int sleep_after = 30;
-static bool halo = true;
-/* More effects of the Dock (Settings -> Desktop & Dock -> Dock Effects): a glow of each icon's color behind it, a
-   light on the glass that follows the pointer, and how strong all of them are (percent). */
-static bool glow = true, spot = true;
+static bool halo = false;
+/* More effects of the Dock (Settings -> Desktop & Dock -> Dock Effects): a light on the glass that follows the
+   pointer, and how strong the effects are (percent). */
+static bool spot = true;
 static int fx_strength = 100;
 static uint64_t last_use;
 static struct spring doze;
@@ -1165,7 +1165,7 @@ static void paint_halo(struct canvas *c, int radius, int awake)
     }
 }
 
-/* A round glow of the icon's color behind it, inside the glass. */
+/* A round light of one color, inside the glass. */
 static void glow_disc(struct canvas *c, struct rect d, int radius, int cx, int cy, int rr, uint32_t tone, int strength)
 {
     struct rect box = rect_intersect(rect_intersect((struct rect){cx - rr, cy - rr, 2 * rr, 2 * rr}, d), c->clip);
@@ -1192,22 +1192,6 @@ static void glow_disc(struct canvas *c, struct rect d, int radius, int cx, int c
             b += (tb - b) * a / 255;
             row[x] = (p & 0xff000000u) | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
         }
-    }
-}
-
-static void paint_glow(struct canvas *c, int radius, int awake)
-{
-    struct rect d = dock_rect;
-    for (int i = 0; i < count; i++) {
-        const struct item *it = &items[i];
-        if (it->kind == DI_SEPARATOR || rect_empty(it->r))
-            continue;
-        uint32_t tone = item_tone(it);
-        if (!tone)
-            continue;
-        int strength = (i == hover_item ? 420 : style.dark ? 200 : 130) * fx_strength / 100;
-        glow_disc(c, d, radius, it->r.x + it->r.w / 2, it->r.y + it->r.h / 2, it->r.w * 4 / 5, tone,
-                  strength * awake / 1024);
     }
 }
 
@@ -1266,8 +1250,6 @@ static void paint_center(struct canvas *c)
         paint_halo(c, radius, awake * fx_strength / 100);
     if (spot && awake > 0)
         paint_spot(c, radius, awake);
-    if (glow && awake > 0)
-        paint_glow(c, radius, awake);
     paint_items(c);
     if (hover_item >= 0 && hover_item < count && pressed_item < 0) {
         const char *label = item_label(&items[hover_item]);
@@ -1852,19 +1834,6 @@ static const struct setting s_halo = {"dockhalo", "on|off", "icons light the Doc
 SETTING(s_sleep);
 SETTING(s_halo);
 
-static void get_glow(char *buf, size_t cap)
-{
-    setting_flag_get(glow, buf, cap);
-}
-
-static int set_glow(struct shell *sh, const char *value)
-{
-    UNUSED(sh);
-    int e = setting_flag(value, &glow);
-    dock_redraw();
-    return e;
-}
-
 static void get_spot(char *buf, size_t cap)
 {
     setting_flag_get(spot, buf, cap);
@@ -1898,13 +1867,10 @@ static int set_fx(struct shell *sh, const char *value)
     return 0;
 }
 
-static const struct setting s_glow = {"dockglow", "on|off", "a glow of each icon's color behind it", get_glow,
-                                      set_glow};
 static const struct setting s_spot = {"dockspot", "on|off", "a light on the Dock glass follows the pointer", get_spot,
                                       set_spot};
 static const struct setting s_fx = {"dockfx", "subtle|normal|vivid", "how strong the Dock's light effects are",
                                     get_fx, set_fx};
-SETTING(s_glow);
 SETTING(s_spot);
 SETTING(s_fx);
 

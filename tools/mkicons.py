@@ -741,7 +741,7 @@ def terminal_art():
     for i, c in enumerate(("ff5f57", "febc2e", "28c840")):
         art.put(ellipse4((54 + i * 15, 53, 64 + i * 15, 63)), hexc(c))
     art.put(line4([(68, 98), (98, 122), (68, 146)], 13), (hexc("f4f5f7"), hexc("c9ccd2")))
-    art.put(rr4((108, 140, 156, 153), 4), (hexc("7cf29a"), hexc("2fbf5a")))
+    art.put(rr4((108, 140, 156, 153), 4), (hexc("f4f5f7"), hexc("c9ccd2")))
     art.put(rr4((68, 172, 188, 178), 3), (255, 255, 255, 40))
     art.put(rr4((50, 70, 206, 120), 14), ((255, 255, 255, 28), (255, 255, 255, 0)))
     return art.done()
@@ -1122,6 +1122,14 @@ def clock_art():
             d.line([(cx + r0 * math.sin(a), cy - r0 * math.cos(a)), (cx + 88 * math.sin(a), cy - 88 * math.cos(a))],
                    fill=255, width=6 if i % 5 == 0 else 2)
     art.put(ticks, hexc("1c1c1e"))
+
+    def numerals(d):
+        f = font(INTER_BOLD, 22 * 4)
+        for h in range(1, 13):
+            a = math.radians(h * 30)
+            x, y = cx + 58 * math.sin(a), cy - 58 * math.cos(a)
+            d.text((x, y), str(h), font=f, fill=255, anchor="mm")
+    art.put(numerals, hexc("1c1c1e"))
     art.put(line4([(cx, cy), (cx - 32, cy - 40)], 12), hexc("1c1c1e"))
     art.put(line4([(cx, cy), (cx + 52, cy - 50)], 9), hexc("1c1c1e"))
     art.put(line4([(cx - 18, cy + 26), (cx + 40, cy - 56)], 4), hexc("ff9f0a"))
@@ -1145,21 +1153,18 @@ def weather_art():
 
 
 def notes_art():
-    """Three sticky notes, the front one with handwriting-like lines."""
-    art = Art(hexc("4b4f58"), hexc("1d1f24"))
+    """A white page under a yellow band, a dotted tear line and ruled lines."""
+    art = Art(hexc("ffffff"), hexc("eceef1"))
+    art.put(rr4((30, 30, 226, 92), 0), (hexc("ffd83d"), hexc("f5b800")))
 
-    def note(x, y, ang):
-        r = math.radians(ang)
-        pts = [(-62, -62), (62, -62), (62, 62), (-62, 62)]
-        return poly4([(x + px * math.cos(r) - py * math.sin(r), y + px * math.sin(r) + py * math.cos(r)) for px, py in pts])
-    art.put(note(104, 112, -12), (hexc("ff8fb1"), hexc("e95a87")), 40, 4)
-    art.put(note(150, 112, 10), (hexc("8de3a0"), hexc("41b965")), 40, 4)
-    art.put(note(128, 146, 0), (hexc("ffe57a"), hexc("f5c22b")), 50, 5)
-    for i in range(3):
-        y = 122 + i * 22
-        art.put(rr4((86, y, 170 - (34 if i == 2 else 0), y + 6), 3), (120, 90, 20, 170))
+    def dots(d):
+        for x in range(40, 222, 12):
+            d.ellipse([x - 3, 98, x + 3, 104], fill=255)
+    art.put(dots, hexc("c9ccd2"))
+    for i in range(5):
+        y = 128 + i * 20
+        art.put(rr4((44, y, 212, y + 3), 1), hexc("d4d6db"))
     return art.done()
-
 
 def console_art():
     """A log window: dark page with grey lines, one yellow warning and one red error line."""

@@ -1195,6 +1195,10 @@ static void pane_appearance(struct page *p)
             }
         }
     }
+    static const char *const shapes[] = {"Squircle", "Rounded", "Circle", "Square", "Leaf"};
+    static const char *const shape_values[] = {"squircle", "rounded", "circle", "square", "leaf"};
+    choice(p, "Icon shape", "Of every app icon: the Dock, Launchpad, menus and notifications", "iconshape", shapes,
+           shape_values, 5, 400);
     end(p, NULL);
     section(p, "Glass");
     static const char *const glass[] = {"Liquid Glass", "Frosted"};
@@ -1333,10 +1337,8 @@ static void pane_dock(struct page *p)
         look_reset();
     end(p, NULL);
     section(p, "Dock Effects");
-    toggle_setting(p, "Glass takes the icons' colors", "Each icon pours its color into the glass under it",
+    toggle_setting(p, "Icon colors under the icons", "Each icon pours its color into the glass under it",
                    "dockhalo");
-    toggle_setting(p, "Glowing icons", "A soft glow of each icon's color behind it, brighter under the pointer",
-                   "dockglow");
     toggle_setting(p, "Light follows the pointer", "A light moves along the glass with the pointer", "dockspot");
     static const char *const fx[] = {"Subtle", "Normal", "Vivid"};
     static const char *const fx_values[] = {"subtle", "normal", "vivid"};

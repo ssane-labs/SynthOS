@@ -1,6 +1,7 @@
-/* The pictures at the top of every Settings pane and before every setting that changes how the system looks: a small
-   copy of this computer (its own wallpaper, menu bar, a window, a widget and the Dock, made of the same glass as the
-   real ones) that acts out what the pane or the setting does, the setting going from before to after and back. */
+/* The pictures at the top of every Settings pane and before every setting that changes how the system looks. They
+   are recordings of this system (/system/previews.pak, made by tools/previews): each pane has its own scene, each
+   value of a setting its own clip, the setting going from before to after and back. Without a recording a small
+   drawn copy of the computer acts it out instead. */
 
 #include <synth/gui.h>
 #include <synth/hal.h>
@@ -11,8 +12,199 @@
 #include <synth/time.h>
 #include <synth/shell.h>
 #include <synth/config.h>
+#include <synth/picture.h>
+#include <synth/vfs.h>
 
 #include "../internal.h"
+
+/* ---- the recordings */
+
+#define CLIP_SLOTS 20
+
+struct clip {
+    char name[24];
+    const uint8_t *data;
+    uint32_t size;
+    int w, h, fps, frames;
+    int shown;   /* the frame in the canvas, -1 before the first */
+    uint32_t at; /* where the next frame starts */
+    struct canvas cv;
+    uint64_t used;
+};
+
+static uint8_t *pak;
+static uint32_t pak_size;
+static struct clip clips[CLIP_SLOTS];
+
+static uint32_t rd32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static int rd16(const uint8_t *p)
+{
+    return p[0] | p[1] << 8;
+}
+
+static bool pak_open(void)
+{
+    static bool tried;
+    if (!pak && !tried) {
+        tried = true;
+        char *buf;
+        size_t n;
+        if (vfs_read_all("/system/previews.pak", &buf, &n) == 0) {
+            if (n >= 8 && !memcmp(buf, "SPV1", 4) && n < 0x40000000u) {
+                pak = (uint8_t *)buf;
+                pak_size = (uint32_t)n;
+            } else {
+                kfree(buf);
+            }
+        }
+    }
+    return pak != NULL;
+}
+
+static bool clip_find(const char *name, const uint8_t **data, uint32_t *size)
+{
+    if (!pak_open())
+        return false;
+    uint32_t count = rd32(pak + 4);
+    if (count > (pak_size - 8) / 32)
+        return false;
+    for (uint32_t i = 0; i < count; i++) {
+        const uint8_t *e = pak + 8 + i * 32;
+        if (strncmp((const char *)e, name, 24))
+            continue;
+        uint32_t off = rd32(e + 24), len = rd32(e + 28);
+        if (off > pak_size || len > pak_size - off || len < 8)
+            return false;
+        *data = pak + off;
+        *size = len;
+        return true;
+    }
+    return false;
+}
+
+/* The clip in a slot of its own, the least recently used slot given up for it. */
+static struct clip *clip_get(const char *name)
+{
+    struct clip *slot = NULL;
+    for (int i = 0; i < CLIP_SLOTS; i++) {
+        if (clips[i].data && !strcmp(clips[i].name, name)) {
+            clips[i].used = hal_ticks_ms();
+            return &clips[i];
+        }
+        if (!slot || (slot->data && (!clips[i].data || clips[i].used < slot->used)))
+            slot = &clips[i];
+    }
+    const uint8_t *data;
+    uint32_t size;
+    if (!clip_find(name, &data, &size))
+        return NULL;
+    int w = rd16(data), h = rd16(data + 2), fps = rd16(data + 4), frames = rd16(data + 6);
+    if (w <= 0 || h <= 0 || w > 2048 || h > 2048 || fps <= 0 || frames <= 0)
+        return NULL;
+    struct clip *c = slot;
+    canvas_free(&c->cv);
+    memset(c, 0, sizeof(*c));
+    if (!canvas_alloc(&c->cv, w, h))
+        return NULL;
+    c->cv.clip = (struct rect){0, 0, w, h};
+    str_copy(c->name, name, sizeof(c->name));
+    c->data = data;
+    c->size = size;
+    c->w = w, c->h = h, c->fps = fps, c->frames = frames;
+    c->shown = -1;
+    c->at = 8;
+    c->used = hal_ticks_ms();
+    return c;
+}
+
+/* Frame i in the clip's canvas: the changed rectangles of every frame since the one shown, from the start when
+   the clip went round. */
+static bool clip_seek(struct clip *c, int i)
+{
+    if (i < c->shown) {
+        c->shown = -1;
+        c->at = 8;
+    }
+    while (c->shown < i) {
+        if (c->at + 12 > c->size)
+            return false;
+        const uint8_t *f = c->data + c->at;
+        int x = rd16(f), y = rd16(f + 2), w = rd16(f + 4), h = rd16(f + 6);
+        uint32_t len = rd32(f + 8);
+        if (len > c->size - c->at - 12)
+            return false;
+        if (len) {
+            struct picture p;
+            if (picture_decode(f + 12, len, &p) == 0) {
+                if (p.w == w && p.h == h && x + w <= c->w && y + h <= c->h) {
+                    struct canvas src = canvas_make(p.px, p.w, p.h);
+                    gfx_blit(&c->cv, x, y, &src, (struct rect){0, 0, w, h});
+                }
+                picture_free(&p);
+            }
+        }
+        c->at += 12 + len;
+        c->shown++;
+    }
+    return true;
+}
+
+/* The clip at this moment over r, filling it (cut at the sides or at the top and bottom), with round corners. */
+static bool clip_draw(struct canvas *out, struct rect r, const char *name, uint32_t ms, int radius, int alpha)
+{
+    struct clip *c = clip_get(name);
+    if (!c || r.w <= 0 || r.h <= 0)
+        return false;
+    int i = (int)((uint64_t)ms * (uint64_t)c->fps / 1000 % (uint64_t)c->frames);
+    if (!clip_seek(c, i))
+        return false;
+    struct rect from = {0, 0, c->w, c->h};
+    if ((int64_t)c->w * r.h > (int64_t)c->h * r.w) {
+        from.w = (int)((int64_t)c->h * r.w / r.h);
+        from.x = (c->w - from.w) / 2;
+    } else {
+        from.h = (int)((int64_t)c->w * r.h / r.w);
+        from.y = (c->h - from.h) / 2;
+    }
+    struct canvas view = canvas_make(c->cv.px + from.y * c->cv.stride + from.x, from.w, from.h);
+    view.stride = c->cv.stride;
+    view.clip = (struct rect){0, 0, from.w, from.h};
+    struct canvas tile;
+    if (!canvas_alloc(&tile, r.w, r.h))
+        return false;
+    tile.clip = (struct rect){0, 0, r.w, r.h};
+    gfx_scale_smooth(&tile, tile.clip, &view, 255);
+    struct canvas cl = *out;
+    cl.clip = rect_intersect(out->clip, r);
+    if (alpha >= 255) {
+        gfx_blit_round(&cl, r, &tile, radius, false);
+    } else {
+        struct canvas mix;
+        if (canvas_alloc(&mix, r.w, r.h)) {
+            mix.clip = tile.clip;
+            gfx_blit(&mix, 0, 0, out, r); /* what lies under it now */
+            gfx_blit_alpha(&mix, 0, 0, &tile, tile.clip, alpha);
+            gfx_blit_round(&cl, r, &mix, radius, false);
+            canvas_free(&mix);
+        }
+    }
+    canvas_free(&tile);
+    return true;
+}
+
+/* The recording of one value of a setting: "s_<key>_<value>"; numbers fall to "lo" or "hi". */
+static void value_clip(char *name, size_t cap, const char *key, const char *value)
+{
+    long n;
+    if (str_parse_long(value, &n))
+        ksnprintf(name, cap, "s_%s_%s", key, n >= 50 ? "hi" : "lo");
+    else
+        ksnprintf(name, cap, "s_%s_%s", key, value);
+}
 
 /* ---- arithmetic without floating point */
 
@@ -736,6 +928,12 @@ static void scene(struct mini *m, struct canvas *c, struct rect s, const char *p
 
 static void hero(struct canvas *c, struct rect r, const char *pane, uint32_t ms)
 {
+    char name[24];
+    ksnprintf(name, sizeof(name), "h_%s", pane);
+    if (clip_draw(c, r, name, ms, 16, 255)) {
+        gfx_round_frame(c, r, 16, ALPHA(0xffffffffu, style.dark ? 30 : 60));
+        return;
+    }
     struct mini m;
     mini_now(&m);
     m.window = 1024;
@@ -784,7 +982,7 @@ static void hero(struct canvas *c, struct rect r, const char *pane, uint32_t ms)
     gfx_round_frame(c, r, 16, ALPHA(0xffffffffu, style.dark ? 30 : 60));
 }
 
-static const char *const shown_keys[] = {"dockhalo", "dockglow", "dockspot", "dockfx", "colorfilter", "appearance", "glass", "glasseffect", "glassstrength", "glassedge",
+static const char *const shown_keys[] = {"dockhalo", "iconshape", "dockspot", "dockfx", "colorfilter", "appearance", "glass", "glasseffect", "glassstrength", "glassedge",
                                          "glassfrost", "docksize", "dockstyle", "dockmode", "magnify",
                                          "dockbounce", "dockdots", "brightness", "nightshift", "nightwarmth",
                                          "animations"};
@@ -811,6 +1009,18 @@ static void setting(struct canvas *c, struct rect r, const char *key, const char
     uint32_t t = ms % 4000;
     int k = t < 1300 ? 0 : t < 1800 ? smooth((int)(t - 1300) * 1024 / 500) : t < 3500 ? 1024
                                                                                      : 1024 - smooth((int)(t - 3500) * 1024 / 500);
+    char was[24], now[24];
+    value_clip(was, sizeof(was), key, before);
+    value_clip(now, sizeof(now), key, after);
+    if (clip_find(now, &(const uint8_t *){0}, &(uint32_t){0})) {
+        bool drawn = k < 1024 && clip_draw(c, r, was, ms, 6, 255);
+        if (k > 0 || !drawn)
+            clip_draw(c, r, now, ms, 6, drawn ? k * 255 / 1024 : 255);
+        gfx_round_frame(c, r, 6, ALPHA(0, 90));
+        gfx_circle(c, r.x + r.w - 7, r.y + r.h - 7, 3, ALPHA(0, 120));
+        gfx_circle(c, r.x + r.w - 7, r.y + r.h - 7, 2, k > 512 ? style.accent : RGB(200, 200, 206));
+        return;
+    }
     struct canvas tile;
     if (!canvas_alloc(&tile, r.w, r.h))
         return;
@@ -904,12 +1114,15 @@ static void setup_page(struct ui *ui, struct rect r, const char *page)
         static const char *const bar_values[] = {"menubar", "pill", "islands"};
         row_choice(ui, r, y + 40, "Top of the screen", "statusbar", bars, bar_values, 3);
         struct rect g = ui_group(ui, r.x, y + 84, r.w, 3, 36);
-        row_switch(ui, g, 0, 3, "Glass takes the icons' colors", NULL, "dockhalo");
-        row_switch(ui, g, 1, 3, "Glowing icons", NULL, "dockglow");
+        row_switch(ui, g, 0, 3, "Icon colors under the icons", NULL, "dockhalo");
+        row_switch(ui, g, 1, 3, "Magnification", NULL, "magnify");
         row_switch(ui, g, 2, 3, "Light follows the pointer", NULL, "dockspot");
         static const char *const st[] = {"Subtle", "Normal", "Vivid"};
         static const char *const st_values[] = {"subtle", "normal", "vivid"};
         row_choice(ui, r, y + 84 + 3 * 36 + 12, "Dock effects", "dockfx", st, st_values, 3);
+        static const char *const sh[] = {"Squircle", "Rounded", "Circle", "Square", "Leaf"};
+        static const char *const sh_values[] = {"squircle", "rounded", "circle", "square", "leaf"};
+        row_choice(ui, r, y + 84 + 3 * 36 + 52, "Icon shape", "iconshape", sh, sh_values, 5);
     } else if (!strcmp(page, "ai")) {
         heading(ui, r, "Assistant", "It runs on this computer: nothing you say or type leaves it.");
         struct rect g = ui_group(ui, r.x, y, r.w, 3, 36);

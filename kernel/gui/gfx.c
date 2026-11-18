@@ -1,8 +1,10 @@
 #include <synth/codepage.h>
+#include <synth/error.h>
 #include <synth/font.h>
 #include <synth/gui.h>
 #include <synth/heap.h>
 #include <synth/lz4.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -909,33 +911,63 @@ static int icon_variant_of(enum icon_id id)
     return style.dark && has_tile(id) ? 1 : 0;
 }
 
-/* The SynthOS tile ("leaf") over the tile's box: wide round corners, a tight one at the bottom right; 4x4 samples per
-   pixel. Under the icon's own layer: a diagonal blend, top left to bottom right, with a soft light at the top left. */
+/* The shape of every app tile in the system (Settings -> Appearance -> Icon shape). */
+enum icon_shape { SHAPE_SQUIRCLE, SHAPE_ROUNDED, SHAPE_CIRCLE, SHAPE_SQUARE, SHAPE_LEAF, SHAPE_COUNT };
+static const char *const shape_names[SHAPE_COUNT] = {"squircle", "rounded", "circle", "square", "leaf"};
+static int icon_shape;
+
+/* Whether a point of the tile's box is inside the shape; u, v are from the center in 1/(8*size) units, half the
+   box's half width. */
+static bool in_shape(int64_t dx, int64_t dy, int64_t half)
+{
+    int64_t ux = dx < 0 ? -dx : dx, uy = dy < 0 ? -dy : dy;
+    if (ux >= half || uy >= half)
+        return false;
+    int64_t r;
+    switch (icon_shape) {
+    case SHAPE_CIRCLE:
+        return ux * ux + uy * uy < half * half;
+    case SHAPE_ROUNDED:
+        r = half * 40 / 100;
+        break;
+    case SHAPE_SQUARE:
+        r = half * 12 / 100;
+        break;
+    case SHAPE_LEAF:
+        r = dx > 0 && dy > 0 ? half * 22 / 100 : half * 62 / 100;
+        break;
+    default: { /* |x|^5 + |y|^5 <= 1 */
+        int64_t uu = (ux << 8) / half, vv = (uy << 8) / half;
+        return uu * uu * uu * uu * uu + vv * vv * vv * vv * vv < ((int64_t)1 << 40);
+    }
+    }
+    int64_t ex = ux - (half - r), ey = uy - (half - r);
+    return !(ex > 0 && ey > 0 && ex * ex + ey * ey > r * r);
+}
+
+/* The tile over its box in the chosen shape, 4x4 samples per pixel, and the background under the icon's own layer:
+   a top-to-bottom blend with a soft light from the top edge. In any shape but the squircle the icon's own layer
+   (drawn for the squircle) is cut to the shape too. */
 static void paint_tile(uint32_t *px, int size, const struct icon_tile *t)
 {
     int64_t half = size * 39 * 8 / 96, mid = size * 4;
-    int64_t wide = half * 62 / 100, tight = half * 22 / 100;
-    int gx = size * 70 * 16 / 256, gy = size * 50 * 16 / 256, gr = size * 702 * 16 / 960;
+    int gx = size * 48 * 16 / 96, gy = size * 9 * 16 / 96, gr = size * 702 * 16 / 960;
     for (int y = 0; y < size; y++) {
+        uint32_t base = color_mix(t->top | 0xff000000u, t->bottom | 0xff000000u, (y * 2 + 1) * 255 / (size * 2));
         for (int x = 0; x < size; x++) {
             int cover = 0;
             for (int sy = 0; sy < 4; sy++)
-                for (int sx = 0; sx < 4; sx++) {
-                    int64_t dx = x * 8 + sx * 2 + 1 - mid, dy = y * 8 + sy * 2 + 1 - mid;
-                    int64_t r = dx > 0 && dy > 0 ? tight : wide;
-                    int64_t ux = dx < 0 ? -dx : dx, uy = dy < 0 ? -dy : dy;
-                    if (ux >= half || uy >= half)
-                        continue;
-                    int64_t ex = ux - (half - r), ey = uy - (half - r);
-                    if (ex > 0 && ey > 0 && ex * ex + ey * ey > r * r)
-                        continue;
-                    cover++;
-                }
+                for (int sx = 0; sx < 4; sx++)
+                    cover += in_shape(x * 8 + sx * 2 + 1 - mid, y * 8 + sy * 2 + 1 - mid, half);
             uint32_t *dst = &px[y * size + x];
             uint32_t fg = *dst;
+            if (icon_shape != SHAPE_SQUIRCLE) {
+                fg = (fg & 0xffffffu) | ((fg >> 24) * (uint32_t)cover / 16) << 24;
+                *dst = fg;
+            }
             if (!cover)
                 continue;
-            uint32_t p = color_mix(t->top | 0xff000000u, t->bottom | 0xff000000u, (x + y + 1) * 255 / (size * 2));
+            uint32_t p = base;
             if (t->glow) {
                 int d = gfx_dist16(x * 16 + 8 - gx, y * 16 + 8 - gy);
                 if (d < gr)
@@ -1037,6 +1069,46 @@ static const uint32_t *icon_at_size(enum icon_id id, int size)
     draw_scaled(&tmp, (struct rect){0, 0, size, size}, icon_px[id][level], src, src, src, 255);
     return e->px;
 }
+
+static void get_icon_shape(char *buf, size_t cap)
+{
+    str_copy(buf, shape_names[icon_shape], cap);
+}
+
+/* A new shape: every app tile is painted again from the pack. */
+static int set_icon_shape(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int shape = -1;
+    for (int i = 0; i < SHAPE_COUNT; i++)
+        if (!strcmp(value, shape_names[i]))
+            shape = i;
+    if (shape < 0)
+        return E_INVAL;
+    if (shape == icon_shape)
+        return 0;
+    icon_shape = shape;
+    for (int v = 0; v < 2; v++)
+        for (int id = 0; id < ICON_COUNT; id++) {
+            if (!has_tile((enum icon_id)id))
+                continue;
+            for (int level = 0; level < ICON_LEVELS; level++) {
+                kfree(icon_px_both[v][id][level]);
+                icon_px_both[v][id][level] = NULL;
+            }
+        }
+    for (size_t i = 0; i < ARRAY_SIZE(scaled_icons); i++)
+        if (scaled_icons[i].px && has_tile((enum icon_id)scaled_icons[i].id)) {
+            kfree(scaled_icons[i].px);
+            scaled_icons[i].px = NULL;
+        }
+    wm_damage_all();
+    return 0;
+}
+
+static const struct setting s_icon_shape = {"iconshape", "squircle|rounded|circle|square|leaf",
+                                            "the shape of every app icon", get_icon_shape, set_icon_shape};
+SETTING(s_icon_shape);
 
 void gfx_icon_alpha(struct canvas *c, int x, int y, enum icon_id id, int size, int alpha)
 {
