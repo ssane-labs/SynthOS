@@ -1083,6 +1083,8 @@ dwrite64
 dwrite families=1 name=1 arial=1 opens=1 glyphs=1 advance=1 upem=1 head=1 path=1 raster=1 same=1
 dwrite64 | grep dwrite3
 dwrite3 factory2=1 factory3=1 collection=1 fallback=1 gray=1
+d3d64
+d3d11 level=b000 adapter=SynthOS Graphics modes=1 shaders=1 map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1
 spawn64
 spawn64 held=ping child=7010 map=pong dll32=0/193 overlapped=1 3 678
 sock6
@@ -1714,12 +1716,12 @@ call: open {"target": "x"}
 EOF
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|d3d64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
         "$work/cases" | sed -e 's|^1  /tmp/auto.txt$|  /tmp/auto.txt|' > "$work/cases.native" &&
         mv "$work/cases.native" "$work/cases"
 elif [ "$NO_WIN64" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|winnet64|menu64|time64|proc64|sys64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|d3d64|spawn64|sock6|winnet64|menu64|time64|proc64|sys64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
         "$work/cases" > "$work/cases.native" && mv "$work/cases.native" "$work/cases"
 fi
 

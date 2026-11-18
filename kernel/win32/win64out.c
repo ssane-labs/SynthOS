@@ -206,12 +206,6 @@ static uint64_t h_no_filter(uint64_t *a, const uint64_t *f, void *t)
     return no_object(a, 1, 0);
 }
 
-static uint64_t h_no_d3d11(uint64_t *a, const uint64_t *f, void *t)
-{
-    no_object(a, 7, 0);
-    return no_object(a, 9, CLASS_NOT_REGISTERED);
-}
-
 static const struct w64_export com_exports[] = {
     W64_FN("SHGetDesktopFolder", h_no_object0),
     W64_FN("SHGetMalloc", h_no_object0),
@@ -239,7 +233,6 @@ static const struct w64_export com_exports[] = {
     W64_FN("CoGetClassObject", h_no_object4),
     W64_FN("LoadRegTypeLib", h_no_object4),
     W64_FN("OleLoadPicturePath", h_no_object5),
-    W64_FN("D3D11CreateDevice", h_no_d3d11),
     W64_FN("GetErrorInfo", h_no_error_info),
     W64_FN("SetErrorInfo", h_set_error_info),
     W64_FN("CoRegisterMessageFilter", h_no_filter),

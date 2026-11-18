@@ -887,6 +887,9 @@ static void cleanup(void)
         if (w32->handles[i].type != WH_FREE)
             w32_handle_close((HANDLE)(uintptr_t)(HANDLE_BASE + i * 4));
     w32_registry_flush();
+#ifdef SYNTH_X32
+    w32_d3d_cleanup();
+#endif
     w32_vm_cleanup();
     w32_unload_all();
     vmm_release(w32->arena_base, w32->arena_size);

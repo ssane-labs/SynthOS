@@ -333,7 +333,7 @@ static void draw_tri_in_tile(struct draw *d, const struct tri *t, int x0, int y0
             if (s->quad) {
                 d->quads++;
                 s->quad(s->ctx, &q, mask, scratch);
-                d->pixels += (uint64_t)__builtin_popcount(mask);
+                d->pixels += (uint64_t)((mask & 1) + (mask >> 1 & 1) + (mask >> 2 & 1) + (mask >> 3 & 1));
                 continue;
             }
             if (s->depth_test && tg->depth) /* before the shader: no shader here writes depth */

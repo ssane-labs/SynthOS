@@ -111,6 +111,8 @@ void gd_resource_unref(struct gd_resource *r);
 void gd_resource_desc(const struct gd_resource *r, struct gd_res_desc *out);
 uint32_t gd_subresources(const struct gd_resource *r);
 
+/* all of a resource's subresources: whole pages of kernel memory, so a program's Map can see them in place */
+uint8_t *gd_resource_memory(struct gd_resource *r, uint32_t *bytes);
 struct gd_layout {
     uint32_t row_pitch, slice_pitch, size; /* rows of texels (blocks), slices of rows */
     uint32_t width, height, depth;         /* of this mip level, in texels */
@@ -263,6 +265,10 @@ void gd_set_depth_target(struct gd_context *c, struct gd_view *dsv);
 void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base_vertex,
              uint32_t instances, uint32_t start_instance);
 
+/* a 2D texture's subresource scaled into the rectangle dx, dy, dw, dh of 0xAARRGGBB pixels (stride: pixels per row),
+   drawing only inside cx, cy, cw, ch: Present */
+void gd_present(struct gd_resource *r, uint32_t sub, uint32_t *dst, int stride, int dx, int dy, int dw, int dh,
+                int cx, int cy, int cw, int ch);
 struct gd_stats {
     uint64_t draws, skipped, triangles, pixels, shader_faults;
     char last_fault[64];

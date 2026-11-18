@@ -17,9 +17,24 @@ static void *kzalloc(size_t n)
 {
     return calloc(1, n);
 }
+static void *kmalloc_pages(size_t n)
+{
+    void *p = aligned_alloc(4096, n);
+    if (p)
+        memset(p, 0, n);
+    return p;
+}
+#define kfree_pages free
+static void hal_parallel(void (*fn)(void *ctx, int from, int to), void *ctx, int count, int grain)
+{
+    (void)grain;
+    fn(ctx, 0, count);
+}
 #else
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/string.h>
+#include <synth/vmm.h>
 #endif
 
 #define E_INVALIDARG 0x80070057u
@@ -117,7 +132,8 @@ struct gd_resource *gd_resource_create(const struct gd_res_desc *desc, const str
             }
         }
     r->size = total;
-    r->data = kzalloc(total ? total : 16);
+    r->alloc = total ? (total + 4095) & ~(size_t)4095 : 4096;
+    r->data = kmalloc_pages(r->alloc);
     if (!r->data)
         goto oom;
     if (init)
@@ -149,10 +165,16 @@ void gd_resource_unref(struct gd_resource *r)
 {
     if (!r || __atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL))
         return;
-    kfree(r->data);
+    kfree_pages(r->data);
     kfree(r->lay);
     kfree(r->off);
     kfree(r);
+}
+
+uint8_t *gd_resource_memory(struct gd_resource *r, uint32_t *bytes)
+{
+    *bytes = (uint32_t)r->alloc;
+    return r->data;
 }
 
 void gd_resource_desc(const struct gd_resource *r, struct gd_res_desc *out)
@@ -1120,10 +1142,13 @@ static void ps_quad(const void *ctx, const struct rs_quad *q, unsigned mask, voi
             return;
     }
     if (!d->ps) { /* depth only */
-        if (!d->early && ds)
-            for (int p = 0; p < 4; p++)
-                if (mask & (1u << p))
-                    depth_stencil(d, q->x + (p & 1), q->y + (p >> 1), biased(d, q, p), q->front);
+        uint64_t passed = 0;
+        for (int p = 0; p < 4; p++)
+            if ((mask & (1u << p)) &&
+                (d->early || !ds || depth_stencil(d, q->x + (p & 1), q->y + (p >> 1), biased(d, q, p), q->front)))
+                passed++;
+        if (passed)
+            __atomic_add_fetch(&stats.pixels, passed, __ATOMIC_RELAXED);
         return;
     }
     uint8_t *mem = scratch;
@@ -1154,6 +1179,7 @@ static void ps_quad(const void *ctx, const struct rs_quad *q, unsigned mask, voi
         for (int p = 0; p < 4; p++)
             if (F(o[0][p][3]) < 0.5f)
                 mask &= ~(1u << p);
+    uint64_t passed = 0; /* what occlusion queries count */
     for (int p = 0; p < 4; p++) {
         if (!(mask & (1u << p)))
             continue;
@@ -1163,10 +1189,13 @@ static void ps_quad(const void *ctx, const struct rs_quad *q, unsigned mask, voi
             if (!depth_stencil(d, x, y, z, q->front))
                 continue;
         }
+        passed++;
         for (int t = 0; t < d->nrt; t++)
             if (d->rt[t].base && x < (int)d->rt[t].w && y < (int)d->rt[t].h)
                 write_color(d, &d->rt[t], x, y, o[t][p], d->dual_source && t == 0 ? o[1][p] : NULL);
     }
+    if (passed)
+        __atomic_add_fetch(&stats.pixels, passed, __ATOMIC_RELAXED);
 }
 
 static bool layout_target(struct gd_view *v, struct target *t)
@@ -1367,6 +1396,67 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     }
     kfree(idx);
     kfree(d);
+}
+
+/* ---- presenting: a swap chain's buffer into a window */
+
+struct present {
+    const uint8_t *src;
+    struct gd_layout l;
+    uint32_t format;
+    uint32_t *dst;
+    int stride, dx, dy, dw, dh, x0, x1;
+    int y0;
+};
+
+static uint32_t to8(float v)
+{
+    v = v != v ? 0.0f : v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
+    return (uint32_t)(v * 255.0f + 0.5f);
+}
+
+static void present_rows(void *ctx, int from, int to)
+{
+    const struct present *p = ctx;
+    for (int y = p->y0 + from; y < p->y0 + to; y++) {
+        uint32_t sy = (uint32_t)(((int64_t)(y - p->dy) * p->l.height) / p->dh);
+        const uint8_t *row = p->src + (size_t)sy * p->l.row_pitch;
+        uint32_t *out = p->dst + (size_t)y * (size_t)p->stride;
+        for (int x = p->x0; x < p->x1; x++) {
+            uint32_t sx = (uint32_t)(((int64_t)(x - p->dx) * p->l.width) / p->dw);
+            uint32_t c;
+            if (p->format == GD_B8G8R8A8_UNORM || p->format == GD_B8G8R8X8_UNORM ||
+                p->format == GD_B8G8R8A8_UNORM_SRGB || p->format == GD_B8G8R8X8_UNORM_SRGB) {
+                memcpy(&c, row + sx * 4, 4);
+            } else if (p->format == GD_R8G8B8A8_UNORM || p->format == GD_R8G8B8A8_UNORM_SRGB) {
+                const uint8_t *t = row + sx * 4;
+                c = (uint32_t)t[0] << 16 | (uint32_t)t[1] << 8 | t[2];
+            } else {
+                uint32_t v[4];
+                gd_texel_load(p->format, row + sx * gd_format_bytes(p->format, &(uint32_t){0}), 0, 0, v);
+                float f[3];
+                memcpy(f, v, sizeof(f));
+                c = to8(f[0]) << 16 | to8(f[1]) << 8 | to8(f[2]);
+            }
+            out[x] = 0xff000000u | (c & 0xffffffu);
+        }
+    }
+}
+
+void gd_present(struct gd_resource *r, uint32_t sub, uint32_t *dst, int stride, int dx, int dy, int dw, int dh,
+                int cx, int cy, int cw, int ch)
+{
+    struct present p = {.dst = dst, .stride = stride, .dx = dx, .dy = dy, .dw = dw, .dh = dh};
+    if (!r || r->d.dim != GD_TEX2D || dw <= 0 || dh <= 0 || !(p.src = gd_subresource(r, sub, &p.l)))
+        return;
+    p.format = gd_format_typed(r->d.format);
+    if (gd_format_class(p.format) != FC_FLOAT || gd_format_depth(p.format))
+        return;
+    int y1 = MIN(dy + dh, cy + ch);
+    p.x0 = MAX(dx, cx), p.x1 = MIN(dx + dw, cx + cw), p.y0 = MAX(dy, cy);
+    if (p.x0 >= p.x1 || p.y0 >= y1)
+        return;
+    hal_parallel(present_rows, &p, y1 - p.y0, 16);
 }
 
 #endif

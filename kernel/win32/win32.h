@@ -715,6 +715,9 @@ uint32_t w32_thread_id(void);
 bool w32_readable(const void *p, size_t size);
 void w32_idle(int ms);
 void w32_gui_cleanup(void);
+#ifdef SYNTH_X32
+void w32_d3d_cleanup(void); /* d3d11_fp.c */
+#endif
 void w32_winsock_cleanup(void);
 void w32_inet_cleanup(void);
 HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id);

@@ -1,0 +1,178 @@
+#include <stdio.h>
+#include <string.h>
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+
+#include "d3d64_shaders.h"
+
+/* A 64-bit Direct3D 11 program: a device and swap chain on a window, a triangle drawn with a vertex buffer, an input
+   layout, shaders and a constant buffer written through Map, read back through a staging texture, then Present. */
+typedef HRESULT(WINAPI *device_fn)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *, UINT,
+                                   UINT, ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
+typedef HRESULT(WINAPI *create_fn)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *, UINT,
+                                   UINT, const DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **, ID3D11Device **,
+                                   D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
+
+struct vertex {
+    float pos[4], color[4];
+};
+
+int main(int argc, char **argv)
+{
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = "d3d64";
+    RegisterClassA(&wc);
+    HWND window = CreateWindowExA(0, "d3d64", "Direct3D 11", WS_OVERLAPPEDWINDOW, 40, 40, 200, 160, NULL, NULL,
+                                  wc.hInstance, NULL);
+    ShowWindow(window, SW_SHOW);
+
+    HMODULE d3d11 = LoadLibraryA("d3d11.dll");
+    create_fn create = (create_fn)(void *)GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain");
+    device_fn create_device = (device_fn)(void *)GetProcAddress(d3d11, "D3D11CreateDevice");
+    DXGI_SWAP_CHAIN_DESC sd = {};
+    sd.BufferDesc.Width = 64;
+    sd.BufferDesc.Height = 64;
+    sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sd.SampleDesc.Count = 1;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.BufferCount = 2;
+    sd.OutputWindow = window;
+    sd.Windowed = TRUE;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    IDXGISwapChain *chain = NULL;
+    ID3D11Device *dev = NULL;
+    ID3D11DeviceContext *ctx = NULL;
+    D3D_FEATURE_LEVEL level = (D3D_FEATURE_LEVEL)0;
+    /* without a desktop (the serial console) there is no window: the picture goes to a texture */
+    HRESULT hr = !create || !create_device ? E_FAIL
+                 : window ? create(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &sd, &chain,
+                                   &dev, &level, &ctx)
+                          : create_device(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &dev,
+                                          &level, &ctx);
+    if (FAILED(hr) || !dev || !ctx || (window && !chain)) {
+        printf("d3d11 create failed %lx window=%d\n", (unsigned long)hr, window != NULL);
+        return 1;
+    }
+
+    IDXGIDevice *dxgi = NULL;
+    IDXGIAdapter *adapter = NULL;
+    DXGI_ADAPTER_DESC ad = {};
+    dev->QueryInterface(__uuidof(IDXGIDevice), (void **)&dxgi);
+    if (dxgi && SUCCEEDED(dxgi->GetAdapter(&adapter)))
+        adapter->GetDesc(&ad);
+    IDXGIOutput *out = NULL;
+    UINT modes = 0;
+    if (adapter && SUCCEEDED(adapter->EnumOutputs(0, &out)))
+        out->GetDisplayModeList(DXGI_FORMAT_B8G8R8A8_UNORM, 0, &modes, NULL);
+
+    ID3D11Texture2D *back = NULL;
+    if (chain) {
+        chain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&back);
+    } else {
+        D3D11_TEXTURE2D_DESC bd2 = {64, 64, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                    D3D11_BIND_RENDER_TARGET, 0, 0};
+        dev->CreateTexture2D(&bd2, NULL, &back);
+    }
+    ID3D11RenderTargetView *rtv = NULL;
+    dev->CreateRenderTargetView(back, NULL, &rtv);
+
+    ID3D11VertexShader *vs = NULL;
+    ID3D11PixelShader *ps = NULL;
+    HRESULT shaders = dev->CreateVertexShader(vs_blob, sizeof(vs_blob), NULL, &vs);
+    if (SUCCEEDED(shaders))
+        shaders = dev->CreatePixelShader(ps_blob, sizeof(ps_blob), NULL, &ps);
+    D3D11_INPUT_ELEMENT_DESC el[2] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
+    };
+    ID3D11InputLayout *layout = NULL;
+    dev->CreateInputLayout(el, 2, vs_blob, sizeof(vs_blob), &layout);
+
+    /* a triangle over the whole target, in the left half only through the scissor-free viewport */
+    vertex v[3] = {{{-1, -1, 0.5f, 1}, {1, 1, 1, 1}}, {{-1, 3, 0.5f, 1}, {1, 1, 1, 1}}, {{3, -1, 0.5f, 1}, {1, 1, 1, 1}}};
+    D3D11_BUFFER_DESC bd = {sizeof(v), D3D11_USAGE_IMMUTABLE, D3D11_BIND_VERTEX_BUFFER, 0, 0, 0};
+    D3D11_SUBRESOURCE_DATA init = {v, 0, 0};
+    ID3D11Buffer *vb = NULL;
+    dev->CreateBuffer(&bd, &init, &vb);
+    D3D11_BUFFER_DESC cd = {16, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+    ID3D11Buffer *cb = NULL;
+    dev->CreateBuffer(&cd, NULL, &cb);
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    int mapped = cb && SUCCEEDED(ctx->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)) && m.pData;
+    if (mapped) {
+        const float tint[4] = {1.0f, 0.5f, 0.25f, 1.0f};
+        memcpy(m.pData, tint, sizeof(tint));
+        ctx->Unmap(cb, 0);
+    }
+
+    const float blue[4] = {0, 0, 1, 1};
+    ctx->ClearRenderTargetView(rtv, blue);
+    ctx->OMSetRenderTargets(1, &rtv, NULL);
+    D3D11_VIEWPORT vp = {0, 0, 32, 64, 0, 1};
+    ctx->RSSetViewports(1, &vp);
+    UINT stride = sizeof(vertex), offset = 0;
+    ctx->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+    ctx->IASetInputLayout(layout);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(vs, NULL, 0);
+    ctx->PSSetShader(ps, NULL, 0);
+    ctx->PSSetConstantBuffers(0, 1, &cb);
+    D3D11_QUERY_DESC qd = {D3D11_QUERY_OCCLUSION, 0};
+    ID3D11Query *q = NULL;
+    dev->CreateQuery(&qd, &q);
+    ctx->Begin(q);
+    ctx->Draw(3, 0);
+    ctx->End(q);
+    UINT64 samples = 0;
+    while (ctx->GetData(q, &samples, sizeof(samples), 0) == S_FALSE)
+        ;
+
+    /* read back: the left half drawn, the right half the clear color */
+    D3D11_TEXTURE2D_DESC td;
+    back->GetDesc(&td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *staging = NULL;
+    dev->CreateTexture2D(&td, NULL, &staging);
+    ctx->CopyResource(staging, back);
+    unsigned left = 0, right = 0;
+    if (staging && SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+        const unsigned char *row = (const unsigned char *)m.pData + 32 * m.RowPitch;
+        memcpy(&left, row + 8 * 4, 4);
+        memcpy(&right, row + 56 * 4, 4);
+        ctx->Unmap(staging, 0);
+    }
+    int presented = chain ? chain->Present(0, 0) == S_OK : -1;
+
+    ID3D11Device *again = NULL;
+    ctx->GetDevice(&again);
+    ID3D11RenderTargetView *bound = NULL;
+    ctx->OMGetRenderTargets(1, &bound, NULL);
+
+    char name[64] = "";
+    WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name), NULL, NULL);
+    printf("d3d11 level=%x adapter=%s modes=%d shaders=%d map=%d samples=%llu left=%06x right=%06x present=%d "
+           "get=%d\n",
+           (unsigned)level, name, modes > 0, SUCCEEDED(shaders), mapped, (unsigned long long)samples,
+           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv);
+    /* d3d64 show: the triangle stays on screen, its tint changing every frame */
+    for (int frame = 0; chain && argc > 1 && !strcmp(argv[1], "show") && frame < 600; frame++) {
+        MSG msg;
+        while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE))
+            DispatchMessageA(&msg);
+        if (SUCCEEDED(ctx->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            float t = (float)(frame % 120) / 120.0f;
+            const float tint[4] = {1.0f - t, t, 0.5f, 1.0f};
+            memcpy(m.pData, tint, sizeof(tint));
+            ctx->Unmap(cb, 0);
+        }
+        ctx->ClearRenderTargetView(rtv, blue);
+        ctx->Draw(3, 0);
+        chain->Present(1, 0);
+    }
+    return 0;
+}

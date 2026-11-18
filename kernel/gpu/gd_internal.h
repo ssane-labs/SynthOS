@@ -13,7 +13,7 @@ struct gd_resource {
     struct gd_layout *lay; /* per subresource (mip + slice * mips) */
     size_t *off;
     uint8_t *data;
-    size_t size;
+    size_t size, alloc; /* the subresources' bytes; the pages they are in */
 };
 
 /* what a view looks at, as the shader sees it */
