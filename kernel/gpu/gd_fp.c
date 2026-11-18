@@ -915,9 +915,15 @@ struct stage_env {
     const struct stage *st;
 };
 
+struct gs_out;
+
 struct draw {
     struct gd_context *c;
     const struct dxbc_shader *vs, *ps;
+    const struct dxbc_shader *gs, *last; /* the geometry shader, or NULL; the stage before the rasterizer */
+    int out_n, out_pos;                  /* what vs_run gives: registers 0 .. out_n - 1 and the position's */
+    struct gs_out *gso;                  /* the geometry shader's vertices */
+    struct dxbc_env gs_env;
     struct vs_input in[MAX_REGS];
     int pos_reg, nvary;
     uint32_t instance, first_instance;
@@ -1139,7 +1145,7 @@ static void vs_run(const void *ctx, uint32_t first, int n, float *out, void *scr
         }
     }
     struct dxbc_lanes lanes = {.v = v, .o = o, .live = (1u << n) - 1, .scratch = mem + sizeof(uint32_t[MAX_REGS][4][4]) * 2};
-    int floats = 4 + d->nvary * 4;
+    int floats = 4 + d->out_n * 4;
     if (!dxbc_run(d->vs, &d->vs_env, &lanes)) {
         note_fault(lanes.error);
         for (int l = 0; l < n; l++)
@@ -1148,11 +1154,11 @@ static void vs_run(const void *ctx, uint32_t first, int n, float *out, void *scr
     }
     for (int l = 0; l < n; l++) {
         float *dst = out + l * floats;
-        if (d->pos_reg >= 0)
-            memcpy(dst, o[d->pos_reg][l], 16);
+        if (d->out_pos >= 0)
+            memcpy(dst, o[d->out_pos][l], 16);
         else
             memset(dst, 0, 16);
-        for (int k = 0; k < d->nvary; k++)
+        for (int k = 0; k < d->out_n; k++)
             memcpy(dst + 4 + k * 4, o[k][l], 16);
     }
 }
@@ -1180,8 +1186,8 @@ static bool link_varyings(struct draw *d, uint32_t *flat, uint32_t *noperspectiv
             p->kind = PSIN_ZERO;
             continue;
         }
-        for (int k = 0; k < d->vs->nout; k++) {
-            const struct dxbc_sig_elem *o = &d->vs->out[k];
+        for (int k = 0; k < d->last->nout; k++) {
+            const struct dxbc_sig_elem *o = &d->last->out[k];
             if (o->reg < MAX_REGS && (int)o->reg < d->nvary && same_name(o->name, s->name) && o->index == s->index) {
                 p->kind = PSIN_VARY;
                 p->from = (int)o->reg;
@@ -1424,6 +1430,167 @@ static bool dual_source(const struct gd_blend_target *b)
     return false;
 }
 
+/* ---- geometry shaders: vertices shaded first, then each primitive through the geometry shader, whose vertices
+   are drawn as lists */
+
+struct gs_out {
+    struct draw *d;
+    float *verts;     /* the emitted vertices: position, then the varyings */
+    uint32_t nv, cap, *ind, ni, icap, strip;
+    int floats;
+    bool full;
+};
+
+static void gs_emit(void *user, struct dxbc_lanes *l, int lane, bool emit, bool cut)
+{
+    struct gs_out *g = user;
+    struct draw *d = g->d;
+    if (emit && !g->full) {
+        if (g->nv == g->cap || g->ni + 3 > g->icap) {
+            uint32_t cap = g->cap ? g->cap * 2 : 256, icap = cap * 3;
+            float *v = kmalloc(sizeof(float) * (size_t)g->floats * cap);
+            uint32_t *ind = kmalloc(sizeof(uint32_t) * icap);
+            if (!v || !ind || cap > (1u << 22)) {
+                kfree(v), kfree(ind);
+                g->full = true;
+                return;
+            }
+            if (g->verts)
+                memcpy(v, g->verts, sizeof(float) * (size_t)g->floats * g->nv), memcpy(ind, g->ind, sizeof(uint32_t) * g->ni);
+            kfree(g->verts), kfree(g->ind);
+            g->verts = v, g->ind = ind, g->cap = cap, g->icap = icap;
+        }
+        float *dst = g->verts + (size_t)g->nv * (size_t)g->floats;
+        if (d->pos_reg >= 0)
+            memcpy(dst, l->o[d->pos_reg][lane], 16);
+        else
+            memset(dst, 0, 16);
+        for (int k = 0; k < d->nvary; k++)
+            memcpy(dst + 4 + k * 4, l->o[k][lane], 16);
+        uint32_t v = g->nv++, in_strip = g->nv - g->strip;
+        switch (d->gs->gs_out) {
+        case 1: g->ind[g->ni++] = v; break;
+        case 3:
+            if (in_strip >= 2)
+                g->ind[g->ni++] = v - 1, g->ind[g->ni++] = v;
+            break;
+        default:
+            if (in_strip >= 3) { /* every other triangle of a strip turns the other way round */
+                bool odd = (in_strip - 3) & 1;
+                g->ind[g->ni++] = v - 2, g->ind[g->ni++] = odd ? v : v - 1, g->ind[g->ni++] = odd ? v - 1 : v;
+            }
+            break;
+        }
+    }
+    if (cut)
+        g->strip = g->nv;
+}
+
+static void gs_fetch(const void *ctx, uint32_t first, int n, float *out, void *scratch)
+{
+    (void)scratch;
+    const struct draw *d = ctx;
+    const struct gs_out *g = d->gso;
+    memcpy(out, g->verts + (size_t)first * (size_t)g->floats, sizeof(float) * (size_t)g->floats * (size_t)n);
+}
+
+static void gs_draw(struct draw *d, struct rs_target *t, struct rs_state *s, enum rs_topology topo, uint32_t count,
+                    uint32_t start, const uint32_t *idx, int32_t base_vertex)
+{
+    const struct dxbc_shader *gs = d->gs;
+    static const int8_t per_prim[8] = {0, 1, 2, 3, 0, 0, 4, 6};
+    int nin = gs->gs_in < 8 ? per_prim[gs->gs_in] : 0;
+    if (!nin)
+        return;
+    /* the vertices the draw uses, through the vertex shader */
+    uint32_t lo = 0xffffffffu, hi = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t v = idx ? idx[i] : start + i;
+        if (idx && v == 0xffffffffu)
+            continue;
+        v = idx ? v + (uint32_t)base_vertex : v;
+        lo = v < lo ? v : lo, hi = v > hi ? v : hi;
+    }
+    if (lo > hi || hi - lo >= (1u << 20))
+        return;
+    uint32_t nverts = hi - lo + 1;
+    int vfloats = 4 + d->out_n * 4;
+    size_t regs = sizeof(uint32_t[MAX_REGS][4][4]) * 2;
+    size_t vsz = dxbc_scratch(d->vs), gsz = dxbc_scratch(gs);
+    float *verts = kmalloc(sizeof(float) * (size_t)vfloats * nverts);
+    uint8_t *scratch = kmalloc(regs + (vsz > gsz ? vsz : gsz));
+    uint32_t *gsv = kmalloc(sizeof(uint32_t) * 4 * MAX_REGS * 6);
+    struct gs_out g = {.d = d, .floats = 4 + d->nvary * 4};
+    if (!verts || !scratch || !gsv)
+        goto done;
+    for (uint32_t v = 0; v < nverts; v += 4)
+        vs_run(d, lo + v, nverts - v < 4 ? (int)(nverts - v) : 4, verts + (size_t)v * (size_t)vfloats, scratch);
+    /* the primitives, each through the geometry shader */
+    uint32_t (*o)[4][4] = (uint32_t(*)[4][4])(scratch + sizeof(uint32_t[MAX_REGS][4][4]));
+    uint32_t prim = 0, instances = gs->gs_instances ? gs->gs_instances : 1;
+    uint32_t from = 0;
+    for (uint32_t i = 0; i <= count; i++) {
+        bool cut = i == count || (idx && idx[i] == 0xffffffffu);
+        if (!cut)
+            continue;
+        uint32_t n = i - from, np = 0, step = 1, span = (uint32_t)nin;
+        switch (topo) {
+        case RS_POINTS: np = n, span = 1; break;
+        case RS_LINES: np = n / 2, step = 2, span = 2; break;
+        case RS_LINE_STRIP: np = n >= 2 ? n - 1 : 0, span = 2; break;
+        case RS_TRIANGLES: np = n / 3, step = 3, span = 3; break;
+        case RS_STRIP: np = n >= 3 ? n - 2 : 0, span = 3; break;
+        case RS_LINES_ADJ: np = n / 4, step = 4, span = 4; break;
+        case RS_LINE_STRIP_ADJ: np = n >= 4 ? n - 3 : 0, span = 4; break;
+        case RS_TRIANGLES_ADJ: np = n / 6, step = 6, span = 6; break;
+        }
+        if (span != (uint32_t)nin)
+            np = 0;
+        for (uint32_t p = 0; p < np && !g.full; p++, prim++) {
+            uint32_t k[6];
+            for (int c = 0; c < nin; c++)
+                k[c] = from + p * step + (uint32_t)c;
+            if (topo == RS_STRIP && (p & 1)) { /* odd triangles of a strip: the same turn as the others */
+                uint32_t x = k[1];
+                k[1] = k[2], k[2] = x;
+            }
+            for (int c = 0; c < nin; c++) {
+                uint32_t v = idx ? idx[k[c]] + (uint32_t)base_vertex : start + k[c];
+                const float *src = verts + (size_t)(v - lo) * (size_t)vfloats + 4;
+                memcpy(gsv + (size_t)c * MAX_REGS * 4, src, sizeof(float) * 4 * (size_t)d->out_n);
+            }
+            for (uint32_t inst = 0; inst < instances; inst++) {
+                struct dxbc_lanes lanes = {.v = (uint32_t(*)[4][4])scratch, .o = o, .live = 1,
+                                           .scratch = scratch + regs, .gsv = gsv, .gsv_regs = MAX_REGS,
+                                           .prim_id = prim, .gs_instance = inst, .emit = gs_emit, .user = &g};
+                g.strip = g.nv;
+                if (!dxbc_run(gs, &d->gs_env, &lanes)) {
+                    note_fault(lanes.error);
+                    goto draw;
+                }
+            }
+        }
+        from = i + 1;
+    }
+draw:
+    if (g.ni) {
+        static const enum rs_topology out_topo[6] = {RS_TRIANGLES, RS_POINTS, RS_LINES, RS_LINES, RS_TRIANGLES,
+                                                     RS_TRIANGLES};
+        struct rs_state gs_state = *s;
+        gs_state.vs = gs_fetch;
+        d->gso = &g;
+        int n = rs_draw(t, &gs_state, out_topo[gs->gs_out < 6 ? gs->gs_out : 5], g.ni, g.ind, 0);
+        stats.triangles += n > 0 ? (uint64_t)n : 0;
+        d->gso = NULL;
+    }
+done:
+    kfree(verts);
+    kfree(scratch);
+    kfree(gsv);
+    kfree(g.verts);
+    kfree(g.ind);
+}
+
 void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base_vertex,
              uint32_t instances, uint32_t start_instance)
 {
@@ -1436,8 +1603,7 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
         return;
     }
     enum rs_topology topo = (enum rs_topology)topologies[c->topology];
-    if (!vs || vs->sh.stage != DXBC_VS || !count || !instances ||
-        c->stage[DXBC_GS].shader || c->stage[DXBC_HS].shader) {
+    if (!vs || vs->sh.stage != DXBC_VS || !count || !instances || c->stage[DXBC_HS].shader) {
         stats.skipped++;
         return;
     }
@@ -1447,18 +1613,33 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     d->c = c;
     d->vs = &vs->sh;
     d->ps = ps && ps->sh.stage == DXBC_PS ? &ps->sh : NULL;
+    struct gd_shader *gs = c->stage[DXBC_GS].shader;
+    d->gs = gs && gs->sh.stage == DXBC_GS ? &gs->sh : NULL;
+    d->last = d->gs ? d->gs : d->vs;
     d->pos_reg = -1;
-    for (int i = 0; i < d->vs->nout; i++)
-        if (d->vs->out[i].system_value == 1 && d->vs->out[i].reg < MAX_REGS)
-            d->pos_reg = (int)d->vs->out[i].reg;
-    d->nvary = d->vs->max_out_reg + 1;
-    for (int i = 0; i < d->vs->nout; i++)
-        if ((int)d->vs->out[i].reg + 1 > d->nvary)
-            d->nvary = (int)d->vs->out[i].reg + 1;
+    for (int i = 0; i < d->last->nout; i++)
+        if (d->last->out[i].system_value == 1 && d->last->out[i].reg < MAX_REGS)
+            d->pos_reg = (int)d->last->out[i].reg;
+    d->nvary = d->last->max_out_reg + 1;
+    for (int i = 0; i < d->last->nout; i++)
+        if ((int)d->last->out[i].reg + 1 > d->nvary)
+            d->nvary = (int)d->last->out[i].reg + 1;
     if (d->nvary > RS_MAX_VARY)
         d->nvary = RS_MAX_VARY;
     if (d->nvary < 0)
         d->nvary = 0;
+    d->out_n = d->nvary, d->out_pos = d->pos_reg;
+    if (d->gs) { /* the vertex shader's every output register goes to the geometry shader */
+        d->out_n = d->vs->max_out_reg + 1, d->out_pos = -1;
+        for (int i = 0; i < d->vs->nout; i++)
+            if ((int)d->vs->out[i].reg + 1 > d->out_n && d->vs->out[i].reg < MAX_REGS)
+                d->out_n = (int)d->vs->out[i].reg + 1;
+        if (d->out_n > MAX_REGS)
+            d->out_n = MAX_REGS;
+        if (d->out_n < 0)
+            d->out_n = 0;
+        make_env(&d->gs_env, &c->stage[DXBC_GS]);
+    }
     link_inputs(d);
     uint32_t flat, nopersp;
     link_varyings(d, &flat, &nopersp);
@@ -1576,6 +1757,15 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
         }
     }
     d->first_instance = start_instance;
+    if (d->gs) {
+        for (uint32_t inst = 0; inst < instances; inst++) {
+            d->instance = inst;
+            gs_draw(d, &t, &s, topo, count, start, idx, base_vertex);
+        }
+        kfree(idx);
+        kfree(d);
+        return;
+    }
     for (uint32_t inst = 0; inst < instances; inst++) {
         d->instance = inst;
         if (!idx) {
@@ -1588,10 +1778,11 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
             bool cut = i == count || idx[i] == 0xffffffffu;
             if (!cut)
                 continue;
-            if (topo == RS_TRIANGLES && i < count) { /* a list has no restart: the index stands for itself */
+            bool list = topo == RS_TRIANGLES || topo == RS_POINTS || topo == RS_LINES || topo == RS_LINES_ADJ ||
+                        topo == RS_TRIANGLES_ADJ;
+            if (list && i < count) /* a list has no restart: the index stands for itself */
                 continue;
-            }
-            if (i - from >= 3) {
+            if (i > from) {
                 int n = rs_draw(&t, &s, topo, i - from, idx + from, base_vertex);
                 stats.triangles += n > 0 ? (uint64_t)n : 0;
             }

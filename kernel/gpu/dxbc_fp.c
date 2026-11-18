@@ -35,7 +35,7 @@ enum {
     OP_DERIV_RTX_COARSE = 122, OP_DERIV_RTX_FINE, OP_DERIV_RTY_COARSE, OP_DERIV_RTY_FINE, OP_GATHER4_C, OP_GATHER4_PO,
     OP_GATHER4_PO_C, OP_RCP, OP_F32TOF16, OP_F16TOF32, OP_UADDC, OP_USUBB, OP_COUNTBITS, OP_FIRSTBIT_HI,
     OP_FIRSTBIT_LO, OP_FIRSTBIT_SHI, OP_UBFE, OP_IBFE, OP_BFI, OP_BFREV, OP_SWAPC,
-    OP_BUFINFO = 121,
+    OP_EMIT_STREAM = 117, OP_CUT_STREAM, OP_EMITTHENCUT_STREAM, OP_BUFINFO = 121,
     OP_DCL_THREAD_GROUP = 155, OP_DCL_UAV_TYPED, OP_DCL_UAV_RAW, OP_DCL_UAV_STRUCTURED, OP_DCL_TGSM_RAW,
     OP_DCL_TGSM_STRUCTURED, OP_DCL_RESOURCE_RAW, OP_DCL_RESOURCE_STRUCTURED, OP_LD_UAV_TYPED, OP_STORE_UAV_TYPED,
     OP_LD_RAW, OP_STORE_RAW, OP_LD_STRUCTURED, OP_STORE_STRUCTURED,
@@ -49,7 +49,7 @@ enum {
 enum {
     T_TEMP, T_INPUT, T_OUTPUT, T_XTEMP, T_IMM32, T_IMM64, T_SAMPLER, T_RESOURCE, T_CB, T_ICB, T_LABEL, T_PRIMID,
     T_ODEPTH, T_NULL, T_RASTERIZER, T_OMASK,
-    T_UAV = 30, T_TGSM, T_TID, T_GID, T_GTID, T_FLAT = 36,
+    T_UAV = 30, T_TGSM, T_TID, T_GID, T_GTID, T_FLAT = 36, T_GSINST = 37,
     T_ODEPTH_GE = 38, T_ODEPTH_LE = 39,
 };
 
@@ -179,7 +179,8 @@ static const uint32_t *operand(const uint32_t *p, const uint32_t *end, struct op
 static bool is_decl(int op)
 {
     return (op >= OP_DCL_RESOURCE && op <= OP_DCL_GLOBAL_FLAGS) || (op >= 143 && op <= 162) || op == 113 ||
-           op == 114 || op == 115 || op == 116 || op == OP_CUSTOMDATA || op == OP_LABEL || op == 203 || op == 204;
+           op == 114 || op == 115 || op == 116 || op == OP_CUSTOMDATA || op == OP_LABEL || op == 203 || op == 204 ||
+           op == 206;
 }
 
 static bool link_flow(struct dxbc_shader *sh)
@@ -323,6 +324,14 @@ bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size)
                 if ((op == OP_DCL_INPUT_PS_SIV || op == OP_DCL_INPUT_SIV) && q < next && *q == 1)
                     sh->pos_in_reg = o.idx[0].imm;
             }
+        } else if (op == OP_DCL_GS_INPUT) {
+            sh->gs_in = (t >> 11) & 0x3f;
+        } else if (op == OP_DCL_GS_OUTPUT_TOPOLOGY) {
+            sh->gs_out = (t >> 11) & 0x3f;
+        } else if (op == OP_DCL_MAX_OUTPUT_VERTEX_COUNT && len >= 2) {
+            sh->gs_max = p[1];
+        } else if (op == 206 && len >= 2) {
+            sh->gs_instances = p[1];
         } else if (op == OP_DCL_THREAD_GROUP && len >= 4) {
             sh->group[0] = p[1], sh->group[1] = p[2], sh->group[2] = p[3];
         } else if (op >= OP_DCL_UAV_TYPED && op <= OP_DCL_RESOURCE_STRUCTURED) {
@@ -466,6 +475,12 @@ static void read_src(struct machine *m, const struct opd *o, int lane, bool inte
         break;
     }
     case T_INPUT: {
+        if (o->ndim > 1 && m->lanes->gsv) { /* a geometry shader's v[vertex][register] */
+            int32_t vx = index_of(m, &o->idx[0], lane), i = index_of(m, &o->idx[1], lane);
+            if (vx >= 0 && vx < 6 && i >= 0 && i < m->lanes->gsv_regs)
+                src = m->lanes->gsv + ((size_t)vx * (size_t)m->lanes->gsv_regs + (size_t)i) * 4;
+            break;
+        }
         int32_t i = index_of(m, &o->idx[o->ndim > 1 ? 1 : 0], lane);
         if (i >= 0 && i < 32)
             src = m->lanes->v[i][lane];
@@ -490,6 +505,8 @@ static void read_src(struct machine *m, const struct opd *o, int lane, bool inte
         break;
     }
     case T_TID: src = m->lanes->tid[lane]; break;
+    case T_PRIMID: raw[0] = raw[1] = raw[2] = raw[3] = m->lanes->prim_id; break;
+    case T_GSINST: raw[0] = raw[1] = raw[2] = raw[3] = m->lanes->gs_instance; break;
     case T_GID: src = m->lanes->gid; break;
     case T_GTID: src = m->lanes->gtid[lane]; break;
     case T_FLAT:
@@ -1179,6 +1196,16 @@ bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct d
         }
         case OP_NOP:
             continue;
+        case OP_EMIT: case OP_CUT: case OP_EMITTHENCUT:
+        case OP_EMIT_STREAM: case OP_CUT_STREAM: case OP_EMITTHENCUT_STREAM: {
+            bool e = in->op != OP_CUT && in->op != OP_CUT_STREAM;
+            bool cut = in->op != OP_EMIT && in->op != OP_EMIT_STREAM;
+            if (lanes->emit && (in->op < OP_EMIT_STREAM || in->o[0].idx[0].imm == 0)) /* stream 0 is drawn */
+                for (int l = 0; l < 4; l++)
+                    if (mask & (1u << l))
+                        lanes->emit(lanes->user, lanes, l, e, cut);
+            continue;
+        }
         case OP_SYNC:
             if ((in->ret_type & 1) && lanes->scratch) { /* the other threads of the group run up to here first */
                 rs->pc = pc + 1, rs->depth = depth, rs->steps = steps, rs->mask = mask, rs->alive = m.alive;

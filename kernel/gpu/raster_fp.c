@@ -541,7 +541,8 @@ int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topo
     case RS_TRIANGLES:
     case RS_STRIP:
     case RS_TRIANGLES_ADJ: {
-        uint32_t ntri = topology == RS_STRIP ? count - 2 : topology == RS_TRIANGLES_ADJ ? count / 6 : count / 3;
+        uint32_t ntri = topology == RS_STRIP ? (count >= 3 ? count - 2 : 0) : topology == RS_TRIANGLES_ADJ ? count / 6
+                                                                                                         : count / 3;
         for (uint32_t i = 0; i < ntri; i++) {
             uint32_t k[3];
             if (topology == RS_STRIP)

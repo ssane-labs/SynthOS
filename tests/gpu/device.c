@@ -398,6 +398,44 @@ static void draw_tests(void)
     expect(pixel(30, 10) == 0x00ff00 && pixel(10, 30) == 0x00ff00 && pixel(20, 30) == 0, "wireframe draws edges only");
     gd_set_raster(ctx, NULL);
 
+    /* a geometry shader that makes a square of every point */
+    {
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Position", 0, 1, 0, 15), out_sig("COLOR", 0, 0, 1, 15);
+        op(93, 1 << 11), end();     /* dcl_inputprimitive point */
+        op(92, 5 << 11), end();     /* dcl_outputtopology trianglestrip */
+        op(94, 0), code[n++] = 4, end(); /* dcl_maxout 4 */
+        const float k = 4.0f / W * 2;
+        const float corner[4][2] = {{-k, -k}, {k, -k}, {-k, k}, {k, k}};
+        for (int i = 0; i < 4; i++) {
+            op(0, 0), dst(OUT, 0, 15); /* add o0, v[0][0], offset */
+            code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | (uint32_t)IN << 12 | 2u << 20, code[n++] = 0, code[n++] = 0;
+            imm4(corner[i][0], corner[i][1], 0, 0), end();
+            op(54, 0), dst(OUT, 1, 15);
+            code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | (uint32_t)IN << 12 | 2u << 20, code[n++] = 0, code[n++] = 1;
+            end();
+            op(19, 0), end(); /* emit */
+        }
+        op(62, 0), end();
+        char gerr[64];
+        size_t gsize = container(2, 1);
+        struct gd_shader *gsh = gd_shader_create(blob, (uint32_t)gsize, gerr);
+        expect(gsh != NULL, "geometry shader parses");
+        gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+        gd_set_raster(ctx, &(struct gd_raster){.fill = 3, .cull = 1, .depth_clip = 1});
+        gd_set_shader(ctx, 2, gsh);
+        gd_set_topology(ctx, 1);
+        struct vert gp[1] = {{{PX(32), PY(32), 0.5f}, {0, 1, 0, 1}}};
+        draw_verts(gp, 1);
+        expect(pixel(32, 32) == 0x00ff00 && pixel(29, 30) == 0x00ff00 && pixel(35, 35) == 0x00ff00 &&
+                   pixel(40, 32) == 0 && pixel(32, 24) == 0,
+               "the geometry shader's triangles are drawn");
+        gd_set_shader(ctx, 2, NULL);
+        gd_set_raster(ctx, NULL);
+        gd_set_topology(ctx, 4);
+        gd_shader_unref(gsh);
+    }
+
     struct gd_stats st;
     gd_get_stats(&st);
     expect(st.shader_faults == 0, "no shader faults");

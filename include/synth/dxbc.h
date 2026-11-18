@@ -43,6 +43,9 @@ struct dxbc_shader {
     uint8_t uav_kind[DXBC_MAX_UAV];              /* 0 typed, 1 raw, 2 structured */
     uint32_t uav_stride[DXBC_MAX_UAV], srv_stride[DXBC_MAX_RES];
     bool syncs;                                  /* has sync instructions that wait for the group */
+    /* geometry shaders: input primitive (1 point, 2 line, 3 triangle, 6 line_adj, 7 triangle_adj), output topology
+       (1 points, 3 line strip, 5 triangle strip), most vertices emitted, instances */
+    uint32_t gs_in, gs_out, gs_max, gs_instances;
     char error[64];
 };
 
@@ -84,6 +87,13 @@ struct dxbc_lanes {
     /* resume: carry on where a sync stopped the last run (same scratch); paused: this run stopped at a sync and
        waits for the rest of the group. Without scratch, syncs do not stop. */
     bool resume, paused;
+    /* geometry shaders: the input vertices' registers, gsv[(vertex * gsv_regs + reg) * 4 + component]; the primitive
+       and the instance; emit: called for emit (with the outputs in o) and cut */
+    const uint32_t *gsv;
+    int gsv_regs;
+    uint32_t prim_id, gs_instance;
+    void (*emit)(void *user, struct dxbc_lanes *l, int lane, bool emit, bool cut);
+    void *user;
 };
 
 bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size);
