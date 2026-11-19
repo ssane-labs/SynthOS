@@ -52,6 +52,7 @@ static struct gd_stats stats;
 
 void gd_get_stats(struct gd_stats *out)
 {
+    gd_host_count(&stats.pixels);
     *out = stats;
 }
 
@@ -170,6 +171,7 @@ void gd_resource_unref(struct gd_resource *r)
 {
     if (!r || __atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL))
         return;
+    gd_host_forget_resource(r);
     kfree_pages(r->data);
     kfree(r->lay);
     kfree(r->off);
@@ -179,6 +181,7 @@ void gd_resource_unref(struct gd_resource *r)
 uint8_t *gd_resource_memory(struct gd_resource *r, uint32_t *bytes)
 {
     *bytes = (uint32_t)r->alloc;
+    gd_host_cpu(r, true);
     return r->data;
 }
 
@@ -198,6 +201,7 @@ uint8_t *gd_subresource(struct gd_resource *r, uint32_t sub, struct gd_layout *l
         return NULL;
     if (layout)
         *layout = r->lay[sub];
+    gd_host_cpu(r, true);
     return r->data + r->off[sub];
 }
 
@@ -213,6 +217,7 @@ void gd_update(struct gd_resource *r, uint32_t sub, const struct gd_box *box, co
 {
     if (!r || sub >= r->subs || !src)
         return;
+    gd_host_cpu(r, true);
     const struct gd_layout *l = &r->lay[sub];
     uint8_t *base = r->data + r->off[sub];
     if (r->d.dim == GD_BUFFER) {
@@ -270,6 +275,8 @@ void gd_copy_resource(struct gd_resource *dst, struct gd_resource *src)
 {
     if (!dst || !src || dst == src)
         return;
+    gd_host_cpu(src, false);
+    gd_host_cpu(dst, true);
     if (dst->size == src->size && dst->subs == src->subs) {
         memcpy(dst->data, src->data, dst->size);
         return;
@@ -283,6 +290,8 @@ void gd_copy_region(struct gd_resource *dst, uint32_t dst_sub, uint32_t x, uint3
 {
     if (!dst || !src || dst_sub >= dst->subs || src_sub >= src->subs)
         return;
+    gd_host_cpu(src, false);
+    gd_host_cpu(dst, true);
     const struct gd_layout *sl = &src->lay[src_sub], *dl = &dst->lay[dst_sub];
     uint8_t *sb = src->data + src->off[src_sub], *db = dst->data + dst->off[dst_sub];
     if (src->d.dim == GD_BUFFER || dst->d.dim == GD_BUFFER) {
@@ -397,6 +406,7 @@ void gd_view_unref(struct gd_view *v)
 {
     if (!v || __atomic_sub_fetch(&v->refs, 1, __ATOMIC_ACQ_REL))
         return;
+    gd_host_forget_view(v);
     gd_resource_unref(v->r);
     kfree(v);
 }
@@ -428,7 +438,7 @@ static uint8_t *target_of(struct gd_view *v, uint32_t slice, struct gd_layout *l
 
 void gd_clear_rtv(struct gd_view *v, const float color[4])
 {
-    if (!v || v->r->d.dim == GD_BUFFER)
+    if (!v || v->r->d.dim == GD_BUFFER || gd_host_clear_rtv(v, color))
         return;
     uint32_t block, bytes = gd_format_bytes(v->format, &block);
     if (!bytes || block != 1)
@@ -462,7 +472,7 @@ void gd_clear_rtv(struct gd_view *v, const float color[4])
 
 void gd_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil)
 {
-    if (!v || !gd_format_depth(v->r->d.format))
+    if (!v || !gd_format_depth(v->r->d.format) || gd_host_clear_dsv(v, flags, depth, stencil))
         return;
     uint32_t f = v->r->d.format, block, bytes = gd_format_bytes(f, &block);
     for (uint32_t s = 0; s < v->d.slices; s++) {
@@ -516,22 +526,6 @@ void gd_generate_mips(struct gd_view *v)
 
 /* ---- shaders */
 
-#define SO_MAX_ENTRIES 64
-
-/* a stream output declaration, resolved: component comp .. comp + ncomp - 1 of output register reg (-1: a gap) */
-struct so_decl {
-    uint32_t n, stride[GD_SLOTS_SO], rasterized;
-    struct {
-        int16_t reg;
-        uint8_t comp, ncomp, slot;
-    } e[SO_MAX_ENTRIES];
-};
-
-struct gd_shader {
-    int refs;
-    struct dxbc_shader sh;
-    struct so_decl *so;
-};
 
 struct gd_shader *gd_shader_create(const void *blob, uint32_t size, char error[64])
 {
@@ -560,6 +554,7 @@ void gd_shader_unref(struct gd_shader *s)
 {
     if (!s || __atomic_sub_fetch(&s->refs, 1, __ATOMIC_ACQ_REL))
         return;
+    gd_host_forget_shader(s);
     dxbc_free(&s->sh);
     kfree(s->so);
     kfree(s);
@@ -572,39 +567,6 @@ int gd_shader_stage(const struct gd_shader *s)
 
 /* ---- the context */
 
-struct stage {
-    struct gd_shader *shader;
-    struct gd_resource *cb[GD_SLOTS_CB];
-    uint32_t cb_first[GD_SLOTS_CB], cb_count[GD_SLOTS_CB];
-    struct gd_view *srv[GD_SLOTS_SRV];
-    struct gd_sampler sampler[GD_SLOTS_SAMPLER];
-    bool sampler_set[GD_SLOTS_SAMPLER];
-    struct gd_view *uav[GD_SLOTS_UAV];
-};
-
-struct gd_context {
-    struct stage stage[GD_STAGES];
-    struct gd_resource *vb[GD_SLOTS_VB];
-    uint32_t vb_stride[GD_SLOTS_VB], vb_offset[GD_SLOTS_VB];
-    struct gd_resource *ib;
-    uint32_t ib_format, ib_offset;
-    uint32_t topology;
-    struct gd_input_layout layout;
-    bool has_layout;
-    struct gd_viewport viewport;
-    uint32_t nviewports;
-    struct gd_rect scissor;
-    uint32_t nscissors;
-    struct gd_raster raster;
-    struct gd_blend blend;
-    float blend_factor[4];
-    uint32_t sample_mask;
-    struct gd_depth depth;
-    uint32_t stencil_ref;
-    struct gd_view *rtv[8];
-    struct gd_view *dsv;
-    struct gd_resource *so[GD_SLOTS_SO];
-};
 
 static const struct gd_raster default_raster = {.fill = 3, .cull = 3, .depth_clip = 1};
 static const struct gd_depth default_depth = {.depth_enable = 1, .write_mask = 1, .func = 2, .read_mask = 0xff,
@@ -871,6 +833,7 @@ static uint8_t *view_bytes(const struct gd_view *v, uint32_t *size)
     if (at + n > r->size)
         n = r->size - at;
     *size = (uint32_t)(n > 0xffffffffu ? 0xffffffffu : n);
+    gd_host_cpu(v->r, true);
     return r->data + at;
 }
 
@@ -2038,6 +2001,37 @@ static bool stream_out(struct draw *d, enum rs_topology topo, bool indexed, uint
     return so->so->rasterized == 0; /* everything goes to stream 0 */
 }
 
+/* the software pipeline is about to draw or dispatch: what it may read or write comes back from the host's graphics
+   card, and the host's copies become old */
+static void software(struct gd_context *c)
+{
+    for (int s = 0; s < GD_STAGES; s++) {
+        struct stage *st = &c->stage[s];
+        for (int i = 0; i < GD_SLOTS_CB; i++)
+            if (st->cb[i])
+                gd_host_cpu(st->cb[i], true);
+        for (int i = 0; i < GD_SLOTS_SRV; i++)
+            if (st->srv[i])
+                gd_host_cpu(st->srv[i]->r, true);
+        for (int i = 0; i < GD_SLOTS_UAV; i++)
+            if (st->uav[i])
+                gd_host_cpu(st->uav[i]->r, true);
+    }
+    for (int i = 0; i < GD_SLOTS_VB; i++)
+        if (c->vb[i])
+            gd_host_cpu(c->vb[i], true);
+    if (c->ib)
+        gd_host_cpu(c->ib, true);
+    for (int i = 0; i < 8; i++)
+        if (c->rtv[i])
+            gd_host_cpu(c->rtv[i]->r, true);
+    if (c->dsv)
+        gd_host_cpu(c->dsv->r, true);
+    for (int i = 0; i < GD_SLOTS_SO; i++)
+        if (c->so[i])
+            gd_host_cpu(c->so[i], true);
+}
+
 void gd_draw_auto(struct gd_context *c)
 {
     struct gd_resource *r = c->vb[0];
@@ -2050,6 +2044,9 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
              uint32_t instances, uint32_t start_instance)
 {
     stats.draws++;
+    if (gd_host_draw(c, indexed, count, start, base_vertex, instances, start_instance))
+        return;
+    software(c);
     struct gd_shader *vs = c->stage[DXBC_VS].shader, *ps = c->stage[DXBC_PS].shader;
     static const int8_t topologies[14] = {-1, RS_POINTS, RS_LINES, RS_LINE_STRIP, RS_TRIANGLES, RS_STRIP, -1, -1, -1,
                                           -1, RS_LINES_ADJ, RS_LINE_STRIP_ADJ, RS_TRIANGLES_ADJ, -1};
@@ -2340,6 +2337,7 @@ void gd_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)
         return;
     }
     gd_texture_init();
+    software(c);
     struct cs_job j = {.sh = sh, .gx = x, .gy = y, .threads = threads, .batches = (threads + 3) / 4};
     make_env(&j.env, st);
     j.per_batch = (dxbc_scratch(sh) + 63) & ~(size_t)63;
@@ -2408,8 +2406,10 @@ void gd_present(struct gd_resource *r, uint32_t sub, uint32_t *dst, int stride, 
                 int cx, int cy, int cw, int ch)
 {
     struct present p = {.dst = dst, .stride = stride, .dx = dx, .dy = dy, .dw = dw, .dh = dh};
-    if (!r || r->d.dim != GD_TEX2D || dw <= 0 || dh <= 0 || !(p.src = gd_subresource(r, sub, &p.l)))
+    if (!r || r->d.dim != GD_TEX2D || dw <= 0 || dh <= 0 || sub >= r->subs)
         return;
+    gd_host_cpu(r, false); /* read only: the host's copy stays good */
+    p.src = r->data + r->off[sub], p.l = r->lay[sub];
     p.format = gd_format_typed(r->d.format);
     if (gd_format_class(p.format) != FC_FLOAT || gd_format_depth(p.format))
         return;

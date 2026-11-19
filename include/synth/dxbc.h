@@ -146,6 +146,7 @@ struct dxbc_tgsi {
     char *text;
     size_t len;
     uint8_t tex_sampler[DXBC_MAX_RES];
+    uint32_t used_cb; /* the constant buffer slots the shader reads, declared or not */
     char error[64];
 };
 bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out);

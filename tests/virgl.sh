@@ -1,6 +1,7 @@
 #!/bin/sh
 # Boots the serial-console image with a 3D virtio-gpu (virgl) and checks that the host renders: the "virgl"
-# command clears a texture to blue and draws a red triangle on the host's graphics card, then reads it back.
+# command clears a texture to blue and draws a red triangle on the host's graphics card, then reads it back; the
+# Direct3D 11 test program (d3d64) then draws through the host and must read back what the software pipeline gives.
 # Without a graphics card on the host, Mesa's llvmpipe renders in a virtual X display (Xvfb).
 # usage: tests/virgl.sh build/serial/synthos.img
 
@@ -12,7 +13,7 @@ if [ -z "$DISPLAY" ]; then
     run="xvfb-run -a -s -screen\ 0\ 1280x1024x24"
 fi
 out=$(mktemp)
-trap 'rm -f "$out"' EXIT
+trap '[ -n "$VIRGL_LOG" ] && cp "$out" "$VIRGL_LOG"; rm -f "$out"' EXIT
 eval $run python3 -I - "$qemu" "$image" > "$out" 2>&1 <<'PY'
 import subprocess, sys, time
 qemu, image = sys.argv[1], sys.argv[2]
@@ -39,12 +40,28 @@ if ok:
     time.sleep(1)
     p.stdin.write(b'virgl\r'); p.stdin.flush()
     ok = wait('fences=', 60) or wait('virgl:', 1)
+    p.stdin.write(b'd3d64\r'); p.stdin.flush()
+    wait(' so=', 120)
+    p.stdin.write(b'hostgpu\r'); p.stdin.flush()
+    wait('in software', 30)
 p.kill()
 sys.stdout.write(buf.decode('utf-8', 'replace'))
 PY
 line=$(grep -a "virgl clear=" "$out" | tr -d '\r')
-grep -a "capset\|virgl" "$out" | tr -d '\r' | grep -v "^root@"
+d3d=$(grep -a "^d3d11 level" "$out" | tr -d '\r')
+host=$(grep -a "^host gpu:" "$out" | tr -d '\r')
+grep -a "capset\|virgl\|^d3d11\|^host gpu\|^gd:" "$out" | tr -d '\r' | grep -v "^root@"
+rc=0
 case "$line" in
-*"clear=ff0000ff middle=ffff0000 corner=ff0000ff"*) echo "virgl: ok"; exit 0 ;;
-*) echo "virgl: FAIL"; exit 1 ;;
+*"clear=ff0000ff middle=ffff0000 corner=ff0000ff"*) echo "virgl: ok" ;;
+*) echo "virgl: FAIL"; rc=1 ;;
 esac
+case "$d3d" in
+*"map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1"*) echo "virgl d3d11: ok" ;;
+*) echo "virgl d3d11: FAIL"; rc=1 ;;
+esac
+case "$host" in
+*"virgl, 0 draws"*|"") echo "virgl d3d11 on the host: FAIL"; rc=1 ;;
+*) echo "virgl d3d11 on the host: ok" ;;
+esac
+exit $rc

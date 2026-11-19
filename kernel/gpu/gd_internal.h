@@ -15,7 +15,12 @@ struct gd_resource {
     uint8_t *data;
     size_t size, alloc; /* the subresources' bytes; the pages they are in */
     uint32_t so_filled;  /* buffers: the bytes stream output wrote */
+    /* the copy on the host's graphics card (gd_host.c): its resource id (0 none), and which side is newer */
+    uint32_t host;
+    uint8_t where; /* HOST_SAME, HOST_CPU_NEWER, HOST_GPU_NEWER */
 };
+
+enum { HOST_SAME, HOST_CPU_NEWER, HOST_GPU_NEWER };
 
 /* what a view looks at, as the shader sees it */
 enum { VD_BUFFER = 1, VD_1D, VD_1D_ARRAY, VD_2D, VD_2D_ARRAY, VD_3D, VD_CUBE, VD_CUBE_ARRAY };
@@ -27,7 +32,116 @@ struct gd_view {
     uint32_t format;
     int vdim;
     uint32_t counter; /* append and counter buffers */
+    uint32_t host;    /* the host's sampler view or surface for it, or 0 */
 };
+
+#define SO_MAX_ENTRIES 64
+
+/* a stream output declaration, resolved: component comp .. comp + ncomp - 1 of output register reg (-1: a gap) */
+struct so_decl {
+    uint32_t n, stride[GD_SLOTS_SO], rasterized;
+    struct {
+        int16_t reg;
+        uint8_t comp, ncomp, slot;
+    } e[SO_MAX_ENTRIES];
+};
+
+struct gd_shader {
+    int refs;
+    struct dxbc_shader sh;
+    struct so_decl *so;
+    /* on the host's graphics card: the shader object (0 not made), -1 when it has no translation */
+    int32_t host;
+    uint8_t tex_sampler[DXBC_MAX_RES];
+    uint32_t used_cb;
+};
+
+struct stage {
+    struct gd_shader *shader;
+    struct gd_resource *cb[GD_SLOTS_CB];
+    uint32_t cb_first[GD_SLOTS_CB], cb_count[GD_SLOTS_CB];
+    struct gd_view *srv[GD_SLOTS_SRV];
+    struct gd_sampler sampler[GD_SLOTS_SAMPLER];
+    bool sampler_set[GD_SLOTS_SAMPLER];
+    struct gd_view *uav[GD_SLOTS_UAV];
+};
+
+struct gd_context {
+    struct stage stage[GD_STAGES];
+    struct gd_resource *vb[GD_SLOTS_VB];
+    uint32_t vb_stride[GD_SLOTS_VB], vb_offset[GD_SLOTS_VB];
+    struct gd_resource *ib;
+    uint32_t ib_format, ib_offset;
+    uint32_t topology;
+    struct gd_input_layout layout;
+    bool has_layout;
+    struct gd_viewport viewport;
+    uint32_t nviewports;
+    struct gd_rect scissor;
+    uint32_t nscissors;
+    struct gd_raster raster;
+    struct gd_blend blend;
+    float blend_factor[4];
+    uint32_t sample_mask;
+    struct gd_depth depth;
+    uint32_t stencil_ref;
+    struct gd_view *rtv[8];
+    struct gd_view *dsv;
+    struct gd_resource *so[GD_SLOTS_SO];
+};
+
+/* ---- the host's graphics card (virtio-gpu with virgl, gd_host.c): draws it can do go there, and resources move
+   between the two memories when one side needs what the other wrote */
+#if defined(RS_HOST)
+static inline bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base,
+                                uint32_t instances, uint32_t first_instance)
+{
+    (void)c, (void)indexed, (void)count, (void)start, (void)base, (void)instances, (void)first_instance;
+    return false;
+}
+static inline void gd_host_cpu(struct gd_resource *r, bool write)
+{
+    (void)r, (void)write;
+}
+static inline bool gd_host_clear_rtv(struct gd_view *v, const float color[4])
+{
+    (void)v, (void)color;
+    return false;
+}
+static inline bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil)
+{
+    (void)v, (void)flags, (void)depth, (void)stencil;
+    return false;
+}
+static inline void gd_host_forget_resource(struct gd_resource *r)
+{
+    (void)r;
+}
+static inline void gd_host_forget_view(struct gd_view *v)
+{
+    (void)v;
+}
+static inline void gd_host_forget_shader(struct gd_shader *s)
+{
+    (void)s;
+}
+static inline void gd_host_count(uint64_t *pixels)
+{
+    (void)pixels;
+}
+#else
+bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base,
+                  uint32_t instances, uint32_t first_instance);
+/* before the CPU reads (write false) or changes a resource */
+void gd_host_cpu(struct gd_resource *r, bool write);
+bool gd_host_clear_rtv(struct gd_view *v, const float color[4]);
+bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil);
+void gd_host_forget_resource(struct gd_resource *r);
+void gd_host_forget_view(struct gd_view *v);
+void gd_host_forget_shader(struct gd_shader *s);
+/* adds the samples the host's draws let through since the last call (occlusion queries) */
+void gd_host_count(uint64_t *pixels);
+#endif
 
 /* format classes */
 enum { FC_NONE, FC_FLOAT, FC_UINT, FC_SINT };

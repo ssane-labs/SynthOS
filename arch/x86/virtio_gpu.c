@@ -671,6 +671,31 @@ bool virtio_gpu_transfer_3d(int gpu, uint32_t ctx, uint32_t id, bool to_host, ui
     return fenced(g, &t.h, sizeof(t), NULL, 0);
 }
 
+/* A box of one level of a resource between the host and its guest memory, which holds it at offset with rows stride
+   bytes apart and layers (or depth slices) layer_stride apart; with wait, returns once the host has done it. */
+bool virtio_gpu_transfer_box(int gpu, uint32_t ctx, uint32_t id, bool to_host, uint32_t level, const uint32_t box[6],
+                             uint64_t offset, uint32_t stride, uint32_t layer_stride, bool wait)
+{
+    struct vgpu *g = gpu3d(gpu);
+    if (!g)
+        return false;
+    struct {
+        struct hdr h;
+        uint32_t box[6];
+        uint64_t offset;
+        uint32_t id, level, stride, layer_stride;
+    } t = {{.type = to_host ? CMD_TRANSFER_TO_HOST_3D : CMD_TRANSFER_FROM_HOST_3D, .ctx = ctx},
+           {box[0], box[1], box[2], box[3], box[4], box[5]},
+           offset,
+           id,
+           level,
+           stride,
+           layer_stride};
+    if (wait)
+        return fenced(g, &t.h, sizeof(t), NULL, 0);
+    return call(g, &t, sizeof(t), NULL, 0, NULL, 0, RESP_OK_NODATA);
+}
+
 /* Sends a command stream (virgl's protocol) to the context, from memory in one page; with wait, returns once the
    host has run it. */
 bool virtio_gpu_submit_3d(int gpu, uint32_t ctx, const uint32_t *cmd, uint32_t dwords, bool wait)
@@ -744,6 +769,17 @@ static void probe_found(const struct pci_device *d, void *ctx)
     int scanouts;
     uint16_t w, h;
     virtio_gpu_probe(d, &scanouts, &w, &h);
+}
+
+/* the first virtio-gpu that renders 3D, set up if nothing has done that yet; -1 when there is none */
+int virtio_gpu_find_3d(void)
+{
+    if (!gpu_count)
+        pci_foreach(probe_found, NULL);
+    for (int i = 0; i < gpu_count; i++)
+        if (gpus[i].virgl)
+            return i;
+    return -1;
 }
 
 COMMAND(virgl, NULL, "system", "virgl", "check 3D rendering by the host's graphics card (virtio-gpu with virgl)")

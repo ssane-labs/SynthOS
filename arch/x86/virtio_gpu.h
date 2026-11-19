@@ -39,6 +39,9 @@ uint32_t virtio_gpu_resource_3d(int gpu, uint32_t ctx, const struct virtio_res3d
 void virtio_gpu_resource_unref(int gpu, uint32_t ctx, uint32_t id);
 bool virtio_gpu_transfer_3d(int gpu, uint32_t ctx, uint32_t id, bool to_host, uint32_t x, uint32_t y, uint32_t w,
                             uint32_t h, uint32_t stride);
+bool virtio_gpu_transfer_box(int gpu, uint32_t ctx, uint32_t id, bool to_host, uint32_t level, const uint32_t box[6],
+                             uint64_t offset, uint32_t stride, uint32_t layer_stride, bool wait);
+int virtio_gpu_find_3d(void);
 bool virtio_gpu_submit_3d(int gpu, uint32_t ctx, const uint32_t *cmd, uint32_t dwords, bool wait);
 
 #endif

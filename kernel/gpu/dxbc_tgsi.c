@@ -39,6 +39,7 @@ struct tg {
     int nsv;
     uint8_t sv_name[32];
     uint32_t used_cb, used_tex, cmp_tex;
+    int32_t cb_max[DXBC_MAX_CB]; /* the highest constant read with a fixed index, or 4095 when one is relative */
     int naddr;
     bool fail;
 };
@@ -232,6 +233,8 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
             break;
         }
         g->used_cb |= 1u << s;
+        int32_t top = o->idx[1].rel_type >= 0 ? 4095 : o->idx[1].imm;
+        g->cb_max[s] = top > g->cb_max[s] ? top : g->cb_max[s];
         put(t, "CONST[");
         putu(t, (uint32_t)s + 1);
         put(t, "]");
@@ -746,15 +749,16 @@ static bool declarations(struct tg *g, struct text *t)
             uint32_t r = sh->in[i].reg;
             if (r >= 32 || (done & (1u << r)))
                 continue;
-            if ((int)r == sh->pos_in_reg) {
+            if ((int)r == sh->pos_in_reg || sh->in[i].system_value == 1) {
                 done |= 1u << r;
                 decl_reg(t, "IN", (int)r, ", POSITION, LINEAR");
                 continue;
             }
-            if (!sh->interp[r])
-                continue; /* not declared: not read */
-            if (sh->in[i].system_value && sh->in[i].system_value != 1)
+            if (sh->in[i].system_value && sh->in[i].system_value != 1) {
+                if (!sh->interp[r])
+                    continue; /* not read */
                 return fail(g, "a pixel shader system value input");
+            }
             done |= 1u << r;
             put(t, "DCL IN[");
             putu(t, r);
@@ -816,7 +820,10 @@ static bool declarations(struct tg *g, struct text *t)
     put(t, "DCL ADDR[0..2]\n");
     for (int s = 0; s < DXBC_MAX_CB; s++)
         if (g->used_cb & (1u << s)) {
-            uint32_t size = sh->cb_size[s] ? sh->cb_size[s] : 4096;
+            /* the declared size; without a declaration, up to what the shader reads (a block larger than the buffer
+               bound to it reads nothing on some hosts) */
+            uint32_t size = sh->cb_size[s] ? sh->cb_size[s] : (uint32_t)g->cb_max[s] + 1;
+            size = size > 4096 ? 4096 : size;
             put(t, "DCL CONST[");
             putu(t, (uint32_t)s + 1);
             put(t, "][0..");
@@ -899,6 +906,7 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out)
     if (g->code.full || t.full)
         fail(g, "out of memory");
     kfree(g->code.p);
+    out->used_cb = g->used_cb;
     bool ok = !g->fail;
     kfree(g);
     if (!ok) {
