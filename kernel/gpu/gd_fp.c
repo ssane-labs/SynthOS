@@ -217,15 +217,20 @@ void gd_update(struct gd_resource *r, uint32_t sub, const struct gd_box *box, co
 {
     if (!r || sub >= r->subs || !src)
         return;
-    gd_host_cpu(r, true);
+    bool direct = gd_host_can_update(r);
+    if (!direct)
+        gd_host_cpu(r, true);
     const struct gd_layout *l = &r->lay[sub];
     uint8_t *base = r->data + r->off[sub];
     if (r->d.dim == GD_BUFFER) {
         uint32_t from = box ? box->left : 0, to = box ? box->right : l->width;
         if (to > l->width)
             to = l->width;
-        if (from < to)
+        if (from < to) {
             memcpy(base + from, src, to - from);
+            if (direct)
+                gd_host_update(r, sub, &(struct gd_box){from, 0, 0, to, 1, 1});
+        }
         return;
     }
     uint32_t bytes, block = res_block(r, &bytes);
@@ -245,6 +250,8 @@ void gd_update(struct gd_resource *r, uint32_t sub, const struct gd_box *box, co
         for (uint32_t y = by0; y < by1; y++)
             memcpy(base + (size_t)z * l->slice_pitch + (size_t)y * l->row_pitch + (size_t)bx0 * bytes,
                    (const uint8_t *)src + (size_t)(z - b.front) * slice_pitch + (size_t)(y - by0) * row_pitch, row);
+    if (direct)
+        gd_host_update(r, sub, &b);
 }
 
 /* how many bytes gd_update reads from src for this box and these pitches */

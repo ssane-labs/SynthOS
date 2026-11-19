@@ -1542,6 +1542,41 @@ bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uin
     return ok;
 }
 
+/* UpdateSubresource of a resource the host has written: the box goes up on its own, with no read back first. The
+   memory here stays out of date elsewhere, as the host's copy is still the newer one. */
+bool gd_host_can_update(const struct gd_resource *r)
+{
+    return ready() && r->host && r->where == HOST_GPU_NEWER && resource_format(r) != 20 /* turned around */;
+}
+
+bool gd_host_update(struct gd_resource *r, uint32_t sub, const struct gd_box *b)
+{
+    const struct gd_layout *l = &r->lay[sub];
+    uint32_t box[6], block = 1, bytes = r->d.dim == GD_BUFFER ? 1 : gd_format_bytes(r->d.format, &block);
+    uint64_t offset = r->off[sub];
+    if (r->d.dim == GD_BUFFER) {
+        box[0] = b->left, box[1] = box[2] = 0, box[3] = b->right - b->left, box[4] = box[5] = 1;
+        offset += b->left;
+    } else {
+        box[0] = b->left, box[1] = b->top, box[2] = b->front;
+        box[3] = b->right - b->left, box[4] = b->bottom - b->top, box[5] = b->back - b->front;
+        offset += (uint64_t)b->front * l->slice_pitch + (uint64_t)(b->top / block) * l->row_pitch +
+                  (uint64_t)(b->left / block) * bytes;
+        if (r->d.dim == GD_TEX1D && r->d.array > 1)
+            box[1] = sub / r->d.mips;
+        else if (r->d.dim != GD_TEX3D)
+            box[2] = sub / r->d.mips;
+    }
+    lock();
+    res_now(r);
+    flush(false); /* draws sent before write to the old contents */
+    bool ok = virtio_gpu_transfer_box(H.gpu, H.ctx, r->host, true, sub % r->d.mips, box, offset,
+                                      r->d.dim == GD_BUFFER ? 0 : l->row_pitch,
+                                      r->d.dim == GD_BUFFER ? 0 : l->slice_pitch, true);
+    unlock();
+    return ok;
+}
+
 bool gd_host_gpu(void)
 {
     return ready();

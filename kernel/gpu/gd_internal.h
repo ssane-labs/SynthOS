@@ -131,6 +131,16 @@ static inline bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, u
     (void)dst, (void)dsub, (void)x, (void)y, (void)z, (void)src, (void)ssub, (void)box;
     return false;
 }
+static inline bool gd_host_can_update(const struct gd_resource *r)
+{
+    (void)r;
+    return false;
+}
+static inline bool gd_host_update(struct gd_resource *r, uint32_t sub, const struct gd_box *box)
+{
+    (void)r, (void)sub, (void)box;
+    return false;
+}
 static inline bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil)
 {
     (void)v, (void)flags, (void)depth, (void)stencil;
@@ -174,6 +184,10 @@ bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t 
 /* a copy done on the host when either resource is there (dsub < 0: every subresource); false: the CPU copies */
 bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uint32_t z, struct gd_resource *src,
                   int ssub, const struct gd_box *box);
+/* gd_host_can_update: the host has written the resource, so gd_update writes its box here without reading it back
+   and gd_host_update sends that box alone */
+bool gd_host_can_update(const struct gd_resource *r);
+bool gd_host_update(struct gd_resource *r, uint32_t sub, const struct gd_box *box);
 void gd_host_forget_resource(struct gd_resource *r);
 void gd_host_forget_view(struct gd_view *v);
 void gd_host_forget_shader(struct gd_shader *s);

@@ -326,6 +326,14 @@ static void draw_tests(void)
         gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
         gd_copy_region(rt_tex, 0, W / 2, 0, 0, copy, 0, &(struct gd_box){0, 0, 0, W / 2, H, 1});
         expect(pixel(10, 20) == 0 && close_rgb(pixel(W / 2 + 10, 20), 0xff8080), "texture copies");
+        /* UpdateSubresource of a box in what the host wrote keeps the rest */
+        static const uint32_t blue4[16] = {0xffff0000u, 0xffff0000u, 0xffff0000u, 0xffff0000u, 0xffff0000u,
+                                           0xffff0000u, 0xffff0000u, 0xffff0000u, 0xffff0000u, 0xffff0000u,
+                                           0xffff0000u, 0xffff0000u, 0xffff0000u, 0xffff0000u, 0xffff0000u,
+                                           0xffff0000u};
+        gd_update(rt_tex, 0, &(struct gd_box){2, 2, 0, 6, 6, 1}, blue4, 16, 64);
+        expect(pixel(3, 3) == 0xff0000 && pixel(1, 1) == 0 && close_rgb(pixel(W / 2 + 10, 20), 0xff8080),
+               "a box updated in a drawn texture");
         gd_resource_unref(copy);
     }
 
