@@ -607,6 +607,36 @@ static void draw_tests(void)
             gd_shader_unref(ps_tex);
     }
 
+    /* a shader the host cannot compile ends its context: the draw is made in software, the context made again, and
+       the next draws go to the host as before */
+    {
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Target", 0, 0, 0, 15);
+        op(54, 0), dst(OUT, 0, 15), src(IN, 1, XYZW), end();
+        op(62, 0), end();
+        size_t size = container(0, 1);
+        char e[64];
+        struct gd_shader *ps_bad = gd_shader_create(blob, (uint32_t)size, e);
+        expect(ps_bad != NULL, "a pixel shader for the lost context");
+        if (ps_bad) {
+            struct vert bv[6];
+            uint64_t before = gd_host_draws();
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            gd_set_shader(ctx, 0, ps_bad);
+            gd_host_test_bad_shader();
+            quad(bv, -1, -1, 0, 1, 0.5f, (const float[4]){1, 0, 0, 1});
+            draw_verts(bv, 6);
+            expect(pixel(10, 30) == 0x0000ff && pixel(50, 30) == 0, "a shader the host cannot use is drawn in software");
+            gd_set_shader(ctx, 0, ps_color);
+            quad(bv, 0, -1, 1, 1, 0.5f, (const float[4]){0, 0, 1, 1});
+            draw_verts(bv, 6);
+            expect(pixel(10, 30) == 0x0000ff && pixel(50, 30) == 0xff0000 && (!before || gd_host_draws() > before),
+                   "the host draws again after its context is made again");
+            gd_clear_dsv(dsv, 1, 1.0f, 0);
+            gd_shader_unref(ps_bad);
+        }
+    }
+
     /* a 4-sample target: drawn into, read back with ld_ms, and resolved (one sample a pixel, as on the host) */
     {
         struct gd_res_desc md = {.dim = GD_TEX2D, .width = W, .height = H, .mips = 1, .array = 1, .samples = 4,

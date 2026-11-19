@@ -71,7 +71,7 @@ case "$d3d" in
 *) echo "virgl d3d11: FAIL"; rc=1 ;;
 esac
 case "$host" in
-*"virgl, 0 draws"*|"") echo "virgl d3d11 on the host: FAIL"; rc=1 ;;
+*" 0 draws there"*|"") echo "virgl d3d11 on the host: FAIL"; rc=1 ;;
 *) echo "virgl d3d11 on the host: ok" ;;
 esac
 case "$gdtest" in

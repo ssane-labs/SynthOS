@@ -654,6 +654,19 @@ uint32_t virtio_gpu_resource_3d(int gpu, uint32_t ctx, const struct virtio_res3d
     return id;
 }
 
+/* Lets context ctx use resource id too (one made for another context). */
+bool virtio_gpu_ctx_attach(int gpu, uint32_t ctx, uint32_t id)
+{
+    struct vgpu *g = gpu3d(gpu);
+    if (!g || !id)
+        return false;
+    struct {
+        struct hdr h;
+        uint32_t id, pad;
+    } a = {{.type = CMD_CTX_ATTACH_RESOURCE, .ctx = ctx}, id, 0};
+    return call(g, &a, sizeof(a), NULL, 0, NULL, 0, RESP_OK_NODATA);
+}
+
 void virtio_gpu_resource_unref(int gpu, uint32_t ctx, uint32_t id)
 {
     struct vgpu *g = gpu3d(gpu);

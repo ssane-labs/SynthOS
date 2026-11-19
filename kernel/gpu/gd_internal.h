@@ -17,6 +17,7 @@ struct gd_resource {
     uint32_t so_filled;  /* buffers: the bytes stream output wrote */
     /* the copy on the host's graphics card (gd_host.c): its resource id (0 none), and which side is newer */
     uint32_t host;
+    uint32_t host_gen; /* the host context it was last used in (a lost context leaves the resource to attach again) */
     uint8_t where; /* HOST_SAME, HOST_CPU_NEWER, HOST_GPU_NEWER */
 };
 
@@ -35,6 +36,7 @@ struct gd_view {
     struct gd_resource *counter_res; /* the counter on the host: a word, newer than counter while counter_on_host */
     bool counter_on_host;
     uint32_t host;    /* the host's sampler view or surface for it, or 0 */
+    uint32_t host_gen; /* the host context host belongs to */
 };
 
 #define SO_MAX_ENTRIES 64
@@ -52,8 +54,10 @@ struct gd_shader {
     int refs;
     struct dxbc_shader sh;
     struct so_decl *so;
-    /* on the host's graphics card: the shader object (0 not made), -1 when it has no translation */
+    /* on the host's graphics card: the shader object (0 not made), -1 when it has no translation or the host could
+       not compile it; host_gen: the host context host and so_host belong to */
     int32_t host;
+    uint32_t host_gen;
     uint8_t tex_sampler[DXBC_MAX_RES];
     uint32_t used_cb, used_uav, used_srv_buf;
     bool icb;                       /* the host shader reads its immediate constant buffer from icb_buf */
@@ -147,6 +151,13 @@ static inline bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y
     (void)c, (void)x, (void)y, (void)z;
     return false;
 }
+static inline uint64_t gd_host_draws(void)
+{
+    return 0;
+}
+static inline void gd_host_test_bad_shader(void)
+{
+}
 #else
 bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base,
                   uint32_t instances, uint32_t first_instance);
@@ -160,6 +171,10 @@ void gd_host_forget_shader(struct gd_shader *s);
 /* adds the samples the host's draws let through since the last call (occlusion queries) */
 void gd_host_count(uint64_t *pixels);
 bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z);
+/* for tests: the draws and dispatches that ran on the host so far; the next shader made for the host made unusable
+   there, as one the host fails to compile */
+uint64_t gd_host_draws(void);
+void gd_host_test_bad_shader(void);
 #endif
 
 /* format classes */

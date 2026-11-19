@@ -5,6 +5,7 @@
 
 #if defined(__x86_64__) && !defined(RS_HOST)
 
+#include <synth/fmt.h>
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/command.h>
@@ -47,9 +48,19 @@ static struct {
     struct gd_sampler samp_key[6][16];
     /* occlusion: one query open across draws, read when someone asks */
     uint32_t query, query_buf, *query_mem, drawn_since;
-    uint32_t so_query; /* the primitives a geometry shader's stream output wrote, at 64 in query_buf */
+    /* the primitives a geometry shader's stream output wrote, and the probe of the context: each query writes its
+       state (virgl_host_query_state) at the start of its own buffer, straight into the guest's memory behind it */
+    uint32_t so_query, so_buf, probe_buf;
     uint64_t draws, software;
     char why[64];
+    /* a context the host put in its error state (a shader it could not compile) does nothing more: it is made again
+       under a new generation number, and objects of an older one are made again when next used. The shaders made
+       since the last check are the suspects; bad_next is for tests. */
+    uint32_t gen, probe;
+    struct gd_shader *fresh[8];
+    bool fresh_so[8];
+    int nfresh;
+    bool bad_next;
     volatile int lock;
 } H;
 
@@ -108,6 +119,38 @@ static void destroy(uint32_t type, uint32_t h)
     put(h);
 }
 
+/* a context, with the occlusion query open and the probe query (both write into a small buffer) */
+static bool open_context(void)
+{
+    H.ctx = virtio_gpu_ctx_create(H.gpu, "synthos-d3d");
+    if (!H.ctx)
+        return false;
+    H.gen++;
+    H.next = 1;
+    uint32_t *bufs[3] = {&H.query_buf, &H.so_buf, &H.probe_buf};
+    for (int i = 0; i < 3; i++)
+        if (!*bufs[i]) {
+            struct virtio_res3d qb = {.target = 0, .format = 64, .bind = B_CUSTOM, .w = 64};
+            *bufs[i] = virtio_gpu_resource_3d(H.gpu, H.ctx, &qb, (uint8_t *)H.query_mem + 64 * i, 64);
+        } else {
+            virtio_gpu_ctx_attach(H.gpu, H.ctx, *bufs[i]);
+        }
+    H.query = H.so_query = H.probe = 0;
+    if (H.query_buf) {
+        H.query = handle();
+        cmd(C_CREATE, O_QUERY, 4);
+        put(H.query), put(0), put(0), put(H.query_buf);
+        cmd(C_BEGIN_QUERY, 0, 1);
+        put(H.query);
+    }
+    if (H.probe_buf) {
+        H.probe = handle();
+        cmd(C_CREATE, O_QUERY, 4);
+        put(H.probe), put(5 /* PRIMITIVES_GENERATED: the occlusion query stays open */), put(0), put(H.probe_buf);
+    }
+    return true;
+}
+
 static bool ready(void)
 {
     if (H.off)
@@ -123,20 +166,8 @@ static bool ready(void)
     if (!H.cmd || !H.query_mem)
         return false;
     virtio_gpu_capset(H.gpu, 1, NULL, 0); /* the host's limits; without it texture buffers are 0 texels long */
-    H.ctx = virtio_gpu_ctx_create(H.gpu, "synthos-d3d");
-    if (!H.ctx)
+    if (!open_context())
         return false;
-    H.next = 1;
-    /* the occlusion query writes its result into a small buffer */
-    struct virtio_res3d qb = {.target = 0, .format = 64, .bind = B_CUSTOM, .w = 64};
-    H.query_buf = virtio_gpu_resource_3d(H.gpu, H.ctx, &qb, H.query_mem, 4096);
-    if (H.query_buf) {
-        H.query = handle();
-        cmd(C_CREATE, O_QUERY, 4);
-        put(H.query), put(0), put(0), put(H.query_buf);
-        cmd(C_BEGIN_QUERY, 0, 1);
-        put(H.query);
-    }
     /* a pixel shader for draws without one (depth only) */
     H.state = 1;
     klog("gd: drawing on the host's graphics card (virtio-gpu %d, virgl)", H.gpu);
@@ -255,9 +286,98 @@ static bool transfer(struct gd_resource *r, bool to_host)
     return ok;
 }
 
+/* objects of an older context: resources stay on the host and are attached to this one, views and shaders are
+   made again (a shader the host could not compile stays -1) */
+static void res_now(struct gd_resource *r)
+{
+    if (r->host && r->host_gen != H.gen)
+        virtio_gpu_ctx_attach(H.gpu, H.ctx, r->host);
+    r->host_gen = H.gen;
+}
+
+static void view_now(struct gd_view *v)
+{
+    if (v->host_gen != H.gen)
+        v->host = 0;
+    v->host_gen = H.gen;
+}
+
+static void shader_now(struct gd_shader *s)
+{
+    if (s->host_gen != H.gen) {
+        s->host = s->host < 0 ? -1 : 0;
+        s->so_host = s->so_host < 0 ? -1 : 0;
+    }
+    s->host_gen = H.gen;
+}
+
+/* a shader object just made: the host compiles it at the first draw, and a failure ends the context */
+static void suspect(struct gd_shader *s, bool so)
+{
+    if (H.nfresh < 8)
+        H.fresh[H.nfresh] = s, H.fresh_so[H.nfresh++] = so;
+}
+
+/* whether the context still works: the probe query's state written over a marker (a context in its error state
+   writes nothing). Waits for the host. */
+static bool alive(void)
+{
+    if (!H.probe)
+        return true;
+    volatile uint32_t *m = H.query_mem + 32; /* the probe's buffer */
+    m[0] = 0xffffffffu;
+    cmd(C_BEGIN_QUERY, 0, 1);
+    put(H.probe);
+    cmd(C_END_QUERY, 0, 1);
+    put(H.probe);
+    cmd(C_QUERY_RESULT, 0, 2);
+    put(H.probe), put(1);
+    flush(true);
+    return m[0] != 0xffffffffu;
+}
+
+/* after a draw or dispatch: when it brought new shaders and the context died of them, they stay in software and the
+   context is made again. False when the draw did not happen. */
+static bool survived(void)
+{
+    if (!H.nfresh)
+        return true;
+    bool ok = alive();
+    if (ok) {
+        H.nfresh = 0;
+        return true;
+    }
+    uint32_t stages = 0;
+    for (int i = 0; i < H.nfresh; i++) {
+        if (H.fresh_so[i])
+            H.fresh[i]->so_host = -1;
+        else
+            H.fresh[i]->host = -1;
+        stages |= 1u << H.fresh[i]->sh.stage;
+    }
+    H.nfresh = 0;
+    static const char *const names[] = {"pixel", "vertex", "geometry", "hull", "domain", "compute"};
+    ksnprintf(H.why, sizeof(H.why), "the host could not compile a %s shader",
+              stages & (stages - 1) ? "new" : names[__builtin_ctz(stages) % 6]);
+    klog("gd: %s; it stays in software and the host's context is made again", H.why);
+    H.n = 0;
+    virtio_gpu_ctx_destroy(H.gpu, H.ctx);
+    if (!open_context()) { /* objects of the old one are made again when used (a -1 stays) */
+        H.state = -1;
+        return false;
+    }
+    H.blend = H.dsa = H.rs = H.ve = H.null_fs = 0;
+    memset(H.samplers, 0, sizeof(H.samplers));
+    memset(H.samp_key, 0, sizeof(H.samp_key));
+    H.tess_bound = false;
+    H.drawn_since = 0;
+    return false;
+}
+
 /* the host's copy, made and brought up to date; 0 when the host cannot have it */
 static uint32_t to_gpu(struct gd_resource *r)
 {
+    res_now(r);
     if (!r->host) {
         if (r->d.usage == 3 /* staging */) /* multisampled ones have one sample, as here */
             return 0;
@@ -291,6 +411,7 @@ void gd_host_cpu(struct gd_resource *r, bool write)
     if (!r || !r->host)
         return;
     lock();
+    res_now(r);
     if (r->where == HOST_GPU_NEWER) {
         flush(false);
         transfer(r, false);
@@ -306,6 +427,7 @@ void gd_host_forget_resource(struct gd_resource *r)
     if (!r->host)
         return;
     lock();
+    res_now(r);
     flush(false);
     virtio_gpu_resource_unref(H.gpu, H.ctx, r->host);
     r->host = 0;
@@ -317,7 +439,8 @@ void gd_host_forget_view(struct gd_view *v)
     if (!v->host)
         return;
     lock();
-    destroy(v->d.kind == GD_VIEW_SRV ? O_SAMPLER_VIEW : O_SURFACE, v->host);
+    if (v->host_gen == H.gen)
+        destroy(v->d.kind == GD_VIEW_SRV ? O_SAMPLER_VIEW : O_SURFACE, v->host);
     v->host = 0;
     unlock();
 }
@@ -327,6 +450,7 @@ void gd_host_forget_shader(struct gd_shader *s)
     if (s->host <= 0 && s->so_host <= 0)
         return;
     lock();
+    shader_now(s);
     if (s->host > 0)
         destroy(O_SHADER, (uint32_t)s->host);
     if (s->so_host > 0)
@@ -346,6 +470,7 @@ static uint32_t view_target(const struct gd_view *v)
 
 static uint32_t sampler_view(struct gd_view *v)
 {
+    view_now(v);
     if (v->host)
         return v->host;
     uint32_t res = to_gpu(v->r), format = view_format(v);
@@ -370,6 +495,7 @@ static uint32_t sampler_view(struct gd_view *v)
 
 static uint32_t surface(struct gd_view *v)
 {
+    view_now(v);
     if (v->host)
         return v->host;
     uint32_t res = to_gpu(v->r), format = view_format(v);
@@ -394,6 +520,8 @@ static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t
         klog("gd: a shader stays in software: %s", t.error);
         return 0;
     }
+    if (H.bad_next && t.len) /* for tests: text the host cannot read, which puts its context in the error state */
+        t.text[0] = '#', H.bad_next = false;
     /* stream output: the outputs in dwords, each at its offset in its buffer's vertex */
     uint32_t so_out[SO_MAX_ENTRIES][2], nso = 0, at_dw[GD_SLOTS_SO] = {0};
     for (uint32_t i = 0; so && i < so->n; i++) {
@@ -438,6 +566,7 @@ static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t
 
 static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *uav_format)
 {
+    shader_now(s);
     if (s->host > 0 && uav_format && memcmp(s->uav_format, uav_format, sizeof(s->uav_format))) {
         destroy(O_SHADER, (uint32_t)s->host);
         s->host = 0;
@@ -449,6 +578,8 @@ static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *u
     /* a geometry shader declares its stream output itself */
     uint32_t h = create_shader(s, type, uav_format, type == SH_GEOMETRY ? s->so : NULL, NULL);
     s->host = h ? (int32_t)h : -1;
+    if (h)
+        suspect(s, false);
     return h;
 }
 
@@ -456,24 +587,30 @@ static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *u
    kept on so_shader for the vertex shader it was last made from */
 static uint32_t so_shader_for(struct gd_shader *so_shader, struct gd_shader *vs)
 {
+    shader_now(so_shader);
     if (so_shader->so_host && so_shader->so_vs == vs->serial)
         return so_shader->so_host > 0 ? (uint32_t)so_shader->so_host : 0;
     if (so_shader->so_host > 0)
         destroy(O_SHADER, (uint32_t)so_shader->so_host);
     uint32_t h = create_shader(vs, SH_VERTEX, NULL, so_shader->so, NULL);
     so_shader->so_host = h ? (int32_t)h : -1, so_shader->so_vs = vs->serial;
+    if (h)
+        suspect(so_shader, true);
     return h;
 }
 
 /* a domain shader as the host takes it after this hull shader */
 static uint32_t tes_for(struct gd_shader *ds, struct gd_shader *hs)
 {
+    shader_now(ds);
     if (ds->so_host && ds->so_vs == hs->serial)
         return ds->so_host > 0 ? (uint32_t)ds->so_host : 0;
     if (ds->so_host > 0)
         destroy(O_SHADER, (uint32_t)ds->so_host);
     uint32_t h = create_shader(ds, SH_TESS_EVAL, NULL, NULL, hs);
     ds->so_host = h ? (int32_t)h : -1, ds->so_vs = hs->serial;
+    if (h)
+        suspect(ds, true);
     return h;
 }
 
@@ -760,13 +897,14 @@ static bool refuse(const char *why)
    of the primitives written (this waits for the draw) */
 static bool so_emitted(const struct gd_shader *gs, uint32_t *bytes)
 {
+    volatile uint32_t *m = H.query_mem + 16; /* its buffer */
+    m[0] = 0xffffffffu;
     cmd(C_END_QUERY, 0, 1);
     put(H.so_query);
     cmd(C_QUERY_RESULT, 0, 2);
     put(H.so_query), put(1);
     flush(true);
-    uint32_t box[6] = {64, 0, 0, 16, 1, 1};
-    if (!virtio_gpu_transfer_box(H.gpu, H.ctx, H.query_buf, false, 0, box, 64, 0, 0, true))
+    if (m[0] == 0xffffffffu)
         return false;
     uint64_t n;
     memcpy(&n, (const uint8_t *)H.query_mem + 72, 8);
@@ -931,6 +1069,10 @@ bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)
     for (int i = 0; i < 3; i++)
         put(cs->sh.group[i] ? cs->sh.group[i] : 1);
     put(x), put(y), put(z), put(0), put(0);
+    if (!survived()) {
+        unlock();
+        return false;
+    }
     wrote_memory(st, cs);
     H.draws++;
     unlock();
@@ -1170,7 +1312,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         if (!H.so_query) {
             H.so_query = handle();
             cmd(C_CREATE, O_QUERY, 4);
-            put(H.so_query), put(7 /* PRIMITIVES_EMITTED */), put(64), put(H.query_buf);
+            put(H.so_query), put(6 /* PRIMITIVES_EMITTED (virgl's gallium numbers) */), put(0), put(H.so_buf);
         }
         cmd(C_BEGIN_QUERY, 0, 1);
         put(H.so_query);
@@ -1183,6 +1325,10 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     put(0), put(0xffffffffu), put(0);
     if (tess)
         put(c->topology - 32), put(0); /* control points a patch, the draw number */
+    if (!survived()) {
+        unlock();
+        return false;
+    }
     if (gs_so && !so_emitted(gs, so_bytes)) /* what it wrote is unknown: the buffers count as full */
         for (int b = 0; b < nso; b++)
             so_bytes[b] = c->so[b] && c->so[b]->size > c->so[b]->so_filled
@@ -1298,6 +1444,16 @@ static const struct setting s_host = {"hostgpu", "on|off",
                                       get_host, set_host};
 SETTING(s_host);
 
+uint64_t gd_host_draws(void)
+{
+    return H.draws;
+}
+
+void gd_host_test_bad_shader(void)
+{
+    H.bad_next = true;
+}
+
 COMMAND(hostgpu, NULL, "system", "hostgpu", "what Direct3D draws on the host's graphics card (virtio-gpu 3D)")
 {
     UNUSED(argc), UNUSED(argv);
@@ -1306,9 +1462,9 @@ COMMAND(hostgpu, NULL, "system", "hostgpu", "what Direct3D draws on the host's g
         ready();
         unlock();
     }
-    sh_printf(sh, "host gpu: %s, %llu draws there, %llu in software%s%s\n",
-              H.off ? "off" : H.state > 0 ? "virgl" : "none", (unsigned long long)H.draws,
-              (unsigned long long)H.software, H.why[0] ? ", last: " : "", H.why);
+    sh_printf(sh, "host gpu: %s, %u context%s, %s%s%llu draws there, %llu in software\n",
+              H.off ? "off" : H.state > 0 ? "virgl" : "none", H.gen, H.gen == 1 ? "" : "s", H.why,
+              H.why[0] ? "; " : "", (unsigned long long)H.draws, (unsigned long long)H.software);
     return 0;
 }
 

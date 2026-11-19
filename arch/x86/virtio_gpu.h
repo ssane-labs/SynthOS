@@ -37,6 +37,7 @@ bool virtio_gpu_capset(int gpu, uint32_t id, void *buf, uint32_t size);
 uint32_t virtio_gpu_ctx_create(int gpu, const char *name);
 void virtio_gpu_ctx_destroy(int gpu, uint32_t ctx);
 uint32_t virtio_gpu_resource_3d(int gpu, uint32_t ctx, const struct virtio_res3d *r, void *backing, size_t bytes);
+bool virtio_gpu_ctx_attach(int gpu, uint32_t ctx, uint32_t id);
 void virtio_gpu_resource_unref(int gpu, uint32_t ctx, uint32_t id);
 bool virtio_gpu_transfer_3d(int gpu, uint32_t ctx, uint32_t id, bool to_host, uint32_t x, uint32_t y, uint32_t w,
                             uint32_t h, uint32_t stride);
