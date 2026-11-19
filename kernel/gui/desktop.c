@@ -2149,7 +2149,7 @@ int gui_run(struct shell *sh)
     }
     input_set_pump(pump);
 #if CONFIG_WIN32
-    winshell_open_hook = queue_open;
+    winshell_set_open_hook(queue_open);
 #endif
     last_input = hal_ticks_ms();
     if (gui_setup_needed()) {
@@ -2169,7 +2169,7 @@ int gui_run(struct shell *sh)
     sh->ctl = CTL_NONE;
     input_set_pump(NULL);
 #if CONFIG_WIN32
-    winshell_open_hook = NULL;
+    winshell_set_open_hook(NULL);
 #endif
     media_stop();
     widgets_stop();

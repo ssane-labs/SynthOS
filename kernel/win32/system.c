@@ -231,7 +231,12 @@ static uint32_t shell_thunk(void *line)
     return (uint32_t)shell_exec(w32->ctx->sh, line);
 }
 
-void (*winshell_open_hook)(const char *target);
+static void (*winshell_open_hook)(const char *target);
+
+void winshell_set_open_hook(void (*hook)(const char *target))
+{
+    winshell_open_hook = hook;
+}
 
 static bool program_ext(const char *ext)
 {
