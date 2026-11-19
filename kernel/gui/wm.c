@@ -1840,10 +1840,29 @@ void wm_toggle_fullscreen(struct window *w)
     wm_damage_all();
 }
 
+/* a frameless window that covers a screen (a game's borderless one) counts as full screen */
+static bool covers_screen(const struct window *w)
+{
+    return (w->flags & (WIN_BARE | WIN_FULLSCREEN)) == (WIN_BARE | WIN_FULLSCREEN);
+}
+
+void wm_cover_screen(struct window *w, bool on)
+{
+    if (!w || !(w->flags & WIN_BARE) || on == !!(w->flags & WIN_FULLSCREEN))
+        return;
+    if (on) {
+        set_frame(w, wm_screen_rect(wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2)));
+        w->flags |= WIN_FULLSCREEN;
+    } else {
+        w->flags &= ~WIN_FULLSCREEN;
+    }
+    wm_damage_all();
+}
+
 static struct window *fullscreen_window(void)
 {
     for (struct window *w = top; w; w = w->below)
-        if (visible(w) && !w->anim_hold && framed(w))
+        if (visible(w) && !w->anim_hold && (framed(w) || covers_screen(w)))
             return (w->flags & WIN_FULLSCREEN) &&
                            rect_contains(screens[0].area, w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2)
                        ? w

@@ -147,6 +147,17 @@ static const struct window_ops bridge_ops;
 static void bridge_drop(struct window *wm, int x, int y, const char *paths);
 
 /* Programs place their windows by Windows' rules; on SynthOS they stay out of the shell's panels and docks. */
+/* a window without borders asked to be exactly a screen covers it, menu bar and Dock too (a borderless game) */
+static void cover_check(struct window *wm, int x, int y, int w, int h)
+{
+    bool cover = false;
+    for (int i = 0; i < wm_screen_count() && !cover; i++) {
+        struct rect s = wm_screen_rect(i);
+        cover = x == s.x && y == s.y && w == s.w && h == s.h;
+    }
+    wm_cover_screen(wm, cover);
+}
+
 static void move_into_work(struct window *wm, int x, int y)
 {
     struct rect work = wm_work_area(0);
@@ -769,6 +780,8 @@ static HANDLE create_window(DWORD ex, const char *class_name, const char *title,
             move_into_work(w->wm, x, y);
         else if (x != W32_CW_USEDEFAULT)
             wm_move(w->wm, x, y);
+        if (!caption && x != W32_CW_USEDEFAULT)
+            cover_check(w->wm, x, y, cw, ch);
         struct rect cr = wm_client_rect(w->wm);
         w->rect = (struct rect){0, 0, cr.w, cr.h};
         w->menu = menu ? menu : class_menu(cls, instance);
@@ -1158,7 +1171,11 @@ static void move_window(struct w32_window *w, int x, int y, int width, int heigh
             wm_move(w->wm, x, y);
         else if (move)
             move_into_work(w->wm, x, y);
-        if (size) {
+        if (bare && (move || size)) {
+            struct rect f = w->wm->frame;
+            cover_check(w->wm, move ? x : f.x, move ? y : f.y, size ? width : f.w, size ? height : f.h);
+        }
+        if (size && !(w->wm->flags & WIN_FULLSCREEN && bare)) {
             int ch = height - (w->wm->flags & WIN_FULLSIZE ? 0 : TITLE_HEIGHT);
             wm_resize_client(w->wm, MAX(width, bare ? 1 : 120), MAX(ch, bare ? 1 : 40));
             struct rect cr = wm_client_rect(w->wm);

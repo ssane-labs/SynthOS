@@ -47,8 +47,12 @@ int main(int argc, char **argv)
     wc.hInstance = GetModuleHandleA(NULL);
     wc.lpszClassName = "d3d64";
     RegisterClassA(&wc);
-    HWND window = CreateWindowExA(0, "d3d64", "Direct3D 11", WS_OVERLAPPEDWINDOW, 40, 40, 200, 160, NULL, NULL,
-                                  wc.hInstance, NULL);
+    /* d3d64 border: a window without borders over the whole screen */
+    bool border = argc > 1 && !strcmp(argv[1], "border");
+    HWND window = border ? CreateWindowExA(0, "d3d64", "Direct3D 11", WS_POPUP, 0, 0, GetSystemMetrics(SM_CXSCREEN),
+                                           GetSystemMetrics(SM_CYSCREEN), NULL, NULL, wc.hInstance, NULL)
+                         : CreateWindowExA(0, "d3d64", "Direct3D 11", WS_OVERLAPPEDWINDOW, 40, 40, 200, 160, NULL,
+                                           NULL, wc.hInstance, NULL);
     ShowWindow(window, SW_SHOW);
 
     HMODULE d3d11 = LoadLibraryA("d3d11.dll");
@@ -263,6 +267,11 @@ int main(int argc, char **argv)
     /* d3d64 show: the triangle stays on screen, its tint changing every frame; d3d64 full: the same on the whole
        screen for five seconds */
     bool full = chain && argc > 1 && !strcmp(argv[1], "full");
+    if (border) {
+        SetForegroundWindow(window);
+        D3D11_VIEWPORT top = {0, 0, 32, 32, 0, 1};
+        ctx->RSSetViewports(1, &top);
+    }
     if (full) {
         HRESULT hr = chain->SetFullscreenState(TRUE, NULL);
         BOOL state = FALSE;
@@ -271,7 +280,9 @@ int main(int argc, char **argv)
         D3D11_VIEWPORT top = {0, 0, 32, 32, 0, 1}; /* the top left quarter: shows which way up the screen is */
         ctx->RSSetViewports(1, &top);
     }
-    for (int frame = 0; chain && argc > 1 && (full || !strcmp(argv[1], "show")) && frame < (full ? 300 : 600);
+    DWORD started = GetTickCount();
+    for (int frame = 0; chain && argc > 1 && (full || border || !strcmp(argv[1], "show")) &&
+                        frame < (full || border ? 300 : 600);
          frame++) {
         MSG msg;
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE))
@@ -286,6 +297,8 @@ int main(int argc, char **argv)
         ctx->Draw(3, 0);
         chain->Present(1, 0);
     }
+    if (full || border)
+        printf("d3d11 300 frames in %lu ms\n", (unsigned long)(GetTickCount() - started));
     if (full) {
         chain->SetFullscreenState(FALSE, NULL);
         ctx->ClearRenderTargetView(rtv, blue);

@@ -3373,6 +3373,17 @@ static uint64_t create_swapchain(struct cobj *dev, HANDLE window, const uint32_t
     return S_OK;
 }
 
+/* a borderless window over the whole screen, in front: shown like a full-screen swap chain */
+static bool covers_screen(HANDLE window, uint32_t sw, uint32_t sh)
+{
+    HANDLE(WINAPI * front)(void) = (HANDLE(WINAPI *)(void))user32("GetForegroundWindow");
+    BOOL(WINAPI * to_screen)(HANDLE, POINT *) = (BOOL(WINAPI *)(HANDLE, POINT *))user32("ClientToScreen");
+    uint32_t w, h;
+    POINT origin = {0, 0};
+    return front && to_screen && front() == window && client_size(window, &w, &h) && w == sw && h == sh &&
+           to_screen(window, &origin) && !origin.x && !origin.y;
+}
+
 /* Present: the back buffer into the window's client area, stretched to it */
 static uint64_t present(struct cobj *o, uint32_t sync, uint32_t flags)
 {
@@ -3381,7 +3392,7 @@ static uint64_t present(struct cobj *o, uint32_t sync, uint32_t flags)
         return S_OK;
     uint32_t sw, sh;
     screen_size(&sw, &sh);
-    bool shown = !s->windowed && gd_scanout(s->buffer->res.r, sw, sh);
+    bool shown = (!s->windowed || covers_screen(s->window, sw, sh)) && gd_scanout(s->buffer->res.r, sw, sh);
     if (s->scanout && !shown)
         gd_scanout(NULL, 0, 0);
     s->scanout = shown;

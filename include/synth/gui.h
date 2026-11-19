@@ -486,6 +486,8 @@ void wm_resize_client(struct window *w, int cw, int ch);
 void wm_toggle_maximize(struct window *w);
 void wm_begin_move(struct window *w);
 void wm_toggle_fullscreen(struct window *w);
+/* A window without a frame over a whole screen (a game's borderless one): in front of the menu bar and the Dock */
+void wm_cover_screen(struct window *w, bool on);
 bool wm_fullscreen_front(void);
 bool wm_fullscreen_menu(void);
 void wm_minimize(struct window *w);
