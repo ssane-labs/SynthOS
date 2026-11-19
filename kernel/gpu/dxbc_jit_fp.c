@@ -170,7 +170,8 @@ static bool dst_ok(const struct dxbc_shader *sh, const struct opd *o)
     }
 }
 
-static int sources(int op)
+/* operations compiled to SSE code; their number of sources */
+static int native(int op)
 {
     switch (op) {
     case OP_MOV: case OP_RCP: case OP_SQRT: case OP_RSQ: case OP_ITOF: case OP_NOT: case OP_INEG: return 1;
@@ -183,32 +184,56 @@ static int sources(int op)
     }
 }
 
-static bool int_src(int op)
+/* operations the compiled code hands to the interpreter's arithmetic, lane by lane; their number of sources */
+static int helped(int op)
 {
     switch (op) {
-    case OP_AND: case OP_OR: case OP_XOR: case OP_NOT: case OP_IADD: case OP_IEQ: case OP_INE: case OP_ILT: case OP_IGE:
-    case OP_INEG: case OP_ITOF: case OP_ISHL: case OP_ISHR: case OP_USHR:
-        return true;
-    default: return false;
+    case OP_FRC: case OP_EXP: case OP_LOG: case OP_ROUND_NE: case OP_ROUND_NI: case OP_ROUND_PI: case OP_ROUND_Z:
+    case OP_FTOI: case OP_FTOU: case OP_UTOF: case OP_COUNTBITS: case OP_FIRSTBIT_HI: case OP_FIRSTBIT_LO:
+    case OP_FIRSTBIT_SHI: case OP_BFREV: case OP_F32TOF16: case OP_F16TOF32:
+        return 1;
+    case OP_IMAX: case OP_IMIN: case OP_UMAX: case OP_UMIN: case OP_UGE: case OP_ULT: case OP_ISHL: case OP_ISHR:
+    case OP_USHR:
+        return 2;
+    case OP_IMAD: case OP_UMAD: return 3;
+    default: return 0;
     }
+}
+
+/* a shift by one constant count for every component */
+static bool uniform_shift(const struct dxbc_ins *in)
+{
+    const struct opd *c = &in->o[2];
+    if (c->type != T_IMM32 || c->mod)
+        return false;
+    for (int k = 0; k < 4; k++)
+        if ((c->imm[c->swz[k]] & 31) != (c->imm[c->swz[0]] & 31))
+            return false;
+    return true;
+}
+
+/* how an instruction is compiled: 1 SSE code, 2 a call of the interpreter's arithmetic, 0 not at all */
+static int how(const struct dxbc_ins *in)
+{
+    bool shift = in->op == OP_ISHL || in->op == OP_ISHR || in->op == OP_USHR;
+    if (native(in->op) && (!shift || uniform_shift(in)))
+        return 1;
+    return helped(in->op) ? 2 : 0;
+}
+
+static int sources(int op)
+{
+    return native(op) ? native(op) : helped(op);
 }
 
 static bool compilable(const struct dxbc_shader *sh, const struct dxbc_ins *in)
 {
     int n = sources(in->op);
-    if (!n || in->nops != n + 1 || !dst_ok(sh, &in->o[0]))
+    if (!n || !how(in) || in->nops != n + 1 || !dst_ok(sh, &in->o[0]))
         return false;
     for (int i = 1; i <= n; i++)
         if (!src_ok(sh, &in->o[i]))
             return false;
-    if (in->op == OP_ISHL || in->op == OP_ISHR || in->op == OP_USHR) { /* one count for every component */
-        const struct opd *c = &in->o[2];
-        if (c->type != T_IMM32 || c->mod)
-            return false;
-        for (int k = 0; k < 4; k++)
-            if ((c->imm[c->swz[k]] & 31) != (c->imm[c->swz[0]] & 31))
-                return false;
-    }
     return true;
 }
 
@@ -320,17 +345,41 @@ static void dot(struct emit *e, int n)
     pshufd(e, 0, 2, 0);
 }
 
+/* xmm0 = dxbc_alu4(op, xmm0, xmm1, xmm2): the sources go to the stack, the result comes back from it */
+static void call_alu(struct emit *e, int op, int nsrc)
+{
+    b(e, 0x48), b(e, 0x83), b(e, 0xec), b(e, 72); /* sub rsp, 72: 16-byte aligned again for the call */
+    for (int i = 0; i < nsrc; i++)
+        sse_m(e, 0, MOVUPS_STORE, i, RSP, i * 16);
+    b(e, 0xbf), d32(e, (uint32_t)op);                         /* mov edi, op */
+    b(e, 0x48), b(e, 0x8d), b(e, 0x34), b(e, 0x24);           /* lea rsi, [rsp] */
+    b(e, 0x48), b(e, 0x8d), b(e, 0x54), b(e, 0x24), b(e, 16); /* lea rdx, [rsp + 16] */
+    b(e, 0x48), b(e, 0x8d), b(e, 0x4c), b(e, 0x24), b(e, 32); /* lea rcx, [rsp + 32] */
+    b(e, 0x41), b(e, 0xb8), d32(e, (uint32_t)nsrc);           /* mov r8d, nsrc */
+    b(e, 0x4c), b(e, 0x8d), b(e, 0x4c), b(e, 0x24), b(e, 48); /* lea r9, [rsp + 48] */
+    uint64_t fn = (uint64_t)(uintptr_t)dxbc_alu4;
+    b(e, 0x48), b(e, 0xb8), d32(e, (uint32_t)fn), d32(e, (uint32_t)(fn >> 32)); /* mov rax, fn */
+    b(e, 0xff), b(e, 0xd0);                                                     /* call rax */
+    sse_m(e, 0, MOVUPS_LOAD, 0, RSP, 48);
+    b(e, 0x48), b(e, 0x83), b(e, 0xc4), b(e, 72); /* add rsp, 72 */
+}
+
 static void ins_lane(struct emit *e, const struct dxbc_ins *in, int lane)
 {
     int op = in->op, n = sources(op);
     if (in->o[0].type == T_NULL)
         return;
-    bool integer = int_src(op);
+    bool integer = dxbc_int_op(op), sse = how(in) == 1;
     for (int i = 0; i < n; i++) {
         bool as_int = op == OP_MOVC ? i == 0 : integer;
-        if ((op == OP_ISHL || op == OP_ISHR || op == OP_USHR) && i == 1)
+        if (sse && (op == OP_ISHL || op == OP_ISHR || op == OP_USHR) && i == 1)
             continue;
         load_src(e, &in->o[i + 1], lane, as_int, i);
+    }
+    if (!sse) {
+        call_alu(e, op, n);
+        store_dst(e, in, lane);
+        return;
     }
     switch (op) {
     case OP_MOV: break;

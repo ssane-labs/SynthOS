@@ -85,6 +85,9 @@ struct dxbc_jit {
 };
 
 void dxbc_jit_compile(struct dxbc_shader *sh);
+/* the interpreter's arithmetic on one lane, and whether an operation reads integers */
+void dxbc_alu4(int op, const uint32_t a[4], const uint32_t b[4], const uint32_t c[4], int nsrc, uint32_t out[4]);
+bool dxbc_int_op(int op);
 void dxbc_jit_free(struct dxbc_shader *sh);
 
 #endif

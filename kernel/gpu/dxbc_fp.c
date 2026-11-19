@@ -691,6 +691,18 @@ static uint32_t alu(int op, const uint32_t *a, const uint32_t *b, const uint32_t
     }
 }
 
+/* for compiled code (dxbc_jit_fp.c): one lane of an operation the compiler leaves to these functions */
+void dxbc_alu4(int op, const uint32_t a[4], const uint32_t b[4], const uint32_t c[4], int nsrc, uint32_t out[4])
+{
+    for (int k = 0; k < 4; k++)
+        out[k] = alu(op, a, nsrc > 1 ? b : NULL, nsrc > 2 ? c : NULL, k);
+}
+
+bool dxbc_int_op(int op)
+{
+    return int_op(op);
+}
+
 static void deriv(uint32_t val[4][4], uint32_t a[4][4], bool x, bool coarse)
 {
     for (int l = 0; l < 4; l++)
