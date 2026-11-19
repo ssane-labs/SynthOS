@@ -1,6 +1,7 @@
 /* DXBC interpreter checks with hand-assembled Shader Model 4 bytecode. */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -219,6 +220,93 @@ static void jit_speed(const struct dxbc_env *env)
     printf("  vertex shader x200000: interpreted %.3f s, compiled %.3f s\n", t[0], t[1]);
 }
 
+/* the TGSI text a vertex and a pixel shader become for the host's renderer */
+static int has(const char *text, const char *part)
+{
+    if (strstr(text, part))
+        return 1;
+    printf("  missing in TGSI: %s\n", part);
+    return 0;
+}
+
+static void tgsi_tests(void)
+{
+    struct dxbc_shader sh;
+    struct dxbc_tgsi t;
+    /* vertex shader: dcl_constantbuffer cb0[4]; dp4 o0.x, v0, cb0[0]; mov o0.yzw, v0; rsq o1.yz, v0.xxyx;
+       movc o1.x, v1.x, l(1.0), cb0[r0.x + 1].y (relative); udiv o1.w, null, v1.x, l(3); ishl r0.x, v1.x, l(33) */
+    in_sig("POSITION", 0, 0, 0, 15), in_sig("TEXCOORD", 0, 0, 1, 15), in_sig("SV_VertexID", 0, 6, 2, 1);
+    out_sig("SV_Position", 0, 1, 0, 15), out_sig("TEXCOORD", 0, 0, 1, 15);
+    op(89, 0), code[n++] = 2u | 1u << 2 | XYZW << 4 | 8u << 12 | 2u << 20, code[n++] = 0, code[n++] = 4, end();
+    op(17, 0), dst(OUT, 0, 1), src(IN, 0, XYZW), cbsrc(0, 0, XYZW), end();
+    op(54, 0), dst(OUT, 0, 14), src(IN, 0, XYZW), end();
+    op(68, 0), dst(OUT, 1, 6), src(IN, 0, SW(0, 0, 1, 0)), end();
+    op(55, 0), dst(OUT, 1, 1), sel(IN, 1, 0), immf(1);
+    code[n++] = 2u | 1u << 2 | XYZW << 4 | 8u << 12 | 2u << 20 | 3u << 25; /* cb0[r0.x + 1]: index 1 relative */
+    code[n++] = 0, code[n++] = 1;
+    code[n++] = 2u | 2u << 2 | 0u << 4 | 0u << 12 | 1u << 20, code[n++] = 0;
+    end();
+    op(78, 0), dst(OUT, 1, 8), code[n++] = 13u << 12, sel(IN, 1, 0), immu(3), end();
+    op(41, 0), dst(TEMP, 0, 1), sel(IN, 2, 0), immu(33), end();
+    op(62, 0), end();
+    size_t size = container(1, 1);
+    expect(dxbc_parse(&sh, blob, size), "parse a vertex shader for TGSI");
+    bool ok = dxbc_tgsi(&sh, &t);
+    if (!ok)
+        printf("  TGSI: %s\n", t.error);
+    expect(ok && has(t.text, "VERT\n") && has(t.text, "DCL IN[0]\n") && has(t.text, "DCL SV[0], VERTEXID") &&
+               has(t.text, "DCL OUT[0], POSITION") && has(t.text, "DCL OUT[1], GENERIC[1]") &&
+               has(t.text, "DCL CONST[1][0..3]") && has(t.text, "DP4 OUT[0].x, IN[0].xyzw, CONST[1][0].xyzw") &&
+               has(t.text, "RSQ TEMP[1].y, IN[0].xxxx") && has(t.text, "RSQ TEMP[1].z, IN[0].yyyy") &&
+               has(t.text, "MOV OUT[1].yz, TEMP[1].xyzw") && has(t.text, "UARL ADDR[0].x, TEMP[0].xxxx") &&
+               has(t.text, "UCMP OUT[1].x, IN[1].xxxx, IMM[0].xxxx, CONST[1][ADDR[0].x+1].xyzw") &&
+               has(t.text, "UDIV OUT[1].w, IN[1].xxxx, IMM[1].xxxx") && !strstr(t.text, "UMOD") &&
+               has(t.text, "SHL TEMP[0].x, SV[0].xxxx, IMM[2].xxxx") && has(t.text, "IMM[2] UINT32 {1, 1, 1, 1}") &&
+               has(t.text, "END\n"),
+           "a vertex shader in TGSI");
+    if (ok && getenv("TGSI_PRINT"))
+        printf("%s", t.text);
+    dxbc_tgsi_free(&t);
+    dxbc_free(&sh);
+
+    /* pixel shader: dcl_resource_texture2d t0; dcl_sampler s0; dcl_input_ps linear v1.xy; sample r0, v1.xyxx, t0.wzyx,
+       s0; discard_z r0.w; if_nz r0.x; mov o0, r0; else; mov o0, l(0); endif; mov oDepth, v1.y */
+    in_sig("SV_Position", 0, 1, 0, 15), in_sig("TEXCOORD", 0, 0, 1, 3);
+    out_sig("SV_Target", 0, 0, 0, 15), out_sig("SV_Depth", 0, 0, 0xffffffffu, 1);
+    op(88, 3 << 11), code[n++] = 7u << 12 | 1u << 20, code[n++] = 0, code[n++] = 0x5555, end();
+    op(90, 0), code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();
+    op(98, 2 << 11), dst(IN, 1, 3), end();
+    op(100, 4 << 11), dst(IN, 0, 15), code[n++] = 1, end();
+    op(69, 0), dst(TEMP, 0, 15), src(IN, 1, SW(0, 1, 0, 0)), src(RES, 0, SW(3, 2, 1, 0));
+    code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();
+    op(13, 0), sel(TEMP, 0, 3), end();
+    op(31, 1 << 18), sel(TEMP, 0, 0), end();
+    op(54, 0), dst(OUT, 0, 15), src(TEMP, 0, XYZW), end();
+    op(18, 0), end();
+    op(54, 0), dst(OUT, 0, 15), imm4(0, 0, 0, 0), end();
+    op(21, 0), end();
+    op(54, 0), code[n++] = 1u | 12u << 12, sel(IN, 1, 1), end();
+    op(62, 0), end();
+    size = container(0, 1);
+    expect(dxbc_parse(&sh, blob, size), "parse a pixel shader for TGSI");
+    ok = dxbc_tgsi(&sh, &t);
+    if (!ok)
+        printf("  TGSI: %s\n", t.error);
+    expect(ok && has(t.text, "FRAG\n") && has(t.text, "DCL IN[0], POSITION, LINEAR") &&
+               has(t.text, "DCL IN[1], GENERIC[1], PERSPECTIVE") && has(t.text, "DCL OUT[0], COLOR[0]") &&
+               has(t.text, "DCL OUT[1], POSITION") && has(t.text, "DCL SAMP[0]") &&
+               has(t.text, "DCL SVIEW[0], 2D, FLOAT") &&
+               has(t.text, "SAMPLE TEMP[3], IN[1].xyxx, SVIEW[0], SAMP[0]") &&
+               has(t.text, "MOV TEMP[0], TEMP[3].wzyx") && has(t.text, "USEQ TEMP[1].x, TEMP[0].wwww") &&
+               has(t.text, "KILL\nENDIF") && has(t.text, "UIF TEMP[0].xxxx\nMOV OUT[0], TEMP[0].xyzw\nELSE") &&
+               has(t.text, "MOV OUT[1].z, TEMP[4].xxxx") && t.tex_sampler[0] == 0,
+           "a pixel shader in TGSI");
+    if (ok && getenv("TGSI_PRINT"))
+        printf("%s", t.text);
+    dxbc_tgsi_free(&t);
+    dxbc_free(&sh);
+}
+
 int dxbc_tests(void)
 {
     struct dxbc_env env = {0};
@@ -363,6 +451,7 @@ int dxbc_tests(void)
     size_t size = container(1, 1);
     expect(!dxbc_parse(&sh, blob, size), "an if without endif is refused");
 
+    tgsi_tests();
     jit_fuzz(&env);
     jit_speed(&env);
     expect(jitted > 0, "the compiler took part of the shaders");

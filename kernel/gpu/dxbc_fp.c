@@ -283,6 +283,21 @@ bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size)
                 if ((op == OP_DCL_INPUT_PS_SIV || op == OP_DCL_INPUT_SIV) && q < next && *q == 1)
                     sh->pos_in_reg = o.idx[0].imm;
             }
+        } else if (op == OP_DCL_RESOURCE || op == OP_DCL_CONSTANT_BUFFER || op == OP_DCL_SAMPLER) {
+            struct opd o;
+            bool bad = false;
+            const uint32_t *q = operand(p + 1, next, &o, &bad);
+            int slot = o.idx[0].imm;
+            if (op == OP_DCL_RESOURCE && o.type == T_RESOURCE && slot >= 0 && slot < DXBC_MAX_RES) {
+                sh->res_dim[slot] = (uint8_t)((t >> 11) & 0x1f);
+                sh->res_ret[slot] = (uint8_t)(q < next ? *q & 15 : 5);
+            } else if (op == OP_DCL_CONSTANT_BUFFER && o.type == T_CB && slot >= 0 && slot < DXBC_MAX_CB) {
+                sh->cb_size[slot] = o.ndim >= 2 && o.idx[1].imm > 0 ? (uint32_t)o.idx[1].imm : 4096;
+            } else if (op == OP_DCL_SAMPLER && o.type == T_SAMPLER && slot >= 0 && slot < 16) {
+                sh->samp_used |= (uint16_t)(1u << slot);
+                if (((t >> 11) & 15) == 1)
+                    sh->samp_cmp |= (uint16_t)(1u << slot);
+            }
         } else if (op == OP_DCL_GS_INPUT) {
             sh->gs_in = (t >> 11) & 0x3f;
         } else if (op == OP_DCL_GS_OUTPUT_TOPOLOGY) {

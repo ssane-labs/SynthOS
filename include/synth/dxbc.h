@@ -63,6 +63,12 @@ struct dxbc_shader {
     int nphase;
     uint32_t cp_in, cp_out, domain, partitioning, out_prim;
     float max_tess;
+    /* declared resources: t# dimension (D3D10_SB_RESOURCE_DIMENSION, 0 undeclared) and return type of its first
+       component (1 unorm, 2 snorm, 3 sint, 4 uint, 5 float); cb# size in vectors (0 undeclared); s# declared with
+       mode comparison (bit per sampler), s# declared at all */
+    uint8_t res_dim[DXBC_MAX_RES], res_ret[DXBC_MAX_RES];
+    uint32_t cb_size[DXBC_MAX_CB];
+    uint16_t samp_cmp, samp_used;
     struct dxbc_jit *jit; /* compiled runs of arithmetic, or NULL */
     char error[64];
 };
@@ -133,5 +139,16 @@ bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct d
 void dxbc_jit_enable(bool on);
 bool dxbc_jit_enabled(void);
 int dxbc_jit_count(const struct dxbc_shader *sh);
+
+/* the shader as TGSI text for the host's renderer (virgl); tex_sampler[t]: the sampler the shader uses with t#,
+   which the renderer must have at slot t (0xff: none). False and error when it has no translation. */
+struct dxbc_tgsi {
+    char *text;
+    size_t len;
+    uint8_t tex_sampler[DXBC_MAX_RES];
+    char error[64];
+};
+bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out);
+void dxbc_tgsi_free(struct dxbc_tgsi *out);
 
 #endif
