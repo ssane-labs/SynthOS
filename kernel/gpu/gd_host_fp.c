@@ -258,7 +258,7 @@ static bool transfer(struct gd_resource *r, bool to_host)
 static uint32_t to_gpu(struct gd_resource *r)
 {
     if (!r->host) {
-        if (r->d.samples > 1 || r->d.usage == 3 /* staging */)
+        if (r->d.usage == 3 /* staging */) /* multisampled ones have one sample, as here */
             return 0;
         uint32_t format = resource_format(r), bind = 0, b = r->d.bind;
         if (!format)

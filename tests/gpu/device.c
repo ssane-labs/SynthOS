@@ -607,6 +607,58 @@ static void draw_tests(void)
             gd_shader_unref(ps_tex);
     }
 
+    /* a 4-sample target: drawn into, read back with ld_ms, and resolved (one sample a pixel, as on the host) */
+    {
+        struct gd_res_desc md = {.dim = GD_TEX2D, .width = W, .height = H, .mips = 1, .array = 1, .samples = 4,
+                                 .format = GD_R8G8B8A8_UNORM,
+                                 .bind = GD_BIND_RENDER_TARGET | GD_BIND_SHADER_RESOURCE};
+        struct gd_resource *ms = gd_resource_create(&md, NULL, &err);
+        struct gd_view *ms_rtv = ms ? gd_view_create(ms, &(struct gd_view_desc){.kind = GD_VIEW_RTV}, &err) : NULL;
+        struct gd_view *ms_srv = ms ? gd_view_create(ms, &(struct gd_view_desc){.kind = GD_VIEW_SRV}, &err) : NULL;
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Target", 0, 0, 0, 15);
+        op(88, 4 << 11 | 4 << 16), code[n++] = 7u << 12 | 1u << 20, code[n++] = 0, code[n++] = 0x5555,
+            end(); /* dcl_resource_texture2dms(4) t0 float */
+        op(28, 0), dst(TEMP, 0, 3), src(IN, 0, XYZW), end(); /* ftou r0.xy, v0 */
+        op(54, 0), dst(TEMP, 0, 12), immv(0, 0, 0, 0), end();
+        op(46, 0), dst(TEMP, 1, 15), src(TEMP, 0, XYZW), src(RES, 0, XYZW), immu(2), end(); /* ld_ms r1, r0, t0, 2 */
+        op(54, 0), dst(OUT, 0, 15), src(TEMP, 1, XYZW), end();
+        op(62, 0), end();
+        size_t size = container(0, 2);
+        char e[64];
+        struct gd_shader *ps_ms = gd_shader_create(blob, (uint32_t)size, e);
+        expect(ms_rtv && ms_srv && ps_ms, "a multisampled target and ld_ms");
+        if (ms_rtv && ms_srv && ps_ms) {
+            struct vert mv[6];
+            gd_set_render_target(ctx, 0, ms_rtv);
+            gd_set_depth_target(ctx, NULL);
+            gd_clear_rtv(ms_rtv, (const float[4]){0, 0, 1, 1});
+            quad(mv, -1, -1, 0, 1, 0.5f, (const float[4]){1, 0, 0, 1});
+            draw_verts(mv, 6);
+            gd_set_render_target(ctx, 0, rtv);
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            gd_copy_region(rt_tex, 0, 0, 0, 0, ms, 0, NULL); /* ResolveSubresource */
+            expect(pixel(10, 30) == 0x0000ff && pixel(50, 30) == 0xff0000, "a multisampled target resolves");
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            gd_set_shader(ctx, 0, ps_ms);
+            gd_set_shader_resource(ctx, 0, 0, ms_srv);
+            quad(mv, -1, -1, 1, 1, 0.5f, (const float[4]){0, 1, 0, 1});
+            draw_verts(mv, 6);
+            expect(pixel(10, 30) == 0x0000ff && pixel(50, 30) == 0xff0000, "ld_ms reads a multisampled texture");
+            gd_set_shader_resource(ctx, 0, 0, NULL);
+            gd_set_shader(ctx, 0, ps_color);
+            gd_set_depth_target(ctx, dsv);
+        }
+        if (ps_ms)
+            gd_shader_unref(ps_ms);
+        if (ms_srv)
+            gd_view_unref(ms_srv);
+        if (ms_rtv)
+            gd_view_unref(ms_rtv);
+        if (ms)
+            gd_resource_unref(ms);
+    }
+
     /* a geometry shader that makes a square of every point */
     {
         in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);

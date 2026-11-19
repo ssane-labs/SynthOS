@@ -499,10 +499,11 @@ static struct opd shift_amount(struct tg *g, const struct opd *b)
     return temp(g->s0 + 1, "xyzw");
 }
 
-static const char *const target_name[] = {"", "BUFFER", "1D", "2D", "2D_MSAA", "3D", "CUBE", "1D_ARRAY", "2D_ARRAY",
-                                          "2D_ARRAY_MSAA", "CUBE_ARRAY"};
-static const char *const shadow_name[] = {"", "BUFFER", "SHADOW1D", "SHADOW2D", "2D_MSAA", "3D", "SHADOWCUBE",
-                                          "SHADOW1D_ARRAY", "SHADOW2D_ARRAY", "2D_ARRAY_MSAA", "SHADOWCUBE_ARRAY"};
+/* multisampled textures have one sample on the host, as in the software pipeline: plain 2D ones there */
+static const char *const target_name[] = {"", "BUFFER", "1D", "2D", "2D", "3D", "CUBE", "1D_ARRAY", "2D_ARRAY",
+                                          "2D_ARRAY", "CUBE_ARRAY"};
+static const char *const shadow_name[] = {"", "BUFFER", "SHADOW1D", "SHADOW2D", "2D", "3D", "SHADOWCUBE",
+                                          "SHADOW1D_ARRAY", "SHADOW2D_ARRAY", "2D_ARRAY", "SHADOWCUBE_ARRAY"};
 
 /* texture instructions the way GL samples (virglrenderer takes TEX, TXL, TXB, TXD, TXF and TXQ, not SAMPLE*): SAMP[t]
    is both the view at t and the sampler state the shader pairs with t#, which the backend binds at slot t. The
@@ -593,6 +594,10 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
         name = "TXD";
     } else if (kind == TX_LD) {
         name = "TXF";
+        if (dim == 4 || dim == 9) { /* ld_ms: the only sample, at level 0 (TXF reads the level from w) */
+            struct opd zero = imm_opd(0);
+            emit1(g, "MOV", false, &cw, &zero);
+        }
     } else if (kind == TX_LOD) { /* (clamped, unclamped, 0, 0) */
         struct opd zw = scratch_dst(g, 2, 12), zero = imm_opd(0);
         emit1(g, "MOV", false, &zw, &zero);
@@ -1271,6 +1276,7 @@ static void instruction(struct tg *g, int pc)
     case OP_SAMPLE_D:
         return texture(g, in, TX_D);
     case OP_LD:
+    case OP_LD_MS:
         return texture(g, in, TX_LD);
     case OP_LOD:
         return texture(g, in, TX_LOD);
