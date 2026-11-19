@@ -261,10 +261,11 @@ static void draw_tests(void)
     struct gd_res_desc rd = {.dim = GD_TEX2D, .width = W, .height = H, .mips = 1, .array = 1,
                              .format = GD_R8G8B8A8_UNORM, .bind = GD_BIND_RENDER_TARGET};
     rt_tex = gd_resource_create(&rd, NULL, &err);
-    rd.format = GD_D24_UNORM_S8_UINT, rd.bind = GD_BIND_DEPTH_STENCIL;
+    /* typeless with a depth view, as a depth texture that shaders may also read */
+    rd.format = GD_R24G8_TYPELESS, rd.bind = GD_BIND_DEPTH_STENCIL | GD_BIND_SHADER_RESOURCE;
     ds_tex = gd_resource_create(&rd, NULL, &err);
     rtv = gd_view_create(rt_tex, &(struct gd_view_desc){.kind = GD_VIEW_RTV}, &err);
-    dsv = gd_view_create(ds_tex, &(struct gd_view_desc){.kind = GD_VIEW_DSV}, &err);
+    dsv = gd_view_create(ds_tex, &(struct gd_view_desc){.kind = GD_VIEW_DSV, .format = GD_D24_UNORM_S8_UINT}, &err);
     ctx = gd_context_create();
     make_shaders();
     expect(vs_color && ps_color && ps_discard && vs_inst && rtv && dsv, "targets and shaders");

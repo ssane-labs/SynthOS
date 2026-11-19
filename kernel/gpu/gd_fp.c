@@ -337,6 +337,10 @@ struct gd_view *gd_view_create(struct gd_resource *r, const struct gd_view_desc 
     uint32_t format = d.format ? d.format : r->d.format;
     if (d.kind == GD_VIEW_SRV || d.kind == GD_VIEW_RTV || d.kind == GD_VIEW_UAV)
         format = gd_format_typed(format);
+    else if (!gd_format_depth(format)) /* a depth view of a typeless resource */
+        format = format == GD_R32_TYPELESS ? GD_D32_FLOAT : format == GD_R16_TYPELESS ? GD_D16_UNORM
+               : format == GD_R24G8_TYPELESS ? GD_D24_UNORM_S8_UINT
+               : format == GD_R32G8X24_TYPELESS ? GD_D32_FLOAT_S8X24_UINT : format;
     int vdim;
     if (r->d.dim == GD_BUFFER) {
         vdim = VD_BUFFER;
@@ -473,9 +477,9 @@ void gd_clear_rtv(struct gd_view *v, const float color[4])
 
 void gd_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil)
 {
-    if (!v || !gd_format_depth(v->r->d.format) || gd_host_clear_dsv(v, flags, depth, stencil))
+    if (!v || !gd_format_depth(v->format) || gd_host_clear_dsv(v, flags, depth, stencil))
         return;
-    uint32_t f = v->r->d.format, block, bytes = gd_format_bytes(f, &block);
+    uint32_t f = v->format, block, bytes = gd_format_bytes(f, &block);
     for (uint32_t s = 0; s < v->d.slices; s++) {
         struct gd_layout l;
         uint8_t *p = target_of(v, s, &l);
@@ -2175,12 +2179,12 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
             h = (int)d->rt[i].h;
     }
     d->dual_source = d->nrt > 0 && d->rt[0].blend.enable && dual_source(&d->rt[0].blend);
-    if (c->dsv && gd_format_depth(c->dsv->r->d.format)) {
+    if (c->dsv && gd_format_depth(c->dsv->format)) {
         struct gd_layout l;
         uint8_t *p = target_of(c->dsv, 0, &l);
         if (p) {
             uint32_t block;
-            d->db = p, d->dpitch = l.row_pitch, d->dformat = c->dsv->r->d.format;
+            d->db = p, d->dpitch = l.row_pitch, d->dformat = c->dsv->format;
             d->dbytes = gd_format_bytes(d->dformat, &block);
             if (!w || (int)l.width < w)
                 w = (int)l.width;
