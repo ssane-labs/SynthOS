@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
-#include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi1_2.h>
 
 #include "d3d64_shaders.h"
@@ -258,12 +258,42 @@ int main(int argc, char **argv)
             sor->Release();
     }
 
+    /* the newer interfaces: a fence signalled on the immediate context, and the device's lock */
+    int newer = 0;
+    ID3D11Device5 *dev5 = NULL;
+    ID3D11DeviceContext4 *ctx4 = NULL;
+    ID3D10Multithread *mt = NULL;
+    ID3D11Fence *fence = NULL;
+    if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D11Device5), (void **)&dev5)) &&
+        SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext4), (void **)&ctx4)) &&
+        SUCCEEDED(dev->QueryInterface(__uuidof(ID3D10Multithread), (void **)&mt)) &&
+        SUCCEEDED(dev5->CreateFence(3, D3D11_FENCE_FLAG_NONE, __uuidof(ID3D11Fence), (void **)&fence))) {
+        HANDLE ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+        mt->SetMultithreadProtected(TRUE);
+        mt->Enter();
+        fence->SetEventOnCompletion(5, ev);
+        bool early = WaitForSingleObject(ev, 0) == WAIT_OBJECT_0;
+        ctx4->Signal(fence, 5);
+        mt->Leave();
+        newer = fence->GetCompletedValue() == 5 && !early && WaitForSingleObject(ev, 0) == WAIT_OBJECT_0 &&
+                mt->GetMultithreadProtected();
+        CloseHandle(ev);
+    }
+    if (fence)
+        fence->Release();
+    if (mt)
+        mt->Release();
+    if (ctx4)
+        ctx4->Release();
+    if (dev5)
+        dev5->Release();
+
     char name[64] = "";
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name), NULL, NULL);
     printf("d3d11 level=%x adapter=%s modes=%d shaders=%d map=%d samples=%llu left=%06x right=%06x present=%d "
-           "get=%d deferred=%d drawn=%06x so=%d\n",
+           "get=%d deferred=%d drawn=%06x so=%d newer=%d\n",
            (unsigned)level, name, modes > 0, SUCCEEDED(shaders), mapped, (unsigned long long)samples,
-           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after, streamed);
+           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after, streamed, newer);
     /* d3d64 show: the triangle stays on screen, its tint changing every frame; d3d64 full: the same on the whole
        screen for five seconds */
     bool full = chain && argc > 1 && !strcmp(argv[1], "full");

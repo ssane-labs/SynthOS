@@ -48,6 +48,30 @@ static const uint8_t IID_DeviceChild[16] =
 static const uint8_t IID_Device[16] = GUID(0xdb6f6ddb, 0xac77, 0x4e88, 0x82, 0x53, 0x81, 0x9d, 0xf9, 0xbb, 0xf1, 0x40);
 static const uint8_t IID_Device1[16] = GUID(0xa04bfb29, 0x08ef, 0x43d6, 0xa4, 0x9c, 0xa9, 0xbd, 0xbd, 0xcb, 0xe6, 0x86);
 static const uint8_t IID_Device2[16] = GUID(0x9d06dffa, 0xd1e5, 0x4d07, 0x83, 0xa8, 0x1b, 0xb1, 0x23, 0xf2, 0xf8, 0x41);
+static const uint8_t IID_Device3[16] = GUID(0xa05c8c37, 0xd2c6, 0x4732, 0xb3, 0xa0, 0x9c, 0xe0, 0xb0, 0xdc, 0x9a, 0xe6);
+static const uint8_t IID_Device4[16] = GUID(0x8992ab71, 0x02e6, 0x4b8d, 0xba, 0x48, 0xb0, 0x56, 0xdc, 0xda, 0x42, 0xc4);
+static const uint8_t IID_Device5[16] = GUID(0x8ffde202, 0xa0e7, 0x45df, 0x9e, 0x01, 0xe8, 0x37, 0x80, 0x1b, 0x5e, 0xa0);
+static const uint8_t IID_Context3[16] =
+    GUID(0xb4e3c01d, 0xe79e, 0x4637, 0x91, 0xb2, 0x51, 0x0e, 0x9f, 0x4c, 0x9b, 0x8f);
+static const uint8_t IID_Context4[16] =
+    GUID(0x917600da, 0xf58c, 0x4c33, 0x98, 0xd8, 0x3e, 0x15, 0xb3, 0x90, 0xfa, 0x24);
+static const uint8_t IID_Fence[16] = GUID(0xaffde9d1, 0x1df7, 0x4bb7, 0x8a, 0x34, 0x0f, 0x46, 0x25, 0x1d, 0xab, 0x80);
+/* ID3D11Multithread has the number of ID3D10Multithread */
+static const uint8_t IID_Multithread[16] =
+    GUID(0x9b7e4e00, 0x342c, 0x4106, 0xa1, 0x9f, 0x4f, 0x27, 0x04, 0xf6, 0x89, 0xf0);
+static const uint8_t IID_Texture2D1[16] =
+    GUID(0x51218251, 0x1e33, 0x4617, 0x9c, 0xcb, 0x4d, 0x3a, 0x43, 0x67, 0xe7, 0xbb);
+static const uint8_t IID_Texture3D1[16] =
+    GUID(0x0c711683, 0x2853, 0x4846, 0x9b, 0xb0, 0xf3, 0xe6, 0x06, 0x39, 0xe4, 0x6a);
+static const uint8_t IID_SRV1[16] = GUID(0x91308b87, 0x9040, 0x411d, 0x8c, 0x67, 0xc3, 0x92, 0x53, 0xce, 0x38, 0x02);
+static const uint8_t IID_RTV1[16] = GUID(0xffbe2e23, 0xf011, 0x418a, 0xac, 0x56, 0x5c, 0xee, 0xd7, 0xc5, 0xb9, 0x4b);
+static const uint8_t IID_UAV1[16] = GUID(0x7b3b6153, 0xa886, 0x4544, 0xab, 0x37, 0x65, 0x37, 0xc8, 0x50, 0x04, 0x03);
+static const uint8_t IID_Query1[16] = GUID(0x631b4766, 0x36dc, 0x461d, 0x8d, 0xb6, 0xc4, 0x7e, 0x13, 0xe6, 0x09, 0x16);
+static const uint8_t IID_Blend1[16] = GUID(0xcc86fabe, 0xda55, 0x401d, 0x85, 0xe7, 0xe3, 0xc9, 0xde, 0x28, 0x77, 0xe9);
+static const uint8_t IID_Raster1[16] =
+    GUID(0x1217d7a6, 0x5039, 0x418c, 0xb0, 0x42, 0x9c, 0xbe, 0x25, 0x6a, 0xfd, 0x6e);
+static const uint8_t IID_Raster2[16] =
+    GUID(0x6fbd02fb, 0x209f, 0x46c4, 0xb0, 0x59, 0x2e, 0xd1, 0x55, 0x86, 0xa6, 0xac);
 static const uint8_t IID_Context[16] = GUID(0xc0bfa96c, 0xe089, 0x44fb, 0x8e, 0xaf, 0x26, 0xf8, 0x79, 0x61, 0x90, 0xda);
 static const uint8_t IID_Context1[16] =
     GUID(0xbb2c6faa, 0xb5fb, 0x4082, 0x8e, 0x6b, 0x38, 0x8b, 0x8c, 0xfa, 0x90, 0xe1);
@@ -139,7 +163,7 @@ enum kind {
     K_DEVICE, K_CONTEXT, K_BUFFER, K_TEX1D, K_TEX2D, K_TEX3D, K_SRV, K_RTV, K_DSV, K_UAV, K_LAYOUT,
     K_PS, K_VS, K_GS, K_HS, K_DS, K_CS, /* the DXBC program types, in order from K_PS */
     K_BLEND, K_DEPTH, K_RASTER, K_SAMPLER, K_QUERY, K_PREDICATE, K_FACTORY, K_ADAPTER, K_OUTPUT, K_SWAPCHAIN,
-    K_CLASSLINKAGE, K_CMDLIST,
+    K_CLASSLINKAGE, K_CMDLIST, K_FENCE,
 };
 
 struct pdata {
@@ -197,7 +221,13 @@ struct cobj {
         struct {
             uint32_t level, flags;
             struct cobj *context;
+            uint64_t lock; /* ID3D11Multithread: a critical section in the program's memory, made on first use */
+            uint32_t protect;
         } dev;
+        struct {
+            uint64_t value;
+            uint64_t at[8], event[8]; /* SetEventOnCompletion waiting for a value */
+        } fence;
     };
 };
 
@@ -259,7 +289,7 @@ static const struct vspec *spec_of(int s);
 enum {
     SP_DEVICE, SP_DXGIDEVICE, SP_CONTEXT, SP_BUFFER, SP_TEX1D, SP_TEX2D, SP_TEX3D, SP_SURFACE, SP_DXGIRES, SP_SRV,
     SP_RTV, SP_DSV, SP_UAV, SP_CHILD, SP_BLEND, SP_DEPTH, SP_RASTER, SP_SAMPLER, SP_QUERY, SP_FACTORY, SP_ADAPTER,
-    SP_OUTPUT, SP_SWAPCHAIN, SP_CMDLIST, SP_COUNT
+    SP_OUTPUT, SP_SWAPCHAIN, SP_CMDLIST, SP_FENCE, SP_MT_CONTEXT, SP_MT_DEVICE, SP_COUNT
 };
 
 static bool deferred(const struct cobj *o);
@@ -933,6 +963,14 @@ static uint64_t m_res_desc(struct cobj *o, uint64_t *a, const uint64_t *f)
     return 0;
 }
 
+/* GetDesc1 of ID3D11Texture2D1 and ID3D11Texture3D1: the description and D3D11_TEXTURE_LAYOUT_UNDEFINED */
+static uint64_t m_res_desc1(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    m_res_desc(o, a, f);
+    put32(a[1] + (o->kind == K_TEX2D ? 44 : 36), 0);
+    return 0;
+}
+
 /* IDXGISurface1 and IDXGIResource1 on a resource */
 static uint64_t m_dxgi_parent(struct cobj *o, uint64_t *a, const uint64_t *f)
 {
@@ -1186,6 +1224,23 @@ static uint64_t m_view_desc(struct cobj *o, uint64_t *a, const uint64_t *f)
 {
     if (a[1])
         memcpy(w64_ptr(a[1]), o->view.desc, view_desc_size[o->kind]);
+    return 0;
+}
+
+/* GetDesc1 of the version 1 views: plane slice 0 after the 2D texture fields */
+static uint64_t m_view_desc1(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    if (!a[1])
+        return 0;
+    uint8_t *d = w64_ptr(a[1]);
+    bool srv = o->kind == K_SRV;
+    memset(d, 0, srv ? 28 : 24);
+    memcpy(d, o->view.desc, view_desc_size[o->kind]);
+    uint32_t dim = get32(a[1] + 4);
+    if (dim == 4) /* TEXTURE2D */
+        put32(a[1] + (srv ? 16 : 12), 0);
+    else if (dim == 5) /* TEXTURE2DARRAY */
+        put32(a[1] + (srv ? 24 : 20), 0);
     return 0;
 }
 
@@ -1550,6 +1605,13 @@ static uint64_t m_query_desc(struct cobj *o, uint64_t *a, const uint64_t *f)
     return 0;
 }
 
+static uint64_t m_query_desc1(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    m_query_desc(o, a, f);
+    put32(a[1] + 8, 0); /* D3D11_CONTEXT_TYPE_ALL */
+    return 0;
+}
+
 /* ---- the device: what the hardware can do */
 
 static uint64_t m_format_support(struct cobj *dev, uint64_t *a, const uint64_t *f)
@@ -1643,6 +1705,149 @@ static uint64_t m_immediate_context(struct cobj *dev, uint64_t *a, const uint64_
 
 static uint64_t m_deferred_context(struct cobj *dev, uint64_t *a, const uint64_t *f);
 
+static void drop_program_ref(struct cobj *o);
+
+/* ---- ID3D11Device3 to 5 */
+
+static uint64_t m_removed_event(struct cobj *dev, uint64_t *a, const uint64_t *f)
+{
+    put32(a[2], 1); /* RegisterDeviceRemovedEvent: the device is never removed */
+    return a[1] ? S_OK : E_INVALIDARG;
+}
+
+/* CreateFence(initial value, flags, iid, out): Signal on the immediate context completes at once, the work before
+   it having been handed to the GPU in order */
+static uint64_t m_create_fence(struct cobj *dev, uint64_t *a, const uint64_t *f)
+{
+    put64(a[4], 0);
+    if (!a[4])
+        return E_INVALIDARG;
+    struct cobj *o = child(K_FENCE, dev, SP_FENCE, -1, -1);
+    if (!o)
+        return E_OUTOFMEMORY;
+    o->fence.value = a[1];
+    uint64_t r = query_out(o, w64_ptr(a[3]), a[4]);
+    if (r == S_OK)
+        __atomic_sub_fetch(&o->refs, 1, __ATOMIC_RELAXED); /* the program holds only the one query_out gave */
+    else
+        drop_program_ref(o);
+    return r;
+}
+
+static void fence_reached(struct cobj *o)
+{
+    BOOL(WINAPI * set)(HANDLE) = (BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("kernel32.dll", "SetEvent");
+    for (int i = 0; i < 8; i++)
+        if (o->fence.event[i] && o->fence.value >= o->fence.at[i]) {
+            if (set)
+                set((HANDLE)(uintptr_t)o->fence.event[i]);
+            o->fence.event[i] = 0;
+        }
+}
+
+static uint64_t m_fence_value(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    return o->fence.value;
+}
+
+/* SetEventOnCompletion(value, event): without an event, waits; nothing else signals, so a value not reached fails */
+static uint64_t m_fence_event(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    if (!a[2])
+        return o->fence.value >= a[1] ? S_OK : E_FAIL;
+    for (int i = 0; i < 8; i++)
+        if (!o->fence.event[i]) {
+            o->fence.at[i] = a[1], o->fence.event[i] = a[2];
+            fence_reached(o);
+            return S_OK;
+        }
+    return E_OUTOFMEMORY;
+}
+
+/* ID3D11DeviceContext4::Signal(fence, value) and Wait(fence, value) */
+static uint64_t m_signal(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct cobj *fe = unwrap_kind(a[1], K_FENCE);
+    if (!fe)
+        return E_INVALIDARG;
+    fe->fence.value = a[2];
+    fence_reached(fe);
+    return S_OK;
+}
+
+static uint64_t m_wait(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    return unwrap_kind(a[1], K_FENCE) ? S_OK : E_INVALIDARG;
+}
+
+/* Flush1(context type, event): the work is handed over, so the event is set */
+static uint64_t m_flush1(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    BOOL(WINAPI * set)(HANDLE) = (BOOL(WINAPI *)(HANDLE))w32_builtin_lookup("kernel32.dll", "SetEvent");
+    if (set && a[2])
+        set((HANDLE)(uintptr_t)a[2]);
+    return 0;
+}
+
+static uint64_t m_protection_state(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    put32(a[1], 0);
+    return 0;
+}
+
+/* ---- ID3D11Multithread (ID3D10Multithread) on the device and its contexts: one lock for the device */
+
+static struct cobj *lock_owner(struct cobj *o)
+{
+    return o->kind == K_DEVICE ? o : o->device;
+}
+
+static void mt_call(struct cobj *o, const char *fn)
+{
+    struct cobj *dev = lock_owner(o);
+    if (!dev)
+        return;
+    if (!dev->dev.lock) {
+        void *cs = w32_zalloc(64);
+        void(WINAPI * init)(void *) = (void(WINAPI *)(void *))w32_builtin_lookup("kernel32.dll",
+                                                                                    "InitializeCriticalSection");
+        if (!cs || !init)
+            return;
+        init(cs);
+        dev->dev.lock = (uintptr_t)cs;
+    }
+    void(WINAPI * call)(void *) = (void(WINAPI *)(void *))w32_builtin_lookup("kernel32.dll", fn);
+    if (call)
+        call((void *)(uintptr_t)dev->dev.lock);
+}
+
+static uint64_t m_mt_enter(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    mt_call(o, "EnterCriticalSection");
+    return 0;
+}
+
+static uint64_t m_mt_leave(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    mt_call(o, "LeaveCriticalSection");
+    return 0;
+}
+
+static uint64_t m_mt_set(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct cobj *dev = lock_owner(o);
+    uint32_t was = dev ? dev->dev.protect : 0;
+    if (dev)
+        dev->dev.protect = (uint32_t)a[1] != 0;
+    return was;
+}
+
+static uint64_t m_mt_get(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    struct cobj *dev = lock_owner(o);
+    return dev ? dev->dev.protect : 0;
+}
+
 /* the device's GetPrivateData comes first, SetPrivateData second */
 static const method device_fns[] = {
     IUNKNOWN,
@@ -1658,6 +1863,13 @@ static const method device_fns[] = {
     m_notimpl,
     /* ID3D11Device2 */
     [50] = m_immediate_context, m_deferred_context, m_zero, m_ms_levels1,
+    /* ID3D11Device3: the newer descriptions start like the older ones */
+    [54] = m_create_tex2d, m_create_tex3d, m_create_raster, m_create_srv, m_create_uav, m_create_rtv, m_create_query,
+    m_immediate_context, m_deferred_context, m_zero /* WriteToSubresource */, m_zero /* ReadFromSubresource */,
+    /* ID3D11Device4 */
+    [65] = m_removed_event, m_zero,
+    /* ID3D11Device5 */
+    [67] = m_notimpl /* OpenSharedFence */, m_create_fence,
 };
 
 /* ---- the immediate context */
@@ -2423,7 +2635,6 @@ static uint64_t m_draw_auto(struct cobj *o, uint64_t *a, const uint64_t *f)
 }
 
 /* D3D11_DEVICE_CONTEXT_IMMEDIATE */
-static void drop_program_ref(struct cobj *o);
 
 static bool deferred(const struct cobj *o)
 {
@@ -2803,6 +3014,10 @@ static const method context_fns[] = {
     /* ID3D11DeviceContext2 */
     [134] = m_notimpl, m_notimpl, m_zero, m_zero, m_notimpl, m_zero, m_zero /* IsAnnotationEnabled */, m_zero,
     m_zero, m_zero,
+    /* ID3D11DeviceContext3 */
+    [144] = m_flush1, m_zero /* SetHardwareProtectionState */, m_protection_state,
+    /* ID3D11DeviceContext4 */
+    [147] = m_signal, m_wait,
 };
 
 static void drop_program_ref(struct cobj *o)
@@ -2867,7 +3082,7 @@ static uint64_t m_deferred_context(struct cobj *dev, uint64_t *a, const uint64_t
     if (!a[2])
         return E_INVALIDARG;
     put64(a[2], 0);
-    struct cobj *o = child(K_CONTEXT, dev, SP_CONTEXT, -1, -1);
+    struct cobj *o = child(K_CONTEXT, dev, SP_CONTEXT, SP_MT_CONTEXT, -1);
     struct context *c = o ? kzalloc(sizeof(*c)) : NULL;
     if (c && !(c->gd = gd_context_create())) {
         kfree(c);
@@ -3671,7 +3886,7 @@ static const method dxgi_device_fns[] = {
 static const method child_fns[] = {DEVICE_CHILD};
 
 static const method buffer_fns[] = {
-    DEVICE_CHILD, [7] = m_res_type, m_zero /* SetEvictionPriority */, m_eviction_value, m_res_desc,
+    DEVICE_CHILD, [7] = m_res_type, m_zero /* SetEvictionPriority */, m_eviction_value, m_res_desc, m_res_desc1,
 };
 
 static const method surface_fns[] = {
@@ -3684,10 +3899,13 @@ static const method dxgi_resource_fns[] = {
     m_notimpl,
 };
 
-static const method view_fns[] = {DEVICE_CHILD, [7] = m_view_resource, m_view_desc};
+static const method view_fns[] = {DEVICE_CHILD, [7] = m_view_resource, m_view_desc, m_view_desc1};
 static const method blend_fns[] = {DEVICE_CHILD, [7] = m_blend_desc, m_blend_desc1};
 static const method state_fns[] = {DEVICE_CHILD, [7] = m_state_desc, m_state_desc, m_state_desc};
-static const method query_fns[] = {DEVICE_CHILD, [7] = m_query_size, m_query_desc};
+static const method query_fns[] = {DEVICE_CHILD, [7] = m_query_size, m_query_desc, m_query_desc1};
+static const method fence_fns[] = {DEVICE_CHILD, [7] = m_notimpl /* CreateSharedHandle */, m_fence_value,
+                                   m_fence_event};
+static const method mt_fns[] = {IUNKNOWN, [3] = m_mt_enter, m_mt_leave, m_mt_set, m_mt_get};
 
 #define SPEC(n, i, t) {n, i, ARRAY_SIZE(t), t}
 
@@ -3716,6 +3934,9 @@ static const struct vspec specs[SP_COUNT] = {
     [SP_OUTPUT] = SPEC("IDXGIOutput", 0, output_fns),
     [SP_SWAPCHAIN] = SPEC("IDXGISwapChain", 0, swapchain_fns),
     [SP_CMDLIST] = SPEC("ID3D11CommandList", 0, cmdlist_fns),
+    [SP_FENCE] = SPEC("ID3D11Fence", 0, fence_fns),
+    [SP_MT_CONTEXT] = SPEC("ID3D11Multithread", 1, mt_fns),
+    [SP_MT_DEVICE] = SPEC("ID3D10Multithread", 2, mt_fns),
 };
 
 static const struct vspec *spec_of(int s)
@@ -3731,22 +3952,25 @@ static const struct vspec *spec_of(int s)
         {IID_DXGIResource1, 2}
 
 static const struct iid_map device_iids[] = {
-    {IID_Unknown, 0}, {IID_Device, 0}, {IID_Device1, 0}, {IID_Device2, 0}, {IID_Object, 1}, {IID_DXGIDevice, 1},
-    {IID_DXGIDevice1, 1}, {IID_DXGIDevice2, 1}, {IID_DXGIDevice3, 1}, {NULL, 0},
+    {IID_Unknown, 0}, {IID_Device, 0}, {IID_Device1, 0}, {IID_Device2, 0}, {IID_Device3, 0}, {IID_Device4, 0},
+    {IID_Device5, 0}, {IID_Object, 1}, {IID_DXGIDevice, 1}, {IID_DXGIDevice1, 1}, {IID_DXGIDevice2, 1},
+    {IID_DXGIDevice3, 1}, {IID_Multithread, 2}, {NULL, 0},
 };
 static const struct iid_map context_iids[] = {
-    CHILD_IIDS, {IID_Context, 0}, {IID_Context1, 0}, {IID_Context2, 0}, {NULL, 0},
+    CHILD_IIDS, {IID_Context, 0}, {IID_Context1, 0}, {IID_Context2, 0}, {IID_Context3, 0}, {IID_Context4, 0},
+    {IID_Multithread, 1}, {NULL, 0},
 };
+static const struct iid_map fence_iids[] = {CHILD_IIDS, {IID_Fence, 0}, {NULL, 0}};
 static const struct iid_map buffer_iids[] = {RES_IIDS, {IID_Buffer, 0}, {NULL, 0}};
 static const struct iid_map tex1d_iids[] = {RES_IIDS, {IID_Texture1D, 0}, {NULL, 0}};
 static const struct iid_map tex2d_iids[] = {
-    RES_IIDS, {IID_Texture2D, 0}, {IID_Surface, 1}, {IID_Surface1, 1}, {NULL, 0},
+    RES_IIDS, {IID_Texture2D, 0}, {IID_Texture2D1, 0}, {IID_Surface, 1}, {IID_Surface1, 1}, {NULL, 0},
 };
-static const struct iid_map tex3d_iids[] = {RES_IIDS, {IID_Texture3D, 0}, {NULL, 0}};
-static const struct iid_map srv_iids[] = {CHILD_IIDS, {IID_View, 0}, {IID_SRV, 0}, {NULL, 0}};
-static const struct iid_map rtv_iids[] = {CHILD_IIDS, {IID_View, 0}, {IID_RTV, 0}, {NULL, 0}};
+static const struct iid_map tex3d_iids[] = {RES_IIDS, {IID_Texture3D, 0}, {IID_Texture3D1, 0}, {NULL, 0}};
+static const struct iid_map srv_iids[] = {CHILD_IIDS, {IID_View, 0}, {IID_SRV, 0}, {IID_SRV1, 0}, {NULL, 0}};
+static const struct iid_map rtv_iids[] = {CHILD_IIDS, {IID_View, 0}, {IID_RTV, 0}, {IID_RTV1, 0}, {NULL, 0}};
 static const struct iid_map dsv_iids[] = {CHILD_IIDS, {IID_View, 0}, {IID_DSV, 0}, {NULL, 0}};
-static const struct iid_map uav_iids[] = {CHILD_IIDS, {IID_View, 0}, {IID_UAV, 0}, {NULL, 0}};
+static const struct iid_map uav_iids[] = {CHILD_IIDS, {IID_View, 0}, {IID_UAV, 0}, {IID_UAV1, 0}, {NULL, 0}};
 static const struct iid_map layout_iids[] = {CHILD_IIDS, {IID_Layout, 0}, {NULL, 0}};
 static const struct iid_map ps_iids[] = {CHILD_IIDS, {IID_PS, 0}, {NULL, 0}};
 static const struct iid_map vs_iids[] = {CHILD_IIDS, {IID_VS, 0}, {NULL, 0}};
@@ -3754,11 +3978,15 @@ static const struct iid_map gs_iids[] = {CHILD_IIDS, {IID_GS, 0}, {NULL, 0}};
 static const struct iid_map hs_iids[] = {CHILD_IIDS, {IID_HS, 0}, {NULL, 0}};
 static const struct iid_map ds_iids[] = {CHILD_IIDS, {IID_DS, 0}, {NULL, 0}};
 static const struct iid_map cs_iids[] = {CHILD_IIDS, {IID_CS, 0}, {NULL, 0}};
-static const struct iid_map blend_iids[] = {CHILD_IIDS, {IID_Blend, 0}, {NULL, 0}};
+static const struct iid_map blend_iids[] = {CHILD_IIDS, {IID_Blend, 0}, {IID_Blend1, 0}, {NULL, 0}};
 static const struct iid_map depth_iids[] = {CHILD_IIDS, {IID_Depth, 0}, {NULL, 0}};
-static const struct iid_map raster_iids[] = {CHILD_IIDS, {IID_Raster, 0}, {NULL, 0}};
+static const struct iid_map raster_iids[] = {
+    CHILD_IIDS, {IID_Raster, 0}, {IID_Raster1, 0}, {IID_Raster2, 0}, {NULL, 0},
+};
 static const struct iid_map sampler_iids[] = {CHILD_IIDS, {IID_Sampler, 0}, {NULL, 0}};
-static const struct iid_map query_iids[] = {CHILD_IIDS, {IID_Async, 0}, {IID_Query, 0}, {NULL, 0}};
+static const struct iid_map query_iids[] = {
+    CHILD_IIDS, {IID_Async, 0}, {IID_Query, 0}, {IID_Query1, 0}, {NULL, 0},
+};
 static const struct iid_map predicate_iids[] = {
     CHILD_IIDS, {IID_Async, 0}, {IID_Query, 0}, {IID_Predicate, 0}, {NULL, 0},
 };
@@ -3792,7 +4020,7 @@ static const struct iid_map *iids_of(uint32_t kind)
         [K_DEPTH] = depth_iids,     [K_RASTER] = raster_iids,   [K_SAMPLER] = sampler_iids,
         [K_QUERY] = query_iids,     [K_PREDICATE] = predicate_iids, [K_FACTORY] = factory_iids,
         [K_ADAPTER] = adapter_iids, [K_OUTPUT] = output_iids,   [K_SWAPCHAIN] = swapchain_iids,
-        [K_CLASSLINKAGE] = plain_iids, [K_CMDLIST] = cmdlist_iids,
+        [K_CLASSLINKAGE] = plain_iids, [K_CMDLIST] = cmdlist_iids, [K_FENCE] = fence_iids,
     };
     return kind < ARRAY_SIZE(by_kind) ? by_kind[kind] : NULL;
 }
@@ -3814,8 +4042,8 @@ static uint32_t pick_level(uint64_t levels, uint32_t count)
 
 static struct cobj *create_device(uint32_t level, uint32_t flags)
 {
-    struct cobj *dev = new_obj(K_DEVICE, NULL, SP_DEVICE, SP_DXGIDEVICE, -1);
-    struct cobj *ctx = dev ? new_obj(K_CONTEXT, dev, SP_CONTEXT, -1, -1) : NULL;
+    struct cobj *dev = new_obj(K_DEVICE, NULL, SP_DEVICE, SP_DXGIDEVICE, SP_MT_DEVICE);
+    struct cobj *ctx = dev ? new_obj(K_CONTEXT, dev, SP_CONTEXT, SP_MT_CONTEXT, -1) : NULL;
     struct context *c = ctx ? kzalloc(sizeof(*c)) : NULL;
     if (c && !(c->gd = gd_context_create())) {
         kfree(c);

@@ -1084,7 +1084,7 @@ dwrite families=1 name=1 arial=1 opens=1 glyphs=1 advance=1 upem=1 head=1 path=1
 dwrite64 | grep dwrite3
 dwrite3 factory2=1 factory3=1 collection=1 fallback=1 gray=1
 d3d64
-d3d11 level=b000 adapter=SynthOS Graphics modes=1 shaders=1 map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1
+d3d11 level=b000 adapter=SynthOS Graphics modes=1 shaders=1 map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1 newer=1
 spawn64
 spawn64 held=ping child=7010 map=pong dll32=0/193 overlapped=1 3 678
 sock6
