@@ -2196,6 +2196,12 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
             d->bias_clamp = c->raster.depth_bias_clamp;
         }
     }
+    if (!d->nrt && !d->db && c->nviewports && c->viewport.w >= 1 && c->viewport.h >= 1) {
+        /* no targets (a pixel shader writing only to unordered access views): the viewport is the area */
+        float vr = c->viewport.x + c->viewport.w, vb = c->viewport.y + c->viewport.h;
+        w = vr > 16384 ? 16384 : vr < 1 ? 0 : (int)vr;
+        h = vb > 16384 ? 16384 : vb < 1 ? 0 : (int)vb;
+    }
     if (!w || !h) {
         stats.skipped++;
         kfree(d);

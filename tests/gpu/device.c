@@ -962,6 +962,18 @@ static void draw_tests(void)
             expect(got == W * H && pixel(5, 5) == 0x00ff00, "every pixel adds one to the counter");
             if (got != W * H)
                 printf("  %u of %u\n", got, W * H);
+            /* no targets at all: the viewport alone sets the area drawn */
+            gd_set_render_target(ctx, 0, NULL);
+            gd_set_depth_target(ctx, NULL);
+            gd_set_viewports(ctx, 1, &(struct gd_viewport){0, 0, 32, 16, 0, 1});
+            draw_verts(q, 6);
+            uint32_t more = *(const uint32_t *)gd_subresource(count, 0, NULL) - got;
+            expect(more == 32 * 16, "a draw without targets runs its pixel shader over the viewport");
+            if (more != 32 * 16)
+                printf("  %u of %u\n", more, 32 * 16);
+            gd_set_viewports(ctx, 1, &(struct gd_viewport){0, 0, W, H, 0, 1});
+            gd_set_render_target(ctx, 0, rtv);
+            gd_set_depth_target(ctx, dsv);
             gd_set_uav(ctx, 0, 1, NULL, 0xffffffffu);
             gd_set_shader(ctx, 0, ps_color);
             gd_set_depth(ctx, NULL, 0);

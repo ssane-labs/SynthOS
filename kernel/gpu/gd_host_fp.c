@@ -22,7 +22,7 @@ enum {
     C_SAMPLER_STATES = 18, C_BEGIN_QUERY = 19, C_END_QUERY = 20, C_QUERY_RESULT = 21, C_SAMPLE_MASK = 24,
     C_STREAMOUT_TARGETS = 25,
     C_UNIFORM_BUFFER = 27, C_BIND_SHADER = 31, C_SHADER_BUFFERS = 34, C_SHADER_IMAGES = 35, C_MEMORY_BARRIER = 36,
-    C_LAUNCH_GRID = 37,
+    C_LAUNCH_GRID = 37, C_FRAMEBUFFER_NO_ATTACH = 38,
     O_BLEND = 1, O_RASTERIZER = 2, O_DSA = 3, O_SHADER = 4, O_VERTEX_ELEMENTS = 5, O_SAMPLER_VIEW = 6,
     O_SAMPLER_STATE = 7, O_SURFACE = 8, O_QUERY = 9, O_STREAMOUT_TARGET = 10,
     B_DEPTH_STENCIL = 1 << 0, B_RENDER_TARGET = 1 << 1, B_SAMPLER_VIEW = 1 << 3, B_VERTEX = 1 << 4,
@@ -1033,8 +1033,16 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     }
     if (c->dsv && !(zsurf = surface(c->dsv)))
         goto refused;
-    if (!ncb && !zsurf)
-        goto refused;
+    /* no targets: the viewport is the size (GL's framebuffer without attachments) */
+    uint32_t bare_w = 0, bare_h = 0;
+    if (!ncb && !zsurf) {
+        float vr = c->viewport.x + c->viewport.w, vb = c->viewport.y + c->viewport.h;
+        if (!c->nviewports || vr < 1 || vb < 1) {
+            unlock();
+            return refuse("a draw without targets or a viewport");
+        }
+        bare_w = vr > 16384 ? 16384 : (uint32_t)vr, bare_h = vb > 16384 ? 16384 : (uint32_t)vb;
+    }
     if (!vertex_elements(c, &vs->sh) || !stage_resources(c, DXBC_VS, SH_VERTEX, vs) ||
         (ps && (!stage_resources(c, DXBC_PS, SH_FRAGMENT, ps) ||
                 !bind_memory(c, DXBC_PS, SH_FRAGMENT, ps, ps_formats))) ||
@@ -1081,12 +1089,18 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     put((uint32_t)ncb), put(zsurf);
     for (int i = 0; i < ncb; i++)
         put(cbufs[i]);
-    float vx = 0, vy = 0, vw, vh, z0 = 0, z1 = 1;
+    if (bare_w) {
+        cmd(C_FRAMEBUFFER_NO_ATTACH, 0, 2);
+        put(bare_w | bare_h << 16), put(1); /* one layer, no samples */
+    }
+    float vx = 0, vy = 0, vw = 0, vh = 0, z0 = 0, z1 = 1;
     struct gd_view *first = c->rtv[0] ? c->rtv[0] : c->dsv;
     for (int i = 0; !first && i < 8; i++)
         first = c->rtv[i];
-    struct gd_layout l = first->r->lay[first->d.first_mip];
-    vw = (float)l.width, vh = (float)l.height;
+    if (first) {
+        struct gd_layout l = first->r->lay[first->d.first_mip];
+        vw = (float)l.width, vh = (float)l.height;
+    }
     if (c->nviewports) {
         vx = c->viewport.x, vy = c->viewport.y, vw = c->viewport.w, vh = c->viewport.h;
         z0 = c->viewport.min_z, z1 = c->viewport.max_z;
