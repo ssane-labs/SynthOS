@@ -4,7 +4,11 @@
 #ifndef TESTS_GPU_ASM_H
 #define TESTS_GPU_ASM_H
 
+#ifdef RS_HOST
 #include <string.h>
+#else
+#include <synth/string.h>
+#endif
 
 #include <synth/types.h>
 

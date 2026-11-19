@@ -1,8 +1,12 @@
 /* The graphics device (include/synth/gd.h) on the build machine: formats, block compression, sampling, and draws
-   with hand-assembled shaders through input layouts, depth, stencil, blending, indices and instances. */
+   with hand-assembled shaders through input layouts, depth, stencil, blending, indices and instances. The kernel
+   builds the same file into the "gdtest" command (kernel/gpu/gdtest_fp.c), so the draws also run on the host's
+   graphics card through virgl. */
 
+#ifdef RS_HOST
 #include <stdio.h>
 #include <string.h>
+#endif
 
 #include <synth/gd.h>
 #include <synth/tess.h>

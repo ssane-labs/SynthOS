@@ -44,13 +44,18 @@ if ok:
     wait(' so=', 120)
     p.stdin.write(b'hostgpu\r'); p.stdin.flush()
     wait('in software', 30)
+    p.stdin.write(b'gdtest\r'); p.stdin.flush()
+    wait('gdtest:', 300)
+    p.stdin.write(b'hostgpu\r'); p.stdin.flush()
+    wait('in software', 30)
 p.kill()
 sys.stdout.write(buf.decode('utf-8', 'replace'))
 PY
 line=$(grep -a "virgl clear=" "$out" | tr -d '\r')
 d3d=$(grep -a "^d3d11 level" "$out" | tr -d '\r')
-host=$(grep -a "^host gpu:" "$out" | tr -d '\r')
-grep -a "capset\|virgl\|^d3d11\|^host gpu\|^gd:" "$out" | tr -d '\r' | grep -v "^root@"
+host=$(grep -a "^host gpu:" "$out" | head -1 | tr -d '\r')
+gdtest=$(grep -a "^gdtest:" "$out" | tr -d '\r')
+grep -a "capset\|virgl\|^d3d11\|^host gpu\|^gd:\|^FAIL\|^gdtest" "$out" | tr -d '\r' | grep -v "^root@"
 rc=0
 case "$line" in
 *"clear=ff0000ff middle=ffff0000 corner=ff0000ff"*) echo "virgl: ok" ;;
@@ -63,5 +68,9 @@ esac
 case "$host" in
 *"virgl, 0 draws"*|"") echo "virgl d3d11 on the host: FAIL"; rc=1 ;;
 *) echo "virgl d3d11 on the host: ok" ;;
+esac
+case "$gdtest" in
+"gdtest: 0 failed") echo "virgl device tests: ok" ;;
+*) echo "virgl device tests: FAIL"; rc=1 ;;
 esac
 exit $rc

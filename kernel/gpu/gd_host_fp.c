@@ -39,6 +39,8 @@ static struct {
     uint32_t blend, dsa, rs, ve, samplers[2][16], null_fs;
     uint8_t blend_key[sizeof(struct gd_blend)], dsa_key[sizeof(struct gd_depth) + 4], rs_key[sizeof(struct gd_raster) + 4];
     uint8_t ve_key[sizeof(struct gd_input_layout) + 32 * 4];
+    uint8_t ve_slot[16]; /* the vertex buffer slot behind each binding, one binding per shader input */
+    int ve_count;
     struct gd_sampler samp_key[2][16];
     /* occlusion: one query open across draws, read when someone asks */
     uint32_t query, query_buf, *query_mem, drawn_since;
@@ -151,7 +153,7 @@ static const uint16_t formats[GD_FORMAT_COUNT] = {
     [GD_R8G8B8A8_SNORM] = 77, [GD_R8G8B8A8_SINT] = 184, [GD_R16G16_TYPELESS] = 92, [GD_R16G16_FLOAT] = 92,
     [GD_R16G16_UNORM] = 49, [GD_R16G16_UINT] = 186, [GD_R16G16_SNORM] = 57, [GD_R16G16_SINT] = 190,
     [GD_R32_TYPELESS] = 28, [GD_D32_FLOAT] = 18, [GD_R32_FLOAT] = 28, [GD_R32_UINT] = 193, [GD_R32_SINT] = 197,
-    [GD_R24G8_TYPELESS] = 19, [GD_D24_UNORM_S8_UINT] = 19, [GD_R24_UNORM_X8_TYPELESS] = 21,
+    [GD_R24G8_TYPELESS] = 20, [GD_D24_UNORM_S8_UINT] = 20, [GD_R24_UNORM_X8_TYPELESS] = 21,
     [GD_X24_TYPELESS_G8_UINT] = 136, [GD_R8G8_TYPELESS] = 65, [GD_R8G8_UNORM] = 65, [GD_R8G8_UINT] = 178,
     [GD_R8G8_SNORM] = 75, [GD_R8G8_SINT] = 182, [GD_R16_TYPELESS] = 91, [GD_R16_FLOAT] = 91,
     [GD_D16_UNORM] = 16, [GD_R16_UNORM] = 48, [GD_R16_UINT] = 185, [GD_R16_SNORM] = 56, [GD_R16_SINT] = 189,
@@ -184,7 +186,7 @@ static uint32_t resource_format(const struct gd_resource *r)
         if (f == GD_R16_TYPELESS || f == GD_D16_UNORM)
             return 16;
         if (f == GD_R24G8_TYPELESS || f == GD_D24_UNORM_S8_UINT)
-            return 19;
+            return 20; /* S8_UINT_Z24_UNORM: the host has no Z24_UNORM_S8_UINT; see transfer() */
         if (f == GD_R32G8X24_TYPELESS || f == GD_D32_FLOAT_S8X24_UINT)
             return 126;
         return 0;
@@ -215,9 +217,20 @@ static uint32_t target_of(const struct gd_resource *r)
     }
 }
 
+/* D24_UNORM_S8_UINT keeps the depth in the low 24 bits and the stencil above; the host's S8_UINT_Z24_UNORM has
+   them the other way round, so the words turn around the transfer */
+static void turn_depth(struct gd_resource *r, bool to_host)
+{
+    uint32_t *w = (uint32_t *)r->data;
+    for (size_t i = 0; i < r->alloc / 4; i++)
+        w[i] = to_host ? w[i] << 8 | w[i] >> 24 : w[i] >> 8 | w[i] << 24;
+}
+
 static bool transfer(struct gd_resource *r, bool to_host)
 {
-    bool ok = true;
+    bool ok = true, turn = resource_format(r) == 20;
+    if (turn && to_host)
+        turn_depth(r, true);
     for (uint32_t s = 0; s < r->d.array && ok; s++)
         for (uint32_t m = 0; m < r->d.mips && ok; m++) {
             uint32_t sub = m + s * r->d.mips;
@@ -230,8 +243,10 @@ static bool transfer(struct gd_resource *r, bool to_host)
             bool last = s + 1 == r->d.array && m + 1 == r->d.mips;
             ok = virtio_gpu_transfer_box(H.gpu, H.ctx, r->host, to_host, m, box, r->off[sub],
                                          r->d.dim == GD_BUFFER ? 0 : l->row_pitch,
-                                         r->d.dim == GD_BUFFER ? 0 : l->slice_pitch, !to_host && last);
+                                         r->d.dim == GD_BUFFER ? 0 : l->slice_pitch, (turn || !to_host) && last);
         }
+    if (turn)
+        turn_depth(r, false);
     return ok;
 }
 
@@ -539,7 +554,7 @@ static bool vertex_elements(const struct gd_context *c, const struct dxbc_shader
                 return false;
             el[s->reg][0] = at;
             el[s->reg][1] = e->per_instance ? (e->step ? e->step : 0xffffffffu) : 0;
-            el[s->reg][2] = e->slot;
+            el[s->reg][2] = e->slot; /* turned into the register's own binding below */
             el[s->reg][3] = f;
             found = true;
         }
@@ -555,6 +570,13 @@ static bool vertex_elements(const struct gd_context *c, const struct dxbc_shader
         el[0][3] = 31;
         n = 1;
     }
+    /* virglrenderer sets an element's instance divisor on the binding numbered as the element, not on the
+       element's buffer: each element gets the binding of its own number, which then points at its buffer */
+    if (n > 16)
+        return false;
+    for (int r = 0; r < n; r++)
+        H.ve_slot[r] = (uint8_t)el[r][2], el[r][2] = (uint32_t)r;
+    H.ve_count = n;
     uint8_t key[sizeof(H.ve_key)];
     memset(key, 0, sizeof(key));
     memcpy(key, el, (size_t)n * 16);
@@ -703,16 +725,14 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         (ps && !stage_resources(c, DXBC_PS, SH_FRAGMENT, ps)))
         goto refused;
     /* vertex and index buffers */
-    int nvb = 0;
-    for (int i = 0; i < GD_SLOTS_VB; i++)
-        if (c->vb[i])
-            nvb = i + 1;
-    uint32_t vbs[GD_SLOTS_VB];
-    for (int i = 0; i < nvb; i++)
-        if (c->vb[i] && !(vbs[i] = to_gpu(c->vb[i])))
+    int nvb = H.ve_count;
+    uint32_t vbs[16];
+    for (int i = 0; i < nvb; i++) {
+        struct gd_resource *vb = c->vb[H.ve_slot[i]];
+        vbs[i] = 0;
+        if (vb && !(vbs[i] = to_gpu(vb)))
             goto refused;
-        else if (!c->vb[i])
-            vbs[i] = 0;
+    }
     uint32_t ib = 0;
     if (indexed && (!c->ib || !(ib = to_gpu(c->ib))))
         goto refused;
@@ -759,7 +779,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     if (nvb) {
         cmd(C_VERTEX_BUFFERS, 0, (uint32_t)nvb * 3);
         for (int i = 0; i < nvb; i++)
-            put(c->vb_stride[i]), put(c->vb_offset[i]), put(vbs[i]);
+            put(c->vb_stride[H.ve_slot[i]]), put(c->vb_offset[H.ve_slot[i]]), put(vbs[i]);
     }
     if (indexed) {
         cmd(C_INDEX_BUFFER, 0, 3);
