@@ -32,6 +32,8 @@ struct gd_view {
     uint32_t format;
     int vdim;
     uint32_t counter; /* append and counter buffers */
+    struct gd_resource *counter_res; /* the counter on the host: a word, newer than counter while counter_on_host */
+    bool counter_on_host;
     uint32_t host;    /* the host's sampler view or surface for it, or 0 */
 };
 
@@ -56,6 +58,7 @@ struct gd_shader {
     uint32_t used_cb, used_uav, used_srv_buf;
     bool icb;                       /* the host shader reads its immediate constant buffer from icb_buf */
     uint8_t clip_planes;            /* the clip distances the host shader writes */
+    uint8_t used_counter;           /* u# whose hidden counter the host shader reaches */
     struct gd_resource *icb_buf;
     uint16_t uav_format[DXBC_MAX_UAV]; /* compute: the typed UAV formats the host shader was made for */
     uint32_t serial; /* a number no other shader had */

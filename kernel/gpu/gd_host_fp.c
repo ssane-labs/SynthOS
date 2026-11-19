@@ -428,7 +428,7 @@ static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t
     }
     memcpy(s->tex_sampler, t.tex_sampler, sizeof(s->tex_sampler));
     s->used_cb = t.used_cb, s->used_uav = t.used_uav, s->used_srv_buf = t.used_srv_buf;
-    s->icb = t.icb, s->clip_planes = t.clip_planes;
+    s->icb = t.icb, s->clip_planes = t.clip_planes, s->used_counter = t.used_counter;
     dxbc_tgsi_free(&t);
     return h;
 }
@@ -788,6 +788,29 @@ static bool bind_memory(struct gd_context *c, int dstage, uint32_t type, struct 
         }
         nbuf = i + 1;
     }
+    for (int u = 0; u < 8 && u < GD_SLOTS_UAV; u++) { /* the hidden counters, a word of their own each */
+        if (!(s->used_counter >> u & 1))
+            continue;
+        struct gd_view *v = st->uav[u];
+        if (v) {
+            if (!v->counter_res) {
+                struct gd_res_desc d = {.dim = GD_BUFFER, .width = 4, .height = 1, .depth = 1, .mips = 1, .array = 1,
+                                        .bind = GD_BIND_UNORDERED_ACCESS};
+                uint32_t e;
+                if (!(v->counter_res = gd_resource_create(&d, NULL, &e)))
+                    return false;
+            }
+            if (!v->counter_on_host) { /* set since: the whole word is the guest's */
+                memcpy(v->counter_res->data, &v->counter, 4);
+                if (v->counter_res->host)
+                    v->counter_res->where = HOST_CPU_NEWER;
+            }
+            if (!(buf[24 + u][2] = to_gpu(v->counter_res)))
+                return false;
+            buf[24 + u][1] = 4;
+        }
+        nbuf = 24 + u + 1 > nbuf ? 24 + u + 1 : nbuf;
+    }
     uint32_t img[DXBC_MAX_UAV][5];
     int nimg = 0;
     memset(img, 0, sizeof(img));
@@ -829,13 +852,17 @@ static bool bind_memory(struct gd_context *c, int dstage, uint32_t type, struct 
 /* after a dispatch or a draw that wrote unordered access views: what it wrote, for everything after it */
 static void wrote_memory(struct stage *st, const struct gd_shader *s)
 {
-    if (!s->used_uav)
+    if (!s->used_uav && !s->used_counter)
         return;
     cmd(C_MEMORY_BARRIER, 0, 1);
     put(0xffffffffu);
-    for (int u = 0; u < DXBC_MAX_UAV && u < GD_SLOTS_UAV; u++)
-        if ((s->used_uav >> u & 1) && st->uav[u])
-            st->uav[u]->r->where = HOST_GPU_NEWER;
+    for (int u = 0; u < DXBC_MAX_UAV && u < GD_SLOTS_UAV; u++) {
+        struct gd_view *v = st->uav[u];
+        if ((s->used_uav >> u & 1) && v)
+            v->r->where = HOST_GPU_NEWER;
+        if (u < 8 && (s->used_counter >> u & 1) && v && v->counter_res)
+            v->counter_res->where = HOST_GPU_NEWER, v->counter_on_host = true;
+    }
 }
 
 bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)

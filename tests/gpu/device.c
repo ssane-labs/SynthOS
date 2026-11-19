@@ -563,6 +563,37 @@ static void draw_tests(void)
                     gd_shader_unref(ps_int);
                 }
             }
+            /* eval_centroid, eval_sample_index, eval_snapped, sample_info and sample_pos: one sample a pixel, so the
+               color as interpolated at the centre */
+            {
+                const uint32_t rast = 2u | 1u << 2 | (uint32_t)XYZW << 4 | 14u << 12; /* the rasterizer operand */
+                in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+                out_sig("SV_Target", 0, 0, 0, 15);
+                op(205, 0), dst(TEMP, 0, 15), src(IN, 1, XYZW), end();
+                op(204, 0), dst(TEMP, 1, 15), src(IN, 1, XYZW), immu(0), end();
+                op(203, 0), dst(TEMP, 2, 15), src(IN, 1, XYZW), immv(0, 0, 0, 0), end();
+                op(111, 0), dst(TEMP, 3, 1), code[n++] = rast, end();
+                op(110, 0), dst(TEMP, 4, 3), code[n++] = rast, immu(0), end();
+                op(0, 0), dst(TEMP, 0, 15), src(TEMP, 0, XYZW), src(TEMP, 1, XYZW), end();
+                op(0, 0), dst(TEMP, 0, 15), src(TEMP, 0, XYZW), src(TEMP, 2, XYZW), end();
+                op(56, 0), dst(TEMP, 0, 15), src(TEMP, 0, XYZW), imm4(1 / 3.0f, 1 / 3.0f, 1 / 3.0f, 1 / 3.0f), end();
+                op(56, 0), dst(TEMP, 0, 15), src(TEMP, 0, XYZW), src(TEMP, 3, XXXX), end();
+                op(0, 0), dst(OUT, 0, 15), src(TEMP, 0, XYZW), src(TEMP, 4, SW(0, 1, 0, 1)), end();
+                op(62, 0), end();
+                size = container(0, 8);
+                struct gd_shader *ps_eval = gd_shader_create(blob, (uint32_t)size, e);
+                expect(ps_eval != NULL, "eval_* and sample_info parse");
+                if (ps_eval) {
+                    gd_set_shader(ctx, 0, ps_color);
+                    draw_verts(tv, 6);
+                    uint32_t want[2] = {pixel(20, 30), pixel(50, 10)};
+                    gd_set_shader(ctx, 0, ps_eval);
+                    draw_verts(tv, 6);
+                    expect(close_rgb(pixel(20, 30), want[0]) && close_rgb(pixel(50, 10), want[1]) && want[0] != want[1],
+                           "eval_* at the pixel centre, one sample");
+                    gd_shader_unref(ps_eval);
+                }
+            }
             gd_set_shader_resource(ctx, 0, 0, NULL);
             gd_set_constant_buffer(ctx, 0, 0, NULL, 0, 0);
             gd_set_shader(ctx, 0, ps_color);
@@ -885,6 +916,74 @@ static void opd(int type, int reg, int ncomp) /* u#, g#: one index, no component
     code[n++] = (uint32_t)reg;
 }
 
+/* an append buffer: 24 threads append their numbers after the 5 already there, then 24 threads consume them */
+static void append_tests(void)
+{
+    enum { UAV = 30 };
+    const uint32_t thread_x = 2u | 2u << 2 | 32u << 12; /* vThreadID.x */
+    struct gd_shader *cs[2];
+    for (int k = 0; k < 2; k++) {
+        op(155, 0), code[n++] = 8, code[n++] = 1, code[n++] = 1, end(); /* dcl_thread_group 8, 1, 1 */
+        op(158, 0), opd(UAV, 0, 0), code[n++] = 4, end();              /* dcl_uav_structured u0, 4 */
+        op(157, 0), opd(UAV, 1, 0), end();                             /* dcl_uav_raw u1 */
+        op(k ? 179 : 178, 0), dst(TEMP, 0, 1), opd(UAV, 0, 0), end();   /* imm_atomic_alloc / consume r0.x, u0 */
+        if (!k) {
+            op(168, 0), dst(UAV, 0, 1), sel(TEMP, 0, 0), immu(0), code[n++] = thread_x, end(); /* u0[r0.x] = id */
+        } else {
+            op(167, 0), dst(TEMP, 1, 1), sel(TEMP, 0, 0), immu(0), src(UAV, 0, XXXX), end(); /* r1.x = u0[r0.x] */
+            op(41, 0), dst(TEMP, 0, 2), code[n++] = thread_x, immu(2), end();                 /* r0.y = id * 4 */
+            op(166, 0), dst(UAV, 1, 1), sel(TEMP, 0, 1), sel(TEMP, 1, 0), end();             /* u1[id] = r1.x */
+        }
+        op(62, 0), end();
+        char err[64];
+        size_t size = container(5, 2);
+        cs[k] = gd_shader_create(blob, (uint32_t)size, err);
+    }
+    expect(cs[0] && cs[1], "imm_atomic_alloc and imm_atomic_consume parse");
+    uint32_t e;
+    struct gd_res_desc rd = {.dim = GD_BUFFER, .width = 4 * 32, .height = 1, .depth = 1, .mips = 1, .array = 1,
+                             .bind = GD_BIND_UNORDERED_ACCESS, .misc = GD_MISC_BUFFER_STRUCTURED, .stride = 4};
+    struct gd_resource *list = gd_resource_create(&rd, NULL, &e);
+    rd.misc = GD_MISC_BUFFER_RAW, rd.stride = 0;
+    struct gd_resource *got = gd_resource_create(&rd, NULL, &e);
+    struct gd_view_desc vd = {.kind = GD_VIEW_UAV, .dim = 1, .elements = 32, .flags = 2};
+    struct gd_view *va = list ? gd_view_create(list, &vd, &e) : NULL;
+    vd.format = GD_R32_TYPELESS, vd.flags = 1;
+    struct gd_view *vg = got ? gd_view_create(got, &vd, &e) : NULL;
+    if (!cs[0] || !cs[1] || !va || !vg) {
+        expect(0, "an append buffer");
+        goto out;
+    }
+    struct gd_context *c = gd_context_create();
+    gd_set_shader(c, 5, cs[0]);
+    gd_set_uav(c, 5, 0, va, 5);
+    gd_set_uav(c, 5, 1, vg, 0xffffffffu);
+    gd_dispatch(c, 3, 1, 1);
+    uint32_t n_after = gd_uav_counter(va), seen = 0;
+    const uint32_t *l = (const uint32_t *)gd_subresource(list, 0, NULL);
+    for (int i = 5; i < 29; i++)
+        if (l[i] < 24)
+            seen |= 1u << l[i];
+    expect(n_after == 29 && seen == 0xffffff, "imm_atomic_alloc: every thread a slot of its own after the count");
+    gd_set_shader(c, 5, cs[1]);
+    gd_set_uav(c, 5, 0, va, 0xffffffffu); /* the count stays */
+    gd_dispatch(c, 3, 1, 1);
+    seen = 0;
+    const uint32_t *g = (const uint32_t *)gd_subresource(got, 0, NULL);
+    for (int i = 0; i < 24; i++)
+        if (g[i] < 24)
+            seen |= 1u << g[i];
+    expect(gd_uav_counter(va) == 5 && seen == 0xffffff, "imm_atomic_consume takes them back");
+    gd_context_destroy(c);
+out:
+    gd_view_unref(va);
+    gd_view_unref(vg);
+    gd_resource_unref(list);
+    gd_resource_unref(got);
+    gd_shader_unref(cs[0]);
+    gd_shader_unref(cs[1]);
+}
+
 static void compute_tests(void)
 {
     enum { UAV = 30, TGSM = 31, FLAT = 36 };
@@ -951,6 +1050,7 @@ static void compute_tests(void)
     gd_resource_unref(out);
     gd_resource_unref(count);
     gd_shader_unref(cs);
+    append_tests();
 }
 
 /* ---- the tessellator: every triangle the same way round, the patch covered once, edges split by their factors */

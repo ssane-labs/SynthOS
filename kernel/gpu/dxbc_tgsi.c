@@ -43,6 +43,8 @@ struct tg {
     uint8_t sv_name[32];
     unsigned gs_sv;
     uint32_t used_buf, used_img; /* BUFFER[n] and IMAGE[n] the shader reaches */
+    uint8_t used_counter;        /* u# whose hidden counter it reaches, in BUFFER[24 + u] */
+    uint8_t srv_high;            /* t16 .. t23 as buffers, in BUFFER[24 ..] too */
     bool shared;           /* reaches MEMORY[0], the group's shared memory */
     const uint16_t *uav_format;        /* geometry shader: reads the primitive number (1, SV[0]),
                                           the instance number (2, SV[1]) */
@@ -639,6 +641,8 @@ static bool memory_of(struct tg *g, const struct opd *r, struct text *name, uint
         putu(name, (uint32_t)i);
     } else if (r->type == T_RESOURCE && i >= 0 && i < 24 && (g->sh->srv_raw >> i & 1)) {
         g->used_buf |= 1u << (8 + i);
+        if (i >= 16)
+            g->srv_high |= (uint8_t)(1u << (i - 16));
         *stride = g->sh->srv_stride[i];
         put(name, "BUFFER[");
         putu(name, (uint32_t)i + 8);
@@ -699,6 +703,31 @@ static void memory_op(struct tg *g, const struct dxbc_ins *in)
     struct text name = {0};
     uint32_t base, stride;
     switch (in->op) {
+    case OP_IMM_ATOMIC_ALLOC: /* the view's hidden counter, a word in BUFFER[24 + u]: the old value, or the new one */
+    case OP_IMM_ATOMIC_CONSUME: {
+        int u = o[1].idx[0].imm;
+        if (o[1].type != T_UAV || u < 0 || u >= 8 || !g->sh->uav_kind[u]) {
+            fail(g, "a counter on a view that is not a buffer");
+            break;
+        }
+        g->used_buf |= 1u << (24 + u), g->used_counter |= (uint8_t)(1u << u);
+        bool add = in->op == OP_IMM_ATOMIC_ALLOC;
+        struct opd at = scratch_dst(g, 0, 1), v = scratch_dst(g, 1, 1), zero = imm_opd(0);
+        struct opd step = imm_opd(add ? 1 : 0xffffffffu), r = scratch_dst(g, 2, 1), rx = temp(g->s0 + 2, "xxxx");
+        emit1(g, "MOV", false, &at, &zero);
+        emit1(g, "MOV", false, &v, &step);
+        put(&g->code, "ATOMUADD ");
+        put_temp(g, 2, ".x, BUFFER[");
+        putu(&g->code, 24u + (uint32_t)u);
+        put(&g->code, "], ");
+        put_temp(g, 0, ".xxxx, ");
+        put_temp(g, 1, ".xxxx\n");
+        if (!add)
+            emit2(g, "UADD", &r, &rx, &step);
+        if (o[0].type != T_NULL)
+            emit1(g, "MOV", false, &o[0], &rx);
+        break;
+    }
     case OP_LD_RAW:
     case OP_LD_STRUCTURED: {
         bool st = in->op == OP_LD_STRUCTURED;
@@ -964,7 +993,7 @@ static void instruction(struct tg *g, int pc)
     case OP_ATOMIC_CMP_STORE: case OP_ATOMIC_IADD: case OP_ATOMIC_IMAX: case OP_ATOMIC_IMIN: case OP_ATOMIC_UMAX:
     case OP_ATOMIC_UMIN: case OP_IMM_ATOMIC_IADD: case OP_IMM_ATOMIC_AND: case OP_IMM_ATOMIC_OR: case OP_IMM_ATOMIC_XOR:
     case OP_IMM_ATOMIC_EXCH: case OP_IMM_ATOMIC_CMP_EXCH: case OP_IMM_ATOMIC_IMAX: case OP_IMM_ATOMIC_IMIN:
-    case OP_IMM_ATOMIC_UMAX: case OP_IMM_ATOMIC_UMIN:
+    case OP_IMM_ATOMIC_UMAX: case OP_IMM_ATOMIC_UMIN: case OP_IMM_ATOMIC_ALLOC: case OP_IMM_ATOMIC_CONSUME:
         return memory_op(g, in);
     case OP_EMIT:
     case OP_CUT:
@@ -1209,6 +1238,45 @@ static void instruction(struct tg *g, int pc)
         for (int i = 0; i < 4; i++)
             from.swz[i] = res->swz[i];
         emit1(g, in->ret_type == 2 ? "MOV" : "U2F", false, &o[0], &from);
+        return;
+    }
+    case OP_SAMPLE_INFO: /* the host draws one sample a pixel, as the software pipeline does */
+    case OP_SAMPLE_POS: {
+        if (o[0].type == T_NULL)
+            return;
+        uint32_t v = in->op == OP_SAMPLE_POS ? 0 : (in->ret_type & 1) ? 1 : 0x3f800000u;
+        struct opd k = temp(0, "xyzw");
+        k.type = T_IMM32, k.ndim = 0;
+        k.imm[0] = v, k.imm[1] = k.imm[2] = k.imm[3] = 0;
+        emit1(g, "MOV", in->sat, &o[0], &k);
+        return;
+    }
+    case OP_EVAL_CENTROID:
+    case OP_EVAL_SAMPLE_INDEX:
+    case OP_EVAL_SNAPPED: {
+        if (o[0].type == T_NULL)
+            return;
+        int r = o[1].idx[0].imm;
+        bool plain = g->sh->stage != DXBC_PS || o[1].type != T_INPUT || o[1].ndim != 1 || o[1].idx[0].rel_type >= 0 ||
+                     r < 0 || r >= 32 || r == g->face || r == g->sh->pos_in_reg || g->sv_in[r] >= 0;
+        if (plain) { /* not an interpolated input: its value */
+            emit1(g, "MOV", in->sat, &o[0], &o[1]);
+            return;
+        }
+        if (in->op == OP_EVAL_CENTROID) {
+            emit1(g, "INTERP_CENTROID", in->sat, &o[0], &o[1]);
+        } else if (in->op == OP_EVAL_SAMPLE_INDEX) {
+            struct opd i = scalar_of(&o[2], 0);
+            const struct opd *src[2] = {&o[1], &i};
+            emit(g, "INTERP_SAMPLE", in->sat, &o[0], src, 2);
+        } else { /* an offset in sixteenths of a pixel, as integers */
+            struct opd f = scratch_dst(g, 0, 3), sixteenth = imm_opd(0x3d800000u);
+            emit1(g, "I2F", false, &f, &o[2]);
+            struct opd fs = temp(g->s0, "xyxy");
+            emit2(g, "MUL", &f, &fs, &sixteenth);
+            const struct opd *src[2] = {&o[1], &fs};
+            emit(g, "INTERP_OFFSET", in->sat, &o[0], src, 2);
+        }
         return;
     }
     default:
@@ -1583,6 +1651,8 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct 
     for (int pc = 0; pc < sh->ncode && !g->fail; pc++)
         instruction(g, pc);
     put(&g->code, "END\n");
+    if (g->srv_high & g->used_counter)
+        fail(g, "a buffer t16 or later and a hidden counter");
     struct text t = {0};
     if (!g->fail)
         declarations(g, &t);
@@ -1593,7 +1663,8 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct 
     kfree(g->code.p);
     out->used_cb = g->used_cb;
     out->used_uav = (g->used_buf & 0xff) | g->used_img;
-    out->used_srv_buf = g->used_buf >> 8;
+    out->used_srv_buf = g->used_buf >> 8 & 0xffff;
+    out->used_counter = g->used_counter;
     bool ok = !g->fail;
     kfree(g);
     if (!ok) {

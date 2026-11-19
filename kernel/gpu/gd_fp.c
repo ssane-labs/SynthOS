@@ -407,6 +407,7 @@ void gd_view_unref(struct gd_view *v)
     if (!v || __atomic_sub_fetch(&v->refs, 1, __ATOMIC_ACQ_REL))
         return;
     gd_host_forget_view(v);
+    gd_resource_unref(v->counter_res);
     gd_resource_unref(v->r);
     kfree(v);
 }
@@ -776,7 +777,19 @@ void gd_set_uav(struct gd_context *c, uint32_t stage, uint32_t slot, struct gd_v
     gd_view_unref(c->stage[stage].uav[slot]);
     c->stage[stage].uav[slot] = v;
     if (v && count != 0xffffffffu)
-        v->counter = count;
+        v->counter = count, v->counter_on_host = false;
+}
+
+/* the hidden counter, back from the host when a draw there moved it last */
+static void counter_back(struct gd_view *v)
+{
+    if (!v || !v->counter_on_host)
+        return;
+    gd_host_cpu(v->counter_res, false);
+    uint32_t n;
+    memcpy(&n, v->counter_res->data, 4);
+    __atomic_store_n(&v->counter, n, __ATOMIC_RELEASE);
+    v->counter_on_host = false;
 }
 
 /* ---- unordered access views */
@@ -881,6 +894,7 @@ void gd_clear_uav(struct gd_view *v, const uint32_t value[4], bool floats)
 
 uint32_t gd_uav_counter(struct gd_view *v)
 {
+    counter_back(v);
     return v ? __atomic_load_n(&v->counter, __ATOMIC_ACQUIRE) : 0;
 }
 
@@ -2044,7 +2058,7 @@ static void software(struct gd_context *c)
                 gd_host_cpu(st->srv[i]->r, true);
         for (int i = 0; i < GD_SLOTS_UAV; i++)
             if (st->uav[i])
-                gd_host_cpu(st->uav[i]->r, true);
+                gd_host_cpu(st->uav[i]->r, true), counter_back(st->uav[i]);
     }
     for (int i = 0; i < GD_SLOTS_VB; i++)
         if (c->vb[i])
