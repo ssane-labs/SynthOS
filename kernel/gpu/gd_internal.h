@@ -55,6 +55,7 @@ struct gd_shader {
     uint8_t tex_sampler[DXBC_MAX_RES];
     uint32_t used_cb, used_uav, used_srv_buf;
     bool icb;                       /* the host shader reads its immediate constant buffer from icb_buf */
+    uint8_t clip_planes;            /* the clip distances the host shader writes */
     struct gd_resource *icb_buf;
     uint16_t uav_format[DXBC_MAX_UAV]; /* compute: the typed UAV formats the host shader was made for */
     uint32_t serial; /* a number no other shader had */

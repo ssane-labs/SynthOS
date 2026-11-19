@@ -37,6 +37,8 @@ struct tg {
     int depth_reg;         /* OUT[] for oDepth */
     int8_t sv_in[32];      /* vertex and pixel shader inputs that are system values: SV[n], or -1 */
     int face;              /* the pixel shader's SV_IsFrontFace input register (read from TEMP[s0 + 4]), or -1 */
+    int clip_reg[2];       /* the output registers holding clip then cull distances, CLIPDIST[0] and [1], or -1 */
+    int nclip, ncull;
     int nsv;
     uint8_t sv_name[32];
     unsigned gs_sv;
@@ -1240,9 +1242,57 @@ static const char *interp_name(int mode)
     }
 }
 
+/* Clip and cull distances: GL keeps them in one array, clip distances first, that TGSI spreads over CLIPDIST[0]
+   and [1]. The shader writes them straight to its output registers, so the registers must hold exactly that array:
+   clip distances from .x of the first, cull distances right after, and nothing else in them. */
+static bool clip_layout(struct tg *g)
+{
+    const struct dxbc_shader *sh = g->sh;
+    uint8_t kind[32][4] = {{0}}; /* 1 clip, 2 cull, 3 anything else */
+    uint32_t regs = 0;
+    g->clip_reg[0] = g->clip_reg[1] = -1;
+    g->nclip = g->ncull = 0;
+    if (sh->stage != DXBC_VS && sh->stage != DXBC_GS)
+        return true;
+    for (int i = 0; i < sh->nout; i++) {
+        uint32_t r = sh->out[i].reg, sv = sh->out[i].system_value;
+        if (r >= 32)
+            continue;
+        if (sv == 2 || sv == 3)
+            regs |= 1u << r;
+        for (int c = 0; c < 4; c++)
+            if (sh->out[i].mask >> c & 1)
+                kind[r][c] = sv == 2 ? 1 : sv == 3 ? 2 : 3;
+    }
+    if (!regs)
+        return true;
+    uint8_t seq[8] = {0};
+    int n = 0;
+    for (int r = 0; r < 32; r++)
+        if (regs >> r & 1) {
+            if (n == 2)
+                return fail(g, "clip and cull distances in more than two registers");
+            g->clip_reg[n] = r;
+            memcpy(seq + 4 * n++, kind[r], 4);
+        }
+    int k = 0;
+    while (k < 8 && seq[k] == 1)
+        g->nclip++, k++;
+    while (k < 8 && seq[k] == 2)
+        g->ncull++, k++;
+    while (k < 8 && seq[k] == 0)
+        k++;
+    if (k < 8 || (n == 2 && g->nclip + g->ncull <= 4))
+        return fail(g, "clip and cull distances laid out unlike GL");
+    return true;
+}
+
 static bool declarations(struct tg *g, struct text *t)
 {
     const struct dxbc_shader *sh = g->sh;
+    if (!clip_layout(g))
+        return false;
+    g->out->clip_planes = (uint8_t)((1u << g->nclip) - 1);
     put(t, sh->stage == DXBC_VS   ? "VERT\n"
            : sh->stage == DXBC_GS ? "GEOM\n"
            : sh->stage == DXBC_CS ? "COMP\n"
@@ -1277,6 +1327,13 @@ static bool declarations(struct tg *g, struct text *t)
     }
     if (sh->stage == DXBC_PS)
         put(t, "PROPERTY FS_COORD_ORIGIN UPPER_LEFT\nPROPERTY FS_COORD_PIXEL_CENTER HALF_INTEGER\n");
+    if (g->nclip + g->ncull) {
+        put(t, "PROPERTY NUM_CLIPDIST_ENABLED ");
+        putu(t, (uint32_t)g->nclip);
+        put(t, "\nPROPERTY NUM_CULLDIST_ENABLED ");
+        putu(t, (uint32_t)g->ncull);
+        put(t, "\n");
+    }
     uint32_t done = 0;
     if (sh->stage == DXBC_VS) {
         for (int i = 0; i < sh->nin; i++) {
@@ -1363,6 +1420,10 @@ static bool declarations(struct tg *g, struct text *t)
             put(t, "]\n");
         } else if (sv == 1) {
             put(t, "], POSITION\n");
+        } else if ((int)r == g->clip_reg[0] || (int)r == g->clip_reg[1]) {
+            put(t, "], CLIPDIST[");
+            putu(t, (int)r == g->clip_reg[0] ? 0u : 1u);
+            put(t, "]\n");
         } else if (sv == 4 || sv == 5) {
             put(t, sv == 4 ? "], LAYER\n" : "], VIEWPORT_INDEX\n");
         } else if (sv == 0) {
@@ -1370,7 +1431,7 @@ static bool declarations(struct tg *g, struct text *t)
             putu(t, r);
             put(t, "]\n");
         } else {
-            return fail(g, "a vertex shader system value output (clip or cull distance)");
+            return fail(g, "a vertex shader system value output");
         }
     }
     if (sh->depth_out)

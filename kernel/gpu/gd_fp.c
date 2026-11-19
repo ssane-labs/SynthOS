@@ -2195,6 +2195,18 @@ void gd_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start,
     s.nvary = d->nvary;
     s.flat = flat;
     s.noperspective = nopersp;
+    for (int i = 0; i < d->last->nout; i++) { /* SV_ClipDistance, SV_CullDistance */
+        const struct dxbc_sig_elem *o = &d->last->out[i];
+        if ((o->system_value != 2 && o->system_value != 3) || (int)o->reg >= d->nvary)
+            continue;
+        for (int c = 0; c < 4; c++)
+            if (o->mask >> c & 1) {
+                if (o->system_value == 2 && s.nclip < 8)
+                    s.clip_at[s.nclip++] = (uint8_t)(o->reg * 4 + (uint32_t)c);
+                else if (o->system_value == 3 && s.ncull < 8)
+                    s.cull_at[s.ncull++] = (uint8_t)(o->reg * 4 + (uint32_t)c);
+            }
+    }
     size_t regs = sizeof(uint32_t[MAX_REGS][4][4]) * 2;
     size_t a = dxbc_scratch(d->vs), b = d->ps ? dxbc_scratch(d->ps) : 0;
     s.scratch = regs + (a > b ? a : b);

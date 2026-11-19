@@ -428,7 +428,7 @@ static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t
     }
     memcpy(s->tex_sampler, t.tex_sampler, sizeof(s->tex_sampler));
     s->used_cb = t.used_cb, s->used_uav = t.used_uav, s->used_srv_buf = t.used_srv_buf;
-    s->icb = t.icb;
+    s->icb = t.icb, s->clip_planes = t.clip_planes;
     dxbc_tgsi_free(&t);
     return h;
 }
@@ -531,16 +531,17 @@ static void depth_state(const struct gd_context *c, bool has_depth)
     put(H.dsa);
 }
 
-/* discard: stream output only, nothing rasterized */
-static void raster_state(const struct gd_context *c, bool discard)
+/* discard: stream output only, nothing rasterized; clip: the clip distances the last vertex stage writes */
+static void raster_state(const struct gd_context *c, bool discard, uint8_t clip)
 {
     const struct gd_raster *r = &c->raster;
-    if (H.rs && !memcmp(H.rs_key, r, sizeof(*r)) && H.rs_key[sizeof(*r)] == discard)
+    if (H.rs && !memcmp(H.rs_key, r, sizeof(*r)) && H.rs_key[sizeof(*r)] == discard &&
+        H.rs_key[sizeof(*r) + 1] == clip)
         return;
     destroy(O_RASTERIZER, H.rs);
     H.rs = handle();
     memcpy(H.rs_key, r, sizeof(*r));
-    H.rs_key[sizeof(*r)] = discard;
+    H.rs_key[sizeof(*r)] = discard, H.rs_key[sizeof(*r) + 1] = clip;
     uint32_t cull = r->cull == 2 ? 1 : r->cull == 3 ? 2 : 0, fill = r->fill == 2 ? 1 : 0;
     bool offset = r->depth_bias || r->slope_scaled_depth_bias != 0;
     cmd(C_CREATE, O_RASTERIZER, 9);
@@ -549,7 +550,7 @@ static void raster_state(const struct gd_context *c, bool discard)
         1u << 4 /* first vertex for flat */ | cull << 8 |
         fill << 10 | fill << 12 | (r->scissor ? 1u << 14 : 0) | (r->front_ccw ? 1u << 15 : 0) |
         (offset ? 1u << 20 : 0) | (r->multisample ? 1u << 25 : 0) | 1u << 29 /* pixel centers at .5 */);
-    put(fbits(1)), put(0), put(0), put(fbits(1));
+    put(fbits(1)), put(0), put((uint32_t)clip << 24), put(fbits(1));
     put(fbits((float)r->depth_bias)), put(fbits(r->slope_scaled_depth_bias)), put(fbits(r->depth_bias_clamp));
     cmd(C_BIND, O_RASTERIZER, 1);
     put(H.rs);
@@ -1009,7 +1010,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     put(gsh), put(SH_GEOMETRY);
     blend_state(c);
     depth_state(c, zsurf != 0);
-    raster_state(c, discard);
+    raster_state(c, discard, gs ? gs->clip_planes : vs->clip_planes);
     cmd(C_STENCIL_REF, 0, 1);
     put((c->stencil_ref & 0xff) | (c->stencil_ref & 0xff) << 8);
     cmd(C_BLEND_COLOR, 0, 4);

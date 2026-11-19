@@ -614,6 +614,35 @@ static void draw_tests(void)
         gd_shader_unref(gsh);
     }
 
+    /* clip and cull distances: x clips the left half away, y culls the quad below the middle */
+    {
+        in_sig("POSITION", 0, 0, 0, 7), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Position", 0, 1, 0, 15), out_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_ClipDistance", 0, 2, 2, 1), out_sig("SV_CullDistance", 0, 3, 2, 2);
+        op(54, 0), dst(OUT, 0, 7), src(IN, 0, XYZW), end();
+        op(54, 0), dst(OUT, 0, 8), immf(1), end();
+        op(54, 0), dst(OUT, 1, 15), src(IN, 1, XYZW), end();
+        op(54, 0), dst(OUT, 2, 1), sel(IN, 0, 0), end();
+        op(54, 0), dst(OUT, 2, 2), sel(IN, 0, 1), end();
+        op(62, 0), end();
+        char cerr[64];
+        size_t csize = container(1, 1);
+        struct gd_shader *vsc = gd_shader_create(blob, (uint32_t)csize, cerr);
+        expect(vsc != NULL, "a vertex shader with clip and cull distances parses");
+        gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+        gd_clear_dsv(dsv, 3, 1.0f, 0);
+        gd_set_shader(ctx, 1, vsc);
+        struct vert cq[12];
+        quad(cq, -1, 0.1f, 1, 1, 0.5f, red);
+        quad(cq + 6, -1, -1, 1, -0.1f, 0.5f, red);
+        draw_verts(cq, 12);
+        expect(pixel(50, 10) == 0x0000ff && pixel(33, 10) == 0x0000ff && pixel(30, 10) == 0 && pixel(10, 10) == 0 &&
+                   pixel(50, 55) == 0 && pixel(10, 55) == 0,
+               "clip distances clip, cull distances cull");
+        gd_set_shader(ctx, 1, vs_color);
+        gd_shader_unref(vsc);
+    }
+
     /* tessellation: a triangle patch whose hull shader asks for factor 4 everywhere (16 triangles), the domain shader
        placing each point between the control points */
     {

@@ -46,8 +46,13 @@ if ok:
     wait('in software', 30)
     p.stdin.write(b'gdtest\r'); p.stdin.flush()
     wait('gdtest:', 300)
+    wait('\u25ba', 5)
+    time.sleep(1)
+    buf_before = len(buf)
     p.stdin.write(b'hostgpu\r'); p.stdin.flush()
-    wait('in software', 30)
+    end = time.time() + 30
+    while time.time() < end and b'in software' not in buf[buf_before:]:
+        wait('in software', 1)
 p.kill()
 sys.stdout.write(buf.decode('utf-8', 'replace'))
 PY

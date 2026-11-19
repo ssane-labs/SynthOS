@@ -61,7 +61,11 @@ struct draw {
     uint8_t *scratch;
     size_t slot_bytes;
     uint64_t slots_free;
+    struct cvert *clip; /* CLIP_VERTS * 3 vertices for clipping, off the stack */
 };
+
+/* a triangle clipped by the six planes of the clip volume and eight clip distances */
+#define CLIP_VERTS 18
 
 static void *take_slot(struct draw *d, int *slot)
 {
@@ -114,7 +118,7 @@ void rs_clear(struct rs_target *t, uint32_t color, bool clear_color, float depth
 
 /* ---- clipping against the six planes of the clip volume (-w <= x, y <= w, 0 <= z <= w) */
 
-static float plane_dist(const float *v, int p)
+static float plane_dist(const struct rs_state *s, const float *v, int p)
 {
     switch (p) {
     case 0: return v[3] + v[0];
@@ -122,23 +126,26 @@ static float plane_dist(const float *v, int p)
     case 2: return v[3] + v[1];
     case 3: return v[3] - v[1];
     case 4: return v[2];
-    default: return v[3] - v[2];
+    case 5: return v[3] - v[2];
+    default: return v[4 + s->clip_at[p - 6]]; /* a clip distance */
     }
 }
 
-static int clip_polygon(struct cvert *in, int n, struct cvert *out, int floats)
+static int clip_polygon(struct draw *d, struct cvert *in, int n, struct cvert *out, int floats)
 {
-    struct cvert buf[2][12];
+    const struct rs_state *s = d->s;
+    struct cvert *buf[2] = {d->clip, d->clip + CLIP_VERTS};
     struct cvert *src = in;
-    for (int p = 0; p < 6 && n >= 3; p++) {
-        struct cvert *dst = p == 5 ? out : buf[p & 1];
+    int planes = 6 + s->nclip;
+    for (int p = 0; p < planes && n >= 3; p++) {
+        struct cvert *dst = p == planes - 1 ? out : buf[p & 1];
         int m = 0;
-        for (int i = 0; i < n && m < 11; i++) {
+        for (int i = 0; i < n && m < CLIP_VERTS - 1; i++) {
             const struct cvert *a = &src[i], *b = &src[(i + 1) % n];
-            float da = plane_dist(a->v, p), db = plane_dist(b->v, p);
+            float da = plane_dist(s, a->v, p), db = plane_dist(s, b->v, p);
             if (da >= 0)
                 dst[m++] = *a;
-            if ((da >= 0) != (db >= 0) && m < 11) {
+            if ((da >= 0) != (db >= 0) && m < CLIP_VERTS - 1) {
                 float k = da / (da - db);
                 for (int f = 0; f < floats; f++)
                     dst[m].v[f] = a->v[f] + (b->v[f] - a->v[f]) * k;
@@ -392,10 +399,15 @@ static void emit_tri(struct draw *d, struct cvert poly[3], int floats)
 {
     const struct rs_state *s = d->s;
     bool inside = true, outside = false;
-    for (int p = 0; p < 6; p++) {
+    for (int k = 0; k < s->ncull; k++) { /* culled: every corner on the wrong side of the same cull distance */
+        int f = 4 + s->cull_at[k];
+        if (poly[0].v[f] < 0 && poly[1].v[f] < 0 && poly[2].v[f] < 0)
+            return;
+    }
+    for (int p = 0; p < 6 + s->nclip; p++) {
         int behind = 0;
         for (int c = 0; c < 3; c++)
-            if (plane_dist(poly[c].v, p) < 0)
+            if (plane_dist(s, poly[c].v, p) < 0)
                 behind++, inside = false;
         if (behind == 3)
             outside = true;
@@ -409,8 +421,8 @@ static void emit_tri(struct draw *d, struct cvert poly[3], int floats)
         add_tri(d, &poly[0], &poly[1], &poly[2], flat);
         return;
     }
-    struct cvert out[12];
-    int n = clip_polygon(poly, 3, out, floats);
+    struct cvert *out = d->clip + 2 * CLIP_VERTS;
+    int n = clip_polygon(d, poly, 3, out, floats);
     stats.clipped++;
     for (int c = 1; c + 1 < n; c++)
         add_tri(d, &out[0], &out[c], &out[c + 1], flat);
@@ -492,7 +504,7 @@ static void shade_vertices(void *ctx, int from, int to)
 int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topology, uint32_t count,
             const uint32_t *indices, int32_t base_vertex)
 {
-    if (!s->vs || s->nvary < 0 || s->nvary > RS_MAX_VARY || !count)
+    if (!s->vs || s->nvary < 0 || s->nvary > RS_MAX_VARY || !count || s->nclip > 8 || s->ncull > 8)
         return 0;
     struct draw d = {.t = t, .s = s};
     d.cminx = 0, d.cminy = 0, d.cmaxx = t->w, d.cmaxy = t->h;
@@ -520,9 +532,10 @@ int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topo
     uint32_t nverts = hi - lo + 1;
     if (nverts > (1u << 24))
         return -1;
-    float *verts = kmalloc(sizeof(float) * (size_t)nverts * (size_t)floats);
+    float *verts = kmalloc(sizeof(float) * (size_t)nverts * (size_t)floats + sizeof(struct cvert) * 3 * CLIP_VERTS);
     if (!verts)
         return -1;
+    d.clip = (struct cvert *)(verts + (size_t)nverts * (size_t)floats);
     if (s->scratch) {
         int slots = hal_parallel_cpus() < 64 ? hal_parallel_cpus() : 64;
         d.slot_bytes = (s->scratch + 63) & ~(size_t)63;

@@ -53,6 +53,9 @@ struct rs_state {
     int nvary;
     uint32_t flat;          /* varyings (bit per float4) taken from the first vertex, not interpolated */
     uint32_t noperspective; /* varyings interpolated in screen space */
+    /* clip distances (clipped where negative) and cull distances (a primitive negative at every corner is dropped),
+       as float indices into the varyings */
+    uint8_t nclip, ncull, clip_at[8], cull_at[8];
     enum rs_cull cull;
     bool front_ccw;
     bool depth_test, depth_write;

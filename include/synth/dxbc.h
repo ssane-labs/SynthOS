@@ -155,6 +155,7 @@ struct dxbc_tgsi {
     uint32_t used_cb; /* the constant buffer slots the shader reads, declared or not */
     uint32_t used_uav, used_srv_buf; /* u# and raw or structured t# the shader reaches */
     bool icb;         /* reads the immediate constant buffer, as constant buffer 14 (CONST[15]) */
+    uint8_t clip_planes; /* the clip distances it writes, a GL clip plane mask */
     char error[64];
 };
 /* uav_format: the host format (virgl numbering) of the view bound at each typed u#, or NULL / 0 for a 32-bit format of
