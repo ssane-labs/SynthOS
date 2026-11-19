@@ -569,68 +569,6 @@ static const struct w32_export sysinfo_kernel32[] = {
     W32_FN(WindowsGetStringRawBuffer),
 };
 
-static const char *object_type_name(HANDLE h, const struct w32_object *o)
-{
-    if (h == W32_PSEUDO_PROCESS)
-        return "Process";
-    if (h == W32_PSEUDO_THREAD)
-        return "Thread";
-    switch (o->type) {
-    case WH_EVENT: return "Event";
-    case WH_MUTEX: return "Mutant";
-    case WH_SEMAPHORE: return "Semaphore";
-    case WH_THREAD: return "Thread";
-    case WH_PROCESS: return "Process";
-    case WH_TIMER: return "Timer";
-    case WH_PORT: return "IoCompletion";
-    case WH_SECTION: return "Section";
-    case WH_TOKEN: return "Token";
-    case WH_KEY: return "Key";
-    case WH_JOB: return "Job";
-    case WH_WINSTA: return "WindowStation";
-    case WH_DESKTOP: return "Desktop";
-    default: return "File";
-    }
-}
-
-static DWORD WINAPI NtQueryObject(HANDLE h, int cls, uint8_t *info, ULONG len, ULONG *ret)
-{
-    static const struct w32_object pseudo = {.type = WH_PROCESS};
-    const struct w32_object *o = h == W32_PSEUDO_PROCESS || h == W32_PSEUDO_THREAD ? &pseudo : w32_handle_get(h);
-    if (!o)
-        return 0xc0000008u;
-    ULONG need;
-    switch (cls) {
-    case 0: need = 56; break;
-    case 1: need = 8; break;
-    case 2: need = 96 + ((ULONG)strlen(object_type_name(h, o)) + 1) * 2; break;
-    case 4: need = 2; break;
-    default: return 0xc0000003u;
-    }
-    if (ret)
-        *ret = need;
-    if (!info || len < need)
-        return 0xc0000004u;
-    memset(info, 0, need);
-    if (cls == 0) {
-        uint32_t basic[4] = {o->inherit ? 2u : 0u, o->access ? o->access : 0x1f0fffu, 1, 1};
-        memcpy(info, basic, sizeof(basic));
-    } else if (cls == 2) {
-        const char *name = object_type_name(h, o);
-        uint16_t n = (uint16_t)(strlen(name) * 2);
-        uint16_t max = (uint16_t)(n + 2);
-        uint32_t buffer = (uint32_t)(uintptr_t)(info + 96);
-        memcpy(info, &n, 2);
-        memcpy(info + 2, &max, 2);
-        memcpy(info + 4, &buffer, 4);
-        for (int i = 0; name[i]; i++)
-            info[96 + i * 2] = (uint8_t)name[i];
-    } else if (cls == 4) {
-        info[0] = o->inherit;
-    }
-    return 0;
-}
-
 static DWORD WINAPI NtSetInformationObject(HANDLE h, int cls, const uint8_t *info, ULONG len)
 {
     struct w32_object *o = w32_handle_get(h);
@@ -645,7 +583,6 @@ static DWORD WINAPI NtSetInformationObject(HANDLE h, int cls, const uint8_t *inf
 }
 
 static const struct w32_export sysinfo_ntdll[] = {
-    W32_FN(NtQueryObject),
     W32_FN(NtSetInformationObject),
     W32_FN(NtWriteFile),
     W32_FN(RtlNtStatusToDosError),

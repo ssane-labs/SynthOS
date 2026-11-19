@@ -1,5 +1,6 @@
 #include <synth/config.h>
 #include <synth/fmt.h>
+#include <synth/sha256.h>
 #include <synth/string.h>
 
 #include "win32.h"
@@ -395,6 +396,25 @@ static BOOL WINAPI SetThreadToken(HANDLE *thread, HANDLE token)
 static BOOL WINAPI ImpersonateLoggedOnUser(HANDLE token)
 {
     return SetThreadToken(NULL, token);
+}
+
+/* the anonymous logon token: an impersonation token at untrusted integrity */
+static BOOL WINAPI ImpersonateAnonymousToken(HANDLE thread)
+{
+    struct w32_thread *t = token_thread(thread);
+    if (!t) {
+        w32_set_error(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    t->token[0] = 2 | 2u << 8;
+    t->token[1] = 0;
+    t->token[2] = 1;
+    return TRUE;
+}
+
+static DWORD WINAPI NtImpersonateAnonymousToken(HANDLE thread)
+{
+    return ImpersonateAnonymousToken(thread) ? 0 : 0xc0000008u;
 }
 
 static BOOL WINAPI RevertToSelf(void)
@@ -1219,7 +1239,7 @@ static const struct w32_export security_exports[] = {
     W32_FN(SetTokenInformation),
     W32_FN(SetThreadToken),
     W32_FN(AdjustTokenPrivileges),
-    W32_AS("ImpersonateAnonymousToken", w32_fail1),
+    W32_FN(ImpersonateAnonymousToken),
     W32_AS("ImpersonateNamedPipeClient", w32_fail1),
     W32_FN(RevertToSelf),
     W32_FN(AllocateAndInitializeSid),
@@ -1252,3 +1272,184 @@ static const struct w32_export security_exports[] = {
 };
 
 W32_EXPORTS(security_module, "advapi32.dll", security_exports);
+
+/* AppContainers (Chromium's network service runs in one): the SIDs Windows derives from names. The name, lowercased,
+   is hashed with SHA-256: an AppContainer is S-1-15-2 and the first seven words of the hash, a capability
+   S-1-15-3-1024 and all eight, its group S-1-5-32 and all eight. */
+static struct sid *derived_sid(const WCHAR *name, uint8_t authority, const DWORD *head, uint8_t nhead, uint8_t words)
+{
+    size_t n = name ? w32_wcslen(name) : 0;
+    WCHAR *lower = w32_alloc((n + 1) * sizeof(WCHAR));
+    if (!lower)
+        return NULL;
+    for (size_t i = 0; i < n; i++)
+        lower[i] = w32_towlower(name[i]);
+    uint8_t hash[32];
+    sha256(lower, n * sizeof(WCHAR), hash);
+    w32_free(lower);
+    uint8_t count = (uint8_t)(nhead + words);
+    struct sid *s = local_alloc(8u + 4u * count);
+    if (!s)
+        return NULL;
+    s->revision = 1;
+    s->count = count;
+    memset(s->authority, 0, 6);
+    s->authority[5] = authority;
+    uint32_t *sub = (uint32_t *)((uint8_t *)s + 8);
+    for (uint8_t i = 0; i < nhead; i++)
+        sub[i] = head[i];
+    memcpy(sub + nhead, hash, 4u * words);
+    return s;
+}
+
+static DWORD WINAPI DeriveAppContainerSidFromAppContainerName(const WCHAR *name, struct sid **sid)
+{
+    static const DWORD head[] = {2};
+    if (!name || !sid)
+        return 0x80070057u;
+    *sid = derived_sid(name, 15, head, 1, 7);
+    return *sid ? 0 : 0x8007000eu;
+}
+
+static DWORD WINAPI CreateAppContainerProfile(const WCHAR *name, const WCHAR *display, const WCHAR *description,
+                                              const void *capabilities, DWORD count, struct sid **sid)
+{
+    UNUSED(display);
+    UNUSED(description);
+    UNUSED(capabilities);
+    UNUSED(count);
+    return DeriveAppContainerSidFromAppContainerName(name, sid);
+}
+
+static DWORD WINAPI DeleteAppContainerProfile(const WCHAR *name)
+{
+    UNUSED(name);
+    return 0;
+}
+
+static BOOL WINAPI DeriveCapabilitySidsFromName(const WCHAR *name, struct sid ***groups, DWORD *group_count,
+                                                struct sid ***sids, DWORD *sid_count)
+{
+    static const DWORD group_head[] = {32}, cap_head[] = {3, 1024};
+    struct sid **g = local_alloc(sizeof(*g)), **c = local_alloc(sizeof(*c));
+    if (g)
+        g[0] = derived_sid(name, 5, group_head, 1, 8);
+    if (c)
+        c[0] = derived_sid(name, 15, cap_head, 2, 8);
+    if (!g || !c || !g[0] || !c[0]) {
+        w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+    *groups = g;
+    *group_count = 1;
+    *sids = c;
+    *sid_count = 1;
+    return TRUE;
+}
+
+/* the monikers registered for AppContainer SIDs, for AppContainerLookupMoniker */
+#define MONIKERS 16
+static W32_STATE struct {
+    uint8_t sid[8 + 4 * 15];
+    WCHAR name[64];
+} monikers[MONIKERS];
+
+static BOOL WINAPI AppContainerRegisterSid(const struct sid *sid, const WCHAR *moniker, const WCHAR *display)
+{
+    UNUSED(display);
+    if (!sid || !moniker || sid->count > 15) {
+        w32_set_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    int slot = -1;
+    for (int i = 0; i < MONIKERS && slot < 0; i++)
+        if (!monikers[i].name[0] || !memcmp(monikers[i].sid, sid, sid_size(sid)))
+            slot = i;
+    if (slot < 0)
+        slot = 0;
+    memcpy(monikers[slot].sid, sid, sid_size(sid));
+    size_t n = MIN(w32_wcslen(moniker), ARRAY_SIZE(monikers[slot].name) - 1);
+    memcpy(monikers[slot].name, moniker, n * sizeof(WCHAR));
+    monikers[slot].name[n] = 0;
+    return TRUE;
+}
+
+static BOOL WINAPI AppContainerUnregisterSid(const struct sid *sid)
+{
+    for (int i = 0; sid && i < MONIKERS; i++)
+        if (monikers[i].name[0] && !memcmp(monikers[i].sid, sid, sid_size(sid)))
+            monikers[i].name[0] = 0;
+    return TRUE;
+}
+
+static BOOL WINAPI AppContainerLookupMoniker(const struct sid *sid, WCHAR **moniker)
+{
+    for (int i = 0; sid && moniker && i < MONIKERS; i++)
+        if (monikers[i].name[0] && !memcmp(monikers[i].sid, sid, sid_size(sid))) {
+            size_t n = w32_wcslen(monikers[i].name) + 1;
+            if (!(*moniker = local_alloc(n * sizeof(WCHAR)))) {
+                w32_set_error(ERROR_NOT_ENOUGH_MEMORY);
+                return FALSE;
+            }
+            memcpy(*moniker, monikers[i].name, n * sizeof(WCHAR));
+            return TRUE;
+        }
+    w32_set_error(ERROR_NOT_FOUND);
+    return FALSE;
+}
+
+static BOOL WINAPI AppContainerFreeMemory(void *p)
+{
+    FreeSid(p);
+    return TRUE;
+}
+
+/* the token an AppContainer process starts with: a low-integrity copy (owner bit 2 marks the AppContainer) */
+static BOOL WINAPI CreateAppContainerToken(HANDLE token, const void *capabilities, HANDLE *out)
+{
+    UNUSED(capabilities);
+    struct w32_object *o = token ? token_get(token) : NULL;
+    if (token && !o)
+        return FALSE;
+    *out = token_new(1, 0, 0x1000, (o ? o->owner : 0) | 2);
+    return *out != NULL;
+}
+
+static DWORD WINAPI NtCreateLowBoxToken(HANDLE *out, HANDLE token, DWORD access, void *attributes,
+                                        const void *package, DWORD ncaps, void *caps, DWORD nhandles, void *handles)
+{
+    UNUSED(access);
+    UNUSED(attributes);
+    UNUSED(package);
+    UNUSED(ncaps);
+    UNUSED(caps);
+    UNUSED(nhandles);
+    UNUSED(handles);
+    return CreateAppContainerToken(token, NULL, out) ? 0 : 0xc0000008u;
+}
+
+static const struct w32_export appcontainer_ntdll[] = {
+    W32_FN(NtCreateLowBoxToken),
+    W32_FN(NtImpersonateAnonymousToken),
+    W32_AS("ZwImpersonateAnonymousToken", NtImpersonateAnonymousToken),
+};
+
+W32_EXPORTS(appcontainer_ntdll_module, "ntdll.dll", appcontainer_ntdll);
+
+static const struct w32_export appcontainer_kernelbase[] = {
+    W32_FN(CreateAppContainerToken),
+    W32_FN(DeriveCapabilitySidsFromName),
+    W32_FN(AppContainerRegisterSid),
+    W32_FN(AppContainerUnregisterSid),
+    W32_FN(AppContainerLookupMoniker),
+    W32_FN(AppContainerFreeMemory),
+};
+
+static const struct w32_export appcontainer_userenv[] = {
+    W32_FN(DeriveAppContainerSidFromAppContainerName),
+    W32_FN(CreateAppContainerProfile),
+    W32_FN(DeleteAppContainerProfile),
+};
+
+W32_EXPORTS(appcontainer_module, "advapi32.dll", appcontainer_kernelbase);
+W32_EXPORTS(appcontainer_userenv_module, "userenv.dll", appcontainer_userenv);

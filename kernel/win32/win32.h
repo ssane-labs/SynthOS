@@ -358,6 +358,7 @@ struct w32_process {
     struct w32_thread *boot;
     struct exec_ctx *spawn_ctx;
     unsigned own_streams;
+    bool nt_stubs; /* ntdll's system call stubs are mapped (w32_nt_stubs_map) */
     bool dead;
     bool frozen;
     bool detached;
@@ -594,6 +595,7 @@ uint32_t w32_int_args(const void *fn);
 void w32_builtin_names(const char *module, void (*fn)(const char *name, void *arg), void *arg);
 uint32_t w64_builtin_image(const char *name, uint32_t *size);
 uint32_t w32_vm_alloc_at(uint32_t base, uint32_t size);
+void w32_nt_stubs_map(void);
 #ifdef __x86_64__
 void *w32_guest_addr(const void *fn);
 bool w32_native_code(const void *fn);

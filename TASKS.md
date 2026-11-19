@@ -301,5 +301,17 @@ SynthOS — агентная ОС. Пункты 25–32 — одна больш�
     клавиатурой через QMP, снимок экрана 10 раз в секунду); `mkpreviews.py` вырезает нужную часть и упаковывает
     в `/system/previews.pak` (80 роликов, 6,3 МБ: в каждом кадре только изменившийся прямоугольник, JPEG).
 
+35. ~~**Браузеры без `--no-sandbox`.** Chromium- и Gecko-браузеры должны открываться со своей песочницей.~~
+    Сделано: система больше не добавляет `--no-sandbox` и не задаёт `MOZ_DISABLE_*_SANDBOX`. Для брокера
+    песочницы сделаны: заглушки `ntdll` по постоянному адресу `0x7ffa0000` (16 байт на функцию, как
+    в WoW64-ntdll Windows — брокер читает их через `ReadProcessMemory` и переписывает на свои перехваты),
+    имена объектов в `NtQueryObject` (`\Device\HarddiskVolume1\…`, `\REGISTRY\…`,
+    `\Sessions\1\BaseNamedObjects\…`), токены AppContainer (`CreateAppContainerProfile`,
+    `DeriveAppContainerSidFromAppContainerName`, `NtCreateLowBoxToken`, SID из SHA-256 имени, как в Windows),
+    `NtImpersonateAnonymousToken`. Проверено: 32- и 64-битный Chromium на 64-битном ядре и 32-битный на
+    i686 печатают DOM с JavaScript (рендереры, служба сети в AppContainer, утилиты — через
+    `CreateProcessAsUserW`); Firefox запускает контент-процессы в песочнице и загружает страницу.
+    Токены и задания ничего не запрещают. Для отладки — `config w32calls`.
+
 Также из прошлых просьб (выполнено): ~~обои — настоящие изображения~~, ~~убрать тему с боковой панелью~~,
 ~~режим Windows в «Файлах» (пути C:\ и т. д.)~~, ~~убрать лимит 4 МБ на размер ядра~~.

@@ -241,6 +241,75 @@ static void *builtin_ordinal(const char *module, uint32_t ordinal)
     return NULL;
 }
 
+/* A 32-bit process's ntdll system calls (Nt* and Zw*) are entered through stubs shaped like those of 32-bit ntdll on
+   64-bit Windows 10: mov eax, N; mov edx, dispatcher; call edx; ret. Sandboxes (Chromium's broker) read a child's stub
+   to check it is a system call and patch it to their interceptor; the patched copy still calls the dispatcher. N is the
+   address of the built-in function; the dispatcher drops the stub's return address and jumps there, so the function
+   returns straight to the caller. The stubs sit at the same address in every process, as ntdll does on Windows. */
+#define NT_STUBS 0x7ffa0000u
+#define NT_STUB_SIZE 16
+#define NT_STUBS_MAX ((0x20000u - NT_STUB_SIZE) / NT_STUB_SIZE)
+
+static const char **nt_names;
+static uint32_t nt_count;
+
+static bool nt_syscall_name(const char *name)
+{
+    return (name[0] == 'N' && name[1] == 't') || (name[0] == 'Z' && name[1] == 'w');
+}
+
+static void nt_collect(const char *name, void *arg)
+{
+    UNUSED(arg);
+    if (!nt_syscall_name(name) || nt_count >= NT_STUBS_MAX || !builtin_find_export("ntdll.dll", name))
+        return;
+    for (uint32_t i = 0; i < nt_count; i++)
+        if (!strcmp(nt_names[i], name))
+            return;
+    nt_names[nt_count++] = name;
+}
+
+static void *nt_stub(const char *module, const char *symbol)
+{
+    if (w32->win64 || !w32->nt_stubs || !symbol || !nt_syscall_name(symbol) || strcmp(module, "ntdll.dll"))
+        return NULL;
+    for (uint32_t i = 0; i < nt_count; i++)
+        if (!strcmp(nt_names[i], symbol))
+            return (void *)(uintptr_t)(NT_STUBS + NT_STUB_SIZE * (i + 1));
+    return NULL;
+}
+
+void w32_nt_stubs_map(void)
+{
+    if (w32->win64)
+        return;
+    if (!nt_names) {
+        if (!(nt_names = kzalloc(NT_STUBS_MAX * sizeof(*nt_names))))
+            return;
+        w32_builtin_names("ntdll.dll", nt_collect, NULL);
+    }
+    uint32_t size = (NT_STUB_SIZE * (nt_count + 1) + 4095) & ~4095u;
+    uint8_t *code = (uint8_t *)(uintptr_t)w32_vm_alloc_at(NT_STUBS, size);
+    if (!code || (uint32_t)(uintptr_t)code != NT_STUBS || vmm_commit_range(NT_STUBS, size))
+        return;
+    static const uint8_t dispatcher[] = {0x83, 0xc4, 0x04, 0xff, 0xe0}; /* add esp, 4; jmp eax */
+    memcpy(code, dispatcher, sizeof(dispatcher));
+    for (uint32_t i = 0; i < nt_count; i++) {
+        uint8_t *s = code + NT_STUB_SIZE * (i + 1);
+        uint32_t fn = (uint32_t)(uintptr_t)w32_guest_addr(builtin_find_export("ntdll.dll", nt_names[i])), at = NT_STUBS;
+        s[0] = 0xb8;
+        memcpy(s + 1, &fn, 4);
+        s[5] = 0xba;
+        memcpy(s + 6, &at, 4);
+        s[10] = 0xff;
+        s[11] = 0xd2;
+        s[12] = 0xc2;
+        s[13] = s[14] = 0;
+        s[15] = 0x90;
+    }
+    w32->nt_stubs = true;
+}
+
 void *w32_builtin_lookup(const char *module, const char *symbol)
 {
     return builtin_lookup(module, symbol);
@@ -382,7 +451,9 @@ static void export_write(uint8_t *header, const char *module, const struct expor
     d[8] = names;
     d[9] = ords;
     for (uint32_t i = 0; i < l->count; i++) {
-        void *fn = w32_guest_addr(builtin_lookup(module, l->names[i]));
+        void *fn = nt_stub(module, l->names[i]);
+        if (!fn)
+            fn = w32_guest_addr(builtin_lookup(module, l->names[i]));
         ((uint32_t *)(header + funcs))[i] = fn ? (uint32_t)(uintptr_t)fn - base : 0;
         ((uint32_t *)(header + names))[i] = text;
         ((uint16_t *)(header + ords))[i] = (uint16_t)i;
@@ -635,6 +706,9 @@ static void *resolve(struct w32_image *dll, const char *module, const char *symb
         return pe64 ? w64_stub(module, symbol, ordinal) : missing_stub(module, symbol ? symbol : "?");
     if (dll->builtin) {
         const char *name = symbol ? symbol : w32_builtin_ordinal_name(dll->name, ordinal);
+        void *stub = nt_stub(dll->name, name);
+        if (stub)
+            return stub;
         fn = w32_guest_addr(symbol ? builtin_lookup(dll->name, symbol) : builtin_ordinal(dll->name, ordinal));
         if (fn && name)
             return relay(fn, dll->name, name);
@@ -654,8 +728,10 @@ static void *resolve(struct w32_image *dll, const char *module, const char *symb
 
 static void *export_lookup(struct w32_image *img, const char *name, uint32_t ordinal, int depth)
 {
-    if (img->builtin)
-        return w32_guest_addr(name ? builtin_lookup(img->name, name) : builtin_ordinal(img->name, ordinal));
+    if (img->builtin) {
+        void *stub = name ? nt_stub(img->name, name) : NULL;
+        return stub ? stub : w32_guest_addr(name ? builtin_lookup(img->name, name) : builtin_ordinal(img->name, ordinal));
+    }
     const uint8_t *mem = (const uint8_t *)img->base;
     uint32_t lfanew = rd32(mem + 0x3c);
     uint32_t opt = lfanew + 24;

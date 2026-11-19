@@ -545,10 +545,10 @@ static bool needs_quotes(const char *s)
     return false;
 }
 
-/* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: a Chromium-family
-   browser (and Steam's CEF browser, steamwebhelper.exe) started as a browser gets the switches that run it without
-   them. */
-static const char *const chromium_switches[] = {"--no-sandbox", "--test-type", "--in-process-gpu", "--disable-gpu",
+/* Chromium's GPU process needs Direct3D: a Chromium-family browser (and Steam's CEF browser, steamwebhelper.exe)
+   started as a browser gets the switches that keep the GPU work in the browser process. Its sandbox runs as on
+   Windows: restricted and AppContainer tokens, job objects and the broker patching the child's ntdll stubs. */
+static const char *const chromium_switches[] = {"--test-type", "--in-process-gpu", "--disable-gpu",
                                                 "--disable-software-rasterizer", "--no-first-run",
                                                 "--no-default-browser-check"};
 
@@ -928,7 +928,7 @@ static int run(struct exec_ctx *ctx)
     w32->engine = w32_browser_engine(ctx->path);
     build_command_line(ctx);
     build_environment(ctx);
-    if (!w32->stack || !build_teb_peb() || (kuser_map(), false) || !w32_threads_start() || (w32->win64 && !w64_setup()))
+    if (!w32->stack || !build_teb_peb() || (kuser_map(), w32_nt_stubs_map(), false) || !w32_threads_start() || (w32->win64 && !w64_setup()))
         return E_NOMEM;
 
     /* the loader reads the pages of cached images it maps, so they have to come in from the start */

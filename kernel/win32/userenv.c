@@ -81,13 +81,6 @@ static HANDLE WINAPI EnterCriticalPolicySection(BOOL machine)
     return (HANDLE)(uintptr_t)0x00030003u;
 }
 
-static DWORD WINAPI DeriveAppContainerSidFromAppContainerName(const WCHAR *name, void **sid)
-{
-    UNUSED(name);
-    *sid = NULL;
-    return 0x80004001u;
-}
-
 static const struct w32_export userenv_exports[] = {
     W32_FN(CreateEnvironmentBlock),
     W32_FN(DestroyEnvironmentBlock),
@@ -100,7 +93,6 @@ static const struct w32_export userenv_exports[] = {
     W32_AS("LeaveCriticalPolicySection", w32_one1),
     W32_AS("RegisterGPNotification", w32_one2),
     W32_AS("UnregisterGPNotification", w32_one1),
-    W32_FN(DeriveAppContainerSidFromAppContainerName),
 };
 
 W32_EXPORTS(userenv_module, "userenv.dll", userenv_exports);
