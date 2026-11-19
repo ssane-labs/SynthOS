@@ -9,6 +9,7 @@
 
 #ifdef SYNTH_X32
 
+#include <synth/error.h>
 #include <synth/gd.h>
 #include <synth/gui.h>
 #include <synth/hal.h>
