@@ -24,7 +24,7 @@ enum {
     C_SAMPLER_STATES = 18, C_BEGIN_QUERY = 19, C_END_QUERY = 20, C_QUERY_RESULT = 21, C_SAMPLE_MASK = 24,
     C_STREAMOUT_TARGETS = 25,
     C_UNIFORM_BUFFER = 27, C_BIND_SHADER = 31, C_SHADER_BUFFERS = 34, C_SHADER_IMAGES = 35, C_MEMORY_BARRIER = 36,
-    C_BLIT = 16, C_LAUNCH_GRID = 37, C_FRAMEBUFFER_NO_ATTACH = 38,
+    C_BLIT = 16, C_COPY_REGION = 17, C_LAUNCH_GRID = 37, C_FRAMEBUFFER_NO_ATTACH = 38,
     O_BLEND = 1, O_RASTERIZER = 2, O_DSA = 3, O_SHADER = 4, O_VERTEX_ELEMENTS = 5, O_SAMPLER_VIEW = 6,
     O_SAMPLER_STATE = 7, O_SURFACE = 8, O_QUERY = 9, O_STREAMOUT_TARGET = 10,
     B_DEPTH_STENCIL = 1 << 0, B_RENDER_TARGET = 1 << 1, B_SAMPLER_VIEW = 1 << 3, B_VERTEX = 1 << 4,
@@ -1490,6 +1490,55 @@ bool gd_scanout(struct gd_resource *r, uint32_t w, uint32_t h)
     unlock();
     ok = ok && hal_screen_show_host(H.gpu, H.scan, (int)w, (int)h);
     H.shown = ok;
+    return ok;
+}
+
+/* a copy between two resources the host has, done there: neither is read back. Whole resources copy one
+   subresource at a time (sub < 0 copies them all). */
+static bool copy_sub(struct gd_resource *dst, uint32_t dsub, uint32_t x, uint32_t y, uint32_t z,
+                     struct gd_resource *src, uint32_t ssub, const struct gd_box *box)
+{
+    const struct gd_layout *sl = &src->lay[ssub], *dl = &dst->lay[dsub];
+    struct gd_box b = box ? *box : (struct gd_box){0, 0, 0, sl->width, sl->height, sl->depth};
+    b.right = MIN(b.right, sl->width), b.bottom = MIN(b.bottom, sl->height), b.back = MIN(b.back, sl->depth);
+    if (dst->d.dim == GD_BUFFER || src->d.dim == GD_BUFFER)
+        y = z = b.top = b.front = 0, b.bottom = b.back = 1;
+    if (b.left >= b.right || b.top >= b.bottom || b.front >= b.back || x >= dl->width || y >= dl->height ||
+        z >= dl->depth)
+        return true;
+    uint32_t w = MIN(b.right - b.left, dl->width - x), h = MIN(b.bottom - b.top, dl->height - y);
+    uint32_t d = MIN(b.back - b.front, dl->depth - z);
+    /* array slices are the z of the host's copy */
+    uint32_t dlev = dsub % dst->d.mips, slev = ssub % src->d.mips;
+    if (dst->d.dim != GD_TEX3D)
+        z += dsub / dst->d.mips;
+    if (src->d.dim != GD_TEX3D)
+        b.front += ssub / src->d.mips;
+    cmd(C_COPY_REGION, 0, 13);
+    put(dst->host), put(dlev), put(x), put(y), put(z);
+    put(src->host), put(slev), put(b.left), put(b.top), put(b.front), put(w), put(h), put(d);
+    return true;
+}
+
+bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uint32_t z, struct gd_resource *src,
+                  int ssub, const struct gd_box *box)
+{
+    if (!ready() || (!src->host && !dst->host))
+        return false;
+    uint32_t sb, db, sbytes = gd_format_bytes(src->d.format, &sb), dbytes = gd_format_bytes(dst->d.format, &db);
+    if (src->d.dim != GD_BUFFER && dst->d.dim != GD_BUFFER && (sbytes != dbytes || sb != db))
+        return false;
+    lock();
+    bool ok = to_gpu(src) && to_gpu(dst);
+    if (ok) {
+        if (dsub < 0)
+            for (uint32_t i = 0; i < dst->subs && i < src->subs; i++)
+                copy_sub(dst, i, 0, 0, 0, src, i, NULL);
+        else
+            copy_sub(dst, (uint32_t)dsub, x, y, z, src, (uint32_t)ssub, box);
+        dst->where = HOST_GPU_NEWER;
+    }
+    unlock();
     return ok;
 }
 

@@ -273,7 +273,7 @@ size_t gd_update_size(struct gd_resource *r, uint32_t sub, const struct gd_box *
 
 void gd_copy_resource(struct gd_resource *dst, struct gd_resource *src)
 {
-    if (!dst || !src || dst == src)
+    if (!dst || !src || dst == src || gd_host_copy(dst, -1, 0, 0, 0, src, -1, NULL))
         return;
     gd_host_cpu(src, false);
     gd_host_cpu(dst, true);
@@ -288,7 +288,8 @@ void gd_copy_resource(struct gd_resource *dst, struct gd_resource *src)
 void gd_copy_region(struct gd_resource *dst, uint32_t dst_sub, uint32_t x, uint32_t y, uint32_t z,
                     struct gd_resource *src, uint32_t src_sub, const struct gd_box *box)
 {
-    if (!dst || !src || dst_sub >= dst->subs || src_sub >= src->subs)
+    if (!dst || !src || dst_sub >= dst->subs || src_sub >= src->subs ||
+        gd_host_copy(dst, (int)dst_sub, x, y, z, src, (int)src_sub, box))
         return;
     gd_host_cpu(src, false);
     gd_host_cpu(dst, true);

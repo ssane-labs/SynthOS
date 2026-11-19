@@ -125,6 +125,12 @@ static inline bool gd_host_clear_rtv(struct gd_view *v, const float color[4])
     (void)v, (void)color;
     return false;
 }
+static inline bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uint32_t z,
+                                struct gd_resource *src, int ssub, const struct gd_box *box)
+{
+    (void)dst, (void)dsub, (void)x, (void)y, (void)z, (void)src, (void)ssub, (void)box;
+    return false;
+}
 static inline bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil)
 {
     (void)v, (void)flags, (void)depth, (void)stencil;
@@ -165,6 +171,9 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
 void gd_host_cpu(struct gd_resource *r, bool write);
 bool gd_host_clear_rtv(struct gd_view *v, const float color[4]);
 bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil);
+/* a copy done on the host when either resource is there (dsub < 0: every subresource); false: the CPU copies */
+bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uint32_t z, struct gd_resource *src,
+                  int ssub, const struct gd_box *box);
 void gd_host_forget_resource(struct gd_resource *r);
 void gd_host_forget_view(struct gd_view *v);
 void gd_host_forget_shader(struct gd_shader *s);

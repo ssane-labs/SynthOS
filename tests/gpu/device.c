@@ -317,6 +317,18 @@ static void draw_tests(void)
     expect(close_rgb(pixel(10, 20), 0xff8080) && close_rgb(pixel(50, 20), 0x8080ff), "alpha blending");
     gd_set_blend(ctx, NULL, NULL, 0xffffffffu);
 
+    /* copies between two textures (on the host's card when there is one): the whole, then the left half moved right */
+    struct gd_res_desc cd = {.dim = GD_TEX2D, .width = W, .height = H, .mips = 1, .array = 1,
+                             .format = GD_R8G8B8A8_UNORM, .bind = GD_BIND_RENDER_TARGET | GD_BIND_SHADER_RESOURCE};
+    struct gd_resource *copy = gd_resource_create(&cd, NULL, &err);
+    if (copy) {
+        gd_copy_resource(copy, rt_tex);
+        gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+        gd_copy_region(rt_tex, 0, W / 2, 0, 0, copy, 0, &(struct gd_box){0, 0, 0, W / 2, H, 1});
+        expect(pixel(10, 20) == 0 && close_rgb(pixel(W / 2 + 10, 20), 0xff8080), "texture copies");
+        gd_resource_unref(copy);
+    }
+
     /* stencil: mark the top half, then draw only where marked */
     gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
     struct gd_depth sd = {.depth_enable = 0, .stencil_enable = 1, .read_mask = 255, .write_mask_stencil = 255,
