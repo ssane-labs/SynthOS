@@ -125,7 +125,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-crypto test-gpu clean tools programs usb windows update
+.PHONY: all run run-serial run-uefi test test-hw test-crypto test-gpu test-virgl clean tools programs usb windows update
 all: $(IMAGE)
 
 ESP_LBA     := 8192
@@ -504,6 +504,11 @@ run-serial:
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
 	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(SUFFIX)/synthos.img
+
+# 3D through the host's graphics card (virtio-gpu with virgl); llvmpipe in Xvfb when the host has none
+test-virgl:
+	@$(MAKE) --no-print-directory SERIAL=1
+	@tests/virgl.sh $(BUILD)/serial/synthos.img
 
 test-gpu:
 	@mkdir -p $(BUILD)/tools

@@ -778,6 +778,8 @@ make run-serial   # запустить с консолью в текущем т�
 make test         # собрать вариант с COM-консолью и прогнать автотесты
 make test-hw      # прогнать образ на разных «машинах» (BIOS/UEFI, IDE/AHCI/NVMe/USB/xHCI, 4 ядра)
 make test-crypto  # проверить SHA-2, AES-GCM, ChaCha20, X25519, RSA, ECDSA на хосте
+make test-gpu     # растеризатор, текстуры, шейдеры DXBC (интерпретатор и компилятор) на хосте
+make test-virgl   # 3D через видеокарту хоста (virtio-gpu с virgl; без видеокарты — llvmpipe в Xvfb)
 make clean        # удалить build/
 ```
 
