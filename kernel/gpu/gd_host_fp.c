@@ -1444,6 +1444,11 @@ static const struct setting s_host = {"hostgpu", "on|off",
                                       get_host, set_host};
 SETTING(s_host);
 
+bool gd_host_gpu(void)
+{
+    return ready();
+}
+
 uint64_t gd_host_draws(void)
 {
     return H.draws;

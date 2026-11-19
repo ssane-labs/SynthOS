@@ -4,6 +4,7 @@
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
+#include <synth/gd.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/input.h>
@@ -574,7 +575,7 @@ static int command_args(struct exec_ctx *ctx, const char **list)
     if (chrome && !child)
         for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++) {
             /* with "w32d3d11 on" it draws through ANGLE on Direct3D 11 */
-            if (w32_d3d11_for == 1 && !strncmp(chromium_switches[i], "--disable-", 10))
+            if (w32_d3d11_chromium() && !strncmp(chromium_switches[i], "--disable-", 10))
                 continue;
             if (!has_arg(ctx, chromium_switches[i], strlen(chromium_switches[i]) + 1))
                 list[n++] = chromium_switches[i];
@@ -1929,6 +1930,12 @@ static int set_headless(struct shell *sh, const char *value)
 }
 
 int w32_d3d11_for;
+
+/* Chromium draws through ANGLE on our Direct3D 11 when asked to, or by itself when the host's card does the work */
+bool w32_d3d11_chromium(void)
+{
+    return w32_d3d11_for == 1 || (!w32_d3d11_for && gd_host_gpu());
+}
 
 static void get_d3d11_for(char *buf, size_t cap)
 {

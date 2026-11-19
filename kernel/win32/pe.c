@@ -1333,6 +1333,16 @@ static bool own_cxx_runtime(const char *norm, const char *search_dir, char *path
     return pe + 6 <= (uint32_t)n && head[pe + 4] == 0x4c && head[pe + 5] == 0x01;
 }
 
+/* A shader compiler a program ships next to itself is real; our builtin only stubs it. */
+static bool own_copy(const char *norm, const char *search_dir, char *path)
+{
+    if (!search_dir || strcmp(norm, "d3dcompiler_47.dll") != 0)
+        return false;
+    char candidate[PATH_MAX_LEN];
+    return path_join(search_dir, norm, candidate, sizeof(candidate)) == 0 &&
+           vfs_resolve_nocase(candidate, path, PATH_MAX_LEN) == 0 && vfs_exists(path) && !vfs_is_dir(path);
+}
+
 struct w32_image *w32_load(const char *name, const char *search_dir, int *error)
 {
     char own[64], own_path[PATH_MAX_LEN];
@@ -1360,6 +1370,8 @@ struct w32_image *w32_load(const char *name, const char *search_dir, int *error)
         if (w32_path(name, path, sizeof(path)) == 0 && vfs_exists(path))
             return load_file(path, norm, error);
     }
+    if (def && own_copy(norm, search_dir, path))
+        return load_file(path, norm, error);
     if (def) {
         img = load_builtin(alias);
         if (img) {

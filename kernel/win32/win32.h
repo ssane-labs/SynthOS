@@ -392,7 +392,8 @@ void w32_trace_note(const char *module, const char *name);
 const char *w32_builtin_name(const void *fn);
 void w32_trace_api(const char *name);
 extern bool w32_headless;
-extern int w32_d3d11_for; /* the "w32d3d11" setting: 0 auto (not Chromium's programs), 1 every program, 2 none */
+extern int w32_d3d11_for;
+bool w32_d3d11_chromium(void); /* the "w32d3d11" setting: 0 auto (not Chromium's programs), 1 every program, 2 none */
 bool w32_vm_committed(uintptr_t address);
 bool w32_vm_overlaps(uint32_t base, uint32_t size);
 

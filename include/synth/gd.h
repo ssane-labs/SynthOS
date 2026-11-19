@@ -73,6 +73,8 @@ struct gd_format {
 };
 
 bool gd_format(uint32_t format, struct gd_format *out);
+/* draws can go to the host's graphics card (virtio-gpu 3D, "hostgpu on") */
+bool gd_host_gpu(void);
 
 /* ---- resources */
 

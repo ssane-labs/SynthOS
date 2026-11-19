@@ -2888,8 +2888,10 @@ static const method cmdlist_fns[] = {DEVICE_CHILD, [7] = m_zero /* GetContextFla
 static W32_STATE int chromium_answer; /* 0 not looked yet, 1 no, 2 yes */
 static bool chromium(void)
 {
+    if (w32_d3d11_chromium())
+        return false;
     if (w32_d3d11_for)
-        return w32_d3d11_for == 2;
+        return true;
     if (!chromium_answer) {
         bool yes = w32->cmdline && strstr(w32->cmdline, "--type=");
         if (!yes && w32->main) {
