@@ -162,6 +162,9 @@ struct dxbc_tgsi {
 /* uav_format: the host format (virgl numbering) of the view bound at each typed u#, or NULL / 0 for a 32-bit format of
    the declared return type */
 bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct dxbc_tgsi *out);
+/* a domain shader needs the hull shader it runs after (spacing, winding, points) */
+bool dxbc_tgsi_tess(const struct dxbc_shader *sh, const struct dxbc_shader *hs, const uint16_t *uav_format,
+                    struct dxbc_tgsi *out);
 void dxbc_tgsi_free(struct dxbc_tgsi *out);
 
 #endif

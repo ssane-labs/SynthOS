@@ -27,7 +27,7 @@ enum {
     O_SAMPLER_STATE = 7, O_SURFACE = 8, O_QUERY = 9, O_STREAMOUT_TARGET = 10,
     B_DEPTH_STENCIL = 1 << 0, B_RENDER_TARGET = 1 << 1, B_SAMPLER_VIEW = 1 << 3, B_VERTEX = 1 << 4,
     B_CONSTANT = 1 << 6, B_SHADER_BUFFER = 1 << 14, B_CUSTOM = 1 << 17,
-    SH_VERTEX = 0, SH_FRAGMENT = 1, SH_GEOMETRY = 2, SH_COMPUTE = 5,
+    SH_VERTEX = 0, SH_FRAGMENT = 1, SH_GEOMETRY = 2, SH_TESS_CTRL = 3, SH_TESS_EVAL = 4, SH_COMPUTE = 5,
 };
 
 #define STREAM_WORDS 1024
@@ -43,6 +43,7 @@ static struct {
     uint8_t ve_key[sizeof(struct gd_input_layout) + 32 * 4];
     uint8_t ve_slot[16]; /* the vertex buffer slot behind each binding, one binding per shader input */
     int ve_count;
+    bool tess_bound; /* hull and domain shaders bound at the last draw */
     struct gd_sampler samp_key[6][16];
     /* occlusion: one query open across draws, read when someone asks */
     uint32_t query, query_buf, *query_mem, drawn_since;
@@ -383,10 +384,11 @@ static uint32_t surface(struct gd_view *v)
 /* the shader on the host, made from its TGSI text in pieces of a page */
 /* a shader object on the host from s's TGSI: compute ones for the given typed UAV formats, vertex ones with the
    stream output so (or NULL); 0 when there is no translation (H.why says why) */
-static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t *uav_format, const struct so_decl *so)
+static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t *uav_format, const struct so_decl *so,
+                              const struct gd_shader *hs)
 {
     struct dxbc_tgsi t;
-    if (!dxbc_tgsi(&s->sh, uav_format, &t)) {
+    if (!dxbc_tgsi_tess(&s->sh, hs ? &hs->sh : NULL, uav_format, &t)) {
         str_copy(H.why, t.error, sizeof(H.why));
         klog("gd: a shader stays in software: %s", t.error);
         return 0;
@@ -443,7 +445,7 @@ static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *u
         memcpy(s->uav_format, uav_format, sizeof(s->uav_format));
     if (s->host)
         return s->host > 0 ? (uint32_t)s->host : 0;
-    uint32_t h = create_shader(s, type, uav_format, NULL);
+    uint32_t h = create_shader(s, type, uav_format, NULL, NULL);
     s->host = h ? (int32_t)h : -1;
     return h;
 }
@@ -456,8 +458,20 @@ static uint32_t so_shader_for(struct gd_shader *so_shader, struct gd_shader *vs)
         return so_shader->so_host > 0 ? (uint32_t)so_shader->so_host : 0;
     if (so_shader->so_host > 0)
         destroy(O_SHADER, (uint32_t)so_shader->so_host);
-    uint32_t h = create_shader(vs, SH_VERTEX, NULL, so_shader->so);
+    uint32_t h = create_shader(vs, SH_VERTEX, NULL, so_shader->so, NULL);
     so_shader->so_host = h ? (int32_t)h : -1, so_shader->so_vs = vs->serial;
+    return h;
+}
+
+/* a domain shader as the host takes it after this hull shader */
+static uint32_t tes_for(struct gd_shader *ds, struct gd_shader *hs)
+{
+    if (ds->so_host && ds->so_vs == hs->serial)
+        return ds->so_host > 0 ? (uint32_t)ds->so_host : 0;
+    if (ds->so_host > 0)
+        destroy(O_SHADER, (uint32_t)ds->so_host);
+    uint32_t h = create_shader(ds, SH_TESS_EVAL, NULL, NULL, hs);
+    ds->so_host = h ? (int32_t)h : -1, ds->so_vs = hs->serial;
     return h;
 }
 
@@ -945,8 +959,15 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     struct gd_shader *vs = c->stage[DXBC_VS].shader, *ps = c->stage[DXBC_PS].shader, *gs = c->stage[DXBC_GS].shader;
     if (!vs || vs->sh.stage != DXBC_VS || !count || !instances)
         return false;
-    if (c->stage[DXBC_HS].shader || c->stage[DXBC_DS].shader)
-        return refuse("tessellation shaders");
+    /* tessellation: patches of 1 to 32 control points through both shaders */
+    struct gd_shader *hs = c->stage[DXBC_HS].shader, *ds = c->stage[DXBC_DS].shader;
+    bool tess = hs || ds;
+    if (tess && (!hs || !ds || hs->sh.stage != DXBC_HS || ds->sh.stage != DXBC_DS))
+        return false;
+    if (tess && (c->topology < 33 || c->topology > 64))
+        return refuse("tessellation without patches");
+    if (tess && (hs->host < 0 || (ds->so_host < 0 && ds->so_vs == hs->serial)))
+        return refuse(H.why);
     /* stream output: declared by the shader in the geometry slot, a geometry shader or a vertex shader made for it
        (then the vertex shader writes it, and nothing runs in between) */
     struct gd_shader *so_vs = NULL;
@@ -959,9 +980,11 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     bool discard = so && so->rasterized != 0;
     if (gs && gs->so && targets)
         return refuse("stream output from a geometry shader");
+    if (tess && so)
+        return refuse("stream output after tessellation");
     if (gs && (gs->sh.stage != DXBC_GS || gs->host < 0))
         return gs->sh.stage == DXBC_GS ? refuse(H.why) : false;
-    if (c->topology >= 14 || prims[c->topology] < 0)
+    if (!tess && (c->topology >= 14 || prims[c->topology] < 0))
         return refuse("topology");
     uint32_t so_bytes[GD_SLOTS_SO] = {0}; /* what stream output writes to each buffer */
     if (so_vs && targets && !so_written(c, so, indexed, count, instances, so_bytes))
@@ -978,6 +1001,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     bool ok = ready();
     uint32_t vsh = ok ? (so_vs ? so_shader_for(so_vs, vs) : shader(vs, SH_VERTEX)) : 0, fsh = 0;
     uint32_t gsh = ok && gs ? shader(gs, SH_GEOMETRY) : 0;
+    uint32_t tcs = ok && tess ? shader(hs, SH_TESS_CTRL) : 0, tes = ok && tess && tcs ? tes_for(ds, hs) : 0;
     uint16_t ps_formats[DXBC_MAX_UAV];
     if (ok && ps) {
         uav_formats(&c->stage[DXBC_PS], &ps->sh, ps_formats);
@@ -990,7 +1014,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         }
         fsh = H.null_fs;
     }
-    if (!vsh || !fsh || (gs && !gsh)) {
+    if (!vsh || !fsh || (gs && !gsh) || (tess && (!tcs || !tes))) {
         unlock();
         return ok ? refuse(H.why) : false;
     }
@@ -1014,7 +1038,8 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     if (!vertex_elements(c, &vs->sh) || !stage_resources(c, DXBC_VS, SH_VERTEX, vs) ||
         (ps && (!stage_resources(c, DXBC_PS, SH_FRAGMENT, ps) ||
                 !bind_memory(c, DXBC_PS, SH_FRAGMENT, ps, ps_formats))) ||
-        (gs && !stage_resources(c, DXBC_GS, SH_GEOMETRY, gs)))
+        (gs && !stage_resources(c, DXBC_GS, SH_GEOMETRY, gs)) ||
+        (tess && (!stage_resources(c, DXBC_HS, SH_TESS_CTRL, hs) || !stage_resources(c, DXBC_DS, SH_TESS_EVAL, ds))))
         goto refused;
     /* vertex and index buffers */
     int nvb = H.ve_count;
@@ -1035,9 +1060,16 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     put(fsh), put(SH_FRAGMENT);
     cmd(C_BIND_SHADER, 0, 2);
     put(gsh), put(SH_GEOMETRY);
+    if (tess || H.tess_bound) {
+        cmd(C_BIND_SHADER, 0, 2);
+        put(tcs), put(SH_TESS_CTRL);
+        cmd(C_BIND_SHADER, 0, 2);
+        put(tes), put(SH_TESS_EVAL);
+        H.tess_bound = tess;
+    }
     blend_state(c);
     depth_state(c, zsurf != 0);
-    raster_state(c, discard, gs ? gs->clip_planes : vs->clip_planes);
+    raster_state(c, discard, gs ? gs->clip_planes : tess ? ds->clip_planes : vs->clip_planes);
     cmd(C_STENCIL_REF, 0, 1);
     put((c->stencil_ref & 0xff) | (c->stencil_ref & 0xff) << 8);
     cmd(C_BLEND_COLOR, 0, 4);
@@ -1099,12 +1131,14 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         for (int b = 0; b < nso; b++)
             put(so_targets[b]);
     }
-    uint32_t mode = (uint32_t)prims[c->topology];
+    uint32_t mode = tess ? 14 /* patches */ : (uint32_t)prims[c->topology];
     bool strip = mode == 3 || mode == 5 || mode == 11 || mode == 13;
-    cmd(C_DRAW, 0, 12);
+    cmd(C_DRAW, 0, tess ? 14 : 12);
     put(start), put(count), put(mode), put(indexed ? 1 : 0), put(instances), put(indexed ? (uint32_t)base : 0);
     put(first_instance), put(indexed && strip ? 1 : 0), put(c->ib_format == GD_R16_UINT ? 0xffff : 0xffffffffu);
     put(0), put(0xffffffffu), put(0);
+    if (tess)
+        put(c->topology - 32), put(0); /* control points a patch, the draw number */
     for (int i = 0; i < 8; i++)
         if (c->rtv[i])
             c->rtv[i]->r->where = HOST_GPU_NEWER;

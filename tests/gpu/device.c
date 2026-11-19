@@ -717,6 +717,17 @@ static void draw_tests(void)
         size = container(4, 1);
         struct gd_shader *dsh = gd_shader_create(blob, (uint32_t)size, terr);
         expect(hsh && dsh, "hull and domain shaders parse");
+        if (hsh && dsh) { /* as the host takes them */
+            struct dxbc_tgsi th, td;
+            bool okh = dxbc_tgsi(&hsh->sh, NULL, &th), okd = dxbc_tgsi_tess(&dsh->sh, &hsh->sh, NULL, &td);
+            expect(okh && okd, "hull and domain shaders translate to TGSI");
+            if (!okh || !okd)
+                printf("%s\n%s\n%s\n", okh ? th.text : th.error, okd ? td.text : td.error, hsh->sh.error);
+            if (okh)
+                dxbc_tgsi_free(&th);
+            if (okd)
+                dxbc_tgsi_free(&td);
+        }
         gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
         gd_clear_dsv(dsv, 3, 1.0f, 0);
         gd_set_shader(ctx, 3, hsh);
@@ -727,12 +738,103 @@ static void draw_tests(void)
         struct vert tp[3] = {{{-1, 1, 0.5f}, {0, 1, 0, 1}}, {{1, 1, 0.5f}, {0, 1, 0, 1}}, {{1, -1, 0.5f}, {0, 1, 0, 1}}};
         draw_verts(tp, 3);
         gd_get_stats(&after);
-        expect(after.triangles - before.triangles == 16 && after.shader_faults == before.shader_faults &&
+        uint64_t tris = after.triangles - before.triangles; /* counted in software; the host's card draws them unseen */
+        expect((tris == 16 || tris == 0) && after.shader_faults == before.shader_faults &&
                    pixel(60, 4) == 0x00ff00 && pixel(40, 20) == 0x00ff00 && pixel(4, 60) == 0,
                "a tessellated patch is drawn as 16 triangles");
         gd_set_shader(ctx, 3, NULL);
         gd_set_shader(ctx, 4, NULL);
         gd_set_topology(ctx, 4);
+        gd_shader_unref(hsh);
+        gd_shader_unref(dsh);
+    }
+
+    /* tessellation as fxc writes it: a control point phase reading vicp[vOutputControlPointID], a fork phase of three
+       instances writing o[vForkInstanceID].x, a join phase reading what the fork wrote (vpc0) and a patch constant
+       the domain shader takes its color from */
+    {
+        enum { OCPID = 22, FORKID = 23, ICP = 25, PC = 27, DOM = 28 };
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Position", 0, 1, 0, 15), out_sig("COLOR", 0, 0, 1, 15);
+        for (uint32_t i = 0; i < 3; i++)
+            pc_sig("SV_TessFactor", i, 13, i, 1);
+        pc_sig("SV_InsideTessFactor", 0, 14, 3, 1);
+        pc_sig("PATCHCOLOR", 0, 0, 4, 15);
+        op(113, 0), end();
+        op(147, 3 << 11), end();
+        op(148, 3 << 11), end();
+        op(149, 2 << 11), end();
+        op(150, 1 << 11), end();
+        op(151, 3 << 11), end();
+        op(114, 0), end(); /* hs_control_point_phase: o# = vicp[vOutputControlPointID][#] */
+        for (uint32_t r = 0; r < 2; r++) {
+            op(54, 0), dst(OUT, (int)r, 15);
+            code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | (uint32_t)ICP << 12 | 2u << 20 | 2u << 22;
+            code[n++] = 2u | 2u << 2 | (uint32_t)OCPID << 12; /* vOutputControlPointID.x */
+            code[n++] = r;
+            end();
+        }
+        op(62, 0), end();
+        op(115, 0), end();                   /* hs_fork_phase */
+        op(153, 0), code[n++] = 3, end();     /* dcl_hs_fork_phase_instance_count 3 */
+        op(54, 0);                            /* mov o[vForkInstanceID].x, 2 */
+        code[n++] = 2u | 1u << 4 | (uint32_t)OUT << 12 | 1u << 20 | 2u << 22;
+        code[n++] = 2u | 2u << 2 | (uint32_t)FORKID << 12;
+        immf(2), end();
+        op(62, 0), end();
+        op(116, 0), end(); /* hs_join_phase: the inside factor from vpc0, the color */
+        op(54, 0), dst(OUT, 3, 1), code[n++] = 2u | 2u << 2 | (uint32_t)PC << 12 | 1u << 20, code[n++] = 0, end();
+        op(54, 0), dst(OUT, 4, 15), imm4(0, 0, 1, 1), end();
+        op(62, 0), end();
+        char terr[64];
+        size_t size = container(3, 1);
+        struct gd_shader *hsh = gd_shader_create(blob, (uint32_t)size, terr);
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Position", 0, 1, 0, 15), out_sig("COLOR", 0, 0, 1, 15);
+        for (uint32_t i = 0; i < 3; i++)
+            pc_sig("SV_TessFactor", i, 13, i, 1);
+        pc_sig("SV_InsideTessFactor", 0, 14, 3, 1);
+        pc_sig("PATCHCOLOR", 0, 0, 4, 15);
+        op(149, 2 << 11), end();
+        for (int k = 0; k < 3; k++) { /* o0 = the control points weighted by the domain location */
+            op(k ? 50 : 56, 0), dst(k == 2 ? OUT : TEMP, 0, 15);
+            code[n++] = 2u | 1u << 2 | (uint32_t)SW(k, k, k, k) << 4 | (uint32_t)DOM << 12;
+            code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | (uint32_t)ICP << 12 | 2u << 20, code[n++] = (uint32_t)k,
+            code[n++] = 0;
+            if (k)
+                src(TEMP, 0, XYZW);
+            end();
+        }
+        op(54, 0), dst(OUT, 1, 15), code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | (uint32_t)PC << 12 | 1u << 20,
+            code[n++] = 4, end();
+        op(62, 0), end();
+        size = container(4, 1);
+        struct gd_shader *dsh = gd_shader_create(blob, (uint32_t)size, terr);
+        expect(hsh && dsh, "phased hull shader and its domain shader parse");
+        if (hsh && dsh) {
+            struct dxbc_tgsi th, td;
+            bool okh = dxbc_tgsi(&hsh->sh, NULL, &th), okd = dxbc_tgsi_tess(&dsh->sh, &hsh->sh, NULL, &td);
+            expect(okh && okd, "the phased hull shader translates to TGSI");
+            if (!okh || !okd)
+                printf("%s\n%s\n", okh ? th.text : th.error, okd ? td.text : td.error);
+            if (okh)
+                dxbc_tgsi_free(&th);
+            if (okd)
+                dxbc_tgsi_free(&td);
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            gd_clear_dsv(dsv, 3, 1.0f, 0);
+            gd_set_shader(ctx, 3, hsh);
+            gd_set_shader(ctx, 4, dsh);
+            gd_set_topology(ctx, 35);
+            struct vert tp[3] = {{{-1, 1, 0.5f}, {0, 1, 0, 1}}, {{1, 1, 0.5f}, {0, 1, 0, 1}},
+                                 {{1, -1, 0.5f}, {0, 1, 0, 1}}};
+            draw_verts(tp, 3);
+            expect(pixel(60, 4) == 0xff0000 && pixel(40, 20) == 0xff0000 && pixel(4, 60) == 0,
+                   "fork and join phases: factors by instance, a patch constant read back");
+            gd_set_shader(ctx, 3, NULL);
+            gd_set_shader(ctx, 4, NULL);
+            gd_set_topology(ctx, 4);
+        }
         gd_shader_unref(hsh);
         gd_shader_unref(dsh);
     }

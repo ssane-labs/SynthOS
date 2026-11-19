@@ -435,6 +435,12 @@ static int32_t index_of(struct machine *m, const struct index *ix, int lane)
         v += (int32_t)m->x[ix->rel_reg][ix->rel_reg2][lane][ix->rel_comp];
     else if (ix->rel_type == T_INPUT)
         v += (int32_t)m->lanes->v[ix->rel_reg][lane][ix->rel_comp];
+    else if (ix->rel_type == T_OCPID) /* vicp[vOutputControlPointID], o[vForkInstanceID]... */
+        v += (int32_t)m->lanes->cp_id[lane];
+    else if (ix->rel_type == T_FORKID || ix->rel_type == T_JOINID)
+        v += (int32_t)m->lanes->phase_id[lane];
+    else if (ix->rel_type == T_PRIMID)
+        v += (int32_t)m->lanes->prim_id;
     return v;
 }
 

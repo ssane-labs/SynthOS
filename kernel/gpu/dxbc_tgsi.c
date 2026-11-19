@@ -51,6 +51,12 @@ struct tg {
     uint32_t used_cb, used_tex, cmp_tex, plain_tex;
     int32_t cb_max[DXBC_MAX_CB]; /* the highest constant read with a fixed index, or 4095 when one is relative */
     int naddr;
+    /* hull and domain shaders: the patch constants in TEMP[pcbase + reg]; the hull shader phase being translated
+       (0 control points, 1 fork, 2 join), its instance and where it ends; the hull shader a domain shader runs after */
+    int pcbase, npc;
+    int phase, phase_inst, phase_end;
+    bool hs_primid;
+    const struct dxbc_shader *hs;
     bool fail;
 };
 
@@ -162,7 +168,8 @@ static void load_addr(struct tg *g, const struct opd *o, int slot)
         addr_reg[slot][d] = -1;
         if (o->idx[d].rel_type < 0)
             continue;
-        if (o->idx[d].rel_type != T_TEMP && o->idx[d].rel_type != T_INPUT) {
+        int rt = o->idx[d].rel_type;
+        if (rt != T_TEMP && rt != T_INPUT && rt != T_OCPID && rt != T_FORKID && rt != T_JOINID) {
             fail(g, "relative index from this register");
             return;
         }
@@ -175,9 +182,18 @@ static void load_addr(struct tg *g, const struct opd *o, int slot)
         put(&g->code, "UARL ADDR[");
         putu(&g->code, (uint32_t)k);
         put(&g->code, "].x, ");
-        put(&g->code, o->idx[d].rel_type == T_TEMP ? "TEMP[" : "IN[");
-        puti(&g->code, o->idx[d].rel_reg);
-        put(&g->code, "].");
+        if (rt == T_OCPID) {
+            put(&g->code, "SV[0].");
+        } else if (rt == T_FORKID || rt == T_JOINID) { /* the phase instance being translated */
+            uint32_t i = (uint32_t)g->phase_inst;
+            put(&g->code, "IMM[");
+            putu(&g->code, (uint32_t)immediate(g, i, i, i, i));
+            put(&g->code, "].");
+        } else {
+            put(&g->code, o->idx[d].rel_type == T_TEMP ? "TEMP[" : "IN[");
+            puti(&g->code, o->idx[d].rel_reg);
+            put(&g->code, "].");
+        }
         char c[5] = {"xyzw"[o->idx[d].rel_comp & 3], "xyzw"[o->idx[d].rel_comp & 3], "xyzw"[o->idx[d].rel_comp & 3],
                      "xyzw"[o->idx[d].rel_comp & 3], 0};
         put(&g->code, c);
@@ -230,7 +246,47 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
         }
         break;
     case T_OUTPUT:
-        put(t, "OUT"), index_text(g, o, 0, slot, 0);
+        if (g->sh->stage == DXBC_HS && g->phase) { /* a patch constant, kept in a temp until the end */
+            if (o->idx[0].rel_type < 0 && (o->idx[0].imm < 0 || o->idx[0].imm >= g->npc)) {
+                fail(g, "a patch constant output");
+                break;
+            }
+            put(t, "TEMP"), index_text(g, o, 0, slot, g->pcbase);
+            put(t, "(9)");
+        } else if (g->sh->stage == DXBC_HS) { /* this invocation's control point */
+            put(t, "OUT[0]"), index_text(g, o, 0, slot, 0);
+        } else {
+            put(t, "OUT"), index_text(g, o, 0, slot, 0);
+        }
+        break;
+    case T_ICP: /* vicp[point][reg] (hull), vcp (domain) */
+        if (o->ndim != 2 || (g->sh->stage != DXBC_HS && g->sh->stage != DXBC_DS)) {
+            fail(g, "an input control point");
+            break;
+        }
+        put(t, "IN"), index_text(g, o, 0, slot, 0), index_text(g, o, 1, slot, 0);
+        break;
+    case T_PC:
+        if (o->idx[0].rel_type < 0 && (o->idx[0].imm < 0 || o->idx[0].imm >= g->npc)) {
+            fail(g, "a patch constant input");
+            break;
+        }
+        put(t, "TEMP"), index_text(g, o, 0, slot, g->pcbase);
+        put(t, "(9)");
+        break;
+    case T_OCPID:
+        put(t, "SV[0]");
+        break;
+    case T_FORKID:
+    case T_JOINID: {
+        uint32_t i = (uint32_t)g->phase_inst;
+        put(t, "IMM[");
+        putu(t, (uint32_t)immediate(g, i, i, i, i));
+        put(t, "]");
+        break;
+    }
+    case T_DOMAIN:
+        put(t, "SV[0]");
         break;
     case T_ODEPTH:
         put(t, "OUT[");
@@ -281,6 +337,12 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
         put(t, "SV[1]");
         break;
     case T_PRIMID:
+        if (g->sh->stage == DXBC_HS) {
+            g->hs_primid = true;
+            put(t, "SV[1]");
+            break;
+        }
+        /* fall through */
     case T_GSINST:
         if (g->sh->stage != DXBC_GS) {
             fail(g, "a primitive or instance number outside a geometry shader");
@@ -1163,6 +1225,8 @@ static void instruction(struct tg *g, int pc)
     case OP_BREAKC:
     case OP_CONTINUEC:
     case OP_RETC:
+        if (in->op == OP_RETC && g->sh->stage == DXBC_HS)
+            return (void)fail(g, "a return inside a hull shader phase");
         test_cond(g, in, &o[0]);
         line(g, in->op == OP_BREAKC ? "BRK" : in->op == OP_CONTINUEC ? "CONT" : "RET");
         line(g, "ENDIF");
@@ -1173,6 +1237,12 @@ static void instruction(struct tg *g, int pc)
         line(g, "ENDIF");
         return;
     case OP_RET:
+        if (g->sh->stage == DXBC_HS) { /* the end of a phase; returning early would skip the phases after it */
+            for (int k = pc + 1; k < g->phase_end; k++)
+                if (g->sh->code[k].op != OP_NOP && g->sh->code[k].op != OP_RET)
+                    return (void)fail(g, "a return inside a hull shader phase");
+            return;
+        }
         if (!last_ret(g->sh, pc))
             line(g, "RET");
         return;
@@ -1284,6 +1354,139 @@ static void instruction(struct tg *g, int pc)
     }
 }
 
+/* ---- hull and domain shaders */
+
+enum { TESS_OUTER = 32, TESS_INNER = 33, TESS_PATCH = 34 }; /* IN/OUT registers of the patch constants */
+
+/* where a patch constant lives on the host: OUT/IN[reg] and the component, or the generic PATCH[reg] (comp -1) */
+static int pc_place(const struct dxbc_sig_elem *e, int *comp)
+{
+    switch (e->system_value) {
+    case 11: case 13: *comp = (int)e->index; return TESS_OUTER;  /* quad, triangle edges */
+    case 12: case 14: *comp = (int)e->index; return TESS_INNER;  /* inside */
+    case 15: *comp = 1; return TESS_OUTER;                        /* line detail: segments a line */
+    case 16: *comp = 0; return TESS_OUTER;                        /* line density: lines */
+    default: *comp = -1; return TESS_PATCH + (int)e->reg;
+    }
+}
+
+static int low_comp(uint32_t mask)
+{
+    for (int c = 0; c < 4; c++)
+        if (mask >> c & 1)
+            return c;
+    return 0;
+}
+
+/* the hull shader as one TESS_CTRL program: the control point phase in every invocation (or the input points passed
+   through), then in invocation 0 each fork and join phase instance in turn, the patch constants in temps, written
+   out at the end (the host takes tessellation factors one component at a time) */
+static void hull_body(struct tg *g)
+{
+    const struct dxbc_shader *sh = g->sh;
+    int cp = -1;
+    for (int k = 0; k < sh->nphase; k++)
+        if (sh->phase[k].kind == 0)
+            cp = k;
+    if (cp >= 0) {
+        g->phase = 0, g->phase_inst = 0;
+        g->phase_end = cp + 1 < sh->nphase ? sh->phase[cp + 1].start : sh->ncode;
+        for (int pc = sh->phase[cp].start; pc < g->phase_end && !g->fail; pc++)
+            instruction(g, pc);
+    } else {
+        uint32_t done = 0;
+        put(&g->code, "UARL ADDR[0].x, SV[0].xxxx\n");
+        for (int i = 0; i < sh->nout; i++) {
+            uint32_t r = sh->out[i].reg;
+            if (r >= 32 || (done >> r & 1))
+                continue;
+            done |= 1u << r;
+            put(&g->code, "MOV OUT[0][");
+            putu(&g->code, r);
+            put(&g->code, "], IN[ADDR[0].x+0][");
+            putu(&g->code, r);
+            put(&g->code, "]\n");
+        }
+    }
+    int zero = immediate(g, 0, 0, 0, 0);
+    put(&g->code, "USEQ ");
+    put_temp(g, 0, ".x, SV[0].xxxx, IMM[");
+    putu(&g->code, (uint32_t)zero);
+    put(&g->code, "].xxxx\nUIF ");
+    put_temp(g, 0, ".xxxx\n");
+    for (int k = 0; k < sh->nphase && !g->fail; k++) {
+        if (sh->phase[k].kind == 0)
+            continue;
+        g->phase = sh->phase[k].kind;
+        g->phase_end = k + 1 < sh->nphase ? sh->phase[k + 1].start : sh->ncode;
+        for (uint32_t i = 0; i < sh->phase[k].instances && !g->fail; i++) {
+            g->phase_inst = (int)i;
+            for (int pc = sh->phase[k].start; pc < g->phase_end && !g->fail; pc++)
+                instruction(g, pc);
+        }
+    }
+    g->phase = 0;
+    uint32_t max_bits; /* dcl_hs_maxtessfactor, up to 64 (as bits: positive floats order as integers) */
+    memcpy(&max_bits, &sh->max_tess, 4);
+    if (max_bits == 0 || max_bits >= 0x42800000u)
+        max_bits = 0x42800000u;
+    int cap = immediate(g, max_bits, max_bits, max_bits, max_bits);
+    for (int i = 0; i < sh->npc; i++) {
+        const struct dxbc_sig_elem *e = &sh->pc[i];
+        int comp, reg = pc_place(e, &comp);
+        if ((int)e->reg >= g->npc || comp > 3)
+            continue;
+        if (comp < 0) /* below, with the whole registers */
+            continue;
+        struct text *t = &g->code;
+        put(t, comp >= 0 ? "MIN OUT[" : "MOV OUT[");
+        putu(t, (uint32_t)reg);
+        put(t, "]");
+        if (comp >= 0) {
+            char m[3] = {'.', "xyzw"[comp], 0};
+            put(t, m);
+        } else if (e->mask != 15) {
+            put(t, mask_text(e->mask));
+        }
+        put(t, ", TEMP[");
+        putu(t, (uint32_t)(g->pcbase + (int)e->reg));
+        put(t, "](9)");
+        if (comp >= 0) {
+            char c = "xyzw"[low_comp(e->mask)];
+            char sw[6] = {'.', c, c, c, c, 0};
+            put(t, sw);
+            put(t, ", IMM[");
+            putu(t, (uint32_t)cap);
+            put(t, "].xxxx");
+        } else {
+            put(t, ".xyzw");
+        }
+        put(t, "\n");
+    }
+    /* every patch constant register as a patch varying for the domain shader (which also reads the factors from
+       there: the host's domain shader cannot read the tessellation levels back) */
+    for (int r = 0; r < g->npc; r++) {
+        put(&g->code, "MOV OUT[");
+        putu(&g->code, (uint32_t)(TESS_PATCH + r));
+        put(&g->code, "], TEMP[");
+        putu(&g->code, (uint32_t)(g->pcbase + r));
+        put(&g->code, "](9).xyzw\n");
+    }
+    put(&g->code, "ENDIF\n");
+}
+
+/* the domain shader's patch constants into their temps first */
+static void domain_prologue(struct tg *g)
+{
+    for (int r = 0; r < g->npc; r++) {
+        put(&g->code, "MOV TEMP[");
+        putu(&g->code, (uint32_t)(g->pcbase + r));
+        put(&g->code, "](9), IN[");
+        putu(&g->code, (uint32_t)(TESS_PATCH + r));
+        put(&g->code, "].xyzw\n");
+    }
+}
+
 /* ---- declarations */
 
 static void decl_reg(struct text *t, const char *file, int n, const char *rest)
@@ -1320,7 +1523,7 @@ static bool clip_layout(struct tg *g)
     uint32_t regs = 0;
     g->clip_reg[0] = g->clip_reg[1] = -1;
     g->nclip = g->ncull = 0;
-    if (sh->stage != DXBC_VS && sh->stage != DXBC_GS)
+    if (sh->stage != DXBC_VS && sh->stage != DXBC_GS && sh->stage != DXBC_DS)
         return true;
     for (int i = 0; i < sh->nout; i++) {
         uint32_t r = sh->out[i].reg, sv = sh->out[i].system_value;
@@ -1364,7 +1567,33 @@ static bool declarations(struct tg *g, struct text *t)
     put(t, sh->stage == DXBC_VS   ? "VERT\n"
            : sh->stage == DXBC_GS ? "GEOM\n"
            : sh->stage == DXBC_CS ? "COMP\n"
+           : sh->stage == DXBC_HS ? "TESS_CTRL\n"
+           : sh->stage == DXBC_DS ? "TESS_EVAL\n"
                                   : "FRAG\n");
+    if (sh->stage == DXBC_HS) {
+        put(t, "PROPERTY TCS_VERTICES_OUT ");
+        putu(t, sh->cp_out ? sh->cp_out : sh->cp_in ? sh->cp_in : 1);
+        put(t, "\n");
+    }
+    if (sh->stage == DXBC_DS) {
+        /* spacing and winding come from the hull shader; D3D's domain has its origin at the top left, GL's at the
+           bottom left, so the same triangles turn the other way */
+        static const char *const prim[4] = {"", "1", "4", "7"}; /* gallium's LINES, TRIANGLES, QUADS */
+        static const char spacing[5] = {'2', '2', '2', '0', '1'}; /* integer, pow2: equal; fractional odd, even */
+        const struct dxbc_shader *hs = g->hs;
+        if (!hs || sh->domain < 1 || sh->domain > 3 || hs->partitioning > 4)
+            return fail(g, "a domain shader without its hull shader");
+        put(t, "PROPERTY TES_PRIM_MODE ");
+        put(t, prim[sh->domain]);
+        put(t, "\nPROPERTY TES_SPACING ");
+        char sp[2] = {spacing[hs->partitioning], 0};
+        put(t, sp);
+        put(t, "\nPROPERTY TES_VERTEX_ORDER_CW ");
+        put(t, hs->out_prim == 4 ? "1" : "0");
+        put(t, "\nPROPERTY TES_POINT_MODE ");
+        put(t, hs->out_prim == 1 ? "1" : "0");
+        put(t, "\n");
+    }
     if (sh->stage == DXBC_CS) {
         static const char *const dim[3] = {"WIDTH", "HEIGHT", "DEPTH"};
         for (int i = 0; i < 3; i++) {
@@ -1435,6 +1664,46 @@ static bool declarations(struct tg *g, struct text *t)
             decl_reg(t, "SV", 0, ", PRIMID");
         if (g->gs_sv & 2)
             decl_reg(t, "SV", 1, ", INVOCATIONID");
+    } else if (sh->stage == DXBC_HS || sh->stage == DXBC_DS) {
+        for (int i = 0; i < sh->nin; i++) { /* the control points */
+            uint32_t r = sh->in[i].reg, sv = sh->in[i].system_value;
+            if (r >= 32 || (done & (1u << r)))
+                continue;
+            done |= 1u << r;
+            if (sv != 0 && sv != 1)
+                return fail(g, "a control point system value");
+            put(t, "DCL IN[][");
+            putu(t, r);
+            put(t, sv == 1 ? "], POSITION\n" : "], GENERIC[");
+            if (sv != 1) {
+                putu(t, r);
+                put(t, "]\n");
+            }
+        }
+        if (sh->stage == DXBC_HS) {
+            decl_reg(t, "SV", 0, ", INVOCATIONID");
+            if (g->hs_primid)
+                decl_reg(t, "SV", 1, ", PRIMID");
+        } else {
+            decl_reg(t, "SV", 0, ", TESSCOORD");
+        }
+        /* the patch constants: every register as a patch varying, and the hull shader's tessellation factors */
+        bool outer = false, inner = false;
+        for (int i = 0; i < sh->npc && sh->stage == DXBC_HS; i++) {
+            int comp, reg = pc_place(&sh->pc[i], &comp);
+            outer |= reg == TESS_OUTER, inner |= reg == TESS_INNER;
+        }
+        if (outer)
+            decl_reg(t, "OUT", TESS_OUTER, ", TESSOUTER");
+        if (inner)
+            decl_reg(t, "OUT", TESS_INNER, ", TESSINNER");
+        for (int r = 0; r < g->npc; r++) {
+            put(t, sh->stage == DXBC_HS ? "DCL OUT[" : "DCL IN[");
+            putu(t, (uint32_t)(TESS_PATCH + r));
+            put(t, "], PATCH[");
+            putu(t, (uint32_t)r);
+            put(t, "]\n");
+        }
     } else {
         for (int i = 0; i < sh->nin; i++) {
             uint32_t r = sh->in[i].reg;
@@ -1470,7 +1739,22 @@ static bool declarations(struct tg *g, struct text *t)
             decl_reg(t, "SV", k, g->sv_name[k] == 7 ? ", PRIMID" : ", SAMPLEID");
     }
     done = 0;
-    for (int i = 0; i < sh->nout; i++) {
+    for (int i = 0; i < sh->nout && sh->stage == DXBC_HS; i++) {
+        uint32_t r = sh->out[i].reg, sv = sh->out[i].system_value;
+        if (r >= 32 || (done & (1u << r)))
+            continue;
+        done |= 1u << r;
+        if (sv != 0 && sv != 1)
+            return fail(g, "a control point system value output");
+        put(t, "DCL OUT[][");
+        putu(t, r);
+        put(t, sv == 1 ? "], POSITION\n" : "], GENERIC[");
+        if (sv != 1) {
+            putu(t, r);
+            put(t, "]\n");
+        }
+    }
+    for (int i = 0; i < sh->nout && sh->stage != DXBC_HS; i++) {
         uint32_t r = sh->out[i].reg, sv = sh->out[i].system_value;
         if (sh->stage == DXBC_PS && (r == 0xffffffffu || !strncmp(sh->out[i].name, "SV_Depth", 8) ||
                                      !strncmp(sh->out[i].name, "SV_DEPTH", 8)))
@@ -1538,6 +1822,13 @@ static bool declarations(struct tg *g, struct text *t)
     put(t, "..");
     putu(t, (uint32_t)total - 1);
     put(t, "]\n");
+    if (g->npc) { /* the patch constants, indexable */
+        put(t, "DCL TEMP[");
+        putu(t, (uint32_t)g->pcbase);
+        put(t, "..");
+        putu(t, (uint32_t)(g->pcbase + g->npc - 1));
+        put(t, "], ARRAY(9)\n");
+    }
     put(t, "DCL ADDR[0..2]\n");
     for (int s = 0; s < DXBC_MAX_CB; s++)
         if (g->used_cb & (1u << s)) {
@@ -1581,7 +1872,8 @@ static bool declarations(struct tg *g, struct text *t)
     return true;
 }
 
-bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct dxbc_tgsi *out)
+bool dxbc_tgsi_tess(const struct dxbc_shader *sh, const struct dxbc_shader *hs, const uint16_t *uav_format,
+                    struct dxbc_tgsi *out)
 {
     memset(out, 0, sizeof(*out));
     memset(out->tex_sampler, 0xff, sizeof(out->tex_sampler));
@@ -1592,13 +1884,16 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct 
     }
     memset(g, 0, sizeof(*g));
     g->sh = sh, g->out = out, g->uav_format = uav_format;
-    if (sh->stage != DXBC_VS && sh->stage != DXBC_PS && sh->stage != DXBC_GS && sh->stage != DXBC_CS)
-        fail(g, "hull and domain shaders");
+    g->hs = hs;
     int next = sh->temps;
     for (int x = 0; x < 8; x++)
         if (sh->xtemps[x])
             g->xbase[x] = next, next += sh->xsize[x];
     g->s0 = next;
+    g->pcbase = next + 6;
+    for (int i = 0; i < sh->npc; i++)
+        if ((int)sh->pc[i].reg + 1 > g->npc && sh->pc[i].reg < 32)
+            g->npc = (int)sh->pc[i].reg + 1;
     g->depth_reg = sh->max_out_reg + 1;
     for (int r = 0; r < 32; r++)
         g->sv_in[r] = -1;
@@ -1648,8 +1943,14 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct 
         put(&g->code, "].xxxx, ");
         put_temp(g, 5, ".xxxx\n");
     }
-    for (int pc = 0; pc < sh->ncode && !g->fail; pc++)
-        instruction(g, pc);
+    if (sh->stage == DXBC_HS) {
+        hull_body(g);
+    } else {
+        if (sh->stage == DXBC_DS)
+            domain_prologue(g);
+        for (int pc = 0; pc < sh->ncode && !g->fail; pc++)
+            instruction(g, pc);
+    }
     put(&g->code, "END\n");
     if (g->srv_high & g->used_counter)
         fail(g, "a buffer t16 or later and a hidden counter");
@@ -1673,6 +1974,11 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct 
     }
     out->text = t.p, out->len = t.len;
     return true;
+}
+
+bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct dxbc_tgsi *out)
+{
+    return dxbc_tgsi_tess(sh, NULL, uav_format, out);
 }
 
 void dxbc_tgsi_free(struct dxbc_tgsi *out)
