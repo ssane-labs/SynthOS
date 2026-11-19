@@ -24,7 +24,7 @@
 | 9 | Intel Gen9–Xe: дисплей (DDI, eDP/HDMI/DP), GTT, кольца команд, блиттер, затем 3D‑конвейер | дальше |
 | 10 | AMD (GCN/RDNA) и NVIDIA — после Intel; NVIDIA — только через открытые модули GSP | дальше |
 | 11 | Vulkan (для DXVK‑подобного пути и родных игр), Direct3D 9/10/12 | дальше |
-| 12 | Steam‑клиент: CEF/Chromium в слое Win32, затем CS2 | дальше |
+| 12 | Steam‑клиент: CEF/Chromium в слое Win32, затем CS2 | начато: Chromium рисует через ANGLE на нашем D3D11 (WebGL, композитинг) на видеокарте хоста |
 
 ## Что умеет Direct3D 11 сейчас
 
