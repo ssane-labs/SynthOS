@@ -385,7 +385,7 @@ bool virtio_gpu_set(int gpu, int scanout, int w, int h, struct virtio_screen *vs
         kfree_pages(vs->pixels);
     }
     kfree_pages(ents);
-    *vs = (struct virtio_screen){gpu, scanout, id, pixels, w, h};
+    *vs = (struct virtio_screen){gpu, scanout, id, pixels, w, h, 0};
     *fb = (struct framebuffer){.base = pixels, .width = (uint32_t)w, .height = (uint32_t)h, .pitch = (uint32_t)w * 4,
                                .bpp = 32, .red_shift = 16, .green_shift = 8, .blue_shift = 0};
     memset(pixels, 0, bytes);
@@ -643,7 +643,7 @@ uint32_t virtio_gpu_resource_3d(int gpu, uint32_t ctx, const struct virtio_res3d
         struct hdr h;
         uint32_t id, target, format, bind, w, h2, depth, array, last_level, samples, flags, pad;
     } c = {{.type = CMD_RESOURCE_CREATE_3D, .ctx = ctx}, id, r->target, r->format, r->bind, r->w, r->h ? r->h : 1,
-           r->depth ? r->depth : 1, r->array ? r->array : 1, r->levels ? r->levels - 1 : 0, r->samples, 0, 0};
+           r->depth ? r->depth : 1, r->array ? r->array : 1, r->levels ? r->levels - 1 : 0, r->samples, r->flags, 0};
     struct {
         struct hdr h;
         uint32_t id, pad;
@@ -730,6 +730,35 @@ bool virtio_gpu_transfer_box(int gpu, uint32_t ctx, uint32_t id, bool to_host, u
 
 /* Sends a command stream (virgl's protocol) to the context, from memory in one page; with wait, returns once the
    host has run it. */
+void virtio_gpu_scanout_3d(struct virtio_screen *vs, uint32_t id, int w, int h)
+{
+    struct vgpu *g = &gpus[vs->gpu];
+    uint32_t res = id ? id : vs->resource;
+    struct vrect r = {0, 0, (uint32_t)(id ? w : vs->w), (uint32_t)(id ? h : vs->h)};
+    struct {
+        struct hdr h;
+        struct vrect r;
+        uint32_t scanout, id;
+    } set = {{.type = CMD_SET_SCANOUT}, r, (uint32_t)vs->scanout, res};
+    struct {
+        struct hdr h;
+        struct vrect r;
+        uint32_t id, pad;
+    } flush = {{.type = CMD_RESOURCE_FLUSH}, r, res, 0};
+    uint32_t flags = hal_irq_save();
+    if (vs->shown != id)
+        submit(g, &set, sizeof(set), NULL, 0, sizeof(struct hdr), NULL);
+    vs->shown = id;
+    hal_irq_restore(flags);
+    if (id) {
+        flags = hal_irq_save();
+        submit(g, &flush, sizeof(flush), NULL, 0, sizeof(struct hdr), NULL);
+        hal_irq_restore(flags);
+    } else {
+        virtio_gpu_present(vs, 0, 0, vs->w, vs->h);
+    }
+}
+
 bool virtio_gpu_submit_3d(int gpu, uint32_t ctx, const uint32_t *cmd, uint32_t dwords, bool wait)
 {
     struct vgpu *g = gpu3d(gpu);

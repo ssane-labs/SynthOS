@@ -595,6 +595,7 @@ struct swapchain {
     uint32_t width, height, format, count, usage, flags, effect, scaling, alpha, windowed;
     uint32_t presents;
     uint64_t last_present;
+    bool scanout; /* full screen: the screen shows the back buffer straight from the host's graphics card */
 };
 
 static void context_unbind_all(struct context *c)
@@ -694,6 +695,8 @@ static void destroy(struct cobj *o)
         break;
     case K_SWAPCHAIN:
         if (o->sc) {
+            if (o->sc->scanout)
+                gd_scanout(NULL, 0, 0);
             drop(o->sc->buffer);
             kfree(o->sc);
         }
@@ -756,6 +759,8 @@ void w32_d3d_cleanup(void)
             kfree(o->layout);
             break;
         case K_SWAPCHAIN:
+            if (o->sc && o->sc->scanout)
+                gd_scanout(NULL, 0, 0);
             kfree(o->sc);
             break;
         default:
@@ -3352,7 +3357,7 @@ static uint64_t create_swapchain(struct cobj *dev, HANDLE window, const uint32_t
     if (!s)
         return E_OUTOFMEMORY;
     *s = (struct swapchain){window, NULL, d1[0], d1[1], format, d1[7] ? d1[7] : 1, d1[6], d1[11], d1[9], d1[8],
-                            d1[10], windowed, 0, 0};
+                            d1[10], windowed, 0, 0, false};
     fit_window(s);
     struct cobj *o = new_obj(K_SWAPCHAIN, dev, SP_SWAPCHAIN, -1, -1);
     if (!o || !(s->buffer = swap_buffer(dev, s))) {
@@ -3374,10 +3379,16 @@ static uint64_t present(struct cobj *o, uint32_t sync, uint32_t flags)
     struct swapchain *s = o->sc;
     if (flags & 1) /* DXGI_PRESENT_TEST */
         return S_OK;
+    uint32_t sw, sh;
+    screen_size(&sw, &sh);
+    bool shown = !s->windowed && gd_scanout(s->buffer->res.r, sw, sh);
+    if (s->scanout && !shown)
+        gd_scanout(NULL, 0, 0);
+    s->scanout = shown;
     HANDLE(WINAPI * get_dc)(HANDLE) = (HANDLE(WINAPI *)(HANDLE))user32("GetDC");
     int(WINAPI * release_dc)(HANDLE, HANDLE) = (int(WINAPI *)(HANDLE, HANDLE))user32("ReleaseDC");
     uint32_t w, h;
-    HANDLE dc = get_dc && client_size(s->window, &w, &h) ? get_dc(s->window) : NULL;
+    HANDLE dc = !shown && get_dc && client_size(s->window, &w, &h) ? get_dc(s->window) : NULL;
     if (dc) {
         int ox, oy;
         struct rect clip;
@@ -3430,6 +3441,9 @@ static uint64_t m_get_buffer(struct cobj *o, uint64_t *a, const uint64_t *f)
 static uint64_t m_set_fullscreen(struct cobj *o, uint64_t *a, const uint64_t *f)
 {
     o->sc->windowed = !(uint32_t)a[1];
+    if (o->sc->windowed && o->sc->scanout)
+        gd_scanout(NULL, 0, 0);
+    o->sc->scanout = o->sc->scanout && !o->sc->windowed;
     return S_OK;
 }
 

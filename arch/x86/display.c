@@ -344,6 +344,20 @@ void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h
 #endif
 }
 
+bool hal_screen_show_host(int gpu, uint32_t id, int w, int h)
+{
+#ifdef __x86_64__
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_VIRTIO && outputs[i].active && outputs[i].vs.gpu == gpu && outputs[i].vs.resource) {
+            virtio_gpu_scanout_3d(&outputs[i].vs, id, w, h);
+            return true;
+        }
+#else
+    UNUSED(gpu), UNUSED(id), UNUSED(w), UNUSED(h);
+#endif
+    return false;
+}
+
 bool hal_cursor_image(const struct framebuffer *fb, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x,
                       int y)
 {

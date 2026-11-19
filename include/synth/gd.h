@@ -115,6 +115,10 @@ void gd_resource_ref(struct gd_resource *r);
 void gd_resource_unref(struct gd_resource *r);
 void gd_resource_desc(const struct gd_resource *r, struct gd_res_desc *out);
 uint32_t gd_subresources(const struct gd_resource *r);
+/* Shows subresource 0 of a 2D texture on the first screen, stretched to w x h, straight from the host's graphics
+   card (its pixels do not come back here); NULL gives the screen back to its framebuffer. False when it cannot be
+   shown that way. */
+bool gd_scanout(struct gd_resource *r, uint32_t w, uint32_t h);
 
 /* all of a resource's subresources: whole pages of kernel memory, so a program's Map can see them in place */
 uint8_t *gd_resource_memory(struct gd_resource *r, uint32_t *bytes);

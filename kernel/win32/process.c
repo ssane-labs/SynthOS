@@ -1934,7 +1934,11 @@ int w32_d3d11_for;
 /* Chromium draws through ANGLE on our Direct3D 11 when asked to, or by itself when the host's card does the work */
 bool w32_d3d11_chromium(void)
 {
+#ifdef __x86_64__
     return w32_d3d11_for == 1 || (!w32_d3d11_for && gd_host_gpu());
+#else
+    return w32_d3d11_for == 1; /* no host graphics card here */
+#endif
 }
 
 static void get_d3d11_for(char *buf, size_t cap)

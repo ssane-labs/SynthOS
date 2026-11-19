@@ -88,6 +88,9 @@ const char *hal_screen_name(int index);
 int hal_screen_modes(int index, struct display_mode *out, int max);
 bool hal_screen_open(int index, int width, int height, struct framebuffer *fb);
 void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h);
+/* The first screen of virtio-gpu gpu shows its 3D resource id (w x h) instead of its framebuffer, or the
+   framebuffer again with id 0; false when no screen of that card is open */
+bool hal_screen_show_host(int gpu, uint32_t id, int w, int h);
 /* a pointer the display hardware draws over the screen (virtio-gpu): its picture and hot spot, then where it is;
    false: this screen has none, the pointer is drawn into the picture */
 bool hal_cursor_image(const struct framebuffer *fb, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x,

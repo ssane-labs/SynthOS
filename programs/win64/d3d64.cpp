@@ -260,8 +260,19 @@ int main(int argc, char **argv)
            "get=%d deferred=%d drawn=%06x so=%d\n",
            (unsigned)level, name, modes > 0, SUCCEEDED(shaders), mapped, (unsigned long long)samples,
            left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after, streamed);
-    /* d3d64 show: the triangle stays on screen, its tint changing every frame */
-    for (int frame = 0; chain && argc > 1 && !strcmp(argv[1], "show") && frame < 600; frame++) {
+    /* d3d64 show: the triangle stays on screen, its tint changing every frame; d3d64 full: the same on the whole
+       screen for five seconds */
+    bool full = chain && argc > 1 && !strcmp(argv[1], "full");
+    if (full) {
+        HRESULT hr = chain->SetFullscreenState(TRUE, NULL);
+        BOOL state = FALSE;
+        chain->GetFullscreenState(&state, NULL);
+        printf("d3d11 full screen=%d set=%lx\n", state, (unsigned long)hr);
+        D3D11_VIEWPORT top = {0, 0, 32, 32, 0, 1}; /* the top left quarter: shows which way up the screen is */
+        ctx->RSSetViewports(1, &top);
+    }
+    for (int frame = 0; chain && argc > 1 && (full || !strcmp(argv[1], "show")) && frame < (full ? 300 : 600);
+         frame++) {
         MSG msg;
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE))
             DispatchMessageA(&msg);
@@ -274,6 +285,12 @@ int main(int argc, char **argv)
         ctx->ClearRenderTargetView(rtv, blue);
         ctx->Draw(3, 0);
         chain->Present(1, 0);
+    }
+    if (full) {
+        chain->SetFullscreenState(FALSE, NULL);
+        ctx->ClearRenderTargetView(rtv, blue);
+        chain->Present(0, 0);
+        printf("d3d11 windowed again\n");
     }
     return 0;
 }

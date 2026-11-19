@@ -6,6 +6,7 @@
 #if defined(__x86_64__) && !defined(RS_HOST)
 
 #include <synth/fmt.h>
+#include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/log.h>
 #include <synth/command.h>
@@ -23,11 +24,11 @@ enum {
     C_SAMPLER_STATES = 18, C_BEGIN_QUERY = 19, C_END_QUERY = 20, C_QUERY_RESULT = 21, C_SAMPLE_MASK = 24,
     C_STREAMOUT_TARGETS = 25,
     C_UNIFORM_BUFFER = 27, C_BIND_SHADER = 31, C_SHADER_BUFFERS = 34, C_SHADER_IMAGES = 35, C_MEMORY_BARRIER = 36,
-    C_LAUNCH_GRID = 37, C_FRAMEBUFFER_NO_ATTACH = 38,
+    C_BLIT = 16, C_LAUNCH_GRID = 37, C_FRAMEBUFFER_NO_ATTACH = 38,
     O_BLEND = 1, O_RASTERIZER = 2, O_DSA = 3, O_SHADER = 4, O_VERTEX_ELEMENTS = 5, O_SAMPLER_VIEW = 6,
     O_SAMPLER_STATE = 7, O_SURFACE = 8, O_QUERY = 9, O_STREAMOUT_TARGET = 10,
     B_DEPTH_STENCIL = 1 << 0, B_RENDER_TARGET = 1 << 1, B_SAMPLER_VIEW = 1 << 3, B_VERTEX = 1 << 4,
-    B_CONSTANT = 1 << 6, B_SHADER_BUFFER = 1 << 14, B_CUSTOM = 1 << 17,
+    B_CONSTANT = 1 << 6, B_SHADER_BUFFER = 1 << 14, B_CUSTOM = 1 << 17, B_SCANOUT = 1 << 18,
     SH_VERTEX = 0, SH_FRAGMENT = 1, SH_GEOMETRY = 2, SH_TESS_CTRL = 3, SH_TESS_EVAL = 4, SH_COMPUTE = 5,
 };
 
@@ -61,6 +62,9 @@ static struct {
     bool fresh_so[8];
     int nfresh;
     bool bad_next;
+    /* a full-screen picture: the texture the screen shows, its size, the context it is attached to */
+    uint32_t scan, scan_w, scan_h, scan_gen;
+    bool shown;
     volatile int lock;
 } H;
 
@@ -1443,6 +1447,51 @@ static const struct setting s_host = {"hostgpu", "on|off",
                                       "draw Direct3D on the host's graphics card when there is one (virtio-gpu 3D)",
                                       get_host, set_host};
 SETTING(s_host);
+
+bool gd_scanout(struct gd_resource *r, uint32_t w, uint32_t h)
+{
+    if (!r) {
+        if (H.shown)
+            hal_screen_show_host(H.gpu, 0, 0, 0);
+        H.shown = false;
+        return true;
+    }
+    if (!ready() || r->d.dim != GD_TEX2D || r->d.samples > 1 || !w || !h || w > 8192 || h > 8192)
+        return false;
+    lock();
+    uint32_t src = to_gpu(r), format = resource_format(r);
+    if (H.scan && H.scan_gen != H.gen)
+        virtio_gpu_ctx_attach(H.gpu, H.ctx, H.scan);
+    H.scan_gen = H.gen;
+    if (src && H.scan && (H.scan_w != w || H.scan_h != h)) {
+        flush(false);
+        if (H.shown)
+            hal_screen_show_host(H.gpu, 0, 0, 0);
+        H.shown = false;
+        virtio_gpu_resource_unref(H.gpu, H.ctx, H.scan);
+        H.scan = 0;
+    }
+    if (src && !H.scan) {
+        struct virtio_res3d d = {.target = 2, .format = 2 /* B8G8R8X8 */, .bind = B_RENDER_TARGET | B_SCANOUT,
+                                 .w = w, .h = h, .flags = 1 /* Y_0_TOP */};
+        flush(false);
+        H.scan = virtio_gpu_resource_3d(H.gpu, H.ctx, &d, NULL, 0);
+        H.scan_w = w, H.scan_h = h;
+    }
+    bool ok = src && H.scan;
+    if (ok) {
+        cmd(C_BLIT, 0, 21);
+        put(0xf | 1 << 8 /* RGBA, linear filter */), put(0), put(0);
+        put(H.scan), put(0), put(2), put(0), put(0), put(0), put(w), put(h), put(1);
+        /* the screen shows rows the other way up: the blit reads from the last row, a negative height */
+        put(src), put(0), put(format), put(0), put(r->d.height), put(0), put(r->d.width), put(-r->d.height), put(1);
+        ok = flush(false);
+    }
+    unlock();
+    ok = ok && hal_screen_show_host(H.gpu, H.scan, (int)w, (int)h);
+    H.shown = ok;
+    return ok;
+}
 
 bool gd_host_gpu(void)
 {
