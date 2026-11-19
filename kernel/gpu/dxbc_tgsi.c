@@ -1810,9 +1810,11 @@ static bool declarations(struct tg *g, struct text *t)
     if (g->shared)
         decl_reg(t, "MEMORY", 0, ", SHARED");
     int total = g->s0 + (sh->stage == DXBC_CS ? 6 : g->face >= 0 ? 5 : 4);
-    put(t, "DCL TEMP[0..");
-    putu(t, (uint32_t)(sh->temps > 0 ? sh->temps - 1 : 0));
-    put(t, "]\n");
+    if (sh->temps > 0) { /* none in a shader without r#: the scratch temps may then start at TEMP[0] */
+        put(t, "DCL TEMP[0..");
+        putu(t, (uint32_t)sh->temps - 1);
+        put(t, "]\n");
+    }
     for (int x = 0; x < 8; x++)
         if (sh->xtemps[x]) {
             put(t, "DCL TEMP[");
