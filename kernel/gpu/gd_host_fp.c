@@ -47,6 +47,7 @@ static struct {
     struct gd_sampler samp_key[6][16];
     /* occlusion: one query open across draws, read when someone asks */
     uint32_t query, query_buf, *query_mem, drawn_since;
+    uint32_t so_query; /* the primitives a geometry shader's stream output wrote, at 64 in query_buf */
     uint64_t draws, software;
     char why[64];
     volatile int lock;
@@ -445,7 +446,8 @@ static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *u
         memcpy(s->uav_format, uav_format, sizeof(s->uav_format));
     if (s->host)
         return s->host > 0 ? (uint32_t)s->host : 0;
-    uint32_t h = create_shader(s, type, uav_format, NULL, NULL);
+    /* a geometry shader declares its stream output itself */
+    uint32_t h = create_shader(s, type, uav_format, type == SH_GEOMETRY ? s->so : NULL, NULL);
     s->host = h ? (int32_t)h : -1;
     return h;
 }
@@ -754,6 +756,26 @@ static bool refuse(const char *why)
     return false;
 }
 
+/* after a draw with a geometry shader's stream output: the bytes it wrote to each bound buffer, from the host's count
+   of the primitives written (this waits for the draw) */
+static bool so_emitted(const struct gd_shader *gs, uint32_t *bytes)
+{
+    cmd(C_END_QUERY, 0, 1);
+    put(H.so_query);
+    cmd(C_QUERY_RESULT, 0, 2);
+    put(H.so_query), put(1);
+    flush(true);
+    uint32_t box[6] = {64, 0, 0, 16, 1, 1};
+    if (!virtio_gpu_transfer_box(H.gpu, H.ctx, H.query_buf, false, 0, box, 64, 0, 0, true))
+        return false;
+    uint64_t n;
+    memcpy(&n, (const uint8_t *)H.query_mem + 72, 8);
+    uint32_t verts = gs->sh.gs_out == 1 ? 1 : gs->sh.gs_out == 3 ? 2 : 3; /* points, line or triangle strips */
+    for (int b = 0; b < GD_SLOTS_SO; b++)
+        bytes[b] = (uint32_t)(n * verts * gs->so->stride[b]);
+    return true;
+}
+
 static const int8_t prims[14] = {-1, 0, 1, 3, 4, 5, -1, -1, -1, -1, 10, 11, 12, 13};
 
 /* ---- compute */
@@ -978,8 +1000,6 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         targets |= c->so[i] != NULL;
     const struct so_decl *so = so_vs ? so_vs->so : gs ? gs->so : NULL;
     bool discard = so && so->rasterized != 0;
-    if (gs && gs->so && targets)
-        return refuse("stream output from a geometry shader");
     if (tess && so)
         return refuse("stream output after tessellation");
     if (gs && (gs->sh.stage != DXBC_GS || gs->host < 0))
@@ -987,6 +1007,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     if (!tess && (c->topology >= 14 || prims[c->topology] < 0))
         return refuse("topology");
     uint32_t so_bytes[GD_SLOTS_SO] = {0}; /* what stream output writes to each buffer */
+    bool gs_so = gs && gs->so && targets; /* counted by the host: the geometry shader decides how much */
     if (so_vs && targets && !so_written(c, so, indexed, count, instances, so_bytes))
         return refuse("stream output of an indexed strip");
     if (so_vs && so_vs->so_host < 0 && so_vs->so_vs == vs->serial)
@@ -1127,7 +1148,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     }
     uint32_t so_targets[GD_SLOTS_SO] = {0};
     int nso = 0;
-    if (so_vs && targets) { /* each buffer from where it is filled to */
+    if ((so_vs || gs_so) && targets) { /* each buffer from where it is filled to */
         for (int b = 0; b < GD_SLOTS_SO; b++) {
             struct gd_resource *r = c->so[b];
             if (!r)
@@ -1145,6 +1166,15 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         for (int b = 0; b < nso; b++)
             put(so_targets[b]);
     }
+    if (gs_so) {
+        if (!H.so_query) {
+            H.so_query = handle();
+            cmd(C_CREATE, O_QUERY, 4);
+            put(H.so_query), put(7 /* PRIMITIVES_EMITTED */), put(64), put(H.query_buf);
+        }
+        cmd(C_BEGIN_QUERY, 0, 1);
+        put(H.so_query);
+    }
     uint32_t mode = tess ? 14 /* patches */ : (uint32_t)prims[c->topology];
     bool strip = mode == 3 || mode == 5 || mode == 11 || mode == 13;
     cmd(C_DRAW, 0, tess ? 14 : 12);
@@ -1153,6 +1183,10 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     put(0), put(0xffffffffu), put(0);
     if (tess)
         put(c->topology - 32), put(0); /* control points a patch, the draw number */
+    if (gs_so && !so_emitted(gs, so_bytes)) /* what it wrote is unknown: the buffers count as full */
+        for (int b = 0; b < nso; b++)
+            so_bytes[b] = c->so[b] && c->so[b]->size > c->so[b]->so_filled
+                              ? (uint32_t)c->so[b]->size - c->so[b]->so_filled : 0;
     for (int i = 0; i < 8; i++)
         if (c->rtv[i])
             c->rtv[i]->r->where = HOST_GPU_NEWER;

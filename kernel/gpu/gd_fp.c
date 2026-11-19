@@ -1129,6 +1129,7 @@ bool gd_shader_set_so(struct gd_shader *s, const struct gd_so_entry *e, uint32_t
     }
     kfree(s->so);
     s->so = so;
+    gd_host_forget_shader(s); /* the host's copies were made with the old declaration */
     return true;
 bad:
     kfree(so);

@@ -691,6 +691,26 @@ static void draw_tests(void)
         expect(pixel(32, 32) == 0x00ff00 && pixel(29, 30) == 0x00ff00 && pixel(35, 35) == 0x00ff00 &&
                    pixel(40, 32) == 0 && pixel(32, 24) == 0,
                "the geometry shader's triangles are drawn");
+        /* its stream output: the two triangles of the strip, then nothing while a third does not fit */
+        {
+            struct gd_so_entry so[1] = {{0, "SV_Position", 0, 0, 4, 0}};
+            uint32_t stride = 16;
+            static uint8_t zero[6 * 16 + 20];
+            struct gd_resource *sob = buffer(zero, sizeof(zero), GD_BIND_STREAM_OUTPUT);
+            expect(gsh && gd_shader_set_so(gsh, so, 1, &stride, 1, 0), "a geometry shader with stream output");
+            gd_set_so_target(ctx, 0, sob, 0);
+            draw_verts(gp, 1);
+            draw_verts(gp, 1);
+            gd_set_so_target(ctx, 0, NULL, 0);
+            float got[8];
+            memcpy(got, gd_subresource(sob, 0, NULL), sizeof(got));
+            expect(gd_so_filled(sob) == 96 && near(got[0], PX(32) - k, 1e-5f) && near(got[1], PY(32) - k, 1e-5f) &&
+                       got[2] == 0.5f && got[3] == 1 && near(got[4], PX(32) + k, 1e-5f),
+                   "a geometry shader's stream output");
+            if (gd_so_filled(sob) != 96)
+                printf("  %u bytes\n", gd_so_filled(sob));
+            gd_resource_unref(sob);
+        }
         gd_set_shader(ctx, 2, NULL);
         gd_set_raster(ctx, NULL);
         gd_set_topology(ctx, 4);
