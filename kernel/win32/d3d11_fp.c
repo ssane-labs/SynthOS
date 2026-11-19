@@ -9,13 +9,11 @@
 
 #ifdef SYNTH_X32
 
-#include <synth/error.h>
 #include <synth/gd.h>
 #include <synth/gui.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/log.h>
-#include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -2888,12 +2886,10 @@ static const method cmdlist_fns[] = {DEVICE_CHILD, [7] = m_zero /* GetContextFla
 /* ---- who asks: Chromium keeps a PC without a graphics driver */
 
 static W32_STATE int chromium_answer; /* 0 not looked yet, 1 no, 2 yes */
-static int d3d11_for; /* the "w32d3d11" setting: 0 auto (not Chromium), 1 every program, 2 none */
-
 static bool chromium(void)
 {
-    if (d3d11_for)
-        return d3d11_for == 2;
+    if (w32_d3d11_for)
+        return w32_d3d11_for == 2;
     if (!chromium_answer) {
         bool yes = w32->cmdline && strstr(w32->cmdline, "--type=");
         if (!yes && w32->main) {
@@ -2909,26 +2905,6 @@ static bool chromium(void)
     }
     return chromium_answer == 2;
 }
-
-static void get_d3d11_for(char *buf, size_t cap)
-{
-    str_copy(buf, d3d11_for == 1 ? "on" : d3d11_for == 2 ? "off" : "auto", cap);
-}
-
-static int set_d3d11_for(struct shell *sh, const char *value)
-{
-    UNUSED(sh);
-    int v = !strcmp(value, "auto") ? 0 : !strcmp(value, "on") ? 1 : !strcmp(value, "off") ? 2 : -1;
-    if (v < 0)
-        return E_INVAL;
-    d3d11_for = v;
-    return 0;
-}
-
-static const struct setting s_d3d11 = {"w32d3d11", "auto|on|off",
-                                       "which Windows programs get a Direct3D 11 device (auto: not Chromium's)",
-                                       get_d3d11_for, set_d3d11_for};
-SETTING(s_d3d11);
 
 static void *user32(const char *name)
 {

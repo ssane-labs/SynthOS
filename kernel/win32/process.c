@@ -572,9 +572,13 @@ static int command_args(struct exec_ctx *ctx, const char **list)
     bool chrome = w32->engine == W32_ENGINE_CHROMIUM;
     bool child = has_arg(ctx, "--type=", 7);
     if (chrome && !child)
-        for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++)
+        for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++) {
+            /* with "w32d3d11 on" it draws through ANGLE on Direct3D 11 */
+            if (w32_d3d11_for == 1 && !strncmp(chromium_switches[i], "--disable-", 10))
+                continue;
             if (!has_arg(ctx, chromium_switches[i], strlen(chromium_switches[i]) + 1))
                 list[n++] = chromium_switches[i];
+        }
     if (chrome && child && !has_arg(ctx, "--ipc-connection-timeout", 24))
         for (size_t i = 0; i < ARRAY_SIZE(chromium_child_switches); i++)
             list[n++] = chromium_child_switches[i];
@@ -1923,6 +1927,28 @@ static int set_headless(struct shell *sh, const char *value)
     w32_headless = !strcmp(value, "on");
     return 0;
 }
+
+int w32_d3d11_for;
+
+static void get_d3d11_for(char *buf, size_t cap)
+{
+    str_copy(buf, w32_d3d11_for == 1 ? "on" : w32_d3d11_for == 2 ? "off" : "auto", cap);
+}
+
+static int set_d3d11_for(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int v = !strcmp(value, "auto") ? 0 : !strcmp(value, "on") ? 1 : !strcmp(value, "off") ? 2 : -1;
+    if (v < 0)
+        return E_INVAL;
+    w32_d3d11_for = v;
+    return 0;
+}
+
+static const struct setting s_d3d11 = {"w32d3d11", "auto|on|off",
+                                       "which Windows programs get a Direct3D 11 device (auto: not Chromium's)",
+                                       get_d3d11_for, set_d3d11_for};
+SETTING(s_d3d11);
 
 static const struct setting s_headless = {"w32headless", "on|off",
                                           "let Windows programs create windows without the desktop (headless mode)",
