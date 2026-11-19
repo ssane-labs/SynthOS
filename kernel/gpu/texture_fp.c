@@ -751,6 +751,57 @@ static int slice_of(float c, uint32_t slices)
     return s < 0 ? 0 : s >= (int)slices ? (int)slices - 1 : s;
 }
 
+/* the level the derivatives of the coordinates select on a level-0 footprint of l0 (before bias and clamping) */
+static float derived_lod(const struct gd_sampler *s, int dims, const struct level *l0, const float du[2],
+                         const float dv[2], const float dw[2])
+{
+    bool aniso = (s->filter & 0x40) != 0;
+    float x0 = du[0] * (float)l0->w, y0 = dv[0] * (float)l0->h, z0 = dw[0] * (float)l0->d;
+    float x1 = du[1] * (float)l0->w, y1 = dv[1] * (float)l0->h, z1 = dw[1] * (float)l0->d;
+    float a = x0 * x0 + (dims > 1 ? y0 * y0 : 0) + (dims > 2 ? z0 * z0 : 0);
+    float b = x1 * x1 + (dims > 1 ? y1 * y1 : 0) + (dims > 2 ? z1 * z1 : 0);
+    float big = a > b ? a : b, small = a > b ? b : a;
+    if (aniso && small > 0) { /* the anisotropic footprint: sharper along the long axis, at most max_anisotropy */
+        float ratio = big / small, max = (float)(s->max_anisotropy ? s->max_anisotropy : 1);
+        if (ratio > max * max)
+            ratio = max * max;
+        big /= ratio;
+    }
+    return big > 0 ? 0.5f * flog2(big) : -32.0f;
+}
+
+/* the derivatives on a cube's face, roughly */
+static void cube_derivatives(const float coord[4], const float ddx[4], const float ddy[4], float du[2], float dv[2])
+{
+    float u, vv, ma;
+    cube_face(coord, &u, &vv, &ma);
+    float k = 0.5f / ma;
+    for (int i = 0; i < 2; i++) {
+        const float *d = i ? ddy : ddx;
+        float m0 = d[0] < 0 ? -d[0] : d[0], m1 = d[1] < 0 ? -d[1] : d[1], m2 = d[2] < 0 ? -d[2] : d[2];
+        float big = m0 > m1 ? (m0 > m2 ? m0 : m2) : (m1 > m2 ? m1 : m2);
+        du[i] = big * k, dv[i] = big * k;
+    }
+}
+
+void gd_lod(const struct gd_view *v, const struct gd_sampler *s, const float coord[4], const float ddx[4],
+            const float ddy[4], float out[2])
+{
+    out[0] = out[1] = 0;
+    struct level l0;
+    if (!v || !v->r || v->vdim == VD_BUFFER || !s || !level_of(v, 0, 0, &l0))
+        return;
+    int dims = view_dims(v);
+    float du[2] = {ddx[0], ddy[0]}, dv[2] = {ddx[1], ddy[1]}, dw[2] = {ddx[2], ddy[2]};
+    if (v->vdim == VD_CUBE || v->vdim == VD_CUBE_ARRAY)
+        cube_derivatives(coord, ddx, ddy, du, dv), dims = 2;
+    float lod = derived_lod(s, dims, &l0, du, dv, dw) + s->mip_lod_bias;
+    out[1] = lod;
+    lod = lod < s->min_lod ? s->min_lod : lod > s->max_lod ? s->max_lod : lod;
+    float last = (float)(view_mips(v) - 1);
+    out[0] = lod < 0 ? 0 : lod > last ? last : lod;
+}
+
 void gd_sample(const struct gd_view *v, const struct gd_sampler *s, const float coord[4], const float ddx[4],
                const float ddy[4], float lod, float bias, const int offset[3], const float *ref, float out[4])
 {
@@ -768,13 +819,7 @@ void gd_sample(const struct gd_view *v, const struct gd_sampler *s, const float 
     if (v->vdim == VD_CUBE || v->vdim == VD_CUBE_ARRAY) {
         float ma;
         int face = cube_face(coord, &u, &vv, &ma);
-        float k = 0.5f / ma; /* the derivatives on the face, roughly */
-        for (int i = 0; i < 2; i++) {
-            const float *d = i ? ddy : ddx;
-            float m0 = d[0] < 0 ? -d[0] : d[0], m1 = d[1] < 0 ? -d[1] : d[1], m2 = d[2] < 0 ? -d[2] : d[2];
-            float big = m0 > m1 ? (m0 > m2 ? m0 : m2) : (m1 > m2 ? m1 : m2);
-            du[i] = big * k, dv[i] = big * k;
-        }
+        cube_derivatives(coord, ddx, ddy, du, dv);
         slice = (uint32_t)face;
         if (v->vdim == VD_CUBE_ARRAY)
             slice += 6u * (uint32_t)slice_of(coord[3], slices / 6 ? slices / 6 : 1);
@@ -790,20 +835,8 @@ void gd_sample(const struct gd_view *v, const struct gd_sampler *s, const float 
     uint32_t f = s->filter;
     bool aniso = (f & 0x40) != 0;
     bool mip_lin = aniso || (f & 1), mag_lin = aniso || (f & 4), min_lin = aniso || (f & 0x10);
-    if (lod < -1e30f) {
-        float x0 = du[0] * (float)l0.w, y0 = dv[0] * (float)l0.h, z0 = dw[0] * (float)l0.d;
-        float x1 = du[1] * (float)l0.w, y1 = dv[1] * (float)l0.h, z1 = dw[1] * (float)l0.d;
-        float a = x0 * x0 + (dims > 1 ? y0 * y0 : 0) + (dims > 2 ? z0 * z0 : 0);
-        float b = x1 * x1 + (dims > 1 ? y1 * y1 : 0) + (dims > 2 ? z1 * z1 : 0);
-        float big = a > b ? a : b, small = a > b ? b : a;
-        if (aniso && small > 0) { /* the anisotropic footprint: sharper along the long axis, at most max_anisotropy */
-            float ratio = big / small, max = (float)(s->max_anisotropy ? s->max_anisotropy : 1);
-            if (ratio > max * max)
-                ratio = max * max;
-            big /= ratio;
-        }
-        lod = big > 0 ? 0.5f * flog2(big) : -32.0f;
-    }
+    if (lod < -1e30f)
+        lod = derived_lod(s, dims, &l0, du, dv, dw);
     lod += bias + s->mip_lod_bias;
     float maxl = s->max_lod, minl = s->min_lod;
     lod = lod < minl ? minl : lod > maxl ? maxl : lod;

@@ -317,8 +317,11 @@ bool dxbc_parse(struct dxbc_shader *sh, const void *blob, size_t size)
             if (o.type == T_UAV && slot >= 0 && slot < DXBC_MAX_UAV) {
                 sh->uav_kind[slot] = (uint8_t)(op == OP_DCL_UAV_RAW ? 1 : op == OP_DCL_UAV_STRUCTURED ? 2 : 0);
                 sh->uav_stride[slot] = op == OP_DCL_UAV_STRUCTURED ? a0 : 0;
+                if (op == OP_DCL_UAV_TYPED)
+                    sh->uav_dim[slot] = (uint8_t)((t >> 11) & 0x1f), sh->uav_ret[slot] = (uint8_t)(a0 & 15);
             } else if (o.type == T_RESOURCE && slot >= 0 && slot < DXBC_MAX_RES) {
                 sh->srv_stride[slot] = op == OP_DCL_RESOURCE_STRUCTURED ? a0 : 0;
+                sh->srv_raw |= 1u << slot;
             } else if (o.type == T_TGSM && slot >= 0 && slot < DXBC_MAX_TGSM) {
                 uint32_t bytes = op == OP_DCL_TGSM_RAW ? a0 : a0 * a1;
                 if (bytes > 32768)
@@ -750,20 +753,40 @@ static void texture_op(struct machine *m, const struct dxbc_ins *in, unsigned ma
         if (in->op == OP_LD || in->op == OP_LD_MS) { /* one sample: every sample index loads it */
             if (env->load)
                 env->load(env->ctx, tex, (const int32_t *)a[l], offset, raw);
-        } else if (in->op == OP_GATHER4 || in->op == OP_GATHER4_C) {
+        } else if (in->op == OP_GATHER4 || in->op == OP_GATHER4_C || in->op == OP_GATHER4_PO ||
+                   in->op == OP_GATHER4_PO_C) {
+            bool po = in->op == OP_GATHER4_PO || in->op == OP_GATHER4_PO_C;
+            bool cmp = in->op == OP_GATHER4_C || in->op == OP_GATHER4_PO_C;
             float coord[4], out[4] = {0, 0, 0, 0}, ref = 0;
+            int at[3] = {offset[0], offset[1], offset[2]};
             for (int c = 0; c < 4; c++)
                 coord[c] = F(a[l][c]);
-            if (in->op == OP_GATHER4_C && in->nops > 4) {
+            if (po) { /* the offset from a register: its low six bits, signed */
+                uint32_t o[4];
+                read_src(m, &in->o[2], l, true, o);
+                for (int c = 0; c < 3; c++)
+                    at[c] = (int)((int32_t)(o[c] << 26) >> 26);
+            }
+            if (cmp && in->nops > 4 + po) {
                 uint32_t r[4];
-                read_src(m, &in->o[4], l, false, r);
+                read_src(m, &in->o[4 + po], l, false, r);
                 ref = F(r[0]);
             }
             if (env->gather)
-                env->gather(env->ctx, tex, s, coord, offset, smp ? smp->swz[0] : 0, in->op == OP_GATHER4_C ? &ref : NULL,
-                            out);
+                env->gather(env->ctx, tex, s, coord, at, smp ? smp->swz[0] : 0, cmp ? &ref : NULL, out);
             for (int c = 0; c < 4; c++)
                 raw[c] = U(out[c]);
+        } else if (in->op == OP_LOD) {
+            float coord[4], ddx[4], ddy[4], out[2] = {0, 0};
+            for (int c = 0; c < 4; c++) {
+                int row = l & 2, col = l & 1;
+                coord[c] = F(a[l][c]);
+                ddx[c] = F(a[row | 1][c]) - F(a[row][c]);
+                ddy[c] = F(a[2 | col][c]) - F(a[col][c]);
+            }
+            if (env->lod)
+                env->lod(env->ctx, tex, s, coord, ddx, ddy, out);
+            raw[0] = U(out[0]), raw[1] = U(out[1]);
         } else if (in->op == OP_RESINFO) {
             uint32_t info[4] = {0, 0, 0, 0};
             if (env->info)
@@ -888,6 +911,11 @@ static bool memory_op(struct machine *m, const struct dxbc_ins *in, unsigned mas
     const struct dxbc_env *env = m->env;
     uint32_t a[4], b[4], c[4], size, stride;
     int kind;
+    bool writes = op == OP_STORE_RAW || op == OP_STORE_STRUCTURED || op == OP_STORE_UAV_TYPED ||
+                  op == OP_IMM_ATOMIC_ALLOC || op == OP_IMM_ATOMIC_CONSUME ||
+                  (op >= OP_ATOMIC_AND && op <= OP_IMM_ATOMIC_UMIN);
+    if (writes)
+        mask &= ~m->lanes->helper; /* helper pixels write nothing; what an atomic returns them is undefined */
     switch (op) {
     case OP_LD_RAW:
     case OP_LD_STRUCTURED: {
@@ -1422,6 +1450,9 @@ bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct d
         case OP_RESINFO:
         case OP_GATHER4:
         case OP_GATHER4_C:
+        case OP_GATHER4_PO:
+        case OP_GATHER4_PO_C:
+        case OP_LOD:
             texture_op(&m, in, mask, val);
             write_dst(&m, in, &in->o[0], mask, val);
             break;

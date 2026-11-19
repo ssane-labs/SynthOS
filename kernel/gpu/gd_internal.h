@@ -53,7 +53,15 @@ struct gd_shader {
     /* on the host's graphics card: the shader object (0 not made), -1 when it has no translation */
     int32_t host;
     uint8_t tex_sampler[DXBC_MAX_RES];
-    uint32_t used_cb;
+    uint32_t used_cb, used_uav, used_srv_buf;
+    bool icb;                       /* the host shader reads its immediate constant buffer from icb_buf */
+    struct gd_resource *icb_buf;
+    uint16_t uav_format[DXBC_MAX_UAV]; /* compute: the typed UAV formats the host shader was made for */
+    uint32_t serial; /* a number no other shader had */
+    /* a vertex shader in the geometry slot for stream output: the host's vertex shader with it, made from the
+       vertex shader numbered so_vs (0 not made, -1 cannot be) */
+    int32_t so_host;
+    uint32_t so_vs;
 };
 
 struct stage {
@@ -129,6 +137,11 @@ static inline void gd_host_count(uint64_t *pixels)
 {
     (void)pixels;
 }
+static inline bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)
+{
+    (void)c, (void)x, (void)y, (void)z;
+    return false;
+}
 #else
 bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base,
                   uint32_t instances, uint32_t first_instance);
@@ -141,6 +154,7 @@ void gd_host_forget_view(struct gd_view *v);
 void gd_host_forget_shader(struct gd_shader *s);
 /* adds the samples the host's draws let through since the last call (occlusion queries) */
 void gd_host_count(uint64_t *pixels);
+bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z);
 #endif
 
 /* format classes */
@@ -173,6 +187,8 @@ void gd_bc_texel(uint32_t f, const uint8_t *block, int x, int y, float out[4]);
 /* the texture unit */
 void gd_sample(const struct gd_view *v, const struct gd_sampler *s, const float coord[4], const float ddx[4],
                const float ddy[4], float lod, float bias, const int offset[3], const float *ref, float out[4]);
+void gd_lod(const struct gd_view *v, const struct gd_sampler *s, const float coord[4], const float ddx[4],
+            const float ddy[4], float out[2]);
 void gd_gather(const struct gd_view *v, const struct gd_sampler *s, const float coord[4], const int offset[3],
                int component, const float *ref, float out[4]);
 void gd_texel_fetch(const struct gd_view *v, const int32_t coord[4], const int offset[3], uint32_t out[4]);

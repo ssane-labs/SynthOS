@@ -558,6 +558,25 @@ int virtio_gpu_capsets(int gpu, uint32_t (*out)[3], int max)
     return n;
 }
 
+/* capability set id, version 1 into buf (at most a reply slot); asking also makes virglrenderer work out the limits it
+   checks commands against, such as the largest texture buffer */
+bool virtio_gpu_capset(int gpu, uint32_t id, void *buf, uint32_t size)
+{
+    struct vgpu *g = gpu3d(gpu);
+    if (!g)
+        return false;
+    struct {
+        struct hdr h;
+        uint32_t id, version;
+    } q = {{.type = CMD_GET_CAPSET}, id, 1};
+    uint8_t a[SLOT_BYTES];
+    if (!call(g, &q, sizeof(q), NULL, 0, a, sizeof(a), RESP_OK_CAPSET))
+        return false;
+    if (buf)
+        memcpy(buf, a + sizeof(struct hdr), MIN(size, (uint32_t)(sizeof(a) - sizeof(struct hdr))));
+    return true;
+}
+
 /* a rendering context on the host (0 when it cannot be made) */
 uint32_t virtio_gpu_ctx_create(int gpu, const char *name)
 {

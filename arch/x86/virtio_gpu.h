@@ -33,6 +33,7 @@ struct virtio_res3d {
 
 bool virtio_gpu_has_3d(int gpu);
 int virtio_gpu_capsets(int gpu, uint32_t (*out)[3], int max);
+bool virtio_gpu_capset(int gpu, uint32_t id, void *buf, uint32_t size);
 uint32_t virtio_gpu_ctx_create(int gpu, const char *name);
 void virtio_gpu_ctx_destroy(int gpu, uint32_t ctx);
 uint32_t virtio_gpu_resource_3d(int gpu, uint32_t ctx, const struct virtio_res3d *r, void *backing, size_t bytes);

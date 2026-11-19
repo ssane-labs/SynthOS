@@ -251,7 +251,7 @@ static void tgsi_tests(void)
     op(62, 0), end();
     size_t size = container(1, 1);
     expect(dxbc_parse(&sh, blob, size), "parse a vertex shader for TGSI");
-    bool ok = dxbc_tgsi(&sh, &t);
+    bool ok = dxbc_tgsi(&sh, NULL, &t);
     if (!ok)
         printf("  TGSI: %s\n", t.error);
     expect(ok && has(t.text, "VERT\n") && has(t.text, "DCL IN[0]\n") && has(t.text, "DCL SV[0], VERTEXID") &&
@@ -289,7 +289,7 @@ static void tgsi_tests(void)
     op(62, 0), end();
     size = container(0, 1);
     expect(dxbc_parse(&sh, blob, size), "parse a pixel shader for TGSI");
-    ok = dxbc_tgsi(&sh, &t);
+    ok = dxbc_tgsi(&sh, NULL, &t);
     if (!ok)
         printf("  TGSI: %s\n", t.error);
     expect(ok && has(t.text, "FRAG\n") && has(t.text, "DCL IN[0], POSITION, LINEAR") &&

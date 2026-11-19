@@ -540,6 +540,8 @@ struct gd_shader *gd_shader_create(const void *blob, uint32_t size, char error[6
         return NULL;
     }
     s->refs = 1;
+    static uint32_t serials;
+    s->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
     error[0] = 0;
     return s;
 }
@@ -555,6 +557,7 @@ void gd_shader_unref(struct gd_shader *s)
     if (!s || __atomic_sub_fetch(&s->refs, 1, __ATOMIC_ACQ_REL))
         return;
     gd_host_forget_shader(s);
+    gd_resource_unref(s->icb_buf);
     dxbc_free(&s->sh);
     kfree(s->so);
     kfree(s);
@@ -970,6 +973,17 @@ static void env_gather(void *ctx, int texture, int sampler, const float coord[4]
     gd_gather(v, s, coord, offset, component, ref, out);
 }
 
+static void env_lod(void *ctx, int texture, int sampler, const float coord[4], const float ddx[4], const float ddy[4],
+                    float out[2])
+{
+    const struct stage *st = ctx;
+    const struct gd_view *v = texture >= 0 && texture < GD_SLOTS_SRV ? st->srv[texture] : NULL;
+    const struct gd_sampler *s = sampler >= 0 && sampler < GD_SLOTS_SAMPLER && st->sampler_set[sampler]
+                                     ? &st->sampler[sampler]
+                                     : &default_sampler;
+    gd_lod(v, s, coord, ddx, ddy, out);
+}
+
 static void env_load(void *ctx, int texture, const int32_t coord[4], const int offset[3], uint32_t out[4])
 {
     const struct stage *st = ctx;
@@ -1039,6 +1053,7 @@ static void make_env(struct dxbc_env *e, const struct stage *st)
     e->ctx = (void *)st;
     e->sample = env_sample;
     e->gather = env_gather;
+    e->lod = env_lod;
     e->load = env_load;
     e->info = env_info;
     e->buffer = env_buffer;
@@ -1441,7 +1456,8 @@ static void ps_quad(const void *ctx, const struct rs_quad *q, unsigned mask, voi
             }
         }
     }
-    struct dxbc_lanes lanes = {.v = v, .o = o, .live = 15, .scratch = mem + sizeof(uint32_t[MAX_REGS][4][4]) * 2};
+    struct dxbc_lanes lanes = {.v = v, .o = o, .live = 15, .helper = 15 & ~mask,
+                               .scratch = mem + sizeof(uint32_t[MAX_REGS][4][4]) * 2};
     if (!dxbc_run(d->ps, &d->ps_env, &lanes)) {
         note_fault(lanes.error);
         return;
@@ -2347,6 +2363,10 @@ void gd_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)
                        (sh->group[2] ? sh->group[2] : 1);
     if (groups > 0x7fffffff || threads > 1024) {
         __atomic_add_fetch(&stats.skipped, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    if (gd_host_dispatch(c, x, y, z)) {
+        __atomic_add_fetch(&stats.dispatches, 1, __ATOMIC_RELAXED);
         return;
     }
     gd_texture_init();

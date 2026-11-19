@@ -240,6 +240,12 @@ static void make_shaders(void)
     ps_discard = gd_shader_create(blob, (uint32_t)size, err);
 }
 
+static void immv(uint32_t a, uint32_t b, uint32_t c, uint32_t d) /* a vector of four integers */
+{
+    code[n++] = 2u | (uint32_t)IMM << 12;
+    code[n++] = a, code[n++] = b, code[n++] = c, code[n++] = d;
+}
+
 static void draw_verts(const struct vert *v, uint32_t count)
 {
     struct gd_resource *vb = buffer(v, (uint32_t)(sizeof(struct vert) * count), GD_BIND_VERTEX);
@@ -454,6 +460,109 @@ static void draw_tests(void)
             int r = (int)(mid & 255), b = (int)(mid >> 16);
             expect(pixel(2, 30) == 0x000080 && r >= 63 && r <= 68 && b >= 121 && b <= 126 && pixel(61, 30) == 0xff0000,
                    "linear filtering between texels");
+            /* the same with aoffimmi(1, 0, 0): the left half reads the blue texel too, the right one clamps to it */
+            in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+            out_sig("SV_Target", 0, 0, 0, 15);
+            op(88, 3 << 11), code[n++] = 7u << 12 | 1u << 20, code[n++] = 0, code[n++] = 0x5555, end();
+            op(90, 0), code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();
+            op(89, 0), code[n++] = 2u | 1u << 2 | XYZW << 4 | 8u << 12 | 2u << 20, code[n++] = 0, code[n++] = 2,
+                end();
+            op(69, (int)(1u << 31)), code[n++] = 1u | 1u << 9; /* sample_aoffimmi(1,0,0) */
+            dst(TEMP, 0, 15), src(IN, 1, SW(0, 1, 0, 0)), src(RES, 0, XYZW);
+            code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();
+            op(56, 0), dst(OUT, 0, 15), src(TEMP, 0, XYZW), cbsrc(0, 1, XYZW), end();
+            op(62, 0), end();
+            size = container(0, 1);
+            struct gd_shader *ps_off = gd_shader_create(blob, (uint32_t)size, e);
+            expect(ps_off != NULL, "a texel offset parses");
+            if (ps_off) {
+                smp.filter = 0;
+                gd_set_sampler(ctx, 0, 0, &smp);
+                gd_set_shader(ctx, 0, ps_off);
+                draw_verts(tv, 6);
+                expect(pixel(10, 30) == 0xff0000 && pixel(50, 30) == 0xff0000, "a constant texel offset");
+                gd_shader_unref(ps_off);
+            }
+            /* gather4 between the two texels: x and w from the left one, y and z from the right; the red channel, then
+               the blue one the sampler operand selects */
+            for (int ch = 0; ch < 2; ch++) {
+                in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+                out_sig("SV_Target", 0, 0, 0, 15);
+                op(88, 3 << 11), code[n++] = 7u << 12 | 1u << 20, code[n++] = 0, code[n++] = 0x5555, end();
+                op(90, 0), code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();
+                /* gather4 o0, (.5,.5), t0, s0 */
+                op(109, 0), dst(OUT, 0, 15), imm4(0.5f, 0.5f, 0, 0), src(RES, 0, XYZW);
+                code[n++] = 2u | 2u << 2 | (ch ? 2u : 0u) << 4 | 6u << 12 | 1u << 20, code[n++] = 0, end();
+                op(62, 0), end();
+                size = container(0, 1);
+                struct gd_shader *ps_g = gd_shader_create(blob, (uint32_t)size, e);
+                if (!ps_g) {
+                    expect(false, "gather4 parses");
+                    break;
+                }
+                gd_set_shader(ctx, 0, ps_g);
+                draw_verts(tv, 6);
+                /* red: (1, 0, 0, 1) -> 0x0000ff; blue: (0, 1, 1, 0) -> 0xffff00 */
+                expect(pixel(10, 30) == (ch ? 0xffff00u : 0x0000ffu), ch ? "gather4 of the channel the sampler selects"
+                                                                         : "gather4 of four texels");
+                if (pixel(10, 30) != (ch ? 0xffff00u : 0x0000ffu))
+                    printf("  %06x\n", pixel(10, 30));
+                gd_shader_unref(ps_g);
+            }
+            /* lod: the texture spans the screen, two texels over 64 pixels: 2^-5 texels a pixel,
+               level 0 after clamping */
+            {
+                in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+                out_sig("SV_Target", 0, 0, 0, 15);
+                op(88, 3 << 11), code[n++] = 7u << 12 | 1u << 20, code[n++] = 0, code[n++] = 0x5555, end();
+                op(90, 0), code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();
+                op(108, 0), dst(TEMP, 0, 15), src(IN, 1, SW(0, 1, 0, 0)), src(RES, 0, XYZW); /* lod r0, v1.xy, t0, s0 */
+                code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();
+                op(24, 0), dst(TEMP, 1, 1), sel(TEMP, 0, 0), immf(0), end();     /* eq r1.x, r0.x, 0 */
+                op(49, 0), dst(TEMP, 1, 2), sel(TEMP, 0, 1), immf(-4.5f), end(); /* lt r1.y, r0.y, -4.5 */
+                op(49, 0), dst(TEMP, 1, 4), immf(-5.5f), sel(TEMP, 0, 1), end(); /* lt r1.z, -5.5, r0.y */
+                op(1, 0), dst(TEMP, 1, 1), sel(TEMP, 1, 0), sel(TEMP, 1, 1), end();
+                op(1, 0), dst(TEMP, 1, 1), sel(TEMP, 1, 0), sel(TEMP, 1, 2), end();
+                op(55, 0), dst(OUT, 0, 15), src(TEMP, 1, XXXX), imm4(0, 1, 0, 1), imm4(1, 0, 0, 1), end();
+                op(62, 0), end();
+                size = container(0, 8);
+                struct gd_shader *ps_lod = gd_shader_create(blob, (uint32_t)size, e);
+                expect(ps_lod != NULL, "lod parses");
+                if (ps_lod) {
+                    gd_set_shader(ctx, 0, ps_lod);
+                    draw_verts(tv, 6);
+                    expect(pixel(20, 30) == 0x00ff00, "lod: clamped and as worked out");
+                    gd_shader_unref(ps_lod);
+                }
+            }
+            /* uaddc, usubb and swapc: every result compared, green when all are right */
+            {
+                in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+                out_sig("SV_Target", 0, 0, 0, 15);
+                op(132, 0), dst(TEMP, 0, 1), dst(TEMP, 1, 1), immu(0xffffffffu), immu(2), end(); /* uaddc: 1, carry 1 */
+                op(133, 0), dst(TEMP, 0, 2), dst(TEMP, 1, 2), immu(1), immu(2), end(); /* usubb: ~0, borrow 1 */
+                op(142, 0), dst(TEMP, 2, 3), dst(TEMP, 3, 3), immv(1, 0, 0, 0), immv(10, 20, 0, 0), immv(30, 40, 0, 0),
+                    end(); /* swapc: (30, 20) and (10, 40) */
+                op(32, 0), dst(TEMP, 4, 3), src(TEMP, 0, XYZW), immv(1, 0xffffffffu, 0, 0), end();
+                op(32, 0), dst(TEMP, 5, 3), src(TEMP, 1, XYZW), immv(1, 1, 0, 0), end();
+                op(32, 0), dst(TEMP, 6, 3), src(TEMP, 2, XYZW), immv(30, 20, 0, 0), end();
+                op(32, 0), dst(TEMP, 7, 3), src(TEMP, 3, XYZW), immv(10, 40, 0, 0), end();
+                op(1, 0), dst(TEMP, 4, 3), src(TEMP, 4, XYZW), src(TEMP, 5, XYZW), end();
+                op(1, 0), dst(TEMP, 4, 3), src(TEMP, 4, XYZW), src(TEMP, 6, XYZW), end();
+                op(1, 0), dst(TEMP, 4, 3), src(TEMP, 4, XYZW), src(TEMP, 7, XYZW), end();
+                op(1, 0), dst(TEMP, 4, 1), sel(TEMP, 4, 0), sel(TEMP, 4, 1), end();
+                op(55, 0), dst(OUT, 0, 15), src(TEMP, 4, XXXX), imm4(0, 1, 0, 1), imm4(1, 0, 0, 1), end();
+                op(62, 0), end();
+                size = container(0, 8);
+                struct gd_shader *ps_int = gd_shader_create(blob, (uint32_t)size, e);
+                expect(ps_int != NULL, "uaddc, usubb and swapc parse");
+                if (ps_int) {
+                    gd_set_shader(ctx, 0, ps_int);
+                    draw_verts(tv, 6);
+                    expect(pixel(20, 30) == 0x00ff00, "uaddc, usubb and swapc");
+                    gd_shader_unref(ps_int);
+                }
+            }
             gd_set_shader_resource(ctx, 0, 0, NULL);
             gd_set_constant_buffer(ctx, 0, 0, NULL, 0, 0);
             gd_set_shader(ctx, 0, ps_color);
@@ -586,7 +695,7 @@ static void draw_tests(void)
         gd_set_so_target(ctx, 0, sob, 0xffffffffu);
         draw_verts(q, 3);
         float got[8];
-        memcpy(got, sob->data, sizeof(got));
+        memcpy(got, gd_subresource(sob, 0, NULL), sizeof(got)); /* as Map reads it, after the host wrote it */
         expect(gd_so_filled(sob) == 96 && got[0] == -1 && got[1] == 1 && got[2] == 0.5f && got[3] == 1 && got[4] == 1 &&
                    got[5] == 0 && got[7] == 1 && pixel(60, 4) == 0,
                "stream output writes whole triangles while they fit, and draws nothing");
@@ -601,6 +710,126 @@ static void draw_tests(void)
         gd_set_vertex_buffer(ctx, 0, NULL, 0, 0);
         gd_set_input_layout(ctx, &il);
         gd_resource_unref(sob);
+    }
+
+    /* a pixel shader that counts its pixels into a typed unordered access view u1 (u0 is the render target's) */
+    {
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Target", 0, 0, 0, 15);
+        op(156, 1 << 11), code[n++] = 30u << 12 | 1u << 20, code[n++] = 1, code[n++] = 0x4444, end();
+        op(173, 0), dst(30, 1, 1), immu(0), immu(1), end(); /* atomic_iadd u1, 0, 1 */
+        op(54, 0), dst(OUT, 0, 15), src(IN, 1, XYZW), end(); /* mov o0, v1 */
+        op(62, 0), end();
+        size_t size = container(0, 1);
+        char e[64];
+        struct gd_shader *ps_count = gd_shader_create(blob, (uint32_t)size, e);
+        uint32_t zero = 0;
+        struct gd_res_desc rd = {.dim = GD_BUFFER, .width = 4, .height = 1, .depth = 1, .mips = 1, .array = 1,
+                                 .bind = GD_BIND_UNORDERED_ACCESS};
+        struct gd_resource *count = gd_resource_create(&rd, &(struct gd_init){(uint64_t)(uintptr_t)&zero, 0, 0}, &err);
+        struct gd_view *uav = count ? gd_view_create(count, &(struct gd_view_desc){.kind = GD_VIEW_UAV,
+                                                       .format = GD_R32_UINT, .dim = 1}, &err) : NULL;
+        expect(ps_count && uav, "a pixel shader with an unordered access view");
+        if (ps_count && uav) {
+            gd_set_shader(ctx, 1, vs_color);
+            gd_set_shader(ctx, 0, ps_count);
+            gd_set_topology(ctx, 4);
+            gd_set_depth(ctx, &(struct gd_depth){.depth_enable = 0}, 0);
+            gd_set_uav(ctx, 0, 1, uav, 0xffffffffu);
+            static const float p[6][2] = {{-1, 1}, {1, 1}, {1, -1}, {-1, 1}, {1, -1}, {-1, -1}};
+            struct vert q[6];
+            for (int i = 0; i < 6; i++) {
+                q[i].p[0] = p[i][0], q[i].p[1] = p[i][1], q[i].p[2] = 0.5f;
+                q[i].c[0] = 0, q[i].c[1] = 1, q[i].c[2] = 0, q[i].c[3] = 1;
+            }
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            draw_verts(q, 6);
+            uint32_t got = *(const uint32_t *)gd_subresource(count, 0, NULL);
+            expect(got == W * H && pixel(5, 5) == 0x00ff00, "every pixel adds one to the counter");
+            if (got != W * H)
+                printf("  %u of %u\n", got, W * H);
+            gd_set_uav(ctx, 0, 1, NULL, 0xffffffffu);
+            gd_set_shader(ctx, 0, ps_color);
+            gd_set_depth(ctx, NULL, 0);
+        }
+        if (uav)
+            gd_view_unref(uav);
+        if (count)
+            gd_resource_unref(count);
+        if (ps_count)
+            gd_shader_unref(ps_count);
+    }
+
+    /* SV_IsFrontFace: green on the front, red on the back (nothing culled) */
+    {
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("SV_IsFrontFace", 0, 9, 1, 1);
+        out_sig("SV_Target", 0, 0, 0, 15);
+        op(99, 1 << 11), code[n++] = 1u | 1u << 4 | IN << 12 | 1u << 20, code[n++] = 1, code[n++] = 9, end();
+        op(55, 0), dst(OUT, 0, 15), src(IN, 1, XXXX), imm4(0, 1, 0, 1), imm4(1, 0, 0, 1), end();
+        op(62, 0), end();
+        size_t size = container(0, 1);
+        char e[64];
+        struct gd_shader *ps_face = gd_shader_create(blob, (uint32_t)size, e);
+        expect(ps_face != NULL, "SV_IsFrontFace parses");
+        if (ps_face) {
+            gd_set_shader(ctx, 1, vs_color);
+            gd_set_shader(ctx, 0, ps_face);
+            gd_set_topology(ctx, 4);
+            gd_set_depth(ctx, &(struct gd_depth){.depth_enable = 0}, 0);
+            gd_set_raster(ctx, &(struct gd_raster){.fill = 3, .cull = 1, .depth_clip = 1});
+            struct vert q[6], back[6];
+            quad(q, -1, -1, 0, 1, 0.5f, red);
+            quad(back, 0, -1, 1, 1, 0.5f, red);
+            for (int i = 0; i < 3; i++) { /* the other way round */
+                struct vert t = back[i];
+                back[i] = back[5 - i], back[5 - i] = t;
+            }
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            draw_verts(q, 6);
+            draw_verts(back, 6);
+            expect(pixel(10, 30) == 0x00ff00 && pixel(50, 30) == 0x0000ff, "SV_IsFrontFace on both sides");
+            if (pixel(10, 30) != 0x00ff00 || pixel(50, 30) != 0x0000ff)
+                printf("  %06x %06x\n", pixel(10, 30), pixel(50, 30));
+            gd_set_raster(ctx, NULL);
+            gd_set_shader(ctx, 0, ps_color);
+            gd_set_depth(ctx, NULL, 0);
+            gd_shader_unref(ps_face);
+        }
+    }
+
+    /* an immediate constant buffer read with a register in the index: icb[r0.x + 1] with r0.x = 1, the green entry */
+    {
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Target", 0, 0, 0, 15);
+        static const float icb[16] = {1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1};
+        code[n++] = 53u | 3u << 11, code[n++] = 2 + 16; /* dcl_immediateConstantBuffer */
+        memcpy(&code[n], icb, sizeof(icb));
+        n += 16;
+        op(54, 0), dst(TEMP, 0, 1), immu(1), end();
+        op(54, 0), dst(OUT, 0, 15);
+        code[n++] = 2u | 1u << 2 | (uint32_t)XYZW << 4 | 9u << 12 | 1u << 20 | 3u << 22, code[n++] = 1;
+        sel(TEMP, 0, 0), end(); /* mov o0, icb[r0.x + 1] */
+        op(62, 0), end();
+        size_t size = container(0, 1);
+        char e[64];
+        struct gd_shader *ps_icb = gd_shader_create(blob, (uint32_t)size, e);
+        expect(ps_icb != NULL, "an immediate constant buffer parses");
+        if (ps_icb) {
+            gd_set_shader(ctx, 1, vs_color);
+            gd_set_shader(ctx, 0, ps_icb);
+            gd_set_topology(ctx, 4);
+            gd_set_depth(ctx, &(struct gd_depth){.depth_enable = 0}, 0);
+            struct vert q[6];
+            quad(q, -1, -1, 1, 1, 0.5f, red);
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            draw_verts(q, 6);
+            expect(pixel(10, 30) == 0x00ff00, "a relative index into the immediate constant buffer");
+            if (pixel(10, 30) != 0x00ff00)
+                printf("  %06x\n", pixel(10, 30));
+            gd_set_shader(ctx, 0, ps_color);
+            gd_set_depth(ctx, NULL, 0);
+            gd_shader_unref(ps_icb);
+        }
     }
 
     struct gd_stats st;
@@ -673,6 +902,7 @@ static void compute_tests(void)
     gd_set_uav(c, 5, 0, v0, 0xffffffffu);
     gd_set_uav(c, 5, 1, v1, 0xffffffffu);
     gd_dispatch(c, 3, 1, 1);
+    gd_subresource(out, 0, NULL), gd_subresource(count, 0, NULL); /* what the host wrote, as Map reads it */
     int good = 1;
     for (int i = 0; i < 24; i++)
         good &= ((uint32_t *)out->data)[i] == (uint32_t)((i % 8 + 1) % 8);

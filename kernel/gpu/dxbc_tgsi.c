@@ -35,10 +35,15 @@ struct tg {
     int xbase[8];          /* x# starts at TEMP[xbase] (indexable temps follow the r#) */
     int s0;                /* scratch temps: TEMP[s0..s0+3] */
     int depth_reg;         /* OUT[] for oDepth */
-    int8_t sv_in[32];      /* vertex shader inputs that are system values: SV[n], or -1 */
+    int8_t sv_in[32];      /* vertex and pixel shader inputs that are system values: SV[n], or -1 */
+    int face;              /* the pixel shader's SV_IsFrontFace input register (read from TEMP[s0 + 4]), or -1 */
     int nsv;
     uint8_t sv_name[32];
-    unsigned gs_sv;        /* geometry shader: reads the primitive number (1, SV[0]), the instance number (2, SV[1]) */
+    unsigned gs_sv;
+    uint32_t used_buf, used_img; /* BUFFER[n] and IMAGE[n] the shader reaches */
+    bool shared;           /* reaches MEMORY[0], the group's shared memory */
+    const uint16_t *uav_format;        /* geometry shader: reads the primitive number (1, SV[0]),
+                                          the instance number (2, SV[1]) */
     uint32_t used_cb, used_tex, cmp_tex, plain_tex;
     int32_t cb_max[DXBC_MAX_CB]; /* the highest constant read with a fixed index, or 4095 when one is relative */
     int naddr;
@@ -106,7 +111,7 @@ static bool fail(struct tg *g, const char *why)
 
 static int immediate(struct tg *g, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
-    for (int i = g->sh->icb_vec4; i < g->nimm; i++)
+    for (int i = 0; i < g->nimm; i++)
         if (g->imm[i][0] == a && g->imm[i][1] == b && g->imm[i][2] == c && g->imm[i][3] == d)
             return i;
     if (g->nimm == MAX_IMM)
@@ -207,7 +212,12 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
         }
         if (o->ndim != 1)
             fail(g, "input arrays");
-        if (g->sh->stage == DXBC_VS && o->idx[0].imm >= 0 && o->idx[0].imm < 32 && g->sv_in[o->idx[0].imm] >= 0) {
+        if (g->sh->stage == DXBC_PS && g->face >= 0 && o->idx[0].imm == g->face && o->idx[0].rel_type < 0) {
+            put(t, "TEMP[");
+            putu(t, (uint32_t)g->s0 + 4);
+            put(t, "]");
+        } else if ((g->sh->stage == DXBC_VS || g->sh->stage == DXBC_PS) && o->idx[0].imm >= 0 && o->idx[0].imm < 32 &&
+                   g->sv_in[o->idx[0].imm] >= 0) {
             put(t, "SV[");
             putu(t, (uint32_t)g->sv_in[o->idx[0].imm]);
             put(t, "]");
@@ -250,6 +260,22 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
         index_text(g, o, 1, slot, 0);
         break;
     }
+    case T_TID: /* SV_DispatchThreadID, worked out at the start */
+        put(t, "TEMP[");
+        putu(t, (uint32_t)g->s0 + 4);
+        put(t, "]");
+        break;
+    case T_FLAT: /* SV_GroupIndex, worked out at the start */
+        put(t, "TEMP[");
+        putu(t, (uint32_t)g->s0 + 5);
+        put(t, "]");
+        break;
+    case T_GTID:
+        put(t, "SV[0]");
+        break;
+    case T_GID:
+        put(t, "SV[1]");
+        break;
     case T_PRIMID:
     case T_GSINST:
         if (g->sh->stage != DXBC_GS) {
@@ -259,14 +285,12 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
         g->gs_sv |= o->type == T_PRIMID ? 1 : 2;
         put(t, o->type == T_PRIMID ? "SV[0]" : "SV[1]");
         break;
-    case T_ICB:
-        if (o->idx[0].rel_type >= 0)
-            fail(g, "relative index into the immediate constant buffer");
-        if (o->idx[0].imm < 0 || o->idx[0].imm >= g->sh->icb_vec4)
+    case T_ICB: /* in a constant buffer at slot 14 (the host has no indexed immediates) */
+        if (o->idx[0].rel_type < 0 && (o->idx[0].imm < 0 || o->idx[0].imm >= g->sh->icb_vec4))
             fail(g, "immediate constant buffer index");
-        put(t, "IMM[");
-        puti(t, o->idx[0].imm);
-        put(t, "]");
+        g->out->icb = true;
+        put(t, "CONST[15]");
+        index_text(g, o, 0, slot, 0);
         break;
     case T_IMM32:
         put(t, "IMM[");
@@ -418,25 +442,27 @@ static const char *const shadow_name[] = {"", "BUFFER", "SHADOW1D", "SHADOW2D", 
    is both the view at t and the sampler state the shader pairs with t#, which the backend binds at slot t. The
    coordinate is copied to TEMP[s0], where a level, bias or depth reference goes into the component GL reads it from
    (or into TEMP[s0 + 1] for the *2 forms); the result comes through TEMP[s0 + 2] when the resource has a swizzle. */
-enum { TX_SAMPLE, TX_L, TX_B, TX_C, TX_C_LZ, TX_D, TX_LD };
+enum { TX_SAMPLE, TX_L, TX_B, TX_C, TX_C_LZ, TX_D, TX_LD, TX_LOD, TX_G, TX_G_C, TX_G_PO, TX_G_PO_C };
 
 static const uint8_t coord_count[] = {0, 1, 1, 2, 2, 3, 3, 2, 3, 3, 4};
 
 static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
 {
-    const struct opd *dst = &in->o[0], *res = &in->o[2];
+    /* gather4_po*: a programmable offset after the coordinate moves the other operands one on */
+    bool po = kind == TX_G_PO || kind == TX_G_PO_C, gather = kind >= TX_G;
+    int k = po ? 1 : 0;
+    const struct opd *dst = &in->o[0], *res = &in->o[2 + k], *smp = &in->o[3 + k], *ref_op = &in->o[4 + k];
     if (dst->type == T_NULL)
         return;
-    if (in->offset[0] || in->offset[1] || in->offset[2])
-        return (void)fail(g, "texel offsets");
+    bool offset = in->offset[0] || in->offset[1] || in->offset[2];
     int t = res->idx[0].imm;
     if (res->type != T_RESOURCE || t < 0 || t >= DXBC_MAX_RES || !g->sh->res_dim[t] || g->sh->res_dim[t] > 10)
         return (void)fail(g, "undeclared texture");
     int dim = g->sh->res_dim[t];
-    bool cmp = kind == TX_C || kind == TX_C_LZ;
+    bool cmp = kind == TX_C || kind == TX_C_LZ || kind == TX_G_C || kind == TX_G_PO_C;
     if (kind != TX_LD) {
-        int s = in->o[3].idx[0].imm;
-        if (in->o[3].type != T_SAMPLER || s < 0 || s >= 16)
+        int s = smp->idx[0].imm;
+        if (smp->type != T_SAMPLER || s < 0 || s >= 16)
             return (void)fail(g, "sampler operand");
         if (g->out->tex_sampler[t] == 0xff)
             g->out->tex_sampler[t] = (uint8_t)s;
@@ -454,6 +480,8 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
         g->plain_tex |= 1u << t;
     const char *target = cmp ? shadow_name[dim] : target_name[dim];
     bool four = coord_count[dim] == 4; /* cube arrays: nothing left in the coordinate for a level or reference */
+    if (gather && (four || dim == 2 || dim == 7 || dim == 5))
+        return (void)fail(g, "gather from a 1D, 3D or cube array texture");
     struct opd c = scratch_dst(g, 0, 15), cw = scratch_dst(g, 0, 8), cz = scratch_dst(g, 0, 4);
     struct opd e = scratch_dst(g, 1, 15), ex = scratch_dst(g, 1, 1), ey = scratch_dst(g, 1, 2);
     emit1(g, "MOV", false, &c, &in->o[1]);
@@ -464,8 +492,18 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
         name = kind == TX_L ? (four ? "TXL2" : "TXL") : (four ? "TXB2" : "TXB");
         emit1(g, "MOV", false, four ? &ex : &cw, &v);
         extra = four;
+    } else if (gather) {
+        name = "TG4";
+        if (cmp) {
+            struct opd ref = scalar_of(ref_op, 0);
+            emit1(g, "MOV", false, dim == 6 || dim == 8 ? &cw : &cz, &ref);
+        }
+        if (po) { /* the offset as integers in TEMP[s0 + 3] */
+            struct opd o3 = scratch_dst(g, 3, 7);
+            emit1(g, "MOV", false, &o3, &in->o[2]);
+        }
     } else if (cmp) {
-        struct opd ref = scalar_of(&in->o[4], 0), zero = imm_opd(0);
+        struct opd ref = scalar_of(ref_op, 0), zero = imm_opd(0);
         bool in_w = dim == 6 || dim == 8; /* SHADOWCUBE, SHADOW2D_ARRAY */
         if (four) {
             emit1(g, "MOV", false, &ex, &ref);
@@ -489,9 +527,13 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
         name = "TXD";
     } else if (kind == TX_LD) {
         name = "TXF";
+    } else if (kind == TX_LOD) { /* (clamped, unclamped, 0, 0) */
+        struct opd zw = scratch_dst(g, 2, 12), zero = imm_opd(0);
+        emit1(g, "MOV", false, &zw, &zero);
+        name = "LODQ";
     }
-    bool identity = res->swz[0] == 0 && res->swz[1] == 1 && res->swz[2] == 2 && res->swz[3] == 3;
-    struct opd d = identity && !in->sat ? *dst : scratch_dst(g, 2, 15);
+    bool identity = res->swz[0] == 0 && res->swz[1] == 1 && res->swz[2] == 2 && res->swz[3] == 3 && kind != TX_LOD;
+    struct opd d = identity && !in->sat ? *dst : scratch_dst(g, 2, kind == TX_LOD ? 3 : 15);
     g->naddr = 0;
     load_addr(g, &d, 0);
     put(&g->code, name);
@@ -509,10 +551,28 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
         putu(&g->code, (uint32_t)g->s0 + 3);
         put(&g->code, "]");
     }
+    if (gather) { /* the channel gathered: what the sampler operand selects (comparisons compare the first) */
+        int comp = cmp ? 0 : smp->swz[0] & 3;
+        put(&g->code, ", IMM[");
+        putu(&g->code, (uint32_t)immediate(g, (uint32_t)comp, 0, 0, 0));
+        put(&g->code, "].xxxx");
+    }
     put(&g->code, ", SAMP[");
     putu(&g->code, (uint32_t)t);
     put(&g->code, "], ");
     put(&g->code, target);
+    if (po) {
+        put(&g->code, ", TEMP[");
+        putu(&g->code, (uint32_t)g->s0 + 3);
+        put(&g->code, "].xyz");
+    } else if (offset) { /* aoffimmi: a constant texel offset, as an immediate the host reads x, y, z of */
+        if (four || dim == 6 || dim == 10)
+            return (void)fail(g, "texel offsets on a cube");
+        put(&g->code, ", IMM[");
+        putu(&g->code, (uint32_t)immediate(g, (uint32_t)in->offset[0], (uint32_t)in->offset[1],
+                                           (uint32_t)in->offset[2], 0));
+        put(&g->code, "].xyz");
+    }
     put(&g->code, "\n");
     if (!(identity && !in->sat)) {
         struct opd from = temp(g->s0 + 2, "xyzw");
@@ -520,6 +580,317 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
             from.swz[i] = res->swz[i];
         emit1(g, "MOV", in->sat, dst, &from);
     }
+}
+
+/* ---- memory: u# raw or structured as BUFFER[u], t# raw or structured as BUFFER[8 + t], g# in MEMORY[0] (the host
+   gives a compute shader one block of shared memory: each g# at its offset), typed u# as IMAGE[u] */
+
+static const struct {
+    uint16_t format;
+    const char *name;
+} image_formats[] = {
+    {1, "B8G8R8A8_UNORM"},      {8, "R10G10B10A2_UNORM"},    {28, "R32_FLOAT"},           {29, "R32G32_FLOAT"},
+    {31, "R32G32B32A32_FLOAT"}, {48, "R16_UNORM"},           {49, "R16G16_UNORM"},        {51, "R16G16B16A16_UNORM"},
+    {59, "R16G16B16A16_SNORM"}, {64, "R8_UNORM"},            {65, "R8G8_UNORM"},          {67, "R8G8B8A8_UNORM"},
+    {77, "R8G8B8A8_SNORM"},     {91, "R16_FLOAT"},           {92, "R16G16_FLOAT"},        {94, "R16G16B16A16_FLOAT"},
+    {124, "R11G11B10_FLOAT"},   {177, "R8_UINT"},            {178, "R8G8_UINT"},          {180, "R8G8B8A8_UINT"},
+    {181, "R8_SINT"},           {184, "R8G8B8A8_SINT"},      {185, "R16_UINT"},           {186, "R16G16_UINT"},
+    {188, "R16G16B16A16_UINT"}, {189, "R16_SINT"},           {190, "R16G16_SINT"},        {192, "R16G16B16A16_SINT"},
+    {193, "R32_UINT"},          {194, "R32G32_UINT"},        {196, "R32G32B32A32_UINT"},  {197, "R32_SINT"},
+    {198, "R32G32_SINT"},       {200, "R32G32B32A32_SINT"},  {253, "R10G10B10A2_UINT"},
+};
+
+static const char *image_format(struct tg *g, int u)
+{
+    uint16_t f = g->uav_format ? g->uav_format[u] : 0;
+    for (size_t i = 0; f && i < sizeof(image_formats) / sizeof(image_formats[0]); i++)
+        if (image_formats[i].format == f)
+            return image_formats[i].name;
+    if (f)
+        fail(g, "a typed UAV format");
+    int ret = g->sh->uav_ret[u];
+    return ret == 4 ? "R32_UINT" : ret == 3 ? "R32_SINT" : "R32_FLOAT";
+}
+
+static const char *image_target(struct tg *g, int u)
+{
+    switch (g->sh->uav_dim[u]) {
+    case 1: return "BUFFER";
+    case 2: return "1D";
+    case 3: return "2D";
+    case 5: return "3D";
+    case 7: return "1D_ARRAY";
+    case 8: return "2D_ARRAY";
+    default: fail(g, "a typed UAV dimension"); return "2D";
+    }
+}
+
+/* the memory behind a u#, t# or g# operand: its name, the byte offset its accesses start at and its structure stride */
+static bool memory_of(struct tg *g, const struct opd *r, struct text *name, uint32_t *base, uint32_t *stride)
+{
+    int i = r->idx[0].imm;
+    *base = 0, *stride = 0;
+    if (r->type == T_UAV && i >= 0 && i < DXBC_MAX_UAV && g->sh->uav_kind[i]) {
+        g->used_buf |= 1u << i;
+        *stride = g->sh->uav_stride[i];
+        put(name, "BUFFER[");
+        putu(name, (uint32_t)i);
+    } else if (r->type == T_RESOURCE && i >= 0 && i < 24 && (g->sh->srv_raw >> i & 1)) {
+        g->used_buf |= 1u << (8 + i);
+        *stride = g->sh->srv_stride[i];
+        put(name, "BUFFER[");
+        putu(name, (uint32_t)i + 8);
+    } else if (r->type == T_TGSM && i >= 0 && i < DXBC_MAX_TGSM && g->sh->tgsm_size[i]) {
+        g->shared = true;
+        *base = g->sh->tgsm_off[i], *stride = g->sh->tgsm_stride[i];
+        put(name, "MEMORY[0");
+    } else {
+        return fail(g, "an undeclared buffer");
+    }
+    put(name, "]");
+    return true;
+}
+
+static void put_temp(struct tg *g, int k, const char *swz)
+{
+    put(&g->code, "TEMP[");
+    putu(&g->code, (uint32_t)(g->s0 + k));
+    put(&g->code, "]");
+    put(&g->code, swz);
+}
+
+/* TEMP[s0].x = the byte address: raw a.x, structured a.x * stride + b.x, plus the block's base */
+static void byte_address(struct tg *g, const struct opd *a, const struct opd *b, uint32_t stride, uint32_t base)
+{
+    struct opd x = scratch_dst(g, 0, 1), ax = scalar_of(a, 0);
+    if (b) {
+        struct opd bx = scalar_of(b, 0), k = imm_opd(stride);
+        emit3(g, "UMAD", &x, &ax, &k, &bx);
+    } else {
+        emit1(g, "MOV", false, &x, &ax);
+    }
+    if (base) {
+        struct opd tx = temp(g->s0, "xxxx"), k = imm_opd(base);
+        emit2(g, "UADD", &x, &tx, &k);
+    }
+}
+
+static const char *mask_text(unsigned m)
+{
+    static const char *const t[16] = {"", ".x", ".y", ".xy", ".z", ".xz", ".yz", ".xyz", ".w", ".xw", ".yw", ".xyw",
+                                      ".zw", ".xzw", ".yzw", ".xyzw"};
+    return t[m & 15];
+}
+
+/* the loaded value in TEMP[s0 + 2] to the destination, through the resource's swizzle */
+static void from_load(struct tg *g, const struct opd *dst, const struct opd *res)
+{
+    struct opd from = temp(g->s0 + 2, "xyzw");
+    for (int i = 0; i < 4; i++)
+        from.swz[i] = res->swz[i];
+    emit1(g, "MOV", false, dst, &from);
+}
+
+static void memory_op(struct tg *g, const struct dxbc_ins *in)
+{
+    const struct opd *o = in->o;
+    struct text name = {0};
+    uint32_t base, stride;
+    switch (in->op) {
+    case OP_LD_RAW:
+    case OP_LD_STRUCTURED: {
+        bool st = in->op == OP_LD_STRUCTURED;
+        const struct opd *res = &o[st ? 3 : 2];
+        if (o[0].type == T_NULL || !memory_of(g, res, &name, &base, &stride))
+            break;
+        byte_address(g, &o[1], st ? &o[2] : NULL, stride, base);
+        put(&g->code, "LOAD ");
+        put_temp(g, 2, "");
+        put(&g->code, ", ");
+        put(&g->code, name.p);
+        put(&g->code, ", ");
+        put_temp(g, 0, ".xxxx\n");
+        from_load(g, &o[0], res);
+        break;
+    }
+    case OP_STORE_RAW:
+    case OP_STORE_STRUCTURED: {
+        bool st = in->op == OP_STORE_STRUCTURED;
+        if (!memory_of(g, &o[0], &name, &base, &stride))
+            break;
+        struct opd v = scratch_dst(g, 1, 15);
+        emit1(g, "MOV", false, &v, &o[st ? 3 : 2]);
+        byte_address(g, &o[1], st ? &o[2] : NULL, stride, base);
+        put(&g->code, "STORE ");
+        put(&g->code, name.p);
+        put(&g->code, mask_text(o[0].mask));
+        put(&g->code, ", ");
+        put_temp(g, 0, ".xxxx, ");
+        put_temp(g, 1, "\n");
+        break;
+    }
+    case OP_LD_UAV_TYPED:
+    case OP_STORE_UAV_TYPED: {
+        bool load = in->op == OP_LD_UAV_TYPED;
+        const struct opd *u = load ? &o[2] : &o[0];
+        int i = u->idx[0].imm;
+        if (u->type != T_UAV || i < 0 || i >= DXBC_MAX_UAV || g->sh->uav_kind[i] || !g->sh->uav_dim[i]) {
+            fail(g, "an undeclared typed UAV");
+            break;
+        }
+        if (load && o[0].type == T_NULL)
+            break;
+        g->used_img |= 1u << i;
+        struct opd c = scratch_dst(g, 0, 15), v = scratch_dst(g, 1, 15);
+        emit1(g, "MOV", false, &c, &o[1]);
+        if (!load)
+            emit1(g, "MOV", false, &v, &o[2]);
+        if (load) {
+            put(&g->code, "LOAD ");
+            put_temp(g, 2, ", IMAGE[");
+        } else {
+            put(&g->code, "STORE IMAGE[");
+        }
+        putu(&g->code, (uint32_t)i);
+        put(&g->code, "], ");
+        put_temp(g, 0, load ? "" : ", ");
+        if (!load)
+            put_temp(g, 1, "");
+        put(&g->code, ", ");
+        put(&g->code, image_target(g, i));
+        put(&g->code, ", PIPE_FORMAT_");
+        put(&g->code, image_format(g, i));
+        put(&g->code, "\n");
+        if (load)
+            from_load(g, &o[0], u);
+        break;
+    }
+    case OP_BUFINFO: {
+        const struct opd *res = &o[1];
+        if (o[0].type == T_NULL)
+            break;
+        int i = res->idx[0].imm;
+        bool typed = res->type == T_UAV && i >= 0 && i < DXBC_MAX_UAV && !g->sh->uav_kind[i];
+        if (typed) {
+            if (g->sh->uav_dim[i] != 1) {
+                fail(g, "bufinfo on a texture");
+                break;
+            }
+            g->used_img |= 1u << i;
+            put(&g->code, "RESQ ");
+            put_temp(g, 2, ", IMAGE[");
+            putu(&g->code, (uint32_t)i);
+            put(&g->code, "], BUFFER, PIPE_FORMAT_");
+            put(&g->code, image_format(g, i));
+            put(&g->code, "\n");
+        } else {
+            if (!memory_of(g, res, &name, &base, &stride) || res->type == T_TGSM) {
+                fail(g, "bufinfo on shared memory");
+                break;
+            }
+            put(&g->code, "RESQ ");
+            put_temp(g, 2, ", ");
+            put(&g->code, name.p);
+            put(&g->code, "\n");
+            if (stride) { /* structured: elements, not bytes */
+                struct opd x = scratch_dst(g, 2, 1), tx = temp(g->s0 + 2, "xxxx"), k = imm_opd(stride);
+                emit2(g, "UDIV", &x, &tx, &k);
+            }
+        }
+        struct opd d = o[0], x = temp(g->s0 + 2, "xxxx");
+        emit1(g, "MOV", false, &d, &x);
+        break;
+    }
+    case OP_SYNC: {
+        unsigned f = in->ret_type, m = 0;
+        if (f & 2)
+            m |= 8; /* shared memory */
+        if (f & 12)
+            m |= 1 | 4 | (f & 8 ? 0 : 16); /* buffers and images, for the group or everyone */
+        if (m) {
+            int k = immediate(g, m, m, m, m);
+            put(&g->code, "MEMBAR IMM[");
+            putu(&g->code, (uint32_t)k);
+            put(&g->code, "].xxxx\n");
+        }
+        if (f & 1)
+            line(g, "BARRIER");
+        break;
+    }
+    default: { /* the atomics */
+        static const struct {
+            uint16_t op, imm_op;
+            const char *name;
+        } atomics[] = {{OP_ATOMIC_AND, OP_IMM_ATOMIC_AND, "ATOMAND"},     {OP_ATOMIC_OR, OP_IMM_ATOMIC_OR, "ATOMOR"},
+                       {OP_ATOMIC_XOR, OP_IMM_ATOMIC_XOR, "ATOMXOR"},
+                       {OP_ATOMIC_IADD, OP_IMM_ATOMIC_IADD, "ATOMUADD"},
+                       {OP_ATOMIC_IMAX, OP_IMM_ATOMIC_IMAX, "ATOMIMAX"},
+                       {OP_ATOMIC_IMIN, OP_IMM_ATOMIC_IMIN, "ATOMIMIN"},
+                       {OP_ATOMIC_UMAX, OP_IMM_ATOMIC_UMAX, "ATOMUMAX"},
+                       {OP_ATOMIC_UMIN, OP_IMM_ATOMIC_UMIN, "ATOMUMIN"},
+                       {OP_ATOMIC_CMP_STORE, OP_IMM_ATOMIC_CMP_EXCH, "ATOMCAS"},
+                       {0xffff, OP_IMM_ATOMIC_EXCH, "ATOMXCHG"}};
+        int a = -1;
+        bool ret = false;
+        for (int k = 0; k < (int)(sizeof(atomics) / sizeof(atomics[0])); k++)
+            if (atomics[k].op == in->op || atomics[k].imm_op == in->op)
+                a = k, ret = atomics[k].imm_op == in->op;
+        if (a < 0) {
+            fail(g, "an instruction without a TGSI translation");
+            break;
+        }
+        bool cas = !strcmp(atomics[a].name, "ATOMCAS");
+        const struct opd *res = &o[ret ? 1 : 0], *addr = &o[ret ? 2 : 1];
+        const struct opd *cmp = cas ? &o[ret ? 3 : 2] : NULL, *val = &o[ret ? (cas ? 4 : 3) : (cas ? 3 : 2)];
+        struct opd v = scratch_dst(g, 1, 1), vx = scalar_of(val, 0), c = scratch_dst(g, 3, 1);
+        emit1(g, "MOV", false, &v, &vx);
+        if (cas) {
+            struct opd cx = scalar_of(cmp, 0);
+            emit1(g, "MOV", false, &c, &cx);
+        }
+        int i = res->idx[0].imm;
+        bool typed = res->type == T_UAV && i >= 0 && i < DXBC_MAX_UAV && !g->sh->uav_kind[i];
+        if (typed) {
+            if (!g->sh->uav_dim[i]) {
+                fail(g, "an undeclared typed UAV");
+                break;
+            }
+            g->used_img |= 1u << i;
+            struct opd at = scratch_dst(g, 0, 15);
+            emit1(g, "MOV", false, &at, addr);
+            put(&name, "IMAGE[");
+            putu(&name, (uint32_t)i);
+            put(&name, "]");
+        } else {
+            if (!memory_of(g, res, &name, &base, &stride))
+                break;
+            struct opd y = scalar_of(addr, 1);
+            byte_address(g, addr, stride ? &y : NULL, stride, base);
+        }
+        put(&g->code, atomics[a].name);
+        put(&g->code, " ");
+        put_temp(g, 2, ".x, ");
+        put(&g->code, name.p);
+        put(&g->code, ", ");
+        put_temp(g, 0, typed ? ", " : ".xxxx, ");
+        if (cas)
+            put_temp(g, 3, ".xxxx, ");
+        put_temp(g, 1, ".xxxx");
+        if (typed) {
+            put(&g->code, ", ");
+            put(&g->code, image_target(g, i));
+            put(&g->code, ", PIPE_FORMAT_");
+            put(&g->code, image_format(g, i));
+        }
+        put(&g->code, "\n");
+        if (ret && o[0].type != T_NULL) {
+            struct opd x = temp(g->s0 + 2, "xxxx");
+            emit1(g, "MOV", false, &o[0], &x);
+        }
+        break;
+    }
+    }
+    kfree(name.p);
 }
 
 struct simple {
@@ -586,6 +957,13 @@ static void instruction(struct tg *g, int pc)
     case OP_NOP:
     case OP_CUSTOMDATA:
         return;
+    case OP_LD_RAW: case OP_LD_STRUCTURED: case OP_STORE_RAW: case OP_STORE_STRUCTURED: case OP_LD_UAV_TYPED:
+    case OP_STORE_UAV_TYPED: case OP_BUFINFO: case OP_SYNC: case OP_ATOMIC_AND: case OP_ATOMIC_OR: case OP_ATOMIC_XOR:
+    case OP_ATOMIC_CMP_STORE: case OP_ATOMIC_IADD: case OP_ATOMIC_IMAX: case OP_ATOMIC_IMIN: case OP_ATOMIC_UMAX:
+    case OP_ATOMIC_UMIN: case OP_IMM_ATOMIC_IADD: case OP_IMM_ATOMIC_AND: case OP_IMM_ATOMIC_OR: case OP_IMM_ATOMIC_XOR:
+    case OP_IMM_ATOMIC_EXCH: case OP_IMM_ATOMIC_CMP_EXCH: case OP_IMM_ATOMIC_IMAX: case OP_IMM_ATOMIC_IMIN:
+    case OP_IMM_ATOMIC_UMAX: case OP_IMM_ATOMIC_UMIN:
+        return memory_op(g, in);
     case OP_EMIT:
     case OP_CUT:
     case OP_EMITTHENCUT:
@@ -631,6 +1009,37 @@ static void instruction(struct tg *g, int pc)
             struct opd from = temp(g->s0, "xyzw");
             emit1(g, "MOV", false, &o[1], &from);
         }
+        return;
+    }
+    case OP_UADDC:
+    case OP_USUBB: { /* the sum or difference and the carry or borrow (1), worked out before either is written */
+        struct opd sum = scratch_dst(g, 0, 15), carry = scratch_dst(g, 1, 15), one = imm_opd(1);
+        struct opd s0 = temp(g->s0, "xyzw"), s1 = temp(g->s0 + 1, "xyzw");
+        if (in->op == OP_UADDC) {
+            emit2(g, "UADD", &sum, &o[2], &o[3]);
+            emit2(g, "USLT", &carry, &s0, &o[2]);
+        } else {
+            emit2(g, "USLT", &carry, &o[2], &o[3]);
+            struct opd neg = scratch_dst(g, 2, 15), n2 = temp(g->s0 + 2, "xyzw");
+            emit1(g, "INEG", false, &neg, &o[3]);
+            emit2(g, "UADD", &sum, &o[2], &n2);
+        }
+        emit2(g, "AND", &carry, &s1, &one);
+        if (o[0].type != T_NULL)
+            emit1(g, "MOV", false, &o[0], &s0);
+        if (o[1].type != T_NULL)
+            emit1(g, "MOV", false, &o[1], &s1);
+        return;
+    }
+    case OP_SWAPC: { /* d0 = cond ? b : a, d1 = cond ? a : b */
+        struct opd x = scratch_dst(g, 0, 15), y = scratch_dst(g, 1, 15);
+        emit3(g, "UCMP", &x, &o[2], &o[4], &o[3]);
+        emit3(g, "UCMP", &y, &o[2], &o[3], &o[4]);
+        struct opd s0 = temp(g->s0, "xyzw"), s1 = temp(g->s0 + 1, "xyzw");
+        if (o[0].type != T_NULL)
+            emit1(g, "MOV", false, &o[0], &s0);
+        if (o[1].type != T_NULL)
+            emit1(g, "MOV", false, &o[1], &s1);
         return;
     }
     case OP_SINCOS: {
@@ -762,6 +1171,16 @@ static void instruction(struct tg *g, int pc)
         return texture(g, in, TX_D);
     case OP_LD:
         return texture(g, in, TX_LD);
+    case OP_LOD:
+        return texture(g, in, TX_LOD);
+    case OP_GATHER4:
+        return texture(g, in, TX_G);
+    case OP_GATHER4_C:
+        return texture(g, in, TX_G_C);
+    case OP_GATHER4_PO:
+        return texture(g, in, TX_G_PO);
+    case OP_GATHER4_PO_C:
+        return texture(g, in, TX_G_PO_C);
     case OP_RESINFO: { /* TXQ gives integers: floats unless the instruction asks for _uint */
         const struct opd *res = &in->o[2];
         int t = res->idx[0].imm;
@@ -824,7 +1243,22 @@ static const char *interp_name(int mode)
 static bool declarations(struct tg *g, struct text *t)
 {
     const struct dxbc_shader *sh = g->sh;
-    put(t, sh->stage == DXBC_VS ? "VERT\n" : sh->stage == DXBC_GS ? "GEOM\n" : "FRAG\n");
+    put(t, sh->stage == DXBC_VS   ? "VERT\n"
+           : sh->stage == DXBC_GS ? "GEOM\n"
+           : sh->stage == DXBC_CS ? "COMP\n"
+                                  : "FRAG\n");
+    if (sh->stage == DXBC_CS) {
+        static const char *const dim[3] = {"WIDTH", "HEIGHT", "DEPTH"};
+        for (int i = 0; i < 3; i++) {
+            put(t, "PROPERTY CS_FIXED_BLOCK_");
+            put(t, dim[i]);
+            put(t, " ");
+            putu(t, sh->group[i] ? sh->group[i] : 1);
+            put(t, "\n");
+        }
+        decl_reg(t, "SV", 0, ", THREAD_ID");
+        decl_reg(t, "SV", 1, ", BLOCK_ID");
+    }
     if (sh->stage == DXBC_GS) {
         static const char *const in_prim[] = {"", "POINTS", "LINES", "TRIANGLES", "", "", "LINES_ADJACENCY",
                                               "TRIANGLES_ADJACENCY"};
@@ -886,7 +1320,14 @@ static bool declarations(struct tg *g, struct text *t)
                 decl_reg(t, "IN", (int)r, ", POSITION, LINEAR");
                 continue;
             }
+            if ((int)r == g->face) { /* gl_FrontFacing as +1 or -1, made a D3D boolean at the start */
+                done |= 1u << r;
+                decl_reg(t, "IN", (int)r, ", FACE, CONSTANT");
+                continue;
+            }
             if (sh->in[i].system_value && sh->in[i].system_value != 1) {
+                if (g->sv_in[r] >= 0)
+                    continue;
                 if (!sh->interp[r])
                     continue; /* not read */
                 return fail(g, "a pixel shader system value input");
@@ -900,6 +1341,8 @@ static bool declarations(struct tg *g, struct text *t)
             put(t, interp_name(sh->interp[r]));
             put(t, "\n");
         }
+        for (int k = 0; k < g->nsv; k++)
+            decl_reg(t, "SV", k, g->sv_name[k] == 7 ? ", PRIMID" : ", SAMPLEID");
     }
     done = 0;
     for (int i = 0; i < sh->nout; i++) {
@@ -932,7 +1375,22 @@ static bool declarations(struct tg *g, struct text *t)
     }
     if (sh->depth_out)
         decl_reg(t, "OUT", g->depth_reg, ", POSITION");
-    int total = g->s0 + 4;
+    for (int i = 0; i < 32; i++)
+        if (g->used_buf >> i & 1)
+            decl_reg(t, "BUFFER", i, "");
+    for (int u = 0; u < DXBC_MAX_UAV; u++)
+        if (g->used_img >> u & 1) {
+            put(t, "DCL IMAGE[");
+            putu(t, (uint32_t)u);
+            put(t, "], ");
+            put(t, image_target(g, u));
+            put(t, ", PIPE_FORMAT_");
+            put(t, image_format(g, u));
+            put(t, ", WR\n");
+        }
+    if (g->shared)
+        decl_reg(t, "MEMORY", 0, ", SHARED");
+    int total = g->s0 + (sh->stage == DXBC_CS ? 6 : g->face >= 0 ? 5 : 4);
     put(t, "DCL TEMP[0..");
     putu(t, (uint32_t)(sh->temps > 0 ? sh->temps - 1 : 0));
     put(t, "]\n");
@@ -964,6 +1422,11 @@ static bool declarations(struct tg *g, struct text *t)
             putu(t, size - 1);
             put(t, "]\n");
         }
+    if (g->out->icb && sh->icb_vec4) {
+        put(t, "DCL CONST[15][0..");
+        putu(t, (uint32_t)sh->icb_vec4 - 1);
+        put(t, "]\n");
+    }
     static const char *const ret[] = {"FLOAT", "UNORM", "SNORM", "SINT", "UINT", "FLOAT"};
     for (int r = 0; r < DXBC_MAX_RES; r++)
         if (g->used_tex & (1u << r)) {
@@ -989,7 +1452,7 @@ static bool declarations(struct tg *g, struct text *t)
     return true;
 }
 
-bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out)
+bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct dxbc_tgsi *out)
 {
     memset(out, 0, sizeof(*out));
     memset(out->tex_sampler, 0xff, sizeof(out->tex_sampler));
@@ -999,17 +1462,9 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out)
         return false;
     }
     memset(g, 0, sizeof(*g));
-    g->sh = sh, g->out = out;
-    if (sh->stage != DXBC_VS && sh->stage != DXBC_PS && sh->stage != DXBC_GS)
-        fail(g, "only vertex, geometry and pixel shaders");
-    if (sh->icb_vec4 > MAX_IMM / 2)
-        fail(g, "a large immediate constant buffer");
-    for (int i = 0; i < sh->icb_vec4 && !g->fail; i++) {
-        const uint32_t *v = (const uint32_t *)&sh->icb[i * 4];
-        for (int c = 0; c < 4; c++)
-            g->imm[i][c] = v[c];
-    }
-    g->nimm = g->fail ? 0 : sh->icb_vec4;
+    g->sh = sh, g->out = out, g->uav_format = uav_format;
+    if (sh->stage != DXBC_VS && sh->stage != DXBC_PS && sh->stage != DXBC_GS && sh->stage != DXBC_CS)
+        fail(g, "hull and domain shaders");
     int next = sh->temps;
     for (int x = 0; x < 8; x++)
         if (sh->xtemps[x])
@@ -1018,6 +1473,7 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out)
     g->depth_reg = sh->max_out_reg + 1;
     for (int r = 0; r < 32; r++)
         g->sv_in[r] = -1;
+    g->face = -1;
     if (sh->stage == DXBC_VS)
         for (int i = 0; i < sh->nin; i++) {
             uint32_t sv = sh->in[i].system_value, r = sh->in[i].reg;
@@ -1028,6 +1484,41 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out)
             g->sv_name[g->nsv] = (uint8_t)sv;
             g->sv_in[r] = (int8_t)g->nsv++;
         }
+    if (sh->stage == DXBC_PS) /* SV_PrimitiveID and SV_SampleIndex as system values, SV_IsFrontFace from FACE */
+        for (int i = 0; i < sh->nin; i++) {
+            uint32_t sv = sh->in[i].system_value, r = sh->in[i].reg;
+            if (r >= 32 || g->sv_in[r] >= 0 || (int)r == g->face)
+                continue;
+            if (sv == 9) {
+                g->face = (int)r;
+                int zero = immediate(g, 0, 0, 0, 0);
+                put(&g->code, "FSLT ");
+                put_temp(g, 4, ", IMM[");
+                putu(&g->code, (uint32_t)zero);
+                put(&g->code, "].xxxx, IN[");
+                putu(&g->code, r);
+                put(&g->code, "].xxxx\n");
+            } else if (sv == 7 || sv == 10) {
+                g->sv_name[g->nsv] = (uint8_t)sv;
+                g->sv_in[r] = (int8_t)g->nsv++;
+            }
+        }
+    if (sh->stage == DXBC_CS) { /* SV_DispatchThreadID and SV_GroupIndex from the group and the thread in it */
+        uint32_t w = sh->group[0], h = sh->group[1];
+        int k = immediate(g, w, h, sh->group[2], 0), wk = immediate(g, w, w, w, w), whk = immediate(g, w * h, w * h,
+                                                                                                   w * h, w * h);
+        put(&g->code, "UMAD ");
+        put_temp(g, 4, ".xyz, SV[1].xyzz, IMM[");
+        putu(&g->code, (uint32_t)k);
+        put(&g->code, "].xyzz, SV[0].xyzz\nUMAD ");
+        put_temp(g, 5, ".x, SV[0].yyyy, IMM[");
+        putu(&g->code, (uint32_t)wk);
+        put(&g->code, "].xxxx, SV[0].xxxx\nUMAD ");
+        put_temp(g, 5, ".x, SV[0].zzzz, IMM[");
+        putu(&g->code, (uint32_t)whk);
+        put(&g->code, "].xxxx, ");
+        put_temp(g, 5, ".xxxx\n");
+    }
     for (int pc = 0; pc < sh->ncode && !g->fail; pc++)
         instruction(g, pc);
     put(&g->code, "END\n");
@@ -1040,6 +1531,8 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out)
         fail(g, "out of memory");
     kfree(g->code.p);
     out->used_cb = g->used_cb;
+    out->used_uav = (g->used_buf & 0xff) | g->used_img;
+    out->used_srv_buf = g->used_buf >> 8;
     bool ok = !g->fail;
     kfree(g);
     if (!ok) {

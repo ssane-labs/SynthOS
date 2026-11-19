@@ -20,12 +20,14 @@ enum {
     C_CREATE = 1, C_BIND = 2, C_DESTROY = 3, C_VIEWPORT = 4, C_FRAMEBUFFER = 5, C_VERTEX_BUFFERS = 6, C_CLEAR = 7,
     C_DRAW = 8, C_SAMPLER_VIEWS = 10, C_INDEX_BUFFER = 11, C_STENCIL_REF = 13, C_BLEND_COLOR = 14, C_SCISSOR = 15,
     C_SAMPLER_STATES = 18, C_BEGIN_QUERY = 19, C_END_QUERY = 20, C_QUERY_RESULT = 21, C_SAMPLE_MASK = 24,
-    C_UNIFORM_BUFFER = 27, C_BIND_SHADER = 31,
+    C_STREAMOUT_TARGETS = 25,
+    C_UNIFORM_BUFFER = 27, C_BIND_SHADER = 31, C_SHADER_BUFFERS = 34, C_SHADER_IMAGES = 35, C_MEMORY_BARRIER = 36,
+    C_LAUNCH_GRID = 37,
     O_BLEND = 1, O_RASTERIZER = 2, O_DSA = 3, O_SHADER = 4, O_VERTEX_ELEMENTS = 5, O_SAMPLER_VIEW = 6,
-    O_SAMPLER_STATE = 7, O_SURFACE = 8, O_QUERY = 9,
+    O_SAMPLER_STATE = 7, O_SURFACE = 8, O_QUERY = 9, O_STREAMOUT_TARGET = 10,
     B_DEPTH_STENCIL = 1 << 0, B_RENDER_TARGET = 1 << 1, B_SAMPLER_VIEW = 1 << 3, B_VERTEX = 1 << 4,
-    B_CONSTANT = 1 << 6, B_CUSTOM = 1 << 17,
-    SH_VERTEX = 0, SH_FRAGMENT = 1, SH_GEOMETRY = 2,
+    B_CONSTANT = 1 << 6, B_SHADER_BUFFER = 1 << 14, B_CUSTOM = 1 << 17,
+    SH_VERTEX = 0, SH_FRAGMENT = 1, SH_GEOMETRY = 2, SH_COMPUTE = 5,
 };
 
 #define STREAM_WORDS 1024
@@ -36,12 +38,12 @@ static struct {
     int gpu;
     uint32_t ctx, *cmd, n, next;
     /* state objects as last made, and what they were made from */
-    uint32_t blend, dsa, rs, ve, samplers[3][16], null_fs;
+    uint32_t blend, dsa, rs, ve, samplers[6][16], null_fs;
     uint8_t blend_key[sizeof(struct gd_blend)], dsa_key[sizeof(struct gd_depth) + 4], rs_key[sizeof(struct gd_raster) + 4];
     uint8_t ve_key[sizeof(struct gd_input_layout) + 32 * 4];
     uint8_t ve_slot[16]; /* the vertex buffer slot behind each binding, one binding per shader input */
     int ve_count;
-    struct gd_sampler samp_key[3][16];
+    struct gd_sampler samp_key[6][16];
     /* occlusion: one query open across draws, read when someone asks */
     uint32_t query, query_buf, *query_mem, drawn_since;
     uint64_t draws, software;
@@ -118,6 +120,7 @@ static bool ready(void)
     H.query_mem = kmalloc_pages(4096);
     if (!H.cmd || !H.query_mem)
         return false;
+    virtio_gpu_capset(H.gpu, 1, NULL, 0); /* the host's limits; without it texture buffers are 0 texels long */
     H.ctx = virtio_gpu_ctx_create(H.gpu, "synthos-d3d");
     if (!H.ctx)
         return false;
@@ -260,7 +263,8 @@ static uint32_t to_gpu(struct gd_resource *r)
         if (!format)
             return 0;
         if (r->d.dim == GD_BUFFER) /* the host takes one use for a buffer; GL binds any buffer anywhere */
-            bind = b & GD_BIND_SHADER_RESOURCE ? B_SAMPLER_VIEW : b == GD_BIND_CONSTANT ? B_CONSTANT : B_VERTEX;
+            bind = b & GD_BIND_SHADER_RESOURCE ? B_SAMPLER_VIEW : b & GD_BIND_UNORDERED_ACCESS ? B_SHADER_BUFFER
+                 : b == GD_BIND_CONSTANT ? B_CONSTANT : B_VERTEX;
         else
             bind = (b & GD_BIND_RENDER_TARGET ? B_RENDER_TARGET : 0) |
                    (b & GD_BIND_DEPTH_STENCIL ? B_DEPTH_STENCIL : B_SAMPLER_VIEW);
@@ -318,11 +322,14 @@ void gd_host_forget_view(struct gd_view *v)
 
 void gd_host_forget_shader(struct gd_shader *s)
 {
-    if (s->host <= 0)
+    if (s->host <= 0 && s->so_host <= 0)
         return;
     lock();
-    destroy(O_SHADER, (uint32_t)s->host);
-    s->host = 0;
+    if (s->host > 0)
+        destroy(O_SHADER, (uint32_t)s->host);
+    if (s->so_host > 0)
+        destroy(O_SHADER, (uint32_t)s->so_host);
+    s->host = s->so_host = 0;
     unlock();
 }
 
@@ -374,22 +381,43 @@ static uint32_t surface(struct gd_view *v)
 }
 
 /* the shader on the host, made from its TGSI text in pieces of a page */
-static uint32_t shader(struct gd_shader *s, uint32_t type)
+/* a shader object on the host from s's TGSI: compute ones for the given typed UAV formats, vertex ones with the
+   stream output so (or NULL); 0 when there is no translation (H.why says why) */
+static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t *uav_format, const struct so_decl *so)
 {
-    if (s->host)
-        return s->host > 0 ? (uint32_t)s->host : 0;
     struct dxbc_tgsi t;
-    if (!dxbc_tgsi(&s->sh, &t)) {
-        s->host = -1;
+    if (!dxbc_tgsi(&s->sh, uav_format, &t)) {
         str_copy(H.why, t.error, sizeof(H.why));
         klog("gd: a shader stays in software: %s", t.error);
         return 0;
     }
+    /* stream output: the outputs in dwords, each at its offset in its buffer's vertex */
+    uint32_t so_out[SO_MAX_ENTRIES][2], nso = 0, at_dw[GD_SLOTS_SO] = {0};
+    for (uint32_t i = 0; so && i < so->n; i++) {
+        uint32_t b = so->e[i].slot;
+        if (so->e[i].reg >= 0)
+            so_out[nso][0] = (uint32_t)so->e[i].reg | (uint32_t)so->e[i].comp << 8 | (uint32_t)so->e[i].ncomp << 10 |
+                             b << 13 | at_dw[b] << 16,
+            so_out[nso++][1] = 0; /* stream 0 */
+        at_dw[b] += so->e[i].ncomp;
+    }
     uint32_t h = handle(), total = (uint32_t)t.len + 1, tokens = total / 2 + 512;
+    uint32_t head = 5 + (nso ? 2 * nso + 4 : 0);
     for (uint32_t at = 0; at < total;) {
         uint32_t bytes = total - at < 3800 ? total - at : 3800, words = (bytes + 3) / 4;
-        cmd(C_CREATE, O_SHADER, 5 + words);
-        put(h), put(type), put(at ? (at | 0x80000000u) : total), put(tokens), put(0);
+        cmd(C_CREATE, O_SHADER, head + words);
+        put(h), put(type), put(at ? (at | 0x80000000u) : total), put(tokens);
+        if (type == SH_COMPUTE) {
+            put(s->sh.tgsm_bytes); /* its shared memory */
+        } else {
+            put(nso);
+            if (nso) {
+                for (int b = 0; b < 4; b++)
+                    put(b < GD_SLOTS_SO ? so->stride[b] / 4 : 0);
+                for (uint32_t i = 0; i < nso; i++)
+                    put(so_out[i][0]), put(so_out[i][1]);
+            }
+        }
         for (uint32_t i = 0; i < words; i++) {
             uint32_t w = 0;
             for (uint32_t k = 0; k < 4 && at + i * 4 + k < total; k++)
@@ -399,10 +427,43 @@ static uint32_t shader(struct gd_shader *s, uint32_t type)
         at += bytes;
     }
     memcpy(s->tex_sampler, t.tex_sampler, sizeof(s->tex_sampler));
-    s->used_cb = t.used_cb;
+    s->used_cb = t.used_cb, s->used_uav = t.used_uav, s->used_srv_buf = t.used_srv_buf;
+    s->icb = t.icb;
     dxbc_tgsi_free(&t);
-    s->host = (int32_t)h;
     return h;
+}
+
+static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *uav_format)
+{
+    if (s->host > 0 && uav_format && memcmp(s->uav_format, uav_format, sizeof(s->uav_format))) {
+        destroy(O_SHADER, (uint32_t)s->host);
+        s->host = 0;
+    }
+    if (uav_format && !s->host)
+        memcpy(s->uav_format, uav_format, sizeof(s->uav_format));
+    if (s->host)
+        return s->host > 0 ? (uint32_t)s->host : 0;
+    uint32_t h = create_shader(s, type, uav_format, NULL);
+    s->host = h ? (int32_t)h : -1;
+    return h;
+}
+
+/* the vertex shader vs writing the stream output that so_shader (a vertex shader in the geometry slot) declares:
+   kept on so_shader for the vertex shader it was last made from */
+static uint32_t so_shader_for(struct gd_shader *so_shader, struct gd_shader *vs)
+{
+    if (so_shader->so_host && so_shader->so_vs == vs->serial)
+        return so_shader->so_host > 0 ? (uint32_t)so_shader->so_host : 0;
+    if (so_shader->so_host > 0)
+        destroy(O_SHADER, (uint32_t)so_shader->so_host);
+    uint32_t h = create_shader(vs, SH_VERTEX, NULL, so_shader->so);
+    so_shader->so_host = h ? (int32_t)h : -1, so_shader->so_vs = vs->serial;
+    return h;
+}
+
+static uint32_t shader(struct gd_shader *s, uint32_t type)
+{
+    return shader_for(s, type, NULL);
 }
 
 /* D3D11 numbers to gallium's */
@@ -470,19 +531,22 @@ static void depth_state(const struct gd_context *c, bool has_depth)
     put(H.dsa);
 }
 
-static void raster_state(const struct gd_context *c)
+/* discard: stream output only, nothing rasterized */
+static void raster_state(const struct gd_context *c, bool discard)
 {
     const struct gd_raster *r = &c->raster;
-    if (H.rs && !memcmp(H.rs_key, r, sizeof(*r)))
+    if (H.rs && !memcmp(H.rs_key, r, sizeof(*r)) && H.rs_key[sizeof(*r)] == discard)
         return;
     destroy(O_RASTERIZER, H.rs);
     H.rs = handle();
     memcpy(H.rs_key, r, sizeof(*r));
+    H.rs_key[sizeof(*r)] = discard;
     uint32_t cull = r->cull == 2 ? 1 : r->cull == 3 ? 2 : 0, fill = r->fill == 2 ? 1 : 0;
     bool offset = r->depth_bias || r->slope_scaled_depth_bias != 0;
     cmd(C_CREATE, O_RASTERIZER, 9);
     put(H.rs);
-    put((r->depth_clip ? 1u << 1 : 0) | 1u << 2 /* clip z 0..w */ | 1u << 4 /* first vertex for flat */ | cull << 8 |
+    put((r->depth_clip ? 1u << 1 : 0) | (discard ? 1u << 3 : 0) | 1u << 2 /* clip z 0..w */ |
+        1u << 4 /* first vertex for flat */ | cull << 8 |
         fill << 10 | fill << 12 | (r->scissor ? 1u << 14 : 0) | (r->front_ccw ? 1u << 15 : 0) |
         (offset ? 1u << 20 : 0) | (r->multisample ? 1u << 25 : 0) | 1u << 29 /* pixel centers at .5 */);
     put(fbits(1)), put(0), put(0), put(fbits(1));
@@ -616,10 +680,24 @@ static bool stage_resources(struct gd_context *c, int dstage, uint32_t type, str
         cmd(C_UNIFORM_BUFFER, 0, 5);
         put(type), put((uint32_t)i + 1), put(first), put(len), put(res);
     }
+    if (s->icb && sh->icb_vec4) { /* the immediate constant buffer, made once */
+        if (!s->icb_buf) {
+            struct gd_res_desc d = {.dim = GD_BUFFER, .width = (uint32_t)sh->icb_vec4 * 16, .height = 1, .depth = 1,
+                                    .mips = 1, .array = 1, .bind = GD_BIND_CONSTANT};
+            struct gd_init init = {(uint64_t)(uintptr_t)sh->icb, 0, 0};
+            uint32_t e;
+            s->icb_buf = gd_resource_create(&d, &init, &e);
+        }
+        uint32_t res = s->icb_buf ? to_gpu(s->icb_buf) : 0;
+        if (!res)
+            return false;
+        cmd(C_UNIFORM_BUFFER, 0, 5);
+        put(type), put(15), put(0), put((uint32_t)sh->icb_vec4 * 16), put(res);
+    }
     uint32_t views[DXBC_MAX_RES], samps[16];
     int nv = 0, ns = 0;
     for (int t = 0; t < DXBC_MAX_RES; t++) {
-        if (!sh->res_dim[t])
+        if (!sh->res_dim[t] || (sh->srv_raw >> t & 1)) /* raw and structured ones are shader buffers */
             continue;
         struct gd_view *v = t < GD_SLOTS_SRV ? st->srv[t] : NULL;
         uint32_t h = v ? sampler_view(v) : 0;
@@ -663,6 +741,174 @@ static bool refuse(const char *why)
 
 static const int8_t prims[14] = {-1, 0, 1, 3, 4, 5, -1, -1, -1, -1, 10, 11, 12, 13};
 
+/* ---- compute */
+
+/* a buffer view's bytes (raw views count 4-byte words, structured ones the buffer's stride, typed ones the format) */
+static void buffer_range(const struct gd_view *v, uint32_t *offset, uint32_t *length)
+{
+    uint32_t block = 1, size = v->r->d.misc & GD_MISC_BUFFER_STRUCTURED ? v->r->d.stride
+                             : (v->d.flags & 1) ? 4 : gd_format_bytes(v->format, &block);
+    uint32_t width = v->r->d.width;
+    *offset = v->d.first_element * size, *length = v->d.elements * size;
+    if (*offset > width)
+        *offset = width;
+    if (*length > width - *offset)
+        *length = width - *offset;
+}
+
+/* the formats of the typed UAVs bound to a stage, which its shader is made for */
+static void uav_formats(const struct stage *st, const struct dxbc_shader *sh, uint16_t *formats)
+{
+    memset(formats, 0, sizeof(uint16_t) * DXBC_MAX_UAV);
+    for (int u = 0; u < DXBC_MAX_UAV && u < GD_SLOTS_UAV; u++)
+        if (!sh->uav_kind[u] && st->uav[u])
+            formats[u] = (uint16_t)host_format(st->uav[u]->format);
+}
+
+/* a stage's raw and structured buffers (u# at u, t# at 8 + t) and typed UAVs as images; false when one cannot be on
+   the host */
+static bool bind_memory(struct gd_context *c, int dstage, uint32_t type, struct gd_shader *s, const uint16_t *formats)
+{
+    struct stage *st = &c->stage[dstage];
+    const struct dxbc_shader *sh = &s->sh;
+    uint32_t buf[8 + DXBC_MAX_RES][3];
+    int nbuf = 0;
+    memset(buf, 0, sizeof(buf));
+    for (int i = 0; i < 8 + DXBC_MAX_RES && i < 32; i++) {
+        bool uav = i < 8;
+        if (uav ? !(s->used_uav >> i & 1) || !sh->uav_kind[i] : !(s->used_srv_buf >> (i - 8) & 1))
+            continue;
+        struct gd_view *v = uav ? (i < GD_SLOTS_UAV ? st->uav[i] : NULL)
+                                : (i - 8 < GD_SLOTS_SRV ? st->srv[i - 8] : NULL);
+        if (v) {
+            if (v->r->d.dim != GD_BUFFER || !(buf[i][2] = to_gpu(v->r)))
+                return false;
+            buffer_range(v, &buf[i][0], &buf[i][1]);
+        }
+        nbuf = i + 1;
+    }
+    uint32_t img[DXBC_MAX_UAV][5];
+    int nimg = 0;
+    memset(img, 0, sizeof(img));
+    for (int u = 0; u < DXBC_MAX_UAV && u < GD_SLOTS_UAV; u++) {
+        if (!(s->used_uav >> u & 1) || sh->uav_kind[u])
+            continue;
+        struct gd_view *v = st->uav[u];
+        if (v) {
+            uint32_t res = to_gpu(v->r);
+            if (!res || !formats[u])
+                return false;
+            img[u][0] = formats[u], img[u][1] = 3; /* read and write */
+            if (v->r->d.dim == GD_BUFFER) {
+                buffer_range(v, &img[u][2], &img[u][3]);
+            } else {
+                uint32_t slices = v->d.slices ? v->d.slices : 1;
+                img[u][2] = v->d.first_slice | (v->d.first_slice + slices - 1) << 16, img[u][3] = v->d.first_mip;
+            }
+            img[u][4] = res;
+        }
+        nimg = u + 1;
+    }
+    if (nbuf) {
+        cmd(C_SHADER_BUFFERS, 0, (uint32_t)nbuf * 3 + 2);
+        put(type), put(0);
+        for (int i = 0; i < nbuf; i++)
+            put(buf[i][0]), put(buf[i][1]), put(buf[i][2]);
+    }
+    if (nimg) {
+        cmd(C_SHADER_IMAGES, 0, (uint32_t)nimg * 5 + 2);
+        put(type), put(0);
+        for (int u = 0; u < nimg; u++)
+            for (int k = 0; k < 5; k++)
+                put(img[u][k]);
+    }
+    return true;
+}
+
+/* after a dispatch or a draw that wrote unordered access views: what it wrote, for everything after it */
+static void wrote_memory(struct stage *st, const struct gd_shader *s)
+{
+    if (!s->used_uav)
+        return;
+    cmd(C_MEMORY_BARRIER, 0, 1);
+    put(0xffffffffu);
+    for (int u = 0; u < DXBC_MAX_UAV && u < GD_SLOTS_UAV; u++)
+        if ((s->used_uav >> u & 1) && st->uav[u])
+            st->uav[u]->r->where = HOST_GPU_NEWER;
+}
+
+bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)
+{
+    if (H.off || H.state < 0)
+        return false;
+    struct stage *st = &c->stage[DXBC_CS];
+    struct gd_shader *cs = st->shader;
+    if (!cs)
+        return false;
+    uint16_t formats[DXBC_MAX_UAV];
+    uav_formats(st, &cs->sh, formats);
+    lock();
+    if (!ready()) {
+        unlock();
+        return false;
+    }
+    uint32_t h = shader_for(cs, SH_COMPUTE, formats);
+    if (!h) {
+        unlock();
+        return refuse(H.why);
+    }
+    if (!stage_resources(c, DXBC_CS, SH_COMPUTE, cs) || !bind_memory(c, DXBC_CS, SH_COMPUTE, cs, formats)) {
+        unlock();
+        return refuse("a compute resource");
+    }
+    cmd(C_BIND_SHADER, 0, 2);
+    put(h), put(SH_COMPUTE);
+    cmd(C_LAUNCH_GRID, 0, 8);
+    for (int i = 0; i < 3; i++)
+        put(cs->sh.group[i] ? cs->sh.group[i] : 1);
+    put(x), put(y), put(z), put(0), put(0);
+    wrote_memory(st, cs);
+    H.draws++;
+    unlock();
+    return true;
+}
+
+/* the bytes a draw's stream output writes to each buffer: whole primitives while they fit in every buffer (the host's
+   transform feedback stops the same way). Counted here, since the vertex shader writes it with nothing in between;
+   false for indexed strips, where a restart index would end a strip */
+static bool so_written(const struct gd_context *c, const struct so_decl *so, bool indexed, uint32_t count,
+                       uint32_t instances, uint32_t *bytes)
+{
+    uint32_t t = c->topology, verts, prims;
+    switch (t) {
+    case 1: verts = 1, prims = count; break;
+    case 2: verts = 2, prims = count / 2; break;
+    case 3: verts = 2, prims = count > 1 ? count - 1 : 0; break;
+    case 4: verts = 3, prims = count / 3; break;
+    case 5: verts = 3, prims = count > 2 ? count - 2 : 0; break;
+    case 10: verts = 2, prims = count / 4; break;
+    case 11: verts = 2, prims = count > 3 ? count - 3 : 0; break;
+    case 12: verts = 3, prims = count / 6; break;
+    case 13: verts = 3, prims = count >= 6 ? count / 2 - 2 : 0; break;
+    default: return false;
+    }
+    if (indexed && (t == 3 || t == 5 || t == 11 || t == 13))
+        return false;
+    uint64_t total = (uint64_t)prims * instances;
+    for (int b = 0; b < GD_SLOTS_SO; b++) {
+        const struct gd_resource *r = c->so[b];
+        uint64_t per = (uint64_t)verts * so->stride[b];
+        if (r && per) {
+            uint64_t room = r->size > r->so_filled ? (r->size - r->so_filled) / per : 0;
+            if (room < total)
+                total = room;
+        }
+    }
+    for (int b = 0; b < GD_SLOTS_SO; b++)
+        bytes[b] = c->so[b] ? (uint32_t)(total * verts * so->stride[b]) : 0;
+    return true;
+}
+
 bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t start, int32_t base,
                   uint32_t instances, uint32_t first_instance)
 {
@@ -673,16 +919,27 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         return false;
     if (c->stage[DXBC_HS].shader || c->stage[DXBC_DS].shader)
         return refuse("tessellation shaders");
+    /* stream output: declared by the shader in the geometry slot, a geometry shader or a vertex shader made for it
+       (then the vertex shader writes it, and nothing runs in between) */
+    struct gd_shader *so_vs = NULL;
+    if (gs && gs->sh.stage == DXBC_VS)
+        so_vs = gs->so ? gs : NULL, gs = NULL;
+    bool targets = false;
+    for (int i = 0; i < GD_SLOTS_SO; i++)
+        targets |= c->so[i] != NULL;
+    const struct so_decl *so = so_vs ? so_vs->so : gs ? gs->so : NULL;
+    bool discard = so && so->rasterized != 0;
+    if (gs && gs->so && targets)
+        return refuse("stream output from a geometry shader");
     if (gs && (gs->sh.stage != DXBC_GS || gs->host < 0))
         return gs->sh.stage == DXBC_GS ? refuse(H.why) : false;
     if (c->topology >= 14 || prims[c->topology] < 0)
         return refuse("topology");
-    for (int i = 0; i < GD_SLOTS_SO; i++)
-        if (c->so[i])
-            return refuse("stream output");
-    for (int i = 0; i < GD_SLOTS_UAV; i++)
-        if (c->stage[DXBC_PS].uav[i])
-            return refuse("unordered access from the pixel shader");
+    uint32_t so_bytes[GD_SLOTS_SO] = {0}; /* what stream output writes to each buffer */
+    if (so_vs && targets && !so_written(c, so, indexed, count, instances, so_bytes))
+        return refuse("stream output of an indexed strip");
+    if (so_vs && so_vs->so_host < 0 && so_vs->so_vs == vs->serial)
+        return refuse(H.why);
     if (ps && ps->sh.stage != DXBC_PS)
         return false;
     if (!c->has_layout && vs->sh.nin)
@@ -691,9 +948,12 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         return refuse(H.why);
     lock();
     bool ok = ready();
-    uint32_t vsh = ok ? shader(vs, SH_VERTEX) : 0, fsh = 0, gsh = ok && gs ? shader(gs, SH_GEOMETRY) : 0;
+    uint32_t vsh = ok ? (so_vs ? so_shader_for(so_vs, vs) : shader(vs, SH_VERTEX)) : 0, fsh = 0;
+    uint32_t gsh = ok && gs ? shader(gs, SH_GEOMETRY) : 0;
+    uint16_t ps_formats[DXBC_MAX_UAV];
     if (ok && ps) {
-        fsh = shader(ps, SH_FRAGMENT);
+        uav_formats(&c->stage[DXBC_PS], &ps->sh, ps_formats);
+        fsh = shader_for(ps, SH_FRAGMENT, ps_formats);
     } else if (ok) {
         if (!H.null_fs) {
             static struct gd_shader none;
@@ -724,7 +984,8 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     if (!ncb && !zsurf)
         goto refused;
     if (!vertex_elements(c, &vs->sh) || !stage_resources(c, DXBC_VS, SH_VERTEX, vs) ||
-        (ps && !stage_resources(c, DXBC_PS, SH_FRAGMENT, ps)) ||
+        (ps && (!stage_resources(c, DXBC_PS, SH_FRAGMENT, ps) ||
+                !bind_memory(c, DXBC_PS, SH_FRAGMENT, ps, ps_formats))) ||
         (gs && !stage_resources(c, DXBC_GS, SH_GEOMETRY, gs)))
         goto refused;
     /* vertex and index buffers */
@@ -748,7 +1009,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     put(gsh), put(SH_GEOMETRY);
     blend_state(c);
     depth_state(c, zsurf != 0);
-    raster_state(c);
+    raster_state(c, discard);
     cmd(C_STENCIL_REF, 0, 1);
     put((c->stencil_ref & 0xff) | (c->stencil_ref & 0xff) << 8);
     cmd(C_BLEND_COLOR, 0, 4);
@@ -790,6 +1051,26 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         cmd(C_INDEX_BUFFER, 0, 3);
         put(ib), put(c->ib_format == GD_R16_UINT ? 2 : 4), put(c->ib_offset);
     }
+    uint32_t so_targets[GD_SLOTS_SO] = {0};
+    int nso = 0;
+    if (so_vs && targets) { /* each buffer from where it is filled to */
+        for (int b = 0; b < GD_SLOTS_SO; b++) {
+            struct gd_resource *r = c->so[b];
+            if (!r)
+                continue;
+            uint32_t res = to_gpu(r), filled = r->so_filled < r->size ? r->so_filled : (uint32_t)r->size;
+            if (!res)
+                goto refused;
+            so_targets[b] = handle();
+            cmd(C_CREATE, O_STREAMOUT_TARGET, 4);
+            put(so_targets[b]), put(res), put(filled), put((uint32_t)r->size - filled);
+            nso = b + 1;
+        }
+        cmd(C_STREAMOUT_TARGETS, 0, 1 + (uint32_t)nso);
+        put(0); /* none appended: each starts at its offset */
+        for (int b = 0; b < nso; b++)
+            put(so_targets[b]);
+    }
     uint32_t mode = (uint32_t)prims[c->topology];
     bool strip = mode == 3 || mode == 5 || mode == 11 || mode == 13;
     cmd(C_DRAW, 0, 12);
@@ -801,6 +1082,18 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
             c->rtv[i]->r->where = HOST_GPU_NEWER;
     if (c->dsv)
         c->dsv->r->where = HOST_GPU_NEWER;
+    if (ps)
+        wrote_memory(&c->stage[DXBC_PS], ps);
+    if (nso) {
+        cmd(C_STREAMOUT_TARGETS, 0, 1);
+        put(0);
+        for (int b = 0; b < nso; b++)
+            if (so_targets[b]) {
+                destroy(O_STREAMOUT_TARGET, so_targets[b]);
+                c->so[b]->so_filled += so_bytes[b];
+                c->so[b]->where = HOST_GPU_NEWER;
+            }
+    }
     H.draws++;
     H.drawn_since++;
     unlock();

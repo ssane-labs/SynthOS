@@ -45,6 +45,8 @@ struct dxbc_shader {
     uint32_t tgsm_off[DXBC_MAX_TGSM], tgsm_size[DXBC_MAX_TGSM], tgsm_stride[DXBC_MAX_TGSM], tgsm_bytes;
     uint8_t uav_kind[DXBC_MAX_UAV];              /* 0 typed, 1 raw, 2 structured */
     uint32_t uav_stride[DXBC_MAX_UAV], srv_stride[DXBC_MAX_RES];
+    uint8_t uav_dim[DXBC_MAX_UAV], uav_ret[DXBC_MAX_UAV]; /* typed u#: dimension and return type as for t# */
+    uint32_t srv_raw;                            /* t# declared raw or structured (bit per slot) */
     bool syncs;                                  /* has sync instructions that wait for the group */
     /* geometry shaders: input primitive (1 point, 2 line, 3 triangle, 6 line_adj, 7 triangle_adj), output topology
        (1 points, 3 line strip, 5 triangle strip), most vertices emitted, instances */
@@ -86,6 +88,9 @@ struct dxbc_env {
     void (*gather)(void *ctx, int texture, int sampler, const float coord[4], const int offset[3], int component,
                    const float *ref, float out[4]);
     void (*load)(void *ctx, int texture, const int32_t coord[4], const int offset[3], uint32_t out[4]);
+    /* the level of detail sampling would use: clamped, and as worked out (lod) */
+    void (*lod)(void *ctx, int texture, int sampler, const float coord[4], const float ddx[4], const float ddy[4],
+                float out[2]);
     void (*info)(void *ctx, int texture, uint32_t mip, uint32_t out[4]); /* width, height, depth, mips */
     /* raw and structured buffers: the bytes a view looks at (uav false: t#, true: u#), or NULL */
     uint8_t *(*buffer)(void *ctx, bool uav, int slot, uint32_t *size);
@@ -103,6 +108,7 @@ struct dxbc_lanes {
     uint32_t (*v)[4][4]; /* inputs */
     uint32_t (*o)[4][4]; /* outputs */
     unsigned live;       /* lanes that run (bit per lane); pixel shaders: discarded lanes are cleared */
+    unsigned helper;     /* pixel shaders: lanes outside the primitive, run for derivatives only: no memory writes */
     float depth[4];
     void *scratch;       /* dxbc_scratch(shader) bytes for the registers, or NULL: allocated (not on helper CPUs) */
     char error[48];      /* why it stopped, when dxbc_run says false */
@@ -147,9 +153,13 @@ struct dxbc_tgsi {
     size_t len;
     uint8_t tex_sampler[DXBC_MAX_RES];
     uint32_t used_cb; /* the constant buffer slots the shader reads, declared or not */
+    uint32_t used_uav, used_srv_buf; /* u# and raw or structured t# the shader reaches */
+    bool icb;         /* reads the immediate constant buffer, as constant buffer 14 (CONST[15]) */
     char error[64];
 };
-bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out);
+/* uav_format: the host format (virgl numbering) of the view bound at each typed u#, or NULL / 0 for a 32-bit format of
+   the declared return type */
+bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct dxbc_tgsi *out);
 void dxbc_tgsi_free(struct dxbc_tgsi *out);
 
 #endif
