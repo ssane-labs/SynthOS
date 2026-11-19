@@ -137,6 +137,15 @@ static const uint8_t IID_Factory5[16] =
     GUID(0x7632e1f5, 0xee65, 0x4dca, 0x87, 0xfd, 0x84, 0xcd, 0x75, 0xf8, 0x83, 0x8d);
 static const uint8_t IID_Factory6[16] =
     GUID(0xc1b6694f, 0xff09, 0x44a9, 0xb0, 0x3c, 0x77, 0x90, 0x0a, 0x0a, 0x1d, 0x17);
+static const uint8_t IID_Factory7[16] =
+    GUID(0xa4966eed, 0x76db, 0x44da, 0x84, 0xc1, 0xee, 0x9a, 0x7a, 0xfb, 0x20, 0xa8);
+static const uint8_t IID_Output2[16] = GUID(0x595e39d1, 0x2724, 0x4663, 0x99, 0xb1, 0xda, 0x96, 0x9d, 0xe2, 0x83, 0x64);
+static const uint8_t IID_Output3[16] = GUID(0x8a6bb301, 0x7e7e, 0x41f4, 0xa8, 0xe0, 0x5b, 0x32, 0xf7, 0xf9, 0x9b, 0x18);
+static const uint8_t IID_Output4[16] = GUID(0xdc7dca35, 0x2196, 0x414d, 0x9f, 0x53, 0x61, 0x78, 0x84, 0x03, 0x2a, 0x60);
+static const uint8_t IID_Output5[16] = GUID(0x80a07424, 0xab52, 0x42eb, 0x83, 0x3c, 0x0c, 0x42, 0xfd, 0x28, 0x2d, 0x98);
+static const uint8_t IID_Output6[16] = GUID(0x068346e8, 0xaaec, 0x4b84, 0xad, 0xd7, 0x13, 0x7f, 0x51, 0x3f, 0x77, 0xa1);
+static const uint8_t IID_SwapChain4[16] =
+    GUID(0x3d585d5a, 0xbd4a, 0x489e, 0xb1, 0xf4, 0x3d, 0xbc, 0xb6, 0x45, 0x2f, 0xfb);
 static const uint8_t IID_Adapter[16] = GUID(0x2411e7e1, 0x12ac, 0x4ccf, 0xbd, 0x14, 0x97, 0x98, 0xe8, 0x53, 0x4d, 0xc0);
 static const uint8_t IID_Adapter1[16] =
     GUID(0x29038f61, 0x3839, 0x4626, 0x91, 0xfd, 0x08, 0x68, 0x79, 0x01, 0x1a, 0x05);
@@ -3329,6 +3338,8 @@ static const method factory_fns[] = {
     m_shared_luid, m_cookie, m_cookie, m_zero, m_cookie, m_cookie, m_zero, m_notimpl /* ForComposition */,
     /* IDXGIFactory3 to 6 */
     [25] = m_zero /* GetCreationFlags */, m_enum_by_luid, m_enum_warp, m_factory_feature, m_enum_by_preference,
+    /* IDXGIFactory7: adapters never change */
+    [30] = m_cookie, m_ok,
 };
 
 /* ---- the adapter */
@@ -3506,6 +3517,41 @@ static uint64_t m_output_desc(struct cobj *o, uint64_t *a, const uint64_t *f)
     return S_OK;
 }
 
+/* IDXGIOutput6::GetDesc1: an 8-bit sRGB screen without HDR */
+static uint64_t m_output_desc1(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    if (!a[1])
+        return E_INVALIDARG;
+    m_output_desc(o, a, f);
+    uint8_t *d = w64_ptr(a[1]);
+    uint32_t bits = 8, space = 0; /* DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 */
+    static const float colour[11] = {0.64f, 0.33f, 0.30f, 0.60f, 0.15f, 0.06f, 0.3127f, 0.3290f, 0.5f, 270, 270};
+    memcpy(d + 96, &bits, 4);
+    memcpy(d + 100, &space, 4);
+    memcpy(d + 104, colour, sizeof(colour));
+    return S_OK;
+}
+
+/* CheckOverlaySupport(format, device, flags), CheckOverlayColorSpaceSupport(format, space, device, flags) and
+   CheckHardwareCompositionSupport(flags): no overlays */
+static uint64_t m_no_overlay(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    put32(a[3], 0);
+    return S_OK;
+}
+
+static uint64_t m_no_overlay_space(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    put32(a[4], 0);
+    return S_OK;
+}
+
+static uint64_t m_no_composition(struct cobj *o, uint64_t *a, const uint64_t *f)
+{
+    put32(a[1], 0);
+    return S_OK;
+}
+
 static uint64_t m_output_parent(struct cobj *o, uint64_t *a, const uint64_t *f)
 {
     return dxgi_parent(adapter(), a);
@@ -3531,6 +3577,9 @@ static const method output_fns[] = {
     m_frame_stats,
     /* IDXGIOutput1 */
     [19] = m_mode_list1, m_closest_mode1, m_notimpl, m_unsupported /* DuplicateOutput */,
+    /* IDXGIOutput2 to 6 */
+    [23] = m_zero /* SupportsOverlays */, m_no_overlay, m_no_overlay_space, m_unsupported /* DuplicateOutput1 */,
+    m_output_desc1, m_no_composition,
 };
 
 /* ---- the swap chain */
@@ -3992,18 +4041,19 @@ static const struct iid_map predicate_iids[] = {
 };
 static const struct iid_map factory_iids[] = {
     {IID_Unknown, 0}, {IID_Object, 0}, {IID_Factory, 0}, {IID_Factory1, 0}, {IID_Factory2, 0}, {IID_Factory3, 0},
-    {IID_Factory4, 0}, {IID_Factory5, 0}, {IID_Factory6, 0}, {NULL, 0},
+    {IID_Factory4, 0}, {IID_Factory5, 0}, {IID_Factory6, 0}, {IID_Factory7, 0}, {NULL, 0},
 };
 static const struct iid_map adapter_iids[] = {
     {IID_Unknown, 0}, {IID_Object, 0}, {IID_Adapter, 0}, {IID_Adapter1, 0}, {IID_Adapter2, 0}, {IID_Adapter3, 0},
     {IID_Adapter4, 0}, {NULL, 0},
 };
 static const struct iid_map output_iids[] = {
-    {IID_Unknown, 0}, {IID_Object, 0}, {IID_Output, 0}, {IID_Output1, 0}, {NULL, 0},
+    {IID_Unknown, 0}, {IID_Object, 0}, {IID_Output, 0}, {IID_Output1, 0}, {IID_Output2, 0}, {IID_Output3, 0},
+    {IID_Output4, 0}, {IID_Output5, 0}, {IID_Output6, 0}, {NULL, 0},
 };
 static const struct iid_map swapchain_iids[] = {
     {IID_Unknown, 0}, {IID_Object, 0}, {IID_SubObject, 0}, {IID_SwapChain, 0}, {IID_SwapChain1, 0},
-    {IID_SwapChain2, 0}, {IID_SwapChain3, 0}, {NULL, 0},
+    {IID_SwapChain2, 0}, {IID_SwapChain3, 0}, {IID_SwapChain4, 0}, {NULL, 0},
 };
 static const struct iid_map plain_iids[] = {CHILD_IIDS, {NULL, 0}};
 static const struct iid_map cmdlist_iids[] = {CHILD_IIDS, {IID_CommandList, 0}, {NULL, 0}};

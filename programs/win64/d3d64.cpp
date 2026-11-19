@@ -2,7 +2,7 @@
 #include <string.h>
 #include <windows.h>
 #include <d3d11_4.h>
-#include <dxgi1_2.h>
+#include <dxgi1_6.h>
 
 #include "d3d64_shaders.h"
 
@@ -279,6 +279,18 @@ int main(int argc, char **argv)
                 mt->GetMultithreadProtected();
         CloseHandle(ev);
     }
+    IDXGIOutput6 *out6 = NULL;
+    IDXGIFactory7 *factory7 = NULL;
+    DXGI_OUTPUT_DESC1 od = {};
+    if (newer && out && SUCCEEDED(out->QueryInterface(__uuidof(IDXGIOutput6), (void **)&out6)) &&
+        SUCCEEDED(out6->GetDesc1(&od)) && SUCCEEDED(adapter->GetParent(__uuidof(IDXGIFactory7), (void **)&factory7)))
+        newer = od.BitsPerColor == 8 && od.MaxLuminance > 0 && od.DesktopCoordinates.right > 0 ? 1 : 0;
+    else
+        newer = 0;
+    if (factory7)
+        factory7->Release();
+    if (out6)
+        out6->Release();
     if (fence)
         fence->Release();
     if (mt)
