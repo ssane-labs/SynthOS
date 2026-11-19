@@ -25,7 +25,7 @@ enum {
     O_SAMPLER_STATE = 7, O_SURFACE = 8, O_QUERY = 9,
     B_DEPTH_STENCIL = 1 << 0, B_RENDER_TARGET = 1 << 1, B_SAMPLER_VIEW = 1 << 3, B_VERTEX = 1 << 4,
     B_CONSTANT = 1 << 6, B_CUSTOM = 1 << 17,
-    SH_VERTEX = 0, SH_FRAGMENT = 1,
+    SH_VERTEX = 0, SH_FRAGMENT = 1, SH_GEOMETRY = 2,
 };
 
 #define STREAM_WORDS 1024
@@ -36,12 +36,12 @@ static struct {
     int gpu;
     uint32_t ctx, *cmd, n, next;
     /* state objects as last made, and what they were made from */
-    uint32_t blend, dsa, rs, ve, samplers[2][16], null_fs;
+    uint32_t blend, dsa, rs, ve, samplers[3][16], null_fs;
     uint8_t blend_key[sizeof(struct gd_blend)], dsa_key[sizeof(struct gd_depth) + 4], rs_key[sizeof(struct gd_raster) + 4];
     uint8_t ve_key[sizeof(struct gd_input_layout) + 32 * 4];
     uint8_t ve_slot[16]; /* the vertex buffer slot behind each binding, one binding per shader input */
     int ve_count;
-    struct gd_sampler samp_key[2][16];
+    struct gd_sampler samp_key[3][16];
     /* occlusion: one query open across draws, read when someone asks */
     uint32_t query, query_buf, *query_mem, drawn_since;
     uint64_t draws, software;
@@ -668,11 +668,13 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
 {
     if (H.off || H.state < 0)
         return false;
-    struct gd_shader *vs = c->stage[DXBC_VS].shader, *ps = c->stage[DXBC_PS].shader;
+    struct gd_shader *vs = c->stage[DXBC_VS].shader, *ps = c->stage[DXBC_PS].shader, *gs = c->stage[DXBC_GS].shader;
     if (!vs || vs->sh.stage != DXBC_VS || !count || !instances)
         return false;
-    if (c->stage[DXBC_GS].shader || c->stage[DXBC_HS].shader || c->stage[DXBC_DS].shader)
-        return refuse("geometry or tessellation shaders");
+    if (c->stage[DXBC_HS].shader || c->stage[DXBC_DS].shader)
+        return refuse("tessellation shaders");
+    if (gs && (gs->sh.stage != DXBC_GS || gs->host < 0))
+        return gs->sh.stage == DXBC_GS ? refuse(H.why) : false;
     if (c->topology >= 14 || prims[c->topology] < 0)
         return refuse("topology");
     for (int i = 0; i < GD_SLOTS_SO; i++)
@@ -689,7 +691,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         return refuse(H.why);
     lock();
     bool ok = ready();
-    uint32_t vsh = ok ? shader(vs, SH_VERTEX) : 0, fsh = 0;
+    uint32_t vsh = ok ? shader(vs, SH_VERTEX) : 0, fsh = 0, gsh = ok && gs ? shader(gs, SH_GEOMETRY) : 0;
     if (ok && ps) {
         fsh = shader(ps, SH_FRAGMENT);
     } else if (ok) {
@@ -700,7 +702,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         }
         fsh = H.null_fs;
     }
-    if (!vsh || !fsh) {
+    if (!vsh || !fsh || (gs && !gsh)) {
         unlock();
         return ok ? refuse(H.why) : false;
     }
@@ -722,7 +724,8 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     if (!ncb && !zsurf)
         goto refused;
     if (!vertex_elements(c, &vs->sh) || !stage_resources(c, DXBC_VS, SH_VERTEX, vs) ||
-        (ps && !stage_resources(c, DXBC_PS, SH_FRAGMENT, ps)))
+        (ps && !stage_resources(c, DXBC_PS, SH_FRAGMENT, ps)) ||
+        (gs && !stage_resources(c, DXBC_GS, SH_GEOMETRY, gs)))
         goto refused;
     /* vertex and index buffers */
     int nvb = H.ve_count;
@@ -741,6 +744,8 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     put(vsh), put(SH_VERTEX);
     cmd(C_BIND_SHADER, 0, 2);
     put(fsh), put(SH_FRAGMENT);
+    cmd(C_BIND_SHADER, 0, 2);
+    put(gsh), put(SH_GEOMETRY);
     blend_state(c);
     depth_state(c, zsurf != 0);
     raster_state(c);

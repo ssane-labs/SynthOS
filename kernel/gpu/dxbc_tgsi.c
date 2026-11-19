@@ -38,6 +38,7 @@ struct tg {
     int8_t sv_in[32];      /* vertex shader inputs that are system values: SV[n], or -1 */
     int nsv;
     uint8_t sv_name[32];
+    unsigned gs_sv;        /* geometry shader: reads the primitive number (1, SV[0]), the instance number (2, SV[1]) */
     uint32_t used_cb, used_tex, cmp_tex, plain_tex;
     int32_t cb_max[DXBC_MAX_CB]; /* the highest constant read with a fixed index, or 4095 when one is relative */
     int naddr;
@@ -196,6 +197,14 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
         put(t, "TEMP"), index_text(g, o, 0, slot, 0);
         break;
     case T_INPUT:
+        if (g->sh->stage == DXBC_GS) { /* v[vertex][register] */
+            if (o->ndim != 2) {
+                fail(g, "a geometry shader input without a vertex");
+                break;
+            }
+            put(t, "IN"), index_text(g, o, 0, slot, 0), index_text(g, o, 1, slot, 0);
+            break;
+        }
         if (o->ndim != 1)
             fail(g, "input arrays");
         if (g->sh->stage == DXBC_VS && o->idx[0].imm >= 0 && o->idx[0].imm < 32 && g->sv_in[o->idx[0].imm] >= 0) {
@@ -241,6 +250,15 @@ static void reg_text(struct tg *g, const struct opd *o, int slot)
         index_text(g, o, 1, slot, 0);
         break;
     }
+    case T_PRIMID:
+    case T_GSINST:
+        if (g->sh->stage != DXBC_GS) {
+            fail(g, "a primitive or instance number outside a geometry shader");
+            break;
+        }
+        g->gs_sv |= o->type == T_PRIMID ? 1 : 2;
+        put(t, o->type == T_PRIMID ? "SV[0]" : "SV[1]");
+        break;
     case T_ICB:
         if (o->idx[0].rel_type >= 0)
             fail(g, "relative index into the immediate constant buffer");
@@ -568,6 +586,26 @@ static void instruction(struct tg *g, int pc)
     case OP_NOP:
     case OP_CUSTOMDATA:
         return;
+    case OP_EMIT:
+    case OP_CUT:
+    case OP_EMITTHENCUT:
+    case OP_EMIT_STREAM:
+    case OP_CUT_STREAM:
+    case OP_EMITTHENCUT_STREAM: {
+        bool streamed = in->op == OP_EMIT_STREAM || in->op == OP_CUT_STREAM || in->op == OP_EMITTHENCUT_STREAM;
+        uint32_t stream = streamed ? (uint32_t)o[0].idx[0].imm : 0;
+        int k = immediate(g, stream, stream, stream, stream);
+        for (int pass = 0; pass < 2; pass++) {
+            bool emit_now = pass == 0 && in->op != OP_CUT && in->op != OP_CUT_STREAM;
+            bool cut_now = pass == 1 && in->op != OP_EMIT && in->op != OP_EMIT_STREAM;
+            if (!emit_now && !cut_now)
+                continue;
+            put(&g->code, emit_now ? "EMIT IMM[" : "ENDPRIM IMM[");
+            putu(&g->code, (uint32_t)k);
+            put(&g->code, "].xxxx\n");
+        }
+        return;
+    }
     case OP_ISHL:
     case OP_ISHR:
     case OP_USHR: {
@@ -786,7 +824,23 @@ static const char *interp_name(int mode)
 static bool declarations(struct tg *g, struct text *t)
 {
     const struct dxbc_shader *sh = g->sh;
-    put(t, sh->stage == DXBC_VS ? "VERT\n" : "FRAG\n");
+    put(t, sh->stage == DXBC_VS ? "VERT\n" : sh->stage == DXBC_GS ? "GEOM\n" : "FRAG\n");
+    if (sh->stage == DXBC_GS) {
+        static const char *const in_prim[] = {"", "POINTS", "LINES", "TRIANGLES", "", "", "LINES_ADJACENCY",
+                                              "TRIANGLES_ADJACENCY"};
+        static const char *const out_prim[] = {"", "POINTS", "", "LINE_STRIP", "", "TRIANGLE_STRIP"};
+        if (sh->gs_in >= 8 || !in_prim[sh->gs_in][0] || sh->gs_out >= 6 || !out_prim[sh->gs_out][0])
+            return fail(g, "a geometry shader primitive");
+        put(t, "PROPERTY GS_INPUT_PRIMITIVE ");
+        put(t, in_prim[sh->gs_in]);
+        put(t, "\nPROPERTY GS_OUTPUT_PRIMITIVE ");
+        put(t, out_prim[sh->gs_out]);
+        put(t, "\nPROPERTY GS_MAX_OUTPUT_VERTICES ");
+        putu(t, sh->gs_max ? sh->gs_max : 1);
+        put(t, "\nPROPERTY GS_INVOCATIONS ");
+        putu(t, sh->gs_instances ? sh->gs_instances : 1);
+        put(t, "\n");
+    }
     if (sh->stage == DXBC_PS)
         put(t, "PROPERTY FS_COORD_ORIGIN UPPER_LEFT\nPROPERTY FS_COORD_PIXEL_CENTER HALF_INTEGER\n");
     uint32_t done = 0;
@@ -800,6 +854,28 @@ static bool declarations(struct tg *g, struct text *t)
         }
         for (int k = 0; k < g->nsv; k++)
             decl_reg(t, "SV", k, g->sv_name[k] == 6 ? ", VERTEXID" : ", INSTANCEID");
+    } else if (sh->stage == DXBC_GS) {
+        for (int i = 0; i < sh->nin; i++) {
+            uint32_t r = sh->in[i].reg, sv = sh->in[i].system_value;
+            if (r >= 32 || (done & (1u << r)))
+                continue;
+            done |= 1u << r;
+            put(t, "DCL IN[][");
+            putu(t, r);
+            if (sv == 1) {
+                put(t, "], POSITION\n");
+            } else if (sv == 0) {
+                put(t, "], GENERIC[");
+                putu(t, r);
+                put(t, "]\n");
+            } else {
+                return fail(g, "a geometry shader system value input");
+            }
+        }
+        if (g->gs_sv & 1)
+            decl_reg(t, "SV", 0, ", PRIMID");
+        if (g->gs_sv & 2)
+            decl_reg(t, "SV", 1, ", INVOCATIONID");
     } else {
         for (int i = 0; i < sh->nin; i++) {
             uint32_t r = sh->in[i].reg;
@@ -844,6 +920,8 @@ static bool declarations(struct tg *g, struct text *t)
             put(t, "]\n");
         } else if (sv == 1) {
             put(t, "], POSITION\n");
+        } else if (sv == 4 || sv == 5) {
+            put(t, sv == 4 ? "], LAYER\n" : "], VIEWPORT_INDEX\n");
         } else if (sv == 0) {
             put(t, "], GENERIC[");
             putu(t, r);
@@ -922,8 +1000,8 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, struct dxbc_tgsi *out)
     }
     memset(g, 0, sizeof(*g));
     g->sh = sh, g->out = out;
-    if (sh->stage != DXBC_VS && sh->stage != DXBC_PS)
-        fail(g, "only vertex and pixel shaders");
+    if (sh->stage != DXBC_VS && sh->stage != DXBC_PS && sh->stage != DXBC_GS)
+        fail(g, "only vertex, geometry and pixel shaders");
     if (sh->icb_vec4 > MAX_IMM / 2)
         fail(g, "a large immediate constant buffer");
     for (int i = 0; i < sh->icb_vec4 && !g->fail; i++) {
