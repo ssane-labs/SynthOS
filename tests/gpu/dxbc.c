@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <synth/dxbc.h>
 
@@ -31,21 +32,52 @@ static void setv(int reg, int lane, float x, float y, float z, float w)
     memcpy(v[reg][lane], (float[4]){x, y, z, w}, 16);
 }
 
+static int jitted;
+
+/* the same values; any NaN equals any other, since which operand's NaN a sum keeps depends on register order */
+static int same_bits(const uint32_t *a, const uint32_t *b, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        int na = (a[i] & 0x7f800000u) == 0x7f800000u && (a[i] & 0x7fffffu);
+        int nb = (b[i] & 0x7f800000u) == 0x7f800000u && (b[i] & 0x7fffffu);
+        if (a[i] != b[i] && !(na && nb))
+            return 0;
+    }
+    return 1;
+} /* instructions the compiler took, over all the checks */
+
+/* every shader runs twice, interpreted and with its arithmetic compiled: the two must give the same bits */
 static int run(int stage, int temps, const struct dxbc_env *env, unsigned live)
 {
+    static uint32_t ref[8][4][4];
     struct dxbc_shader sh;
     size_t size = container(stage, temps);
-    if (!dxbc_parse(&sh, blob, size)) {
-        printf("  parse: %s\n", sh.error);
-        return 0;
+    int result = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        dxbc_jit_enable(pass == 1);
+        if (!dxbc_parse(&sh, blob, size)) {
+            printf("  parse: %s\n", sh.error);
+            dxbc_jit_enable(true);
+            return 0;
+        }
+        jitted += pass ? dxbc_jit_count(&sh) : 0;
+        struct dxbc_lanes l = {.v = v, .o = o, .live = live};
+        memset(o, 0, sizeof(o));
+        bool ok = dxbc_run(&sh, env, &l);
+        if (!ok)
+            printf("  run: %s\n", l.error);
+        dxbc_free(&sh);
+        int r = ok ? (int)(l.live | 0x100) : 0;
+        if (!pass) {
+            result = r;
+            memcpy(ref, o, sizeof(o));
+        } else if (r != result || !same_bits(&ref[0][0][0], &o[0][0][0], sizeof(o) / 4)) {
+            printf("  compiled code differs from the interpreter\n");
+            failures++;
+        }
     }
-    struct dxbc_lanes l = {.v = v, .o = o, .live = live};
-    memset(o, 0, sizeof(o));
-    bool ok = dxbc_run(&sh, env, &l);
-    if (!ok)
-        printf("  run: %s\n", l.error);
-    dxbc_free(&sh);
-    return ok ? (int)(l.live | 0x100) : 0;
+    dxbc_jit_enable(true);
+    return result;
 }
 
 static void load(void *ctx, int texture, const int32_t coord[4], const int offset[3], uint32_t out[4])
@@ -65,6 +97,123 @@ static void sample(void *ctx, int texture, int sampler, const float coord[4], co
 {
     (void)ctx, (void)sampler, (void)ddy, (void)lod, (void)bias, (void)offset, (void)ref;
     out[0] = coord[0] * 10, out[1] = coord[1] * 10, out[2] = (float)texture, out[3] = ddx[0];
+}
+
+/* random runs of arithmetic, interpreted and compiled (run compares them) */
+static uint32_t seed = 12345;
+
+static uint32_t rnd(uint32_t limit)
+{
+    seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
+    return seed % limit;
+}
+
+static uint32_t value(void)
+{
+    static const uint32_t pool[] = {0x00000000, 0x80000000, 0x3f800000, 0xbf800000, 0x3f000000, 0x406ccccd,
+                                    0xc0100000, 0x7149f2ca, 0x8ba3c5d7, 0x7f800000, 0xff800000, 0x7fc00000,
+                                    7,          0xffffffff, 0x41200000, 0x3e99999a, 0x447a0000, 0x00000003};
+    return pool[rnd(sizeof(pool) / sizeof(pool[0]))];
+}
+
+static void random_src(int integer_count)
+{
+    if (integer_count) {
+        immu(rnd(40));
+        return;
+    }
+    int swz = (int)rnd(256), mod = (int)rnd(4), kind = (int)rnd(10);
+    if (kind < 4) {
+        if (mod)
+            srcmod(TEMP, (int)rnd(6), swz, mod);
+        else
+            src(TEMP, (int)rnd(6), swz);
+    } else if (kind < 7) {
+        if (mod)
+            srcmod(IN, (int)rnd(4), swz, mod);
+        else
+            src(IN, (int)rnd(4), swz);
+    } else if (kind < 9) {
+        cbsrc(0, (int)rnd(3), swz);
+    } else {
+        code[n++] = 2u | (uint32_t)IMM << 12;
+        for (int k = 0; k < 4; k++)
+            code[n++] = value();
+    }
+}
+
+static void jit_fuzz(struct dxbc_env *env)
+{
+    static const struct {
+        int op, srcs;
+    } ops[] = {{0, 2},  {1, 2},  {14, 2}, {15, 2}, {16, 2}, {17, 2}, {24, 2}, {26, 1}, {29, 2}, {30, 2}, {32, 2},
+               {33, 2}, {34, 2}, {39, 2}, {40, 1}, {41, 2}, {42, 2}, {43, 1}, {49, 2}, {50, 3}, {51, 2}, {52, 2},
+               {54, 1}, {55, 3}, {56, 2}, {57, 2}, {59, 1}, {60, 2}, {68, 1}, {75, 1}, {85, 2}, {87, 2}, {129, 1}};
+    int before = failures;
+    for (int round = 0; round < 3000 && failures == before; round++) {
+        n = 0;
+        for (int r = 0; r < 4; r++)
+            for (int l = 0; l < 4; l++)
+                for (int c = 0; c < 4; c++)
+                    v[r][l][c] = value();
+        for (int t = 0; t < 6; t++) { /* the temporaries start from inputs */
+            op(54, 0), dst(TEMP, t, 15), src(IN, t & 3, (int)rnd(256)), end();
+        }
+        int count = 1 + (int)rnd(14);
+        for (int i = 0; i < count; i++) {
+            int k = (int)rnd(sizeof(ops) / sizeof(ops[0]));
+            op(ops[k].op, rnd(4) ? 0 : 1 << 13);
+            if (rnd(4))
+                dst(TEMP, (int)rnd(6), 1 + (int)rnd(15));
+            else
+                dst(OUT, (int)rnd(2), 1 + (int)rnd(15));
+            for (int j = 0; j < ops[k].srcs; j++)
+                random_src(j == 1 && (ops[k].op == 41 || ops[k].op == 42 || ops[k].op == 85));
+            end();
+        }
+        for (int t = 0; t < 6; t++) {
+            op(54, 0), dst(OUT, 2 + t, 15), src(TEMP, t, XYZW), end();
+        }
+        op(62, 0), end();
+        if (!run(1, 6, env, 1 + rnd(15)))
+            failures++;
+    }
+    expect(failures == before, "random arithmetic: compiled code gives the interpreter's bits");
+}
+
+/* how much faster a typical vertex shader's arithmetic runs compiled: informational */
+static void jit_speed(const struct dxbc_env *env)
+{
+    n = 0;
+    for (int i = 0; i < 4; i++) { /* a matrix, lighting and fog */
+        op(17, 0), dst(TEMP, 0, 1 << i), src(IN, 0, XYZW), cbsrc(0, i & 1, XYZW), end();
+    }
+    op(16, 0), dst(TEMP, 1, 1), src(IN, 1, XYZW), src(IN, 1, XYZW), end();
+    op(68, 0), dst(TEMP, 1, 1), sel(TEMP, 1, 0), end();
+    op(56, 0), dst(TEMP, 2, 7), src(IN, 1, XYZW), sel(TEMP, 1, 0), end();
+    op(16, 1 << 13), dst(TEMP, 3, 1), src(TEMP, 2, XYZW), cbsrc(0, 1, XYZW), end();
+    op(50, 0), dst(TEMP, 4, 15), sel(TEMP, 3, 0), cbsrc(0, 0, XYZW), imm4(0.1f, 0.1f, 0.1f, 1), end();
+    op(52, 0), dst(TEMP, 4, 15), src(TEMP, 4, XYZW), imm4(0, 0, 0, 0), end();
+    op(51, 0), dst(TEMP, 4, 15), src(TEMP, 4, XYZW), imm4(1, 1, 1, 1), end();
+    op(54, 0), dst(OUT, 0, 15), src(TEMP, 0, XYZW), end();
+    op(54, 0), dst(OUT, 1, 15), src(TEMP, 4, XYZW), end();
+    op(62, 0), end();
+    size_t size = container(1, 5);
+    double t[2] = {0, 0};
+    for (int pass = 0; pass < 2; pass++) {
+        struct dxbc_shader sh;
+        dxbc_jit_enable(pass == 1);
+        if (!dxbc_parse(&sh, blob, size))
+            return;
+        struct dxbc_lanes l = {.v = v, .o = o, .live = 15};
+        clock_t c0 = clock();
+        for (int i = 0; i < 200000; i++)
+            dxbc_run(&sh, env, &l);
+        t[pass] = (double)(clock() - c0) / CLOCKS_PER_SEC;
+        dxbc_free(&sh);
+    }
+    dxbc_jit_enable(true);
+    printf("  vertex shader x200000: interpreted %.3f s, compiled %.3f s\n", t[0], t[1]);
 }
 
 int dxbc_tests(void)
@@ -211,5 +360,9 @@ int dxbc_tests(void)
     size_t size = container(1, 1);
     expect(!dxbc_parse(&sh, blob, size), "an if without endif is refused");
 
+    jit_fuzz(&env);
+    jit_speed(&env);
+    expect(jitted > 0, "the compiler took part of the shaders");
+    printf("  %d instructions compiled\n", jitted);
     return failures;
 }

@@ -22,6 +22,7 @@ struct dxbc_sig_elem {
 };
 
 struct dxbc_ins; /* decoded instructions */
+struct dxbc_jit;
 
 struct dxbc_shader {
     enum dxbc_stage stage;
@@ -62,6 +63,7 @@ struct dxbc_shader {
     int nphase;
     uint32_t cp_in, cp_out, domain, partitioning, out_prim;
     float max_tess;
+    struct dxbc_jit *jit; /* compiled runs of arithmetic, or NULL */
     char error[64];
 };
 
@@ -126,5 +128,10 @@ void dxbc_free(struct dxbc_shader *sh);
 size_t dxbc_scratch(const struct dxbc_shader *sh);
 /* runs the shader on the live lanes; false and lanes->error on a fault */
 bool dxbc_run(const struct dxbc_shader *sh, const struct dxbc_env *env, struct dxbc_lanes *lanes);
+/* compiling straight runs of arithmetic to machine code when shaders are parsed (on by default); how many
+   instructions of a shader were compiled */
+void dxbc_jit_enable(bool on);
+bool dxbc_jit_enabled(void);
+int dxbc_jit_count(const struct dxbc_shader *sh);
 
 #endif
