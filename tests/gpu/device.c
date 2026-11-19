@@ -626,7 +626,8 @@ static void draw_tests(void)
             gd_host_test_bad_shader();
             quad(bv, -1, -1, 0, 1, 0.5f, (const float[4]){1, 0, 0, 1});
             draw_verts(bv, 6);
-            expect(pixel(10, 30) == 0x0000ff && pixel(50, 30) == 0, "a shader the host cannot use is drawn in software");
+            expect(pixel(10, 30) == 0x0000ff && pixel(50, 30) == 0,
+                   "a shader the host cannot use is drawn in software");
             gd_set_shader(ctx, 0, ps_color);
             quad(bv, 0, -1, 1, 1, 0.5f, (const float[4]){0, 0, 1, 1});
             draw_verts(bv, 6);
