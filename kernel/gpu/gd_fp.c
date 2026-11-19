@@ -1349,9 +1349,22 @@ static uint32_t stencil_apply(uint32_t op, uint32_t v, uint32_t ref)
     }
 }
 
+/* a depth as the depth buffer keeps it: hardware compares in the buffer's format, so a pixel drawn again at the
+   same depth fails LESS on a 16- or 24-bit buffer too */
+static float stored_depth(uint32_t f, float z)
+{
+    z = z < 0 ? 0 : z > 1 ? 1 : z;
+    if (f == GD_D24_UNORM_S8_UINT)
+        return (float)(uint32_t)((double)z * 16777215.0 + 0.5) / 16777215.0f;
+    if (f == GD_D16_UNORM)
+        return (float)(uint32_t)(z * 65535.0f + 0.5f) / 65535.0f;
+    return z;
+}
+
 /* the depth and stencil tests of one pixel; writes what passing or failing them changes */
 static bool depth_stencil(const struct draw *d, int x, int y, float z, bool front)
 {
+    z = stored_depth(d->dformat, z);
     uint8_t *p = d->db + (size_t)y * d->dpitch + (size_t)x * d->dbytes;
     const struct gd_depth *ds = &d->c->depth;
     bool pass = true;

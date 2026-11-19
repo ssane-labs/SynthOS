@@ -38,7 +38,7 @@ struct tg {
     int8_t sv_in[32];      /* vertex shader inputs that are system values: SV[n], or -1 */
     int nsv;
     uint8_t sv_name[32];
-    uint32_t used_cb, used_tex, cmp_tex;
+    uint32_t used_cb, used_tex, cmp_tex, plain_tex;
     int32_t cb_max[DXBC_MAX_CB]; /* the highest constant read with a fixed index, or 4095 when one is relative */
     int naddr;
     bool fail;
@@ -396,10 +396,15 @@ static const char *const target_name[] = {"", "BUFFER", "1D", "2D", "2D_MSAA", "
 static const char *const shadow_name[] = {"", "BUFFER", "SHADOW1D", "SHADOW2D", "2D_MSAA", "3D", "SHADOWCUBE",
                                           "SHADOW1D_ARRAY", "SHADOW2D_ARRAY", "2D_ARRAY_MSAA", "SHADOWCUBE_ARRAY"};
 
-/* texture instructions: SAMPLE* name, SVIEW[t] and SAMP[t] (the backend binds the sampler state the shader pairs
-   with t# at slot t); the result goes through the resource's swizzle */
-static void texture(struct tg *g, const struct dxbc_ins *in, const char *name, int extra_first, int nextra,
-                    bool sampler)
+/* texture instructions the way GL samples (virglrenderer takes TEX, TXL, TXB, TXD, TXF and TXQ, not SAMPLE*): SAMP[t]
+   is both the view at t and the sampler state the shader pairs with t#, which the backend binds at slot t. The
+   coordinate is copied to TEMP[s0], where a level, bias or depth reference goes into the component GL reads it from
+   (or into TEMP[s0 + 1] for the *2 forms); the result comes through TEMP[s0 + 2] when the resource has a swizzle. */
+enum { TX_SAMPLE, TX_L, TX_B, TX_C, TX_C_LZ, TX_D, TX_LD };
+
+static const uint8_t coord_count[] = {0, 1, 1, 2, 2, 3, 3, 2, 3, 3, 4};
+
+static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
 {
     const struct opd *dst = &in->o[0], *res = &in->o[2];
     if (dst->type == T_NULL)
@@ -409,39 +414,87 @@ static void texture(struct tg *g, const struct dxbc_ins *in, const char *name, i
     int t = res->idx[0].imm;
     if (res->type != T_RESOURCE || t < 0 || t >= DXBC_MAX_RES || !g->sh->res_dim[t] || g->sh->res_dim[t] > 10)
         return (void)fail(g, "undeclared texture");
-    g->used_tex |= 1u << t;
-    if (sampler) {
+    int dim = g->sh->res_dim[t];
+    bool cmp = kind == TX_C || kind == TX_C_LZ;
+    if (kind != TX_LD) {
         int s = in->o[3].idx[0].imm;
         if (in->o[3].type != T_SAMPLER || s < 0 || s >= 16)
             return (void)fail(g, "sampler operand");
         if (g->out->tex_sampler[t] == 0xff)
             g->out->tex_sampler[t] = (uint8_t)s;
+        if (dim == 1 || dim == 4 || dim == 9)
+            return (void)fail(g, "sampling a buffer or a multisampled texture");
     }
-    if (!strncmp(name, "SAMPLE_C", 8))
+    if (cmp ? (g->plain_tex >> t & 1) : (g->cmp_tex >> t & 1))
+        return (void)fail(g, "a texture sampled with and without comparison");
+    if (cmp && (dim == 5 || dim == 1))
+        return (void)fail(g, "comparison on a 3D texture");
+    g->used_tex |= 1u << t;
+    if (cmp)
         g->cmp_tex |= 1u << t;
+    else if (kind != TX_LD)
+        g->plain_tex |= 1u << t;
+    const char *target = cmp ? shadow_name[dim] : target_name[dim];
+    bool four = coord_count[dim] == 4; /* cube arrays: nothing left in the coordinate for a level or reference */
+    struct opd c = scratch_dst(g, 0, 15), cw = scratch_dst(g, 0, 8), cz = scratch_dst(g, 0, 4);
+    struct opd e = scratch_dst(g, 1, 15), ex = scratch_dst(g, 1, 1), ey = scratch_dst(g, 1, 2);
+    emit1(g, "MOV", false, &c, &in->o[1]);
+    const char *name = "TEX";
+    bool extra = false;
+    if (kind == TX_L || kind == TX_B) {
+        struct opd v = scalar_of(&in->o[4], 0);
+        name = kind == TX_L ? (four ? "TXL2" : "TXL") : (four ? "TXB2" : "TXB");
+        emit1(g, "MOV", false, four ? &ex : &cw, &v);
+        extra = four;
+    } else if (cmp) {
+        struct opd ref = scalar_of(&in->o[4], 0), zero = imm_opd(0);
+        bool in_w = dim == 6 || dim == 8; /* SHADOWCUBE, SHADOW2D_ARRAY */
+        if (four) {
+            emit1(g, "MOV", false, &ex, &ref);
+            if (kind == TX_C_LZ)
+                emit1(g, "MOV", false, &ey, &zero);
+            name = kind == TX_C_LZ ? "TXL2" : "TEX2";
+            extra = true;
+        } else {
+            emit1(g, "MOV", false, in_w ? &cw : &cz, &ref);
+            if (kind == TX_C_LZ) {
+                if (in_w)
+                    emit1(g, "MOV", false, &ex, &zero), name = "TXL2", extra = true;
+                else
+                    emit1(g, "MOV", false, &cw, &zero), name = "TXL";
+            }
+        }
+    } else if (kind == TX_D) {
+        struct opd dy = scratch_dst(g, 3, 15);
+        emit1(g, "MOV", false, &e, &in->o[4]);
+        emit1(g, "MOV", false, &dy, &in->o[5]);
+        name = "TXD";
+    } else if (kind == TX_LD) {
+        name = "TXF";
+    }
     bool identity = res->swz[0] == 0 && res->swz[1] == 1 && res->swz[2] == 2 && res->swz[3] == 3;
     struct opd d = identity && !in->sat ? *dst : scratch_dst(g, 2, 15);
     g->naddr = 0;
     load_addr(g, &d, 0);
-    load_addr(g, &in->o[1], 1);
-    for (int i = 0; i < nextra; i++)
-        load_addr(g, &in->o[extra_first + i], 2 + i);
     put(&g->code, name);
     dst_text(g, &d, 0);
-    src_text(g, &in->o[1], 1, false);
-    put(&g->code, ", SVIEW[");
-    putu(&g->code, (uint32_t)t);
+    put(&g->code, ", TEMP[");
+    putu(&g->code, (uint32_t)g->s0);
     put(&g->code, "]");
-    if (sampler) {
-        put(&g->code, ", SAMP[");
-        putu(&g->code, (uint32_t)t);
+    if (extra || kind == TX_D) {
+        put(&g->code, ", TEMP[");
+        putu(&g->code, (uint32_t)g->s0 + 1);
         put(&g->code, "]");
     }
-    for (int i = 0; i < nextra; i++) {
-        const struct opd *e = &in->o[extra_first + i];
-        struct opd one = !strcmp(name, "SAMPLE_D") ? *e : scalar_of(e, 0);
-        src_text(g, &one, 2 + i, false);
+    if (kind == TX_D) {
+        put(&g->code, ", TEMP[");
+        putu(&g->code, (uint32_t)g->s0 + 3);
+        put(&g->code, "]");
     }
+    put(&g->code, ", SAMP[");
+    putu(&g->code, (uint32_t)t);
+    put(&g->code, "], ");
+    put(&g->code, target);
     put(&g->code, "\n");
     if (!(identity && !in->sat)) {
         struct opd from = temp(g->s0 + 2, "xyzw");
@@ -658,20 +711,20 @@ static void instruction(struct tg *g, int pc)
         line(g, "ENDSWITCH");
         return;
     case OP_SAMPLE:
-        return texture(g, in, "SAMPLE", 0, 0, true);
+        return texture(g, in, TX_SAMPLE);
     case OP_SAMPLE_L:
-        return texture(g, in, "SAMPLE_L", 4, 1, true);
+        return texture(g, in, TX_L);
     case OP_SAMPLE_B:
-        return texture(g, in, "SAMPLE_B", 4, 1, true);
+        return texture(g, in, TX_B);
     case OP_SAMPLE_C:
-        return texture(g, in, "SAMPLE_C", 4, 1, true);
+        return texture(g, in, TX_C);
     case OP_SAMPLE_C_LZ:
-        return texture(g, in, "SAMPLE_C_LZ", 4, 1, true);
+        return texture(g, in, TX_C_LZ);
     case OP_SAMPLE_D:
-        return texture(g, in, "SAMPLE_D", 4, 2, true);
+        return texture(g, in, TX_D);
     case OP_LD:
-        return texture(g, in, "SAMPLE_I", 0, 0, false);
-    case OP_RESINFO: { /* SVIEWINFO gives integers: floats unless the instruction asks for _uint */
+        return texture(g, in, TX_LD);
+    case OP_RESINFO: { /* TXQ gives integers: floats unless the instruction asks for _uint */
         const struct opd *res = &in->o[2];
         int t = res->idx[0].imm;
         if (o[0].type == T_NULL)
@@ -681,15 +734,18 @@ static void instruction(struct tg *g, int pc)
         if (in->ret_type == 1)
             return (void)fail(g, "resinfo_rcpFloat");
         g->used_tex |= 1u << t;
-        struct opd d = scratch_dst(g, 2, 15), mip = scalar_of(&o[1], 0);
+        struct opd d = scratch_dst(g, 2, 15), mip = scalar_of(&o[1], 0), m = scratch_dst(g, 0, 15);
+        emit1(g, "MOV", false, &m, &mip);
         g->naddr = 0;
-        load_addr(g, &mip, 1);
-        put(&g->code, "SVIEWINFO");
+        put(&g->code, "TXQ");
         dst_text(g, &d, 0);
-        src_text(g, &mip, 1, false);
-        put(&g->code, ", SVIEW[");
+        put(&g->code, ", TEMP[");
+        putu(&g->code, (uint32_t)g->s0);
+        put(&g->code, "], SAMP[");
         putu(&g->code, (uint32_t)t);
-        put(&g->code, "]\n");
+        put(&g->code, "], ");
+        put(&g->code, (g->cmp_tex >> t & 1) ? shadow_name[g->sh->res_dim[t]] : target_name[g->sh->res_dim[t]]);
+        put(&g->code, "\n");
         struct opd from = temp(g->s0 + 2, "xyzw");
         for (int i = 0; i < 4; i++)
             from.swz[i] = res->swz[i];
@@ -834,8 +890,7 @@ static bool declarations(struct tg *g, struct text *t)
     for (int r = 0; r < DXBC_MAX_RES; r++)
         if (g->used_tex & (1u << r)) {
             int dim = sh->res_dim[r];
-            if (g->out->tex_sampler[r] != 0xff)
-                decl_reg(t, "SAMP", r, "");
+            decl_reg(t, "SAMP", r, "");
             put(t, "DCL SVIEW[");
             putu(t, (uint32_t)r);
             put(t, "], ");

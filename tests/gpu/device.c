@@ -403,6 +403,70 @@ static void draw_tests(void)
     expect(pixel(30, 10) == 0x00ff00 && pixel(10, 30) == 0x00ff00 && pixel(20, 30) == 0, "wireframe draws edges only");
     gd_set_raster(ctx, NULL);
 
+    /* a texture through a sampler, scaled by a constant buffer's second constant: the left texel red, the right
+       blue, with point and then linear filtering */
+    {
+        in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);
+        out_sig("SV_Target", 0, 0, 0, 15);
+        op(88, 3 << 11), code[n++] = 7u << 12 | 1u << 20, code[n++] = 0, code[n++] = 0x5555, end(); /* t0 float */
+        op(90, 0), code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end();                          /* s0 */
+        op(89, 0), code[n++] = 2u | 1u << 2 | XYZW << 4 | 8u << 12 | 2u << 20, code[n++] = 0, code[n++] = 2,
+            end(); /* dcl_constantbuffer cb0[2] */
+        op(69, 0), dst(TEMP, 0, 15), src(IN, 1, SW(0, 1, 0, 0)), src(RES, 0, XYZW);
+        code[n++] = 6u << 12 | 1u << 20, code[n++] = 0, end(); /* sample r0, v1.xyxx, t0, s0 */
+        op(56, 0), dst(OUT, 0, 15), src(TEMP, 0, XYZW), cbsrc(0, 1, XYZW), end();
+        op(62, 0), end();
+        size_t size = container(0, 1);
+        char e[64];
+        struct gd_shader *ps_tex = gd_shader_create(blob, (uint32_t)size, e);
+        static const uint32_t texels[2] = {0xff0000ffu, 0xffff0000u};
+        struct gd_resource *tex = texture(2, 1, 1, texels);
+        struct gd_view *srv = tex ? gd_view_create(tex, &(struct gd_view_desc){.kind = GD_VIEW_SRV}, &err) : NULL;
+        static const float consts[8] = {0, 0, 0, 0, 0.5f, 1, 1, 1};
+        struct gd_resource *cb = buffer(consts, sizeof(consts), GD_BIND_CONSTANT);
+        expect(ps_tex && srv && cb, "a textured pixel shader");
+        if (ps_tex && srv && cb) {
+            gd_set_input_layout(ctx, &il);
+            gd_set_topology(ctx, 4);
+            gd_set_shader(ctx, 1, vs_color);
+            gd_set_shader(ctx, 0, ps_tex);
+            gd_set_depth(ctx, &(struct gd_depth){.depth_enable = 0}, 0);
+            gd_set_shader_resource(ctx, 0, 0, srv);
+            gd_set_constant_buffer(ctx, 0, 0, cb, 0, 0);
+            struct gd_sampler smp = {.filter = 0, .address_u = 3, .address_v = 3, .address_w = 3, .max_lod = 1000};
+            gd_set_sampler(ctx, 0, 0, &smp);
+            /* texture coordinates in the color: u from 0 on the left to 1 on the right */
+            static const float p[6][2] = {{-1, 1}, {1, 1}, {1, -1}, {-1, 1}, {1, -1}, {-1, -1}};
+            struct vert tv[6];
+            for (int i = 0; i < 6; i++) {
+                tv[i].p[0] = p[i][0], tv[i].p[1] = p[i][1], tv[i].p[2] = 0.5f;
+                tv[i].c[0] = (p[i][0] + 1) / 2, tv[i].c[1] = (1 - p[i][1]) / 2, tv[i].c[2] = 0, tv[i].c[3] = 1;
+            }
+            gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
+            gd_clear_dsv(dsv, 1, 1.0f, 0);
+            draw_verts(tv, 6);
+            expect(close_rgb(pixel(10, 30), 0x000080) && pixel(50, 30) == 0xff0000, "point sampling times cb0[1]");
+            smp.filter = 0x15;
+            gd_set_sampler(ctx, 0, 0, &smp);
+            draw_verts(tv, 6);
+            /* pixel 31: u = 31.5 / 64, 0.484375 of the way from the red texel's center to the blue one's */
+            uint32_t mid = pixel(31, 30);
+            int r = (int)(mid & 255), b = (int)(mid >> 16);
+            expect(pixel(2, 30) == 0x000080 && r >= 63 && r <= 68 && b >= 121 && b <= 126 && pixel(61, 30) == 0xff0000,
+                   "linear filtering between texels");
+            gd_set_shader_resource(ctx, 0, 0, NULL);
+            gd_set_constant_buffer(ctx, 0, 0, NULL, 0, 0);
+            gd_set_shader(ctx, 0, ps_color);
+            gd_set_depth(ctx, NULL, 0);
+        }
+        if (srv)
+            gd_view_unref(srv);
+        gd_resource_unref(tex);
+        gd_resource_unref(cb);
+        if (ps_tex)
+            gd_shader_unref(ps_tex);
+    }
+
     /* a geometry shader that makes a square of every point */
     {
         in_sig("SV_Position", 0, 1, 0, 15), in_sig("COLOR", 0, 0, 1, 15);

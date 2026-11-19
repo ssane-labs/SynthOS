@@ -296,7 +296,7 @@ static void tgsi_tests(void)
                has(t.text, "DCL IN[1], GENERIC[1], PERSPECTIVE") && has(t.text, "DCL OUT[0], COLOR[0]") &&
                has(t.text, "DCL OUT[1], POSITION") && has(t.text, "DCL SAMP[0]") &&
                has(t.text, "DCL SVIEW[0], 2D, FLOAT") &&
-               has(t.text, "SAMPLE TEMP[3], IN[1].xyxx, SVIEW[0], SAMP[0]") &&
+               has(t.text, "MOV TEMP[1], IN[1].xyxx\nTEX TEMP[3], TEMP[1], SAMP[0], 2D") &&
                has(t.text, "MOV TEMP[0], TEMP[3].wzyx") && has(t.text, "USEQ TEMP[1].x, TEMP[0].wwww") &&
                has(t.text, "KILL\nENDIF") && has(t.text, "UIF TEMP[0].xxxx\nMOV OUT[0], TEMP[0].xyzw\nELSE") &&
                has(t.text, "MOV OUT[1].z, TEMP[4].xxxx") && t.tex_sampler[0] == 0,
