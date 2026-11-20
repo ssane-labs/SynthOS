@@ -394,6 +394,45 @@ void hal_graphics_leave(void)
         hal_screen_close(i);
 }
 
+/* ---- sleep in S3: the displays lose their mode; those this driver sets itself are set again */
+
+bool display_can_sleep(char *why, size_t cap)
+{
+    probe();
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_GOP || outputs[i].kind == K_VIRTIO) {
+            ksnprintf(why, cap, "the %s cannot be set up again after sleep", outputs[i].name);
+            return false;
+        }
+    return true;
+}
+
+void display_resume(void)
+{
+    bool any = false;
+    for (int i = 0; i < output_count; i++) {
+        struct output *o = &outputs[i];
+        struct framebuffer fb;
+        if (!o->active)
+            continue;
+        any |= o->primary;
+        if (o->kind == K_BOCHS && !bochs_set(o, (int)o->fb.width, (int)o->fb.height, &fb))
+            klog("display: %s did not come back", o->name);
+        if (o->kind == K_VBE && !vbe_enter((int)o->fb.width, (int)o->fb.height, &fb))
+            klog("display: %s did not come back", o->name);
+    }
+    if (any || !output_count)
+        return;
+    /* the text console: on the firmware's framebuffer (UEFI) or in VGA text mode */
+    if (is_uefi() && outputs[0].kind == K_BOCHS) {
+        struct framebuffer fb;
+        bochs_set(&outputs[0], outputs[0].boot_w, outputs[0].boot_h, &fb);
+        fbcon_invalidate();
+    } else if (!is_uefi()) {
+        vbe_leave();
+    }
+}
+
 /* The backlight of a laptop's built-in panel on Intel graphics: the PWM the firmware set up is left running at its
    frequency and only its duty cycle changes. Two register layouts: Haswell to Kaby Lake keep the period and the duty
    in the high and low halves of one register, Broxton and Cannon Point onwards in two registers. */

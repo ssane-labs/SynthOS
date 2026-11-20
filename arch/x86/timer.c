@@ -90,6 +90,11 @@ void pit_init(uint32_t hz)
     irq_install(0, pit_tick);
 }
 
+void pit_resume(void)
+{
+    pit_divisor(PIT_FREQUENCY / tick_hz);
+}
+
 void pit_bios_mode(bool bios)
 {
     pit_divisor(bios ? 0 : PIT_FREQUENCY / tick_hz);

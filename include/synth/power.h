@@ -12,8 +12,15 @@ enum power_action {
 };
 
 enum power_action power_button_action(void);
-/* closing the lid locks the screen and turns it off */
-bool power_lid_locks(void);
+enum lid_action {
+    LID_LOCK, /* lock the screen and turn it off */
+    LID_SLEEP,
+    LID_NOTHING,
+};
+
+enum lid_action power_lid_action(void);
+/* text mode's sleep: S3 when the machine can, else the console waits, idle, for a key; 0 after an S3 sleep */
+int power_sleep_text(void);
 /* in text mode, where no desktop takes them: does what a power key asks; false for any other key */
 bool power_key_text(int key);
 

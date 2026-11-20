@@ -931,9 +931,8 @@ static int handshake12(struct tls *t, const struct server_hello *sh, struct key_
     return 0;
 }
 
-static int handshake(struct tls *t)
+static int handshake_in(struct tls *t, uint8_t *hello)
 {
-    static uint8_t hello[2048];
     uint8_t session[32];
     random_bytes(session, sizeof(session));
     struct key_share share;
@@ -1072,6 +1071,17 @@ static int handshake(struct tls *t)
     t->transcript = NULL;
     t->transcript_len = t->transcript_cap = 0;
     return 0;
+}
+
+/* the ClientHello is built in 2 KB from the heap: the 32-bit kernel's image has no room for it */
+static int handshake(struct tls *t)
+{
+    uint8_t *hello = kmalloc(2048);
+    if (!hello)
+        return E_NOMEM;
+    int err = handshake_in(t, hello);
+    kfree(hello);
+    return err;
 }
 
 struct tls *tls_connect(int sock, const char *host, bool verify, int *error)

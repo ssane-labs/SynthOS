@@ -180,6 +180,10 @@ int hal_cpu_count(void);
    all address spaces share and call nothing that locks, sleeps or allocates */
 void hal_parallel(void (*fn)(void *ctx, int from, int to), void *ctx, int count, int grain);
 int hal_parallel_cpus(void);
+/* sleep in S3 (suspend to RAM): false with the reason when the firmware or a device in use cannot */
+bool hal_can_suspend(char *why, size_t cap);
+/* 0 once the machine is awake again, or an error before it slept */
+int hal_suspend(void);
 NORETURN void hal_reboot(void);
 NORETURN void hal_poweroff(void);
 

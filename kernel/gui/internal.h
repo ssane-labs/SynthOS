@@ -416,6 +416,7 @@ struct window *terminal_window(void);
 void terminal_retitle(void);
 
 void gui_lock(void);
+void gui_sleep(void);
 void gui_login(void);
 void gui_blurred_wallpaper(struct canvas *out);
 bool gui_setup_needed(void);

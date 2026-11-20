@@ -56,6 +56,7 @@ static int extended_key(uint8_t code)
     case 0x1c: return KEY_ENTER;
     case 0x35: return '/';
     case 0x37: return KEY_PRINT;
+    case 0x5f: return KEY_SLEEP; /* the keyboard's Sleep key (ACPI keyboards) */
     default: return KEY_NONE;
     }
 }

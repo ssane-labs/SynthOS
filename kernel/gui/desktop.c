@@ -1882,13 +1882,15 @@ static bool power_key(int key)
         else if (power_button_action() == POWER_ASK)
             shell_power_menu(false);
         else if (power_button_action() == POWER_SLEEP)
-            gui_lock();
+            gui_sleep();
         return true;
     case KEY_SLEEP:
-        gui_lock();
+        gui_sleep();
         return true;
     case KEY_LID_CLOSE:
-        if (power_lid_locks()) {
+        if (power_lid_action() == LID_SLEEP) {
+            gui_sleep();
+        } else if (power_lid_action() == LID_LOCK) {
             if (user_current()->has_password && !gui_locked())
                 gui_lock();
             display_screen(false);

@@ -175,6 +175,7 @@ static void setup_vmd(const struct pci_device *d, void *ctx)
         return;
     klog("vmd: %04x at %02x:%02x.%u, buses from %u", d->device, d->bus, d->dev, d->fn, v.first_bus);
     scan_bus(&v, v.first_bus, 0);
+    resume_register("VMD", NULL);
 }
 
 /* Storage controllers: those on the ordinary PCI buses, then those behind a VMD. */

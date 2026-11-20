@@ -242,6 +242,7 @@ static void probe(const struct pci_device *d, void *ctx)
     n->dev.write = nvme_write;
     n->dev.priv = n;
     block_register(&n->dev);
+    resume_register("NVMe", NULL);
     count++;
 }
 

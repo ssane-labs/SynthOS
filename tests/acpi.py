@@ -1,6 +1,7 @@
 """ACPI events in QEMU: a test SSDT (tests/aml.py) adds a lid, a power button that Notifies, and methods that check
-what the AML interpreter computes; QMP then hot-plugs a PCI card (a GPE whose _E01 runs in QEMU's own DSDT) and
-presses the power button. usage: tests/acpi.py IMAGE"""
+what the AML interpreter computes; QMP then hot-plugs a PCI card (a GPE whose _E01 runs in QEMU's own DSDT), wakes the
+machine from S3 sleep (the shell, the disk, the e1000 and both processors must come back) and presses the power button.
+usage: tests/acpi.py IMAGE"""
 import codecs
 import json
 import os
@@ -82,7 +83,7 @@ class Machine:
         self.proc = subprocess.Popen(
             [os.environ.get("QEMU", "qemu-system-x86_64"),
              "-drive", "format=raw,file=" + os.path.join(work, "disk.img"),
-             "-m", "64", "-display", "none", "-serial", "stdio", "-nic", "none",
+             "-m", "64", "-smp", "2", "-display", "none", "-serial", "stdio", "-nic", "user,model=e1000",
              "-acpitable", "file=" + os.path.join(work, "test.aml"),
              "-qmp", "unix:%s,server=on,wait=off" % self.qmp_path],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -128,14 +129,17 @@ class Machine:
         s.connect(self.qmp_path)
         f = s.makefile("rw")
         f.readline()
+        replies = []
         for c in ({"execute": "qmp_capabilities"},) + commands:
             f.write(json.dumps(c) + "\n")
             f.flush()
             while True:
                 reply = json.loads(f.readline())
                 if "return" in reply or "error" in reply:
+                    replies.append(reply)
                     break
         s.close()
+        return replies[1:]
 
 
 def main():
@@ -180,6 +184,24 @@ def main():
         m.run("acpi eval _SB.PBTN.PRES")
         expect("control-method power button", "acpi: power button", m.run("dmesg | grep button"))
         m.run("config powerbutton ask")
+        # sleep in S3: QEMU stops the machine until QMP wakes it; then the shell, the disk and the clock still work
+        expect("S3 offered", "S3 sleep is available", m.run("suspend -n"))
+        with m.lock:
+            start = len(m.out)
+        m.proc.stdin.write(b"suspend\n")
+        m.proc.stdin.flush()
+        m.wait_for("Sleeping (S3)", start, 20)
+        time.sleep(2)
+        status = m.qmp({"execute": "query-status"})
+        expect("asleep", "'suspended'", str(status))
+        m.qmp({"execute": "system_wakeup"})
+        expect("awake", "Awake.", m.out[start:] if m.wait_for("Awake.", start, 30) else m.out[start:])
+        m.wait_for("►", start, 10)
+        expect("disk after sleep", "after-s3", m.run("echo after-s3 > /home/s3.txt; cat /home/s3.txt"))
+        expect("network after sleep", "2 received", m.run("ping -c 2 10.0.2.2", 30))
+        out = m.run("dmesg | grep sleep")
+        expect("processors after sleep", "2 processors after sleep", out)
+        expect("time after sleep", "sleep: awake after", out)
         # the fixed power button: the shell shuts down
         with m.lock:
             start = len(m.out)

@@ -40,7 +40,8 @@ static uint32_t gpe_blk[2];
 static uint8_t gpe_len[2], gpe1_base;
 static uint64_t ssdt[MAX_SSDT];
 static int nssdt;
-static uint64_t dsdt_phys;
+static uint64_t dsdt_phys, facs_phys;
+static uint8_t s3_a, s3_b;
 
 static bool events_on;
 static uint16_t pm1_enabled;
@@ -220,6 +221,9 @@ void acpi_init(void)
             reset_mmio = (volatile uint8_t *)map(reset_reg.addr, 1);
         have_reset = reset_reg.addr && (reset_reg.space == 1 || reset_mmio);
     }
+    facs_phys = *(const uint32_t *)(f + 36);
+    if (!facs_phys && len >= 140 && (sizeof(void *) == 8 || !(*(const uint64_t *)(f + 132) >> 32)))
+        facs_phys = *(const uint64_t *)(f + 132);
     const uint8_t *d = dsdt ? table(dsdt) : NULL;
     if (d && !memcmp(d, "DSDT", 4)) {
         dsdt_phys = dsdt;
@@ -823,6 +827,105 @@ const char *hal_power_init(void)
               gpes == 1 ? "" : "s", (pm1_enabled & PM1_PWRBTN) || power_button ? ", power button" : "",
               lid ? ", lid" : "", ec_node ? ", embedded controller" : "");
     return summary;
+}
+
+/* ---- sleep in S3: \_S3 gives the sleep types, the FACS holds where the processor starts again ---- */
+
+static volatile uint8_t *facs(void)
+{
+    volatile uint8_t *t = facs_phys ? (volatile uint8_t *)map(facs_phys, 64) : NULL;
+    return t && !memcmp((const void *)t, "FACS", 4) ? t : NULL;
+}
+
+bool acpi_s3_ready(char *why, size_t cap)
+{
+    if (!events_on || !pm1a) {
+        ksnprintf(why, cap, "ACPI is not on (or the machine is hardware-reduced)");
+        return false;
+    }
+    struct aml_obj *pkg = NULL;
+    uint64_t a = 0, b = 0;
+    bool ok = aml_eval(aml_root(), "\\_S3", NULL, 0, &pkg) && pkg && aml_type_of(pkg) == AML_PKG &&
+              aml_pkg_int(pkg, 0, &a);
+    if (ok && !aml_pkg_int(pkg, 1, &b))
+        b = a;
+    if (pkg)
+        aml_put(pkg);
+    if (!ok) {
+        ksnprintf(why, cap, "the firmware offers no S3");
+        return false;
+    }
+    if (!facs()) {
+        ksnprintf(why, cap, "there is no FACS for the waking vector");
+        return false;
+    }
+    s3_a = (uint8_t)(a & 7);
+    s3_b = (uint8_t)(b & 7);
+    return true;
+}
+
+static void clear_events(void)
+{
+    pm1_write(pm1a_evt, 0, 0xffff);
+    pm1_write(pm1b_evt, 0, 0xffff);
+    for (int i = 0; i < gpe_bytes(); i++)
+        outb(gpe_port(i, false), 0xff);
+}
+
+bool acpi_s3_prepare(uint32_t vector)
+{
+    volatile uint8_t *t = facs();
+    if (!t)
+        return false;
+    *(volatile uint32_t *)(t + 12) = vector;
+    if (*(volatile uint32_t *)(t + 4) >= 32)
+        *(volatile uint64_t *)(t + 24) = 0;
+    struct aml_obj *arg = aml_int(3);
+    if (aml_find(aml_root(), "\\_PTS"))
+        aml_eval(aml_root(), "\\_PTS", &arg, 1, NULL);
+    aml_put(arg);
+    clear_events();
+    return true;
+}
+
+/* the last step: the machine sleeps while the registers are written, or does not and this returns */
+void acpi_s3_enter(void)
+{
+    __asm__ volatile("wbinvd" ::: "memory");
+    clear_events();
+    uint16_t a = (uint16_t)((inw((uint16_t)pm1a) & 0x203) | s3_a << 10);
+    outw((uint16_t)pm1a, a);
+    if (pm1b)
+        outw((uint16_t)pm1b, (uint16_t)((inw((uint16_t)pm1b) & 0x203) | s3_b << 10));
+    outw((uint16_t)pm1a, (uint16_t)(a | 1u << 13));
+    if (pm1b)
+        outw((uint16_t)pm1b, (uint16_t)((inw((uint16_t)pm1b) & 0x203) | s3_b << 10 | 1u << 13));
+    for (int i = 0; i < 1000000 && !(pm1_read(pm1a_evt, 0) & 0x8000); i++)
+        io_wait();
+}
+
+/* after the wake (or a failed try): ACPI mode, the enabled events, the SCI's trigger, then \_WAK */
+void acpi_s3_resume(void)
+{
+    if (smi_cmd && acpi_on && !(inw((uint16_t)pm1a) & 1)) {
+        outb((uint16_t)smi_cmd, acpi_on);
+        for (int i = 0; i < 300000 && !(inw((uint16_t)pm1a) & 1); i++)
+            io_wait();
+    }
+    clear_events();
+    pm1_write(pm1a_evt, pm1_len / 2, pm1_enabled);
+    pm1_write(pm1b_evt, pm1_len / 2, pm1_enabled);
+    for (int i = 0; i < gpe_bytes(); i++)
+        outb(gpe_port(i, true), (uint8_t)(gpe_enabled[i] & ~gpe_pending[i]));
+    if (sci_irq && sci_irq < 16 && sci_irq != 2) {
+        uint16_t port = sci_irq < 8 ? 0x4d0 : 0x4d1;
+        outb(port, (uint8_t)(inb(port) | 1u << (sci_irq & 7)));
+    }
+    struct aml_obj *arg = aml_int(3);
+    if (aml_find(aml_root(), "\\_WAK"))
+        aml_eval(aml_root(), "\\_WAK", &arg, 1, NULL);
+    aml_put(arg);
+    lid_dirty = true;
 }
 
 int hal_lid_state(void)

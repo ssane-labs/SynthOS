@@ -221,6 +221,19 @@ void cpu_init(void)
     fpu_init();
 }
 
+static void cpu_local_init(void);
+
+/* after sleep (S3): the boot processor's GDT, task registers, IDT and control registers as cpu_init left them */
+void cpu_resume(void)
+{
+    tss_init();
+    struct table_ptr gp = {sizeof(gdt) - 1, (uint32_t)gdt};
+    gdt_flush(&gp);
+    __asm__ volatile("ltr %w0" : : "r"(0x40));
+    __asm__ volatile("lidt %0" : : "m"(idt32_ptr));
+    cpu_local_init();
+}
+
 static bool has_cpuid(void)
 {
     uint32_t a, b;

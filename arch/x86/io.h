@@ -290,6 +290,21 @@ void acpi_poweroff(void);
 void acpi_reset(void);
 int acpi_service(void);
 void ata_init(void);
+
+/* sleep (sleep.c). A driver whose device has to be set up again after S3 (the device lost its registers) gives the
+   function that does it; with fn NULL the device cannot come back, and the machine sleeps without S3. */
+void resume_register(const char *name, bool (*fn)(void));
+/* the start-up code (smpboot.asm) in its page below 1 MB: processors take stacks[first..max) and call entry */
+uint32_t smp_trampoline(void (*entry)(int), void **stacks, int first, int max);
+void smp_resume(void);
+void cpu_resume(void);
+void pit_resume(void);
+bool acpi_s3_ready(char *why, size_t cap);
+bool acpi_s3_prepare(uint32_t vector);
+void acpi_s3_enter(void);
+void acpi_s3_resume(void);
+bool display_can_sleep(char *why, size_t cap);
+void display_resume(void);
 void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size);
 
 #endif

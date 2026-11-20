@@ -614,6 +614,8 @@ bool hda_probe(int rate)
     pci_foreach(collect, &c);
     for (int i = 0; i < c.count && !hd.ready; i++)
         hd.ready = try_controller(&c.dev[i], rate);
+    if (hd.ready)
+        resume_register("HD Audio", NULL);
     return hd.ready;
 }
 

@@ -847,6 +847,7 @@ void xhci_init(void)
     pci_foreach(found_pci, NULL);
     if (!controller_count)
         return;
+    resume_register("xHCI USB", NULL);
     usb_poll_register(poll_all);
     hal_sleep_ms(100);
     usb_port_changed();
