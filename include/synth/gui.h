@@ -457,6 +457,10 @@ struct wm_raw {
 };
 uint32_t wm_raw_count(void);
 void wm_raw_inject(int dx, int dy, int wheel, unsigned press, unsigned release);
+void wm_pointer_warp(int x, int y);
+void wm_pointer_clip(const struct rect *r); /* NULL: free */
+bool wm_pointer_clipped(struct rect *r);
+void wm_pointer_hide(bool hide); /* a program in front hides the pointer (ShowCursor) */
 bool wm_raw_get(uint32_t seq, struct wm_raw *out);
 void wm_invalidate(struct window *w);
 int wm_controls_width(void);

@@ -42,7 +42,7 @@ static unsigned mouse_buttons;
 static int mouse_speed = 5, accel_x, accel_y;
 static bool natural_scroll, left_handed;
 static int double_click_ms = 400, scroll_lines = 1;
-static bool cursor_visible = true;
+static bool cursor_visible = true, cursor_app_hidden; /* the lock screen's; a program's (ShowCursor) */
 
 enum cursor_kind {
     CUR_ARROW,
@@ -318,7 +318,7 @@ static bool hw_hardware(void)
     if (hw_none || screen_count != 1 || screens[0].scale != 1 || screens[0].turn)
         return false;
     struct screen *s = &screens[0];
-    bool show = hw_live && cursor_visible && cursor_px[cursor_kind];
+    bool show = hw_live && cursor_visible && !cursor_app_hidden && cursor_px[cursor_kind];
     int x = hw_x - s->area.x, y = hw_y - s->area.y;
     if (show && hw_kind != cursor_kind) {
         if (!hal_cursor_image(&s->fb, cursor_px[cursor_kind], CURSOR_SIZE, CURSOR_SIZE, cursor_hot[cursor_kind][0],
@@ -350,7 +350,7 @@ static void hw_cursor_move(void)
         return;
     }
     struct rect old = hw_drawn;
-    hw_drawn = hw_live && cursor_visible && cursor_px[cursor_kind]
+    hw_drawn = hw_live && cursor_visible && !cursor_app_hidden && cursor_px[cursor_kind]
                    ? (struct rect){hw_x - cursor_hot[cursor_kind][0], hw_y - cursor_hot[cursor_kind][1], CURSOR_SIZE,
                                    CURSOR_SIZE}
                    : (struct rect){0, 0, 0, 0};
@@ -2818,8 +2818,15 @@ static void mouse_moved(void)
         client_event(w, EV_MOUSE_MOVE, 0, 0, 0);
 }
 
+/* Where a program keeps the pointer (ClipCursor); w == 0: anywhere */
+static struct rect pointer_clip;
+
 static void nearest_point(int *px, int *py)
 {
+    if (pointer_clip.w > 0 && pointer_clip.h > 0) {
+        *px = CLAMP(*px, pointer_clip.x, pointer_clip.x + pointer_clip.w - 1);
+        *py = CLAMP(*py, pointer_clip.y, pointer_clip.y + pointer_clip.h - 1);
+    }
     int x = *px, y = *py;
     for (int i = 0; i < screen_count; i++)
         if (rect_contains(screens[i].area, x, y))
@@ -2921,6 +2928,32 @@ static void raw_record(const struct pointer_event *ev)
     raw_ring[raw_next % RAW_RING] = (struct wm_raw){dx, dy, ev->wheel, ev->buttons, ev->buttons ^ raw_buttons};
     raw_buttons = ev->buttons;
     __atomic_store_n(&raw_next, raw_next + 1, __ATOMIC_RELEASE);
+}
+
+void wm_pointer_clip(const struct rect *r)
+{
+    pointer_clip = r ? *r : (struct rect){0};
+    if (r)
+        wm_pointer_warp(mouse_x, mouse_y);
+}
+
+bool wm_pointer_clipped(struct rect *r)
+{
+    *r = pointer_clip;
+    return pointer_clip.w > 0;
+}
+
+/* SetCursorPos: the pointer jumps; no raw motion (a game recentring the cursor must not see its own jump) */
+void wm_pointer_warp(int x, int y)
+{
+    int old_x = mouse_x, old_y = mouse_y;
+    clamp_mouse(x, y);
+    if (old_x == mouse_x && old_y == mouse_y)
+        return;
+    hw_x = mouse_x;
+    hw_y = mouse_y;
+    hw_cursor_refresh();
+    mouse_moved();
 }
 
 /* SendInput's mouse: motion and buttons a program made, recorded as if the mouse had reported them */
@@ -3087,6 +3120,14 @@ struct window *wm_top_popup(void)
 void wm_set_cursor_visible(bool on)
 {
     cursor_visible = on;
+    hw_cursor_refresh();
+}
+
+void wm_pointer_hide(bool hide)
+{
+    if (cursor_app_hidden == hide)
+        return;
+    cursor_app_hidden = hide;
     hw_cursor_refresh();
 }
 

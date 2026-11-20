@@ -2362,6 +2362,33 @@ static struct w32_window *raw_target(void)
     return t ? t : w32_focus();
 }
 
+/* ClipCursor: this program keeps the pointer in a rectangle; let go when it leaves the front or exits */
+static W32_STATE bool clip_mine;
+static void clip_release(void);
+/* ShowCursor's display count: below zero hides the pointer while this program is in front */
+static W32_STATE int cursor_count;
+static W32_STATE bool cursor_hid;
+
+static bool program_in_front(void)
+{
+    struct w32_window *front = w32_focus() ? w32_top(w32_focus()) : NULL;
+    return front && front->wm && front->wm == wm_focused();
+}
+
+/* the pointer as this program wants it, while it is in front; given back when it is not */
+static void pointer_follow_front(void)
+{
+    if (!gui_active() || (!clip_mine && !cursor_hid && cursor_count >= 0))
+        return;
+    bool front = program_in_front();
+    if (clip_mine && !front)
+        clip_release();
+    bool hide = cursor_count < 0 && front;
+    if (hide != cursor_hid)
+        wm_pointer_hide(hide);
+    cursor_hid = hide;
+}
+
 /* the program's top-level windows */
 static int top_windows(void)
 {
@@ -2592,6 +2619,7 @@ static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
         }
         return true;
     }
+    pointer_follow_front();
     if (raw_message(msg, hwnd, lo, hi, remove, me))
         return true;
     if (quit_posted && quit_thread == me && (!lo || WM_QUIT >= lo)) {
@@ -2820,9 +2848,50 @@ static BOOL WINAPI GetCursorPos(POINT *p)
 
 static BOOL WINAPI SetCursorPos(int x, int y)
 {
-    UNUSED(x);
-    UNUSED(y);
+    if (gui_active())
+        wm_pointer_warp(x, y);
     return TRUE;
+}
+
+static BOOL WINAPI ClipCursor(const RECT *r)
+{
+    if (!gui_active())
+        return TRUE;
+    if (r && r->right > r->left && r->bottom > r->top) {
+        struct rect c = {r->left, r->top, r->right - r->left, r->bottom - r->top};
+        wm_pointer_clip(&c);
+        clip_mine = true;
+    } else {
+        wm_pointer_clip(NULL);
+        clip_mine = false;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI GetClipCursor(RECT *r)
+{
+    struct rect c;
+    if (!r)
+        return FALSE;
+    if (!gui_active() || !wm_pointer_clipped(&c)) {
+        int n = gui_active() ? wm_screen_count() : 0;
+        *r = (RECT){0, 0, 0, 0};
+        for (int i = 0; i < n; i++) {
+            struct rect a = wm_screen_rect(i);
+            r->left = MIN(r->left, a.x), r->top = MIN(r->top, a.y);
+            r->right = MAX(r->right, a.x + a.w), r->bottom = MAX(r->bottom, a.y + a.h);
+        }
+        return TRUE;
+    }
+    *r = (RECT){c.x, c.y, c.x + c.w, c.y + c.h};
+    return TRUE;
+}
+
+static void clip_release(void)
+{
+    if (clip_mine)
+        wm_pointer_clip(NULL);
+    clip_mine = false;
 }
 
 static short WINAPI GetKeyState(int vk)
@@ -3663,7 +3732,9 @@ static HANDLE WINAPI LoadKeyboardLayoutW(LPCWSTR id, UINT flags)
 
 static int WINAPI ShowCursor(BOOL show)
 {
-    return show ? 1 : 0;
+    cursor_count += show ? 1 : -1;
+    pointer_follow_front();
+    return cursor_count;
 }
 
 
@@ -5168,6 +5239,11 @@ void w32_gdi_reset(void);
 
 void w32_gui_cleanup(void)
 {
+    clip_release();
+    if (cursor_hid)
+        wm_pointer_hide(false);
+    cursor_hid = false;
+    cursor_count = 0;
     w32_gdi_reset();
     for (int i = 0; shared_windows && i < SHARED_WINDOWS; i++)
         if (shared_windows[i].owner == w32)
@@ -5244,7 +5320,7 @@ static const struct w32_export window_exports[] = {
     W32_AS("DispatchMessageW", w32_dispatch),
     W32_FN(SetCapture),
     W32_FN(ReleaseCapture), W32_FN(GetCapture), W32_FN(SetFocus), W32_FN(GetFocus), W32_FN(GetCursorPos),
-    W32_FN(SetCursorPos), W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(GetSystemMetrics),
+    W32_FN(SetCursorPos), W32_FN(ClipCursor), W32_FN(GetClipCursor), W32_FN(GetKeyState), W32_AS("GetAsyncKeyState", GetKeyState), W32_FN(GetSystemMetrics),
     W32_FN(SystemParametersInfoA), W32_FN(SystemParametersInfoW), W32_FN(SystemParametersInfoForDpi), W32_FN(LoadCursorA),
     W32_AS("LoadCursorW", LoadCursorA), W32_FN(LoadIconA), W32_FN(LoadIconW), W32_FN(LoadImageA),
     W32_FN(LoadImageW),

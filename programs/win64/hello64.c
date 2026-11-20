@@ -58,6 +58,10 @@ int main(int argc, char **argv)
         RAWINPUTDEVICE d = {1, 2, 0, NULL};
         RegisterRawInputDevices(&d, 1, sizeof(d));
         long n = 0, sx = 0, sy = 0;
+        RECT clip = {200, 200, 260, 240}, got;
+        ClipCursor(&clip); /* a game keeps the pointer in its window and recentres it */
+        SetCursorPos(230, 220);
+        int shown = ShowCursor(FALSE);
         DWORD end = GetTickCount() + 8000;
         while (GetTickCount() < end) {
             MSG m;
@@ -71,7 +75,13 @@ int main(int argc, char **argv)
             }
             Sleep(10);
         }
-        printf("raw motion: %ld messages, %ld %ld\n", n, sx, sy);
+        POINT at;
+        GetCursorPos(&at);
+        GetClipCursor(&got);
+        printf("raw motion: %ld messages, %ld %ld, pointer %ld %ld in %ld %ld %ld %ld, shown %d\n", n, sx, sy,
+               at.x, at.y, got.left, got.top, got.right, got.bottom, shown);
+        ShowCursor(TRUE);
+        ClipCursor(NULL);
         DestroyWindow(w);
         return 0;
     }

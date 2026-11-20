@@ -1709,7 +1709,6 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("GetMessageExtraInfo", w32_zero0),
     W32_FN(GetMessageTime),
     W32_FN(GetCursorInfo),
-    W32_AS("ClipCursor", w32_one1),
     W32_FN(SendInput),
     W32_AS("RegisterHotKey", w32_one4),
     W32_AS("UnregisterHotKey", w32_one2),

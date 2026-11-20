@@ -583,6 +583,9 @@ Windows, и отвечает на вызовы API.
   `WM_INPUT` приходит окну-цели, когда её окно впереди (или всегда — с `RIDEV_INPUTSINK`); у программы без окон —
   в очередь потока. `GetRawInputData`, `GetRawInputBuffer`, `GetRawInputDeviceList/Info` отдают записи
   `RAWMOUSE` по номеру события; `SendInput` с `INPUT_MOUSE` добавляет событие в то же кольцо.
+  `SetCursorPos` переносит указатель без сырого движения, `ClipCursor` держит его в прямоугольнике, а
+  `ShowCursor` со счётчиком ниже нуля прячет — пока окно программы впереди; при уходе с переднего плана и
+  при выходе программы указатель освобождается и снова виден.
 * **Диалоги файлов** (`filedialog.c`, `kernel/gui/picker.c`): `IFileOpenDialog`/`IFileSaveDialog`
   (`CoCreateInstance`), `IShellItem`, `SHCreateItemFromParsingName`, `GetOpenFileName`/`GetSaveFileName`
   показывают панель рабочего стола `gui_file_picker` и ждут её, как модальный диалог, разбирая
