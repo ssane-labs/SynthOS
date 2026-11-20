@@ -65,6 +65,7 @@ struct gd_shader {
     uint8_t used_counter;           /* u# whose hidden counter the host shader reaches */
     struct gd_resource *icb_buf;
     uint16_t uav_format[DXBC_MAX_UAV]; /* compute: the typed UAV formats the host shader was made for */
+    uint32_t ms; /* the t# read as multisampled textures in the host shader */
     uint32_t serial; /* a number no other shader had */
     /* a vertex shader in the geometry slot for stream output: the host's vertex shader with it, made from the
        vertex shader numbered so_vs (0 not made, -1 cannot be); a domain shader: the host's, made for the hull

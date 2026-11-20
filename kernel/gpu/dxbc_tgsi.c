@@ -49,6 +49,7 @@ struct tg {
     const uint16_t *uav_format;        /* geometry shader: reads the primitive number (1, SV[0]),
                                           the instance number (2, SV[1]) */
     uint32_t used_cb, used_tex, cmp_tex, plain_tex;
+    uint32_t ms;                 /* t# bound to a multisampled texture on the host: read as 2D_MSAA */
     int32_t cb_max[DXBC_MAX_CB]; /* the highest constant read with a fixed index, or 4095 when one is relative */
     int naddr;
     /* hull and domain shaders: the patch constants in TEMP[pcbase + reg]; the hull shader phase being translated
@@ -499,7 +500,7 @@ static struct opd shift_amount(struct tg *g, const struct opd *b)
     return temp(g->s0 + 1, "xyzw");
 }
 
-/* multisampled textures have one sample on the host, as in the software pipeline: plain 2D ones there */
+/* multisampled textures are plain 2D ones (one sample, as in the software pipeline) unless g->ms has them */
 static const char *const target_name[] = {"", "BUFFER", "1D", "2D", "2D", "3D", "CUBE", "1D_ARRAY", "2D_ARRAY",
                                           "2D_ARRAY", "CUBE_ARRAY"};
 static const char *const shadow_name[] = {"", "BUFFER", "SHADOW1D", "SHADOW2D", "2D", "3D", "SHADOWCUBE",
@@ -509,6 +510,14 @@ static const char *const shadow_name[] = {"", "BUFFER", "SHADOW1D", "SHADOW2D", 
    is both the view at t and the sampler state the shader pairs with t#, which the backend binds at slot t. The
    coordinate is copied to TEMP[s0], where a level, bias or depth reference goes into the component GL reads it from
    (or into TEMP[s0 + 1] for the *2 forms); the result comes through TEMP[s0 + 2] when the resource has a swizzle. */
+static const char *tex_target(const struct tg *g, int t)
+{
+    int dim = g->sh->res_dim[t];
+    if ((dim == 4 || dim == 9) && (g->ms >> t & 1))
+        return dim == 4 ? "2D_MSAA" : "2D_ARRAY_MSAA";
+    return (g->cmp_tex >> t & 1) ? shadow_name[dim] : target_name[dim];
+}
+
 enum { TX_SAMPLE, TX_L, TX_B, TX_C, TX_C_LZ, TX_D, TX_LD, TX_LOD, TX_G, TX_G_C, TX_G_PO, TX_G_PO_C };
 
 static const uint8_t coord_count[] = {0, 1, 1, 2, 2, 3, 3, 2, 3, 3, 4};
@@ -545,7 +554,7 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
         g->cmp_tex |= 1u << t;
     else if (kind != TX_LD)
         g->plain_tex |= 1u << t;
-    const char *target = cmp ? shadow_name[dim] : target_name[dim];
+    const char *target = cmp ? shadow_name[dim] : tex_target(g, t);
     bool four = coord_count[dim] == 4; /* cube arrays: nothing left in the coordinate for a level or reference */
     if (gather && (four || dim == 2 || dim == 7 || dim == 5))
         return (void)fail(g, "gather from a 1D, 3D or cube array texture");
@@ -594,7 +603,10 @@ static void texture(struct tg *g, const struct dxbc_ins *in, int kind)
         name = "TXD";
     } else if (kind == TX_LD) {
         name = "TXF";
-        if (dim == 4 || dim == 9) { /* ld_ms: the only sample, at level 0 (TXF reads the level from w) */
+        if ((dim == 4 || dim == 9) && (g->ms >> t & 1)) { /* ld_ms: the sample in w */
+            struct opd sample = scalar_of(&in->o[3], 0);
+            emit1(g, "MOV", false, &cw, &sample);
+        } else if (dim == 4 || dim == 9) { /* the only sample, at level 0 (TXF reads the level from w) */
             struct opd zero = imm_opd(0);
             emit1(g, "MOV", false, &cw, &zero);
         }
@@ -1308,7 +1320,7 @@ static void instruction(struct tg *g, int pc)
         put(&g->code, "], SAMP[");
         putu(&g->code, (uint32_t)t);
         put(&g->code, "], ");
-        put(&g->code, (g->cmp_tex >> t & 1) ? shadow_name[g->sh->res_dim[t]] : target_name[g->sh->res_dim[t]]);
+        put(&g->code, tex_target(g, t));
         put(&g->code, "\n");
         struct opd from = temp(g->s0 + 2, "xyzw");
         for (int i = 0; i < 4; i++)
@@ -1320,6 +1332,28 @@ static void instruction(struct tg *g, int pc)
     case OP_SAMPLE_POS: {
         if (o[0].type == T_NULL)
             return;
+        int t = o[1].type == T_RESOURCE ? o[1].idx[0].imm : -1;
+        if (in->op == OP_SAMPLE_INFO && t >= 0 && t < DXBC_MAX_RES && (g->ms >> t & 1) &&
+            (g->sh->res_dim[t] == 4 || g->sh->res_dim[t] == 9)) { /* a multisampled texture's samples: TXQS */
+            g->used_tex |= 1u << t;
+            struct opd d = scratch_dst(g, 2, 15);
+            g->naddr = 0;
+            put(&g->code, "TXQS");
+            dst_text(g, &d, 0);
+            put(&g->code, ", TEMP[");
+            putu(&g->code, (uint32_t)g->s0);
+            put(&g->code, "], SAMP[");
+            putu(&g->code, (uint32_t)t);
+            put(&g->code, "], ");
+            put(&g->code, tex_target(g, t));
+            put(&g->code, "\n");
+            struct opd from = temp(g->s0 + 2, "xxxx"), zero = imm_opd(0), x = o[0];
+            emit1(g, "MOV", false, &o[0], &zero);
+            x.mask &= 1;
+            if (x.mask)
+                emit1(g, (in->ret_type & 1) ? "MOV" : "U2F", in->sat, &x, &from);
+            return;
+        }
         uint32_t v = in->op == OP_SAMPLE_POS ? 0 : (in->ret_type & 1) ? 1 : 0x3f800000u;
         struct opd k = temp(0, "xyzw");
         k.type = T_IMM32, k.ndim = 0;
@@ -1858,12 +1892,11 @@ static bool declarations(struct tg *g, struct text *t)
     static const char *const ret[] = {"FLOAT", "UNORM", "SNORM", "SINT", "UINT", "FLOAT"};
     for (int r = 0; r < DXBC_MAX_RES; r++)
         if (g->used_tex & (1u << r)) {
-            int dim = sh->res_dim[r];
             decl_reg(t, "SAMP", r, "");
             put(t, "DCL SVIEW[");
             putu(t, (uint32_t)r);
             put(t, "], ");
-            put(t, (g->cmp_tex & (1u << r)) ? shadow_name[dim] : target_name[dim]);
+            put(t, tex_target(g, r));
             put(t, ", ");
             put(t, ret[sh->res_ret[r] <= 5 ? sh->res_ret[r] : 0]);
             put(t, "\n");
@@ -1883,6 +1916,12 @@ static bool declarations(struct tg *g, struct text *t)
 bool dxbc_tgsi_tess(const struct dxbc_shader *sh, const struct dxbc_shader *hs, const uint16_t *uav_format,
                     struct dxbc_tgsi *out)
 {
+    return dxbc_tgsi_ms(sh, hs, uav_format, 0, out);
+}
+
+bool dxbc_tgsi_ms(const struct dxbc_shader *sh, const struct dxbc_shader *hs, const uint16_t *uav_format,
+                  uint32_t ms, struct dxbc_tgsi *out)
+{
     memset(out, 0, sizeof(*out));
     memset(out->tex_sampler, 0xff, sizeof(out->tex_sampler));
     struct tg *g = kmalloc(sizeof(*g));
@@ -1892,7 +1931,7 @@ bool dxbc_tgsi_tess(const struct dxbc_shader *sh, const struct dxbc_shader *hs, 
     }
     memset(g, 0, sizeof(*g));
     g->sh = sh, g->out = out, g->uav_format = uav_format;
-    g->hs = hs;
+    g->hs = hs, g->ms = ms;
     int next = sh->temps;
     for (int x = 0; x < 8; x++)
         if (sh->xtemps[x])

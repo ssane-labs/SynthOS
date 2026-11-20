@@ -855,7 +855,7 @@ static uint64_t map_sub(struct cobj *o, uint32_t sub, struct gd_layout *l)
 static uint64_t create_resource(struct cobj *dev, uint32_t kind, struct gd_res_desc *d, uint64_t init, uint64_t out)
 {
     uint32_t samples = d->samples ? d->samples : 1;
-    d->samples = 1; /* multisampling is drawn with one sample */
+    d->samples = samples; /* on the host's card multisampled; here one sample, the resolved picture */
     if (d->dim != GD_BUFFER && !d->mips)
         d->mips = mip_count(d->width, d->height, d->dim == GD_TEX3D ? d->depth : 1);
     uint32_t subs = d->dim == GD_BUFFER ? 1 : d->mips * (d->dim == GD_TEX3D ? 1 : MAX(d->array, 1u));

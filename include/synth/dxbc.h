@@ -165,6 +165,9 @@ bool dxbc_tgsi(const struct dxbc_shader *sh, const uint16_t *uav_format, struct 
 /* a domain shader needs the hull shader it runs after (spacing, winding, points) */
 bool dxbc_tgsi_tess(const struct dxbc_shader *sh, const struct dxbc_shader *hs, const uint16_t *uav_format,
                     struct dxbc_tgsi *out);
+/* ms: the t# bound to multisampled textures on the host, read as 2D_MSAA there (others with one sample) */
+bool dxbc_tgsi_ms(const struct dxbc_shader *sh, const struct dxbc_shader *hs, const uint16_t *uav_format, uint32_t ms,
+                  struct dxbc_tgsi *out);
 void dxbc_tgsi_free(struct dxbc_tgsi *out);
 
 #endif

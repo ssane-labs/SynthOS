@@ -699,6 +699,22 @@ static void draw_tests(void)
             expect(pixel(10, 30) == 0x0000ff && pixel(50, 30) == 0xff0000, "ld_ms reads a multisampled texture");
             gd_set_shader_resource(ctx, 0, 0, NULL);
             gd_set_shader(ctx, 0, ps_color);
+            /* on the host's card the samples are real: a diagonal edge resolves to colours between the two sides */
+            uint64_t host_before = gd_host_draws();
+            gd_set_render_target(ctx, 0, ms_rtv);
+            gd_clear_rtv(ms_rtv, (const float[4]){0, 0, 0, 1});
+            struct vert tri[3] = {{{-1, 1, 0.5f}, {1, 0, 0, 1}}, {{1, 1, 0.5f}, {1, 0, 0, 1}},
+                                  {{1, -1, 0.5f}, {1, 0, 0, 1}}};
+            draw_verts(tri, 3);
+            gd_set_render_target(ctx, 0, rtv);
+            gd_copy_region(rt_tex, 0, 0, 0, 0, ms, 0, NULL);
+            int between = 0;
+            for (int x = 0; x < W; x++) {
+                uint32_t red = pixel(x, H / 2) & 255;
+                between += red > 40 && red < 215;
+            }
+            if (gd_host_draws() > host_before)
+                expect(between > 0, "the host's samples smooth an edge");
             gd_set_depth_target(ctx, dsv);
         }
         if (ps_ms)

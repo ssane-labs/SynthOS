@@ -244,6 +244,14 @@ static uint32_t view_format(const struct gd_view *v)
 
 /* ---- resources */
 
+/* a multisampled render or depth target is multisampled on the host too; the memory here keeps one sample, the
+   resolved picture, which goes up to the host no more (a multisampled texture cannot be written to by a transfer) */
+static bool host_ms(const struct gd_resource *r)
+{
+    return r->d.samples > 1 && r->d.dim == GD_TEX2D && r->d.usage != 3 &&
+           (r->d.bind & (GD_BIND_RENDER_TARGET | GD_BIND_DEPTH_STENCIL)) && !(r->d.bind & GD_BIND_UNORDERED_ACCESS);
+}
+
 static uint32_t target_of(const struct gd_resource *r)
 {
     switch (r->d.dim) {
@@ -266,8 +274,33 @@ static void turn_depth(struct gd_resource *r, bool to_host)
         w[i] = to_host ? w[i] << 8 | w[i] >> 24 : w[i] >> 8 | w[i] << 24;
 }
 
+/* a multisampled resource read back: resolved on the host into a resource with one sample, which comes back */
+static uint32_t resolved(struct gd_resource *r)
+{
+    uint32_t format = resource_format(r), depth = r->d.bind & GD_BIND_DEPTH_STENCIL;
+    struct virtio_res3d d = {.target = target_of(r), .format = format,
+                             .bind = depth ? B_DEPTH_STENCIL : B_RENDER_TARGET | B_SAMPLER_VIEW, .w = r->d.width,
+                             .h = r->d.height, .depth = 1, .array = r->d.array, .levels = 1};
+    uint32_t id = virtio_gpu_resource_3d(H.gpu, H.ctx, &d, NULL, 0);
+    if (!id)
+        return 0;
+    cmd(C_BLIT, 0, 21);
+    put((depth ? 0x30 : 0xf) /* Z and S, or RGBA; nearest */), put(0), put(0);
+    put(id), put(0), put(format), put(0), put(0), put(0), put(r->d.width), put(r->d.height), put(r->d.array);
+    put(r->host), put(0), put(format), put(0), put(0), put(0), put(r->d.width), put(r->d.height), put(r->d.array);
+    flush(false);
+    return id;
+}
+
 static bool transfer(struct gd_resource *r, bool to_host)
 {
+    uint32_t from = r->host;
+    if (host_ms(r)) {
+        if (to_host) /* what was written here stays here */
+            return true;
+        if (!(from = resolved(r)))
+            return false;
+    }
     bool ok = true, turn = resource_format(r) == 20;
     if (turn && to_host)
         turn_depth(r, true);
@@ -281,12 +314,14 @@ static bool transfer(struct gd_resource *r, bool to_host)
             else if (r->d.dim != GD_TEX3D)
                 box[2] = s, box[5] = 1;
             bool last = s + 1 == r->d.array && m + 1 == r->d.mips;
-            ok = virtio_gpu_transfer_box(H.gpu, H.ctx, r->host, to_host, m, box, r->off[sub],
+            ok = virtio_gpu_transfer_box(H.gpu, H.ctx, from, to_host, m, box, r->off[sub],
                                          r->d.dim == GD_BUFFER ? 0 : l->row_pitch,
                                          r->d.dim == GD_BUFFER ? 0 : l->slice_pitch, (turn || !to_host) && last);
         }
     if (turn)
         turn_depth(r, false);
+    if (from != r->host)
+        virtio_gpu_resource_unref(H.gpu, H.ctx, from);
     return ok;
 }
 
@@ -395,7 +430,8 @@ static uint32_t to_gpu(struct gd_resource *r)
             bind = (b & GD_BIND_RENDER_TARGET ? B_RENDER_TARGET : 0) |
                    (b & GD_BIND_DEPTH_STENCIL ? B_DEPTH_STENCIL : B_SAMPLER_VIEW);
         struct virtio_res3d d = {.target = target_of(r), .format = format, .bind = bind, .w = r->d.width,
-                                 .h = r->d.height, .depth = r->d.depth, .array = r->d.array, .levels = r->d.mips};
+                                 .h = r->d.height, .depth = r->d.depth, .array = r->d.array, .levels = r->d.mips,
+                                 .samples = host_ms(r) ? r->d.samples : 0};
         flush(false);
         r->host = virtio_gpu_resource_3d(H.gpu, H.ctx, &d, r->data, r->alloc);
         if (!r->host)
@@ -516,10 +552,10 @@ static uint32_t surface(struct gd_view *v)
 /* a shader object on the host from s's TGSI: compute ones for the given typed UAV formats, vertex ones with the
    stream output so (or NULL); 0 when there is no translation (H.why says why) */
 static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t *uav_format, const struct so_decl *so,
-                              const struct gd_shader *hs)
+                              const struct gd_shader *hs, uint32_t ms)
 {
     struct dxbc_tgsi t;
-    if (!dxbc_tgsi_tess(&s->sh, hs ? &hs->sh : NULL, uav_format, &t)) {
+    if (!dxbc_tgsi_ms(&s->sh, hs ? &hs->sh : NULL, uav_format, ms, &t)) {
         str_copy(H.why, t.error, sizeof(H.why));
         klog("gd: a shader stays in software: %s", t.error);
         return 0;
@@ -568,10 +604,11 @@ static uint32_t create_shader(struct gd_shader *s, uint32_t type, const uint16_t
     return h;
 }
 
-static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *uav_format)
+/* the shader for the typed UAV formats and the multisampled textures (ms, a mask of t#) bound now */
+static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *uav_format, uint32_t ms)
 {
     shader_now(s);
-    if (s->host > 0 && uav_format && memcmp(s->uav_format, uav_format, sizeof(s->uav_format))) {
+    if (s->host > 0 && ((uav_format && memcmp(s->uav_format, uav_format, sizeof(s->uav_format))) || s->ms != ms)) {
         destroy(O_SHADER, (uint32_t)s->host);
         s->host = 0;
     }
@@ -579,8 +616,9 @@ static uint32_t shader_for(struct gd_shader *s, uint32_t type, const uint16_t *u
         memcpy(s->uav_format, uav_format, sizeof(s->uav_format));
     if (s->host)
         return s->host > 0 ? (uint32_t)s->host : 0;
+    s->ms = ms;
     /* a geometry shader declares its stream output itself */
-    uint32_t h = create_shader(s, type, uav_format, type == SH_GEOMETRY ? s->so : NULL, NULL);
+    uint32_t h = create_shader(s, type, uav_format, type == SH_GEOMETRY ? s->so : NULL, NULL, ms);
     s->host = h ? (int32_t)h : -1;
     if (h)
         suspect(s, false);
@@ -596,7 +634,7 @@ static uint32_t so_shader_for(struct gd_shader *so_shader, struct gd_shader *vs)
         return so_shader->so_host > 0 ? (uint32_t)so_shader->so_host : 0;
     if (so_shader->so_host > 0)
         destroy(O_SHADER, (uint32_t)so_shader->so_host);
-    uint32_t h = create_shader(vs, SH_VERTEX, NULL, so_shader->so, NULL);
+    uint32_t h = create_shader(vs, SH_VERTEX, NULL, so_shader->so, NULL, 0);
     so_shader->so_host = h ? (int32_t)h : -1, so_shader->so_vs = vs->serial;
     if (h)
         suspect(so_shader, true);
@@ -611,7 +649,7 @@ static uint32_t tes_for(struct gd_shader *ds, struct gd_shader *hs)
         return ds->so_host > 0 ? (uint32_t)ds->so_host : 0;
     if (ds->so_host > 0)
         destroy(O_SHADER, (uint32_t)ds->so_host);
-    uint32_t h = create_shader(ds, SH_TESS_EVAL, NULL, NULL, hs);
+    uint32_t h = create_shader(ds, SH_TESS_EVAL, NULL, NULL, hs, 0);
     ds->so_host = h ? (int32_t)h : -1, ds->so_vs = hs->serial;
     if (h)
         suspect(ds, true);
@@ -620,7 +658,17 @@ static uint32_t tes_for(struct gd_shader *ds, struct gd_shader *hs)
 
 static uint32_t shader(struct gd_shader *s, uint32_t type)
 {
-    return shader_for(s, type, NULL);
+    return shader_for(s, type, NULL, 0);
+}
+
+/* the t# of a stage bound to textures multisampled on the host */
+static uint32_t ms_views(const struct stage *st)
+{
+    uint32_t m = 0;
+    for (int t = 0; t < GD_SLOTS_SRV && t < 32; t++)
+        if (st->srv[t] && host_ms(st->srv[t]->r))
+            m |= 1u << t;
+    return m;
 }
 
 /* D3D11 numbers to gallium's */
@@ -706,7 +754,7 @@ static void raster_state(const struct gd_context *c, bool discard, uint8_t clip)
     put((r->depth_clip ? 1u << 1 : 0) | (discard ? 1u << 3 : 0) | 1u << 2 /* clip z 0..w */ |
         1u << 4 /* first vertex for flat */ | cull << 8 |
         fill << 10 | fill << 12 | (r->scissor ? 1u << 14 : 0) | (r->front_ccw ? 1u << 15 : 0) |
-        (offset ? 1u << 20 : 0) | (r->multisample ? 1u << 25 : 0) | 1u << 29 /* pixel centers at .5 */);
+        (offset ? 1u << 20 : 0) | 1u << 25 /* triangles multisampled (D3D10.1 on) */ | 1u << 29 /* pixel centers at .5 */);
     put(fbits(1)), put(0), put((uint32_t)clip << 24), put(fbits(1));
     put(fbits((float)r->depth_bias)), put(fbits(r->slope_scaled_depth_bias)), put(fbits(r->depth_bias_clamp));
     cmd(C_BIND, O_RASTERIZER, 1);
@@ -1058,7 +1106,7 @@ bool gd_host_dispatch(struct gd_context *c, uint32_t x, uint32_t y, uint32_t z)
         unlock();
         return false;
     }
-    uint32_t h = shader_for(cs, SH_COMPUTE, formats);
+    uint32_t h = shader_for(cs, SH_COMPUTE, formats, ms_views(st));
     if (!h) {
         unlock();
         return refuse(H.why);
@@ -1166,13 +1214,14 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         return refuse(H.why);
     lock();
     bool ok = ready();
-    uint32_t vsh = ok ? (so_vs ? so_shader_for(so_vs, vs) : shader(vs, SH_VERTEX)) : 0, fsh = 0;
-    uint32_t gsh = ok && gs ? shader(gs, SH_GEOMETRY) : 0;
+    uint32_t vsh = ok ? (so_vs ? so_shader_for(so_vs, vs) : shader_for(vs, SH_VERTEX, NULL,
+                                                                       ms_views(&c->stage[DXBC_VS]))) : 0, fsh = 0;
+    uint32_t gsh = ok && gs ? shader_for(gs, SH_GEOMETRY, NULL, ms_views(&c->stage[DXBC_GS])) : 0;
     uint32_t tcs = ok && tess ? shader(hs, SH_TESS_CTRL) : 0, tes = ok && tess && tcs ? tes_for(ds, hs) : 0;
     uint16_t ps_formats[DXBC_MAX_UAV];
     if (ok && ps) {
         uav_formats(&c->stage[DXBC_PS], &ps->sh, ps_formats);
-        fsh = shader_for(ps, SH_FRAGMENT, ps_formats);
+        fsh = shader_for(ps, SH_FRAGMENT, ps_formats, ms_views(&c->stage[DXBC_PS]));
     } else if (ok) {
         if (!H.null_fs) {
             static struct gd_shader none;
@@ -1366,7 +1415,7 @@ refused:
 /* clears of what is on the host already happen there */
 static bool host_clear(struct gd_view *v, uint32_t buffers, const float color[4], float depth, uint32_t stencil)
 {
-    if (!v->r->host || H.state <= 0 || H.off)
+    if ((!v->r->host && !host_ms(v->r)) || H.state <= 0 || H.off) /* multisampled ones are cleared there */
         return false;
     lock();
     uint32_t h = to_gpu(v->r) ? surface(v) : 0;
@@ -1514,6 +1563,15 @@ static bool copy_sub(struct gd_resource *dst, uint32_t dsub, uint32_t x, uint32_
         z += dsub / dst->d.mips;
     if (src->d.dim != GD_TEX3D)
         b.front += ssub / src->d.mips;
+    if (host_ms(src) && !host_ms(dst)) { /* ResolveSubresource: a blit takes the samples' average */
+        uint32_t mask = src->d.bind & GD_BIND_DEPTH_STENCIL ? 0x30 : 0xf;
+        cmd(C_BLIT, 0, 21);
+        put(mask), put(0), put(0);
+        put(dst->host), put(dlev), put(resource_format(dst)), put(x), put(y), put(z), put(w), put(h), put(d);
+        put(src->host), put(slev), put(resource_format(src)), put(b.left), put(b.top), put(b.front), put(w), put(h),
+            put(d);
+        return true;
+    }
     cmd(C_COPY_REGION, 0, 13);
     put(dst->host), put(dlev), put(x), put(y), put(z);
     put(src->host), put(slev), put(b.left), put(b.top), put(b.front), put(w), put(h), put(d);
@@ -1523,7 +1581,7 @@ static bool copy_sub(struct gd_resource *dst, uint32_t dsub, uint32_t x, uint32_
 bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uint32_t z, struct gd_resource *src,
                   int ssub, const struct gd_box *box)
 {
-    if (!ready() || (!src->host && !dst->host))
+    if (!ready() || (!src->host && !dst->host) || (host_ms(dst) && !host_ms(src)))
         return false;
     uint32_t sb, db, sbytes = gd_format_bytes(src->d.format, &sb), dbytes = gd_format_bytes(dst->d.format, &db);
     if (src->d.dim != GD_BUFFER && dst->d.dim != GD_BUFFER && (sbytes != dbytes || sb != db))
