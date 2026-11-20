@@ -1096,10 +1096,6 @@ dwrite64
 dwrite families=1 name=1 arial=1 opens=1 glyphs=1 advance=1 upem=1 head=1 path=1 raster=1 same=1
 dwrite64 | grep dwrite3
 dwrite3 factory2=1 factory3=1 collection=1 fallback=1 gray=1
-d3d64
-d3d11 level=b000 adapter=SynthOS Graphics modes=1 shaders=1 map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1 newer=1 dynamic=1
-audio64
-wasapi: Speakers (SynthOS Audio), flow 0, 1 device, mic no, 48000 Hz 2 ch float, buffer ok, again refused, early refused, full refused, volume 0.5, wakes ok, paced 1, clock 1, after stop kept, s16 ok, mp3 refused, resampled 1
 spawn64
 spawn64 held=ping child=7010 map=pong dll32=0/193 overlapped=1 3 678
 sock6
@@ -1600,9 +1596,20 @@ df | grep hdcp
 /mnt/hdcp2 ntfs
 echo x > /mnt/hdcp2/new.txt
 permission denied
+d3d64
+d3d11 level=b000 adapter=SynthOS Graphics modes=1 shaders=1 map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1 newer=1 dynamic=1
+audio64
+wasapi: Speakers (SynthOS Audio), flow 0, 1 device, mic no, 48000 Hz 2 ch float, buffer ok, again refused, early refused, full refused, volume 0.5, wakes ok, paced 1, clock 1, after stop kept, s16 ok, mp3 refused, resampled 1
 EOF
 else
+    # Direct3D 11 and Core Audio for 64-bit programs are in the 64-bit kernel only: here they say so and stop
     sed -i 's/ afd=AFD$/ afd=0/' "$work/cases"
+    cat >> "$work/cases" <<'EOF'
+d3d64
+d3d11 create failed
+audio64
+wasapi: no enumerator
+EOF
 fi
 # an OpenVPN server on the host when the tests run as root with openvpn and a tun device (tests/ovpnserver.sh)
 ovpn=""

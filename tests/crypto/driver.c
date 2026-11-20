@@ -3,6 +3,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <synth/crypto.h>
+
+/* the heap of the kernel, for the elliptic curves of pk.c */
+void *kzalloc(size_t size)
+{
+    return calloc(1, size);
+}
+
+void kfree(void *p)
+{
+    free(p);
+}
 uint32_t hal_entropy(void)
 {
     return 0;

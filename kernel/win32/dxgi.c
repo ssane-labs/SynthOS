@@ -223,4 +223,223 @@ static const struct w32_export dxgi_exports[] = {
 
 W32_EXPORTS(dxgi_module, "dxgi.dll", dxgi_exports);
 
-/* 64-bit programs: d3d11_fp.c */
+/* 64-bit programs: d3d11_fp.c on the 64-bit kernel; on the 32-bit kernel the factory and adapter below, which
+   have no device behind them (D3D11CreateDevice answers "class not registered", win64out.c) */
+#ifndef SYNTH_X32
+
+/* 64-bit programs: the same objects behind vtables of 64-bit stubs */
+
+struct obj64 {
+    uint64_t vtbl;
+    int kind;
+    struct obj64 *parent;
+};
+
+static W32_STATE struct obj64 *factory64, *adapter64;
+
+static void put_ptr(uint64_t where, const void *p)
+{
+    uint64_t v = (uintptr_t)p;
+    memcpy(w64_ptr(where), &v, 8);
+}
+
+static uint64_t qi64_of(struct obj64 *self, const uint8_t *iid, uint64_t out)
+{
+    if (!out)
+        return E_POINTER;
+    bool has = self && kind_has(self->kind, iid);
+    put_ptr(out, has ? self : NULL);
+    return has ? S_OK : E_NOINTERFACE;
+}
+
+static uint64_t h_qi(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    return qi64_of(w64_ptr(a[0]), w64_ptr(a[1]), a[2]);
+}
+
+static uint64_t h_one(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(a);
+    UNUSED(f);
+    UNUSED(t);
+    return 1;
+}
+
+static uint64_t h_ok(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(a);
+    UNUSED(f);
+    UNUSED(t);
+    return S_OK;
+}
+
+static uint64_t h_parent(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    const struct obj64 *self = w64_ptr(a[0]);
+    return qi64_of(self->parent, w64_ptr(a[1]), a[2]);
+}
+
+static uint64_t h_get_window(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    put_ptr(a[1], NULL);
+    return S_OK;
+}
+
+static uint64_t h_not_found(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    if (a[2])
+        put_ptr(a[2], NULL);
+    return DXGI_ERROR_NOT_FOUND;
+}
+
+/* CreateSwapChain(device, desc, out) and CreateSoftwareAdapter(module, out) */
+static uint64_t h_unsupported(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    if (a[(uintptr_t)t])
+        put_ptr(a[(uintptr_t)t], NULL);
+    return DXGI_ERROR_UNSUPPORTED;
+}
+
+static uint64_t h_desc(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    return adapter_desc(w64_ptr(a[1]), 8, t != NULL);
+}
+
+static uint64_t h_version(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    return interface_version(a[2] ? w64_ptr(a[2]) : NULL);
+}
+
+static uint64_t h_enum_adapters(uint64_t *a, const uint64_t *f, void *t);
+
+struct method {
+    w64_handler fn;
+    const char *name;
+    void *target;
+};
+
+static const struct method adapter_methods[] = {
+    {h_qi, "IDXGIAdapter::QueryInterface", NULL}, {h_one, "IDXGIAdapter::AddRef", NULL},
+    {h_one, "IDXGIAdapter::Release", NULL},       {h_ok, "IDXGIAdapter::SetPrivateData", NULL},
+    {h_ok, "IDXGIAdapter::SetPrivateDataInterface", NULL},
+    {h_ok, "IDXGIAdapter::GetPrivateData", NULL}, {h_parent, "IDXGIAdapter::GetParent", NULL},
+    {h_not_found, "IDXGIAdapter::EnumOutputs", NULL}, {h_desc, "IDXGIAdapter::GetDesc", NULL},
+    {h_version, "IDXGIAdapter::CheckInterfaceSupport", NULL}, {h_desc, "IDXGIAdapter1::GetDesc1", (void *)1},
+};
+
+static const struct method factory_methods[] = {
+    {h_qi, "IDXGIFactory::QueryInterface", NULL},
+    {h_one, "IDXGIFactory::AddRef", NULL},
+    {h_one, "IDXGIFactory::Release", NULL},
+    {h_ok, "IDXGIFactory::SetPrivateData", NULL},
+    {h_ok, "IDXGIFactory::SetPrivateDataInterface", NULL},
+    {h_ok, "IDXGIFactory::GetPrivateData", NULL},
+    {h_parent, "IDXGIFactory::GetParent", NULL},
+    {h_enum_adapters, "IDXGIFactory::EnumAdapters", NULL},
+    {h_ok, "IDXGIFactory::MakeWindowAssociation", NULL},
+    {h_get_window, "IDXGIFactory::GetWindowAssociation", NULL},
+    {h_unsupported, "IDXGIFactory::CreateSwapChain", (void *)3},
+    {h_unsupported, "IDXGIFactory::CreateSoftwareAdapter", (void *)2},
+    {h_enum_adapters, "IDXGIFactory1::EnumAdapters1", NULL},
+    {h_one, "IDXGIFactory1::IsCurrent", NULL},
+};
+
+static W32_STATE uint64_t *vtables[2];
+
+static uint64_t vtable(int kind)
+{
+    const struct method *m = kind == FACTORY ? factory_methods : adapter_methods;
+    size_t n = kind == FACTORY ? ARRAY_SIZE(factory_methods) : ARRAY_SIZE(adapter_methods);
+    if (!vtables[kind]) {
+        uint64_t *v = w32_zalloc(n * sizeof(uint64_t));
+        for (size_t i = 0; v && i < n; i++) {
+            void *stub = m[i].target ? w64_target_stub(m[i].fn, m[i].target) : w64_kernel_stub(m[i].fn, m[i].name);
+            if (!stub)
+                return 0;
+            v[i] = (uintptr_t)stub;
+        }
+        vtables[kind] = v;
+    }
+    return (uintptr_t)vtables[kind];
+}
+
+static struct obj64 *object64(struct obj64 **slot, int kind, struct obj64 *parent)
+{
+    if (!*slot) {
+        uint64_t v = vtable(kind);
+        if (v && (*slot = w32_zalloc(sizeof(**slot))))
+            **slot = (struct obj64){v, kind, parent};
+    }
+    return *slot;
+}
+
+static uint64_t h_enum_adapters(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    if (!a[2])
+        return E_POINTER;
+    if ((uint32_t)a[1])
+        return h_not_found(a, f, t);
+    struct obj64 *adapter = object64(&adapter64, ADAPTER, w64_ptr(a[0]));
+    put_ptr(a[2], adapter);
+    return adapter ? S_OK : DXGI_ERROR_UNSUPPORTED;
+}
+
+static uint64_t create_factory(const uint8_t *iid, uint64_t out)
+{
+    if (!out)
+        return E_POINTER;
+    struct obj64 *factory = object64(&factory64, FACTORY, NULL);
+    if (!factory) {
+        put_ptr(out, NULL);
+        return DXGI_ERROR_UNSUPPORTED;
+    }
+    return qi64_of(factory, iid, out);
+}
+
+static uint64_t h_create_factory(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    return create_factory(w64_ptr(a[0]), a[1]);
+}
+
+static uint64_t h_create_factory2(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    return create_factory(w64_ptr(a[1]), a[2]);
+}
+
+static uint64_t h_debug_interface(uint64_t *a, const uint64_t *f, void *t)
+{
+    UNUSED(f);
+    UNUSED(t);
+    if (a[2])
+        put_ptr(a[2], NULL);
+    return E_NOINTERFACE;
+}
+
+static const struct w64_export dxgi64_exports[] = {
+    W64_FN("CreateDXGIFactory", h_create_factory),
+    W64_FN("CreateDXGIFactory1", h_create_factory),
+    W64_FN("CreateDXGIFactory2", h_create_factory2),
+    W64_FN("DXGIGetDebugInterface1", h_debug_interface),
+};
+
+W64_EXPORTS(dxgi64_module, "dxgi.dll", dxgi64_exports);
+
+#endif

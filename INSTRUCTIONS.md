@@ -713,7 +713,8 @@ SynthOS 1.2 «Nebula» — рабочая система:
 * эмулятор **MS-DOS** (8086/186) для `.COM` и `.EXE`;
 * автотесты: `make test` (более 500 проверок, в обеих сборках), `make test-hw` (BIOS/UEFI × IDE/AHCI/NVMe/USB/xHCI,
   4 ядра; i486 — в `ARCH=i686`), `make test-crypto` (криптография против эталонов), `make test-ai` (движок
-  ассистента на хосте: все пути SIMD против C и крошечные модели против эталона на numpy).
+  ассистента на хосте: все пути SIMD против C и крошечные модели против эталона на numpy), `make fuzz` (фаззинг
+  разборщиков файлов на хосте с AddressSanitizer); CI (`.github/workflows/tests.yml`) запускает их все.
 
 ---
 
@@ -785,6 +786,7 @@ make test         # собрать вариант с COM-консолью и п�
 make test-hw      # прогнать образ на разных «машинах» (BIOS/UEFI, IDE/AHCI/NVMe/USB/xHCI, 4 ядра)
 make test-crypto  # проверить SHA-2, AES-GCM, ChaCha20, X25519, RSA, ECDSA на хосте
 make test-ai      # движок ассистента на хосте: AVX2/AVX-VNNI/AVX-512 против C, крошечные модели против numpy
+make fuzz         # фаззинг разборщиков файлов (PE, картинки, звук, PDF, офис, архивы) на хосте, 60 с
 make test-gpu     # растеризатор, текстуры, шейдеры DXBC (интерпретатор и компилятор) на хосте
 make test-virgl   # 3D через видеокарту хоста (virtio-gpu с virgl; без видеокарты — llvmpipe в Xvfb)
 make clean        # удалить build/
@@ -1208,6 +1210,13 @@ DOS переносятся без изменений (эмулятор DOS тр�
   целочисленных произведений, который есть у процессора (AVX2, AVX‑VNNI, AVX‑512, AVX‑512 VNNI, прямые блоки
   Q4_K/Q6_K/Q8_0), сверяется с обычным C, F16 — с F16C, а крошечные модели всех архитектур из `tests/aimodel.py` —
   с эталоном на numpy (нужен `numpy`). `build/tools/llmtest модель.gguf --bench 32` меряет скорость на одном ядре.
+* `make fuzz` — фаззер разборщиков файлов (`tests/fuzz`): код ядра собирается для хоста с AddressSanitizer и
+  UndefinedBehaviorSanitizer, каждый базовый блок отмечается через `-fsanitize-coverage=trace-pc`, и вход, который
+  дошёл до нового кода, остаётся в корпусе. Цели: `pe`, `picture` (PNG, JPEG, GIF, BMP), `codecs` (TIFF, TGA, PNM,
+  QOI, ICO, FLAC, AIFF), `media` (MP3, Ogg, WebP), `doc` (PDF и офисные файлы), `archive` (tar, gzip, xz, lzma),
+  `zip`, `lnk`. Начальные файлы — образцы из `rootfs/system/samples` и `tests/fuzz/seeds.py`. `FUZZ_SECONDS=600`
+  — общее время, `FUZZ_TARGET=pe` — одна цель, `FUZZ_SEED` — повторить прогон. Упавший вход сохраняется в
+  `build/fuzz/crash-<цель>.bin`; повторить: `build/fuzz/fuzz 0 каталог цель`, где в `каталог/цель/` лежит этот файл.
 * `tests/shot.sh build/vga/synthos.img out.png 12 <клавиши QEMU…>` — запускает VGA-образ, нажимает
   клавиши (`l s ret`, `shift-apostrophe`, `sleep:5` — пауза) и сохраняет скриншот через
   `AFTER` секунд после последней клавиши (нужны `socat` и Python PIL; `QEMU_EXTRA` — доп. флаги).
