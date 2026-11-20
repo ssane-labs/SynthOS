@@ -206,6 +206,15 @@ static uint64_t h_no_filter(uint64_t *a, const uint64_t *f, void *t)
     return no_object(a, 1, 0);
 }
 
+/* CoCreateInstance(clsid, outer, context, iid, out): the built-in classes (Core Audio) */
+static uint64_t h_co_create(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint64_t hr;
+    if (a[0] && w64_audio_create(w64_ptr(a[0]), a[3] ? w64_ptr(a[3]) : NULL, a[4], &hr))
+        return hr;
+    return no_object(a, 4, CLASS_NOT_REGISTERED);
+}
+
 static const struct w64_export com_exports[] = {
     W64_FN("SHGetDesktopFolder", h_no_object0),
     W64_FN("SHGetMalloc", h_no_object0),
@@ -229,7 +238,7 @@ static const struct w64_export com_exports[] = {
     W64_FN("CoGetObject", h_no_object3),
     W64_FN("AccessibleObjectFromWindow", h_no_object3),
     W64_FN("CreateStdAccessibleObject", h_no_object3),
-    W64_FN("CoCreateInstance", h_no_object4),
+    W64_FN("CoCreateInstance", h_co_create),
     W64_FN("CoGetClassObject", h_no_object4),
     W64_FN("LoadRegTypeLib", h_no_object4),
     W64_FN("OleLoadPicturePath", h_no_object5),

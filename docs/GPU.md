@@ -7,7 +7,7 @@
 - Windows x64, Steam‑клиент (Chromium‑интерфейс), античит VAC (в пользовательском режиме).
 - **Direct3D 11** (Source 2; на Linux — Vulkan). Шейдеры DXBC Shader Model 5.0.
 - Процессор с SSE4.2/AVX, 8 ГБ памяти, видеокарта с 1 ГБ памяти и выше.
-- Сеть (UDP, Steam Datagram Relay), звук (XAudio2/WASAPI), сырой ввод мыши (сделано: `WM_INPUT`, `GetRawInputData/Buffer`, `SendInput`, `ClipCursor`, `ShowCursor`).
+- Сеть (UDP, Steam Datagram Relay), звук (XAudio2/WASAPI; WASAPI сделан, `audio64`), сырой ввод мыши (сделано: `WM_INPUT`, `GetRawInputData/Buffer`, `SendInput`, `ClipCursor`, `ShowCursor`).
 
 ## Порядок работ
 

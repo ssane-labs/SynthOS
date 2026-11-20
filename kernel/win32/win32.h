@@ -171,6 +171,7 @@ struct w32_object {
     uint32_t max;
     struct w32_thread *thread;
     uint64_t due;
+    uint32_t period; /* an event that turns signaled by itself every period ms from due (WASAPI) */
     char *path;
     bool inherit;
     bool skip_port;

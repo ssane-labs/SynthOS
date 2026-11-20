@@ -604,6 +604,7 @@ void w64_tls_callbacks(uint32_t reason)
 void w64_cleanup(void)
 {
     crt_slots64 = 0;
+    w64_audio_cleanup();
     w64_mem_cleanup();
 }
 
