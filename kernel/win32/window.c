@@ -2344,6 +2344,236 @@ static void probe_captions(uint32_t me)
     }
 }
 
+/* ---- raw input: a program that registered the mouse (usage page 1, usage 2) gets WM_INPUT at its target window
+   (or the focused one) while that window is in front, or always with RIDEV_INPUTSINK; a program without windows (no
+   desktop) gets it as thread messages of the thread that registered. The motion is the window manager's numbered
+   record; a message's handle is its number + 1. */
+#define WM_INPUT 0x00ff
+#define RAW_MOUSE ((HANDLE)(uintptr_t)0x10001)
+static W32_STATE struct {
+    HANDLE target;
+    uint32_t flags, seen, thread;
+    bool on;
+} raw_mouse;
+
+static struct w32_window *raw_target(void)
+{
+    struct w32_window *t = raw_mouse.target ? w32_win(raw_mouse.target) : NULL;
+    return t ? t : w32_focus();
+}
+
+/* the program's top-level windows */
+static int top_windows(void)
+{
+    int n = 0;
+    for (struct w32_window *w = windows; w; w = w->next_all)
+        n += !is_child(w) && !w->destroyed;
+    return n;
+}
+
+static bool raw_for_us(struct w32_window *t)
+{
+    struct w32_window *top = t ? w32_top(t) : NULL;
+    return top && (raw_mouse.flags & 0x100 /* RIDEV_INPUTSINK */ || (top->wm && top->wm == wm_focused()));
+}
+
+/* the next WM_INPUT for this thread, or false (motion meant for no window of this program is dropped) */
+static bool raw_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove, uint32_t me)
+{
+    uint32_t n = wm_raw_count();
+    if (!raw_mouse.on || raw_mouse.seen == n || (lo | hi && (WM_INPUT < lo || WM_INPUT > hi)))
+        return false;
+    struct w32_window *t = raw_target();
+    if (!raw_for_us(t) && (t || top_windows())) {
+        raw_mouse.seen = n;
+        return false;
+    }
+    if (n - raw_mouse.seen > 256)
+        raw_mouse.seen = n - 256;
+    MSG m = {t, WM_INPUT, 0 /* RIM_INPUT */, (LPARAM)(raw_mouse.seen + 1), message_time(), {mouse_x, mouse_y}};
+    if ((t ? t->thread : raw_mouse.thread) != me || !in_filter(&m, hwnd, lo, hi))
+        return false;
+    if (remove)
+        raw_mouse.seen++;
+    *msg = m;
+    return true;
+}
+
+static bool raw_moved(const void *seen)
+{
+    return wm_raw_count() != (uint32_t)(uintptr_t)seen;
+}
+
+/* RAWINPUTDEVICE: usage page, usage, flags, target window; 12 bytes, 16 for 64-bit programs */
+static BOOL WINAPI RegisterRawInputDevices(const uint8_t *devs, UINT count, UINT size)
+{
+    if (!devs || size < 12)
+        return FALSE;
+    for (UINT i = 0; i < count; i++) {
+        const uint8_t *d = devs + (size_t)i * size;
+        uint16_t page, usage;
+        uint32_t flags, target;
+        memcpy(&page, d, 2), memcpy(&usage, d + 2, 2), memcpy(&flags, d + 4, 4), memcpy(&target, d + 8, 4);
+        if (page != 1 || usage != 2) /* keyboards and others: accepted, their keys keep coming as messages */
+            continue;
+        raw_mouse.on = !(flags & 1 /* RIDEV_REMOVE */);
+        raw_mouse.flags = flags;
+        raw_mouse.target = (HANDLE)(uintptr_t)target;
+        raw_mouse.seen = wm_raw_count();
+        raw_mouse.thread = w32_thread_id();
+    }
+    return TRUE;
+}
+
+static UINT WINAPI GetRegisteredRawInputDevices(uint8_t *devs, UINT *count, UINT size)
+{
+    UINT n = raw_mouse.on ? 1 : 0;
+    if (!count)
+        return (UINT)-1;
+    if (!devs || *count < n) {
+        *count = n;
+        return devs && n ? (UINT)-1 : 0;
+    }
+    if (n) {
+        memset(devs, 0, size);
+        uint16_t page = 1, usage = 2;
+        uint32_t target = (uint32_t)(uintptr_t)raw_mouse.target;
+        memcpy(devs, &page, 2), memcpy(devs + 2, &usage, 2), memcpy(devs + 4, &raw_mouse.flags, 4);
+        memcpy(devs + 8, &target, 4);
+    }
+    return n;
+}
+
+/* RAWINPUTHEADER (type, size, device, wParam: 16 bytes, 24 for 64-bit programs) and RAWMOUSE (24 bytes) */
+static UINT raw_header_size(void)
+{
+    return w32->win64 ? 24 : 16;
+}
+
+static void raw_fill(uint8_t *out, const struct wm_raw *r)
+{
+    UINT hs = raw_header_size();
+    memset(out, 0, hs + 24);
+    uint32_t type = 0 /* RIM_TYPEMOUSE */, size = hs + 24, dev = (uint32_t)(uintptr_t)RAW_MOUSE;
+    memcpy(out, &type, 4), memcpy(out + 4, &size, 4), memcpy(out + 8, &dev, 4);
+    uint8_t *m = out + hs;
+    uint16_t flags = 0, data = 0;
+    static const uint16_t down[3] = {1, 4, 0x10}, up[3] = {2, 8, 0x20}; /* left, right, middle */
+    static const unsigned bit[3] = {BUTTON_LEFT, BUTTON_RIGHT, 4};
+    for (int i = 0; i < 3; i++)
+        if (r->changed & bit[i])
+            flags |= r->buttons & bit[i] ? down[i] : up[i];
+    if (r->wheel) {
+        flags |= 0x400; /* RI_MOUSE_WHEEL: away from the user is positive */
+        data = (uint16_t)(int16_t)(-r->wheel * 120);
+    }
+    int32_t dx = r->dx, dy = r->dy;
+    memcpy(m + 4, &flags, 2), memcpy(m + 6, &data, 2), memcpy(m + 12, &dx, 4), memcpy(m + 16, &dy, 4);
+}
+
+static UINT WINAPI GetRawInputData(HANDLE h, UINT command, void *data, UINT *size, UINT header_size)
+{
+    struct wm_raw r;
+    UINT hs = raw_header_size();
+    if (!size || header_size != hs || !h || !wm_raw_get((uint32_t)(uintptr_t)h - 1, &r))
+        return (UINT)-1;
+    UINT need = command == 0x10000005 /* RID_HEADER */ ? hs : hs + 24;
+    if (!data) {
+        *size = need;
+        return 0;
+    }
+    if (*size < need) {
+        *size = need;
+        return (UINT)-1;
+    }
+    uint8_t full[48];
+    raw_fill(full, &r);
+    memcpy(data, full, need);
+    return need;
+}
+
+/* the motion waiting for this program, as RAWINPUT records one after another (8-byte aligned): it no longer comes as
+   WM_INPUT */
+static UINT WINAPI GetRawInputBuffer(void *data, UINT *size, UINT header_size)
+{
+    UINT hs = raw_header_size(), one = (hs + 24 + 7) & ~7u;
+    if (!size || header_size != hs)
+        return (UINT)-1;
+    uint32_t n = wm_raw_count();
+    struct w32_window *t = raw_target();
+    if (!raw_mouse.on || (!raw_for_us(t) && (t || top_windows())))
+        raw_mouse.seen = n;
+    if (n - raw_mouse.seen > 256)
+        raw_mouse.seen = n - 256;
+    if (!data) {
+        *size = raw_mouse.seen != n ? one : 0;
+        return 0;
+    }
+    UINT got = 0;
+    struct wm_raw r;
+    while (raw_mouse.seen != n && (got + 1) * one <= *size && wm_raw_get(raw_mouse.seen, &r)) {
+        raw_fill((uint8_t *)data + got * one, &r);
+        raw_mouse.seen++, got++;
+    }
+    return got;
+}
+
+/* RAWINPUTDEVICELIST: one mouse */
+static UINT WINAPI GetRawInputDeviceList(uint8_t *list, UINT *count, UINT size)
+{
+    if (!count || size < 8)
+        return (UINT)-1;
+    if (!list || *count < 1) {
+        *count = 1;
+        return list ? (UINT)-1 : 0;
+    }
+    memset(list, 0, size);
+    uint32_t dev = (uint32_t)(uintptr_t)RAW_MOUSE;
+    memcpy(list, &dev, 4); /* type 0 (RIM_TYPEMOUSE) after the handle */
+    return 1;
+}
+
+/* RIDI_DEVICENAME: a name; RIDI_DEVICEINFO: RID_DEVICE_INFO of a mouse with three buttons and a wheel */
+static UINT raw_device_info(HANDLE dev, UINT command, uint8_t *data, UINT *size, bool wide)
+{
+    static const char name[] = "\\\\?\\HID#VID_0000&PID_0000#1#{378de44c-56ef-11d1-bc8c-00a0c91405dd}";
+    if (dev != RAW_MOUSE || !size)
+        return (UINT)-1;
+    if (command == 0x20000007) {
+        UINT chars = (UINT)sizeof(name);
+        if (!data || *size < chars) {
+            *size = chars;
+            return data ? (UINT)-1 : 0;
+        }
+        for (UINT i = 0; i < chars; i++)
+            if (wide)
+                ((uint16_t *)data)[i] = (uint8_t)name[i];
+            else
+                data[i] = (uint8_t)name[i];
+        return chars;
+    }
+    if (command == 0x2000000b) {
+        if (!data || *size < 32) {
+            *size = 32;
+            return data ? (UINT)-1 : 0;
+        }
+        uint32_t info[8] = {32, 0 /* RIM_TYPEMOUSE */, 1, 3, 100, 0, 0, 0};
+        memcpy(data, info, 32);
+        return 32;
+    }
+    return (UINT)-1;
+}
+
+static UINT WINAPI GetRawInputDeviceInfoA(HANDLE dev, UINT command, void *data, UINT *size)
+{
+    return raw_device_info(dev, command, data, size, false);
+}
+
+static UINT WINAPI GetRawInputDeviceInfoW(HANDLE dev, UINT command, void *data, UINT *size)
+{
+    return raw_device_info(dev, command, data, size, true);
+}
+
 static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
 {
     gui_replay();
@@ -2362,6 +2592,8 @@ static bool next_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi, bool remove)
         }
         return true;
     }
+    if (raw_message(msg, hwnd, lo, hi, remove, me))
+        return true;
     if (quit_posted && quit_thread == me && (!lo || WM_QUIT >= lo)) {
         *msg = (MSG){NULL, WM_QUIT, (WPARAM)quit_code, 0, message_time(), {mouse_x, mouse_y}};
         if (remove)
@@ -2426,7 +2658,10 @@ static void wait_messages(uint64_t deadline)
     }
     if (track_hover && track_hover->thread == me && (!deadline || hover_due < deadline))
         deadline = MAX(hover_due, (uint64_t)1);
-    w32_wait_process(deadline, false, NULL, NULL);
+    if (raw_mouse.on) /* raw motion wakes it even where the pointer does not move */
+        w32_wait_process(deadline, false, raw_moved, (const void *)(uintptr_t)raw_mouse.seen);
+    else
+        w32_wait_process(deadline, false, NULL, NULL);
 }
 
 static BOOL get_message(MSG *msg, HANDLE hwnd, UINT lo, UINT hi)
@@ -5002,6 +5237,9 @@ static const struct w32_export window_exports[] = {
     W32_AS("GetWindowDC", GetDC), W32_FN(ReleaseDC), W32_FN(SetTimer), W32_FN(KillTimer), W32_FN(GetMessageA),
     W32_FN(SetCoalescableTimer),
     W32_AS("GetMessageW", GetMessageA), W32_FN(PeekMessageA), W32_AS("PeekMessageW", PeekMessageA),
+    W32_FN(RegisterRawInputDevices), W32_FN(GetRegisteredRawInputDevices), W32_FN(GetRawInputData),
+    W32_FN(GetRawInputBuffer), W32_FN(GetRawInputDeviceList), W32_FN(GetRawInputDeviceInfoA),
+    W32_FN(GetRawInputDeviceInfoW),
     W32_FN(WaitMessage), W32_FN(MsgWaitForMultipleObjects), W32_FN(TranslateMessage), W32_AS("DispatchMessageA", w32_dispatch),
     W32_AS("DispatchMessageW", w32_dispatch),
     W32_FN(SetCapture),

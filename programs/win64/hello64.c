@@ -48,6 +48,33 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "raw")) { /* hello64 raw: a window in front counts the mouse's raw motion */
+        WNDCLASSA rc = {0};
+        rc.lpfnWndProc = DefWindowProcA;
+        rc.lpszClassName = "HelloRaw";
+        RegisterClassA(&rc);
+        HWND w = CreateWindowExA(0, "HelloRaw", "raw input", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 300, 200,
+                                 NULL, NULL, NULL, NULL);
+        RAWINPUTDEVICE d = {1, 2, 0, NULL};
+        RegisterRawInputDevices(&d, 1, sizeof(d));
+        long n = 0, sx = 0, sy = 0;
+        DWORD end = GetTickCount() + 8000;
+        while (GetTickCount() < end) {
+            MSG m;
+            while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
+                RAWINPUT ri;
+                UINT sz = sizeof(ri);
+                if (m.message == WM_INPUT &&
+                    GetRawInputData((HRAWINPUT)m.lParam, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1)
+                    n++, sx += ri.data.mouse.lLastX, sy += ri.data.mouse.lLastY;
+                DispatchMessageA(&m);
+            }
+            Sleep(10);
+        }
+        printf("raw motion: %ld messages, %ld %ld\n", n, sx, sy);
+        DestroyWindow(w);
+        return 0;
+    }
     printf("hello from 64-bit Windows code, %d args, argv[0] ends with %s\n", argc,
            strrchr(argv[0], '\\') ? strrchr(argv[0], '\\') + 1 : argv[0]);
     printf("pointer size %zu, long long %lld, hex %llx\n", sizeof(void *), 123456789012345LL, 0xfedcba9876ULL);
@@ -135,5 +162,36 @@ int main(int argc, char **argv)
     if (RegisterClassExA(&wc) && GetClassInfoExA(NULL, "Hello64", &back))
         printf("window class: proc %s, extra %d\n", back.lpfnWndProc == class_proc ? "same" : "different",
                back.cbWndExtra);
+
+    /* raw input: the mouse registered for a window (in the background too), a move and a click sent with SendInput
+       come back as WM_INPUT, the release through GetRawInputBuffer */
+    HWND rw = CreateWindowExA(0, "Hello64", "raw", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, NULL, NULL);
+    RAWINPUTDEVICE rid = {1, 2, RIDEV_INPUTSINK, rw};
+    INPUT in[2] = {{0}};
+    in[0].type = in[1].type = INPUT_MOUSE;
+    in[0].mi.dx = 7, in[0].mi.dy = -3, in[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+    in[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    BOOL reg = RegisterRawInputDevices(&rid, 1, sizeof(rid));
+    UINT sent = SendInput(2, in, sizeof(INPUT));
+    MSG msg;
+    int got = 0, down = 0;
+    long sx = 0, sy = 0;
+    while (PeekMessageA(&msg, NULL, WM_INPUT, WM_INPUT, PM_REMOVE)) {
+        RAWINPUT ri;
+        UINT sz = sizeof(ri);
+        if (GetRawInputData((HRAWINPUT)msg.lParam, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+            ri.header.dwType == RIM_TYPEMOUSE && msg.hwnd == rw) {
+            got++;
+            sx += ri.data.mouse.lLastX, sy += ri.data.mouse.lLastY;
+            down |= ri.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN;
+        }
+    }
+    in[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(1, &in[1], sizeof(INPUT));
+    RAWINPUT rbuf[4];
+    UINT cap = sizeof(rbuf), n = GetRawInputBuffer(rbuf, &cap, sizeof(RAWINPUTHEADER));
+    printf("raw input: registered %d, sent %u, messages %d, moved %ld %ld, button %d, buffer %u up %d\n", reg, sent,
+           got, sx, sy, down != 0, n, n == 1 && (rbuf[0].data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP) != 0);
+    DestroyWindow(rw);
     return 7;
 }

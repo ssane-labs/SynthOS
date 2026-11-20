@@ -342,7 +342,6 @@ STUB(GetGUIThreadInfo, 2, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(GetGestureInfo, 2, 0, ERROR_NOT_SUPPORTED)
 STUB0(GetOpenClipboardWindow, 0)
 STUB(GetPointerFrameTouchInfo, 3, 0, ERROR_NOT_SUPPORTED)
-STUB(GetRawInputDeviceInfoA, 4, (uint32_t)-1, 0)
 STUB(GetTouchInputInfo, 4, 0, ERROR_NOT_SUPPORTED)
 STUB0(InSendMessage, 0)
 STUB(InSendMessageEx, 1, 0, 0)
@@ -441,7 +440,7 @@ static const struct w32_export gecko_user32[] = {
     W32_FN(BroadcastSystemMessageW), W32_FN(CloseGestureInfoHandle), W32_FN(CreateCaret), W32_FN(DestroyCaret),
     W32_FN(ShowCaret), W32_FN(CreateSyntheticPointerDevice), W32_FN(InjectSyntheticPointerInput),
     W32_FN(GetAutoRotationState), W32_FN(GetClassWord), W32_FN(GetGUIThreadInfo), W32_FN(GetGestureInfo),
-    W32_FN(GetOpenClipboardWindow), W32_FN(GetPointerFrameTouchInfo), W32_FN(GetRawInputDeviceInfoA),
+    W32_FN(GetOpenClipboardWindow), W32_FN(GetPointerFrameTouchInfo),
     W32_FN(GetTouchInputInfo), W32_FN(InSendMessage), W32_FN(InSendMessageEx),
     W32_FN(IsGUIThread), W32_FN(RegisterTouchWindow), W32_FN(ReplyMessage), W32_FN(SetGestureConfig),
     W32_FN(SetSysColors), W32_FN(WaitForInputIdle), W32_FN(GetKeyboardLayoutNameA),

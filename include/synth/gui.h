@@ -449,6 +449,15 @@ void wm_show_passive(struct window *w);
 void wm_hide(struct window *w);
 void wm_focus(struct window *w);
 struct window *wm_focused(void);
+/* the mouse's raw motion, numbered from 0: wm_raw_count is the number recorded so far, wm_raw_get one of the last
+   256 (false when it is older or not there yet) */
+struct wm_raw {
+    int dx, dy, wheel;
+    unsigned buttons, changed;
+};
+uint32_t wm_raw_count(void);
+void wm_raw_inject(int dx, int dy, int wheel, unsigned press, unsigned release);
+bool wm_raw_get(uint32_t seq, struct wm_raw *out);
 void wm_invalidate(struct window *w);
 int wm_controls_width(void);
 void wm_controls_paint(struct canvas *c, const struct window *w, int x, int cy, int hot);

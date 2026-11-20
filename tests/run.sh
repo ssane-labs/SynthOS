@@ -1055,6 +1055,8 @@ hello64 | grep sockets
 sockets: SynthOS sockets 127.0.0.1 port 80, select 1 set 1
 hello64 | grep 'window class'
 window class: proc same, extra 16
+hello64 | grep 'raw input'
+raw input: registered 1, sent 2, messages 2, moved 7 -3, button 1, buffer 1 up 1
 hello64u a | grep math
 math 1.4142 0.8415 3.162e+20
 hello64u a | grep sockets

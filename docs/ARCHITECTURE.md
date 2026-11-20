@@ -578,6 +578,11 @@ Windows, и отвечает на вызовы API.
   `UpdateLayeredWindow` (предумноженная альфа переводится в обычную, окно смешивается по альфе —
   `WIN_TRANSLUCENT`); `CreateDIBSection` с секцией строит битмап прямо на общей памяти, в которую рисует
   компоновщик Chromium.
+* **Сырой ввод мыши** (`window.c`, `wm.c`): каждое событие указателя пишется в кольцо `wm_raw` (сдвиг,
+  колёсико, кнопки) до того, как курсор упрётся в край экрана. `RegisterRawInputDevices` подписывает программу,
+  `WM_INPUT` приходит окну-цели, когда её окно впереди (или всегда — с `RIDEV_INPUTSINK`); у программы без окон —
+  в очередь потока. `GetRawInputData`, `GetRawInputBuffer`, `GetRawInputDeviceList/Info` отдают записи
+  `RAWMOUSE` по номеру события; `SendInput` с `INPUT_MOUSE` добавляет событие в то же кольцо.
 * **Диалоги файлов** (`filedialog.c`, `kernel/gui/picker.c`): `IFileOpenDialog`/`IFileSaveDialog`
   (`CoCreateInstance`), `IShellItem`, `SHCreateItemFromParsingName`, `GetOpenFileName`/`GetSaveFileName`
   показывают панель рабочего стола `gui_file_picker` и ждут её, как модальный диалог, разбирая

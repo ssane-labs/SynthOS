@@ -2897,8 +2897,56 @@ static void pointer_irq(struct pointer_event *ev)
         hw_cursor_move();
 }
 
+/* Raw motion for programs that ask for it (WM_INPUT): what the mouse reported, before acceleration and the edges of
+   the screen (a tablet's absolute points give their steps); kept in a ring, numbered */
+#define RAW_RING 256
+static struct wm_raw *raw_ring; /* made at the first motion */
+static uint32_t raw_next;
+static unsigned raw_buttons;
+static int raw_abs_x = -1, raw_abs_y;
+
+static void raw_record(const struct pointer_event *ev)
+{
+    int dx = ev->dx, dy = ev->dy;
+    if (ev->absolute) {
+        int x = ev->x, y = ev->y;
+        if (!ev->placed)
+            absolute_point(ev, &x, &y);
+        dx = raw_abs_x < 0 ? 0 : x - raw_abs_x, dy = raw_abs_x < 0 ? 0 : y - raw_abs_y;
+        raw_abs_x = x, raw_abs_y = y;
+    }
+    if ((!dx && !dy && !ev->wheel && ev->buttons == raw_buttons) ||
+        (!raw_ring && !(raw_ring = kmalloc(sizeof(*raw_ring) * RAW_RING))))
+        return;
+    raw_ring[raw_next % RAW_RING] = (struct wm_raw){dx, dy, ev->wheel, ev->buttons, ev->buttons ^ raw_buttons};
+    raw_buttons = ev->buttons;
+    __atomic_store_n(&raw_next, raw_next + 1, __ATOMIC_RELEASE);
+}
+
+/* SendInput's mouse: motion and buttons a program made, recorded as if the mouse had reported them */
+void wm_raw_inject(int dx, int dy, int wheel, unsigned press, unsigned release)
+{
+    struct pointer_event ev = {.dx = dx, .dy = dy, .wheel = wheel, .buttons = (raw_buttons | press) & ~release};
+    raw_record(&ev);
+}
+
+uint32_t wm_raw_count(void)
+{
+    return __atomic_load_n(&raw_next, __ATOMIC_ACQUIRE);
+}
+
+bool wm_raw_get(uint32_t seq, struct wm_raw *out)
+{
+    uint32_t n = wm_raw_count();
+    if (seq >= n || n - seq > RAW_RING || !raw_ring)
+        return false;
+    *out = raw_ring[seq % RAW_RING];
+    return true;
+}
+
 void wm_pointer(const struct pointer_event *ev)
 {
+    raw_record(ev);
     int old_x = mouse_x, old_y = mouse_y;
     if (ev->placed) {
         clamp_mouse(ev->x, ev->y);
