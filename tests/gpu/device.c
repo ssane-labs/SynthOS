@@ -473,6 +473,16 @@ static void draw_tests(void)
             gd_clear_dsv(dsv, 1, 1.0f, 0);
             draw_verts(tv, 6);
             expect(close_rgb(pixel(10, 30), 0x000080) && pixel(50, 30) == 0xff0000, "point sampling times cb0[1]");
+            /* UpdateSubresource of a texel and a constant the host already has (only those boxes go), then back */
+            static const uint32_t green1 = 0xff00ff00u;
+            static const float full[4] = {1, 1, 1, 1};
+            gd_update(tex, 0, &(struct gd_box){0, 0, 0, 1, 1, 1}, &green1, 4, 4);
+            gd_update(cb, 0, &(struct gd_box){16, 0, 0, 32, 1, 1}, full, 16, 16);
+            draw_verts(tv, 6);
+            expect(pixel(10, 30) == 0x00ff00 && pixel(50, 30) == 0xff0000,
+                   "a texel and constants updated between draws");
+            gd_update(tex, 0, &(struct gd_box){0, 0, 0, 1, 1, 1}, &texels[0], 4, 4);
+            gd_update(cb, 0, &(struct gd_box){16, 0, 0, 32, 1, 1}, &consts[4], 16, 16);
             smp.filter = 0x15;
             gd_set_sampler(ctx, 0, 0, &smp);
             draw_verts(tv, 6);

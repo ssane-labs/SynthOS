@@ -1791,7 +1791,8 @@ bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uin
    memory here stays out of date elsewhere, as the host's copy is still the newer one. */
 bool gd_host_can_update(const struct gd_resource *r)
 {
-    return ready() && r->host && r->where == HOST_GPU_NEWER && resource_format(r) != 20 /* turned around */;
+    return ready() && r->host && (r->where == HOST_GPU_NEWER || r->where == HOST_SAME) &&
+           resource_format(r) != 20 /* turned around */ && !host_ms(r);
 }
 
 bool gd_host_update(struct gd_resource *r, uint32_t sub, const struct gd_box *b)
@@ -1816,6 +1817,11 @@ bool gd_host_update(struct gd_resource *r, uint32_t sub, const struct gd_box *b)
     }
     lock();
     res_now(r);
+    if (r->d.dim == GD_BUFFER && box[3] <= INLINE_BYTES) { /* in the stream, after the draws sent before */
+        send_bytes(r, box[0], box[3]);
+        unlock();
+        return true;
+    }
     flush(false); /* draws sent before write to the old contents */
     bool ok = virtio_gpu_transfer_box(H.gpu, H.ctx, r->host, true, sub % r->d.mips, box, offset,
                                       r->d.dim == GD_BUFFER ? 0 : l->row_pitch,
