@@ -83,6 +83,21 @@ bool hal_backlight(int percent);
 const char *hal_power_init(void);
 /* 1 open, 0 closed, -1 when there is no lid */
 int hal_lid_state(void);
+/* A laptop's batteries (ACPI control-method batteries): energy in mWh, power in mW (batteries that count in mAh are
+   converted with their design voltage), 0 or -1 where the firmware does not say. Read at most every few seconds. */
+struct battery_info {
+    char name[8];   /* "BAT0" */
+    char model[24];
+    bool charging, discharging, critical;
+    int percent;    /* of the last full charge; -1 unknown */
+    int minutes;    /* to empty when discharging, to full when charging; -1 unknown */
+    uint32_t now, full, design, rate, low;
+    uint32_t cycles;
+};
+/* the batteries present (up to max), 0 when there are none */
+int hal_batteries(struct battery_info *out, int max);
+/* the AC adapter: 1 plugged in, 0 not, -1 no adapter is described */
+int hal_ac_online(void);
 /* the state of the SCI, GPEs and embedded controller, for the acpi command */
 void hal_acpi_info(char *buf, size_t cap);
 

@@ -82,6 +82,7 @@ enum pane {
     P_TERMINAL,
     P_SCREENSHOT,
     P_AI,
+    P_BATTERY,
     P_COUNT,
 };
 
@@ -103,6 +104,7 @@ static void pane_apps(struct page *p);
 static void pane_terminal(struct page *p);
 static void pane_screenshot(struct page *p);
 static void pane_ai(struct page *p);
+static void pane_battery(struct page *p);
 static void pane_about(struct page *p);
 static void pane_storage(struct page *p);
 static void pane_datetime(struct page *p);
@@ -142,6 +144,7 @@ static const struct {
     {"Terminal", "terminal", SYM_TERMINAL, RGB(60, 60, 64), 4, P_APPS, pane_terminal},
     {"Screenshot", "screenshot", SYM_SCREENSHOT, RGB(142, 142, 148), 4, P_APPS, pane_screenshot},
     {"AI", "ai", SYM_SPARKLE, RGB(124, 92, 236), 2, -1, pane_ai},
+    {"Battery & Power", "battery", SYM_BATTERY, RGB(52, 199, 89), 2, -1, pane_battery},
 };
 
 static const char *const wall_names[WALLS] = {"From the look", "Mono", "Halo", "Sunrise", "Earthset", "Aurora",
@@ -1623,6 +1626,62 @@ static void pane_lock(struct page *p)
     end(p, NULL);
 }
 
+/* the batteries, Low Power Mode, and what the power button, the lid and sleep do */
+static void pane_battery(struct page *p)
+{
+    struct battery_info b[2];
+    int n = hal_batteries(b, 2), ac = hal_ac_online();
+    char text[96];
+    section(p, "Battery");
+    for (int i = 0; i < n; i++) {
+        if (b[i].minutes >= 0)
+            ksnprintf(text, sizeof(text), "%d%%, %s, %d:%02d %s", b[i].percent,
+                      b[i].charging ? "charging" : b[i].discharging ? "on battery" : "not charging",
+                      b[i].minutes / 60, b[i].minutes % 60, b[i].charging ? "until full" : "remaining");
+        else
+            ksnprintf(text, sizeof(text), "%d%%, %s", b[i].percent,
+                      b[i].charging ? "charging" : b[i].discharging ? "on battery" : "not charging");
+        row(p, b[i].model[0] ? b[i].model : b[i].name, text, 0, 0);
+        if (b[i].design) {
+            ksnprintf(text, sizeof(text), "%u%% of its capacity when new",
+                      (unsigned)((uint64_t)b[i].full * 100 / b[i].design));
+            if (b[i].cycles)
+                ksnprintf(text + strlen(text), sizeof(text) - strlen(text), ", %u charge cycles",
+                          (unsigned)b[i].cycles);
+            row(p, "Battery health", text, 0, 0);
+        }
+    }
+    if (!n)
+        row(p, "No battery", "This computer runs from the mains", 0, 0);
+    if (ac >= 0)
+        row(p, "Power source", ac ? "Power adapter" : "Battery", 0, 0);
+    end(p, NULL);
+    section(p, NULL);
+    static const char *const lows[] = {"Never", "Always", "Only on Battery"};
+    static const char *const low_values[] = {"off", "on", "battery"};
+    choice(p, "Low Power Mode", "Fewer frames while things move and a dimmer screen", "lowpower", lows, low_values, 3,
+           340);
+    end(p, NULL);
+    section(p, "Buttons and Lid");
+    static const char *const buttons[] = {"Ask", "Shut down", "Sleep", "Do nothing"};
+    static const char *const button_values[] = {"ask", "shutdown", "sleep", "nothing"};
+    popup(p, "Power button", NULL, "powerbutton", buttons, button_values, 4);
+    static const char *const lids[] = {"Lock and turn off the screen", "Sleep", "Do nothing"};
+    static const char *const lid_values[] = {"lock", "sleep", "nothing"};
+    popup(p, "Closing the lid", NULL, "lidclose", lids, lid_values, 3);
+    end(p, NULL);
+    section(p, NULL);
+    char why[96];
+    bool s3 = hal_can_suspend(why, sizeof(why));
+    if (!s3)
+        ksnprintf(text, sizeof(text), "Only the screen turns off: %s", why);
+    if (button(p, "Sleep", s3 ? "Suspend to RAM (S3): wakes on a key, the power button or the lid" : text, "Sleep")) {
+        p->ui->win = NULL;
+        gui_sleep();
+    }
+    end(p, NULL);
+}
+
 static void pane_privacy(struct page *p)
 {
     struct settings *s = p->s;
@@ -2217,7 +2276,9 @@ static void login_file(void *ctx, const char *path)
 /* What opens after login: apps from a menu, files from the open panel; no typing. */
 static void login_items(struct page *p)
 {
-    static char items[AUTOSTART_MAX][AUTOSTART_LEN];
+    static char (*items)[AUTOSTART_LEN]; /* from the heap: the 32-bit kernel's image has no room */
+    if (!items && !(items = kmalloc(sizeof(*items) * AUTOSTART_MAX)))
+        return;
     int n = autostart_items(items, AUTOSTART_MAX);
     section(p, "Open at Login");
     if (!n)

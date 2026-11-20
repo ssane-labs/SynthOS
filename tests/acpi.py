@@ -21,6 +21,15 @@ def test_table():
     lid = Device("LID0", Name("_HID", EisaId("PNP0C0D")), Name("LIDS", One),
                  Method("_LID", 0, Return(N("LIDS"))),
                  Method("TOGL", 0, Store(XOr(N("LIDS"), One), N("LIDS")), Notify(N("LID0"), Int(0x80))))
+    # a battery at half charge, discharging at 5 W (five hours left), and an unplugged AC adapter; LOWB drops it to 8 %
+    battery = Device("BAT0", Name("_HID", EisaId("PNP0C0A")), Method("_STA", 0, Return(Int(0x1F))),
+                     Name("BSTV", Package(Int(1), Int(5000), Int(25000), Int(12000))),
+                     Method("_BIF", 0, Return(Package(Zero, Int(60000), Int(50000), One, Int(12000), Int(5000),
+                                                      Int(2000), One, One, Str("TestCell"), Str("42"), Str("LION"),
+                                                      Str("SynthLab")))),
+                     Method("_BST", 0, Return(N("BSTV"))),
+                     Method("LOWB", 0, Store(Int(4000), Index(N("BSTV"), Int(2))), Notify(N("BAT0"), Int(0x80))))
+    adapter = Device("ADP0", Name("_HID", Str("ACPI0003")), Method("_PSR", 0, Return(Zero)))
     button = Device("PBTN", Name("_HID", EisaId("PNP0C0C")), Method("PRES", 0, Notify(N("PBTN"), Int(0x80))))
     checks = Method(
         "\\TST1", 0,
@@ -57,7 +66,7 @@ def test_table():
         check(24, Add(Ones, One), Zero),
         Return(Zero))
     return ssdt(
-        Scope("\\_SB", lid, button),
+        Scope("\\_SB", lid, button, battery, adapter),
         Name("\\BUF0", Buffer([1, 2, 3, 4, 5, 6, 7, 8])),
         Name("\\PKG0", Package(Int(10), Str("ab"), Package(Int(7)), N("\\_SB.LID0"))),
         Name("\\PKG1", Package(Int(10), Int(20), Int(30))),
@@ -168,6 +177,15 @@ def main():
         expect("AML checks", "TST1 = 0x0", m.run("acpi eval TST1"))
         expect("recursion stops", "methods nest too deep", m.run("acpi eval RECU"))
         expect("endless loop stops", "While runs too long", m.run("acpi eval LOOP", 120))
+        out = m.run("battery")
+        expect("battery", "BAT0 (TestCell): 50%, discharging, 5 h 00 min left", out)
+        expect("battery health", "25.0 Wh of 50.0 Wh (new: 60.0 Wh, health 83%), 5.0 W", out)
+        expect("AC adapter", "AC adapter: not plugged in", out)
+        with m.lock:
+            start = len(m.out)
+        m.run("acpi eval _SB.BAT0.LOWB")
+        expect("low battery warning", "Battery: 8% of the battery is left (about 48 min)",
+               m.out[start:] if m.wait_for("Battery: 8%", start, 20) else m.out[start:])
         m.run("acpi eval _SB.LID0.TOGL")
         expect("lid closed", "lid: closed", m.run("acpi"))
         expect("lid in the log", "acpi: lid closed", m.run("dmesg | grep lid"))

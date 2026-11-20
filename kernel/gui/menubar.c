@@ -3,6 +3,7 @@
 #include <synth/fmt.h>
 #include <synth/keys.h>
 #include <synth/net.h>
+#include <synth/power.h>
 #include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/time.h>
@@ -36,6 +37,7 @@ enum status_part {
     S_DISPLAY,
     S_FOCUS,
     S_ASSIST,
+    S_BATTERY,
     S_COUNT,
 };
 
@@ -47,6 +49,33 @@ static unsigned extras = 1u << 0 | 1u << 1 | 1u << 4;
 static bool extra(int i)
 {
     return extras & 1u << i;
+}
+
+/* the battery: "85%" and a gauge, while the machine has one */
+static bool battery_text(char *buf, size_t cap)
+{
+    bool charging;
+    int minutes, pct = power_battery_percent(&charging, &minutes);
+    if (pct < 0)
+        return false;
+    ksnprintf(buf, cap, "%d%%", pct);
+    return true;
+}
+
+static void draw_battery(struct canvas *c, int x, int ty, uint32_t ink)
+{
+    bool charging;
+    int minutes, pct = power_battery_percent(&charging, &minutes);
+    char text[8];
+    ksnprintf(text, sizeof(text), "%d%%", pct);
+    int tw = gfx_text_width(&font_sans, text);
+    gfx_text_box(c, (struct rect){x + 4, ty, tw + 4, MENUBAR_HEIGHT}, &font_sans, text, ink, ALIGN_LEFT);
+    int bx = x + tw + 12, by = ty + (MENUBAR_HEIGHT - 12) / 2;
+    gfx_round_frame(c, (struct rect){bx, by, 23, 12}, 3, (ink & 0xffffff) | 0xa0000000u);
+    gfx_fill(c, (struct rect){bx + 23, by + 4, 2, 4}, (ink & 0xffffff) | 0xa0000000u);
+    uint32_t fill = charging ? RGB(52, 199, 89) : pct <= 10 ? RGB(255, 59, 48) : power_low() ? RGB(255, 204, 0) : ink;
+    int fw = MAX(2, 19 * CLAMP(pct, 0, 100) / 100);
+    gfx_round(c, (struct rect){bx + 2, by + 2, fw, 8}, 2, fill);
 }
 
 static struct glass bars[MAX_SCREENS];
@@ -166,6 +195,10 @@ static void layout(void)
     right -= w;
     w = keymap_multi() ? gfx_text_width(&font_sans, keymap_label()) + 14 : 0;
     status[S_LANG] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
+    right -= w;
+    char pct[8];
+    w = battery_text(pct, sizeof(pct)) ? gfx_text_width(&font_sans, pct) + 42 : 0;
+    status[S_BATTERY] = (struct rect){right - w, ty, w, MENUBAR_HEIGHT};
     right -= w;
     static const int order[] = {S_FOCUS, S_SOUND, S_NETWORK, S_DISPLAY};
     static const int bit[] = {3, 0, 1, 2};
@@ -287,6 +320,45 @@ void menubar_paint(struct canvas *c, int screen)
     if (status[S_LANG].w)
         gfx_text_box(c, (struct rect){status[S_LANG].x + dx, ty, status[S_LANG].w, MENUBAR_HEIGHT}, &font_sans,
                      keymap_label(), ink, ALIGN_CENTER);
+    if (status[S_BATTERY].w)
+        draw_battery(c, status[S_BATTERY].x + dx, ty, ink);
+}
+
+/* the battery's menu: its state, Low Power Mode, and the Battery settings */
+static char battery_lines[2][64];
+static struct menu_item battery_items[5];
+
+static void pick_battery(struct window *owner, int index)
+{
+    UNUSED(owner);
+    if (index == 3) {
+        setting_apply(NULL, "lowpower", power_low() ? "off" : "on");
+        display_tick();
+    } else if (index == 4) {
+        gui_app_launch(gui_app_find("System Settings"), "battery");
+    }
+    chrome_changed();
+}
+
+static void battery_menu(int x, int y)
+{
+    bool charging;
+    int minutes, pct = power_battery_percent(&charging, &minutes);
+    int ac = hal_ac_online();
+    if (minutes >= 0)
+        ksnprintf(battery_lines[0], sizeof(battery_lines[0]), "%d%%, %d:%02d %s", pct, minutes / 60, minutes % 60,
+                  charging ? "until full" : "remaining");
+    else
+        ksnprintf(battery_lines[0], sizeof(battery_lines[0]), "%d%%%s", pct, charging ? ", charging" : "");
+    ksnprintf(battery_lines[1], sizeof(battery_lines[1]), "Power Source: %s",
+              ac == 1 ? "Power Adapter" : ac == 0 ? "Battery" : "unknown");
+    battery_items[0] = (struct menu_item){battery_lines[0], MENU_HEADER, NULL};
+    battery_items[1] = (struct menu_item){battery_lines[1], MENU_HEADER, NULL};
+    battery_items[2] = (struct menu_item){"", 0, NULL};
+    battery_items[3] = (struct menu_item){power_low() ? "Turn Off Low Power Mode" : "Turn On Low Power Mode", 0, NULL};
+    battery_items[4] = (struct menu_item){"Battery Settings…", 0, NULL};
+    wm_close_popups();
+    ui_menu_items(NULL, x, y, battery_items, ARRAY_SIZE(battery_items), pick_battery);
 }
 
 static const struct menu_item logo_items[] = {
@@ -602,6 +674,7 @@ void chrome_mouse(int x, int y, unsigned button, bool down, int clicks)
     case S_DISPLAY: control_module_toggle(CONTROL_DISPLAY, right, top); break;
     case S_FOCUS: control_module_toggle(CONTROL_FOCUS, right, top); break;
     case S_CLOCK: notification_center_toggle(); break;
+    case S_BATTERY: battery_menu(status[S_BATTERY].x + dx, top); break;
     }
     damage_bars();
 }

@@ -928,6 +928,161 @@ void acpi_s3_resume(void)
     lid_dirty = true;
 }
 
+/* ---- batteries (PNP0C0A) and the AC adapter (ACPI0003): _BIX or _BIF once, _BST every few seconds ---- */
+
+#define MAX_BATTERIES 2
+#define UNKNOWN 0xffffffffu
+
+struct battery {
+    struct aml_node *node;
+    struct battery_info info;
+    uint32_t volts; /* mV, to turn mAh into mWh */
+    bool amps, have_static;
+};
+
+static struct battery batteries[MAX_BATTERIES];
+static int battery_count = -1;
+static uint64_t battery_read_at;
+static uint32_t battery_seen = UNKNOWN;
+static int ac_state = -1;
+
+static uint32_t pkg_u32(const struct aml_obj *pkg, uint32_t i)
+{
+    uint64_t v;
+    return aml_pkg_int(pkg, i, &v) && v < UNKNOWN ? (uint32_t)v : UNKNOWN;
+}
+
+/* mWh (or mW) from what the battery reports, 0 when it does not know */
+static uint32_t energy(const struct battery *b, uint32_t v)
+{
+    if (v == UNKNOWN)
+        return 0;
+    if (!b->amps)
+        return v;
+    return b->volts && b->volts != UNKNOWN ? (uint32_t)((uint64_t)v * b->volts / 1000) : 0;
+}
+
+static void battery_static(struct battery *b)
+{
+    struct aml_obj *p = NULL;
+    bool bix = aml_eval(b->node, "_BIX", NULL, 0, &p) && p && aml_type_of(p) == AML_PKG && aml_pkg_count(p) >= 20;
+    if (!bix) {
+        if (p)
+            aml_put(p);
+        p = NULL;
+        if (!aml_eval(b->node, "_BIF", NULL, 0, &p) || !p || aml_type_of(p) != AML_PKG || aml_pkg_count(p) < 13) {
+            if (p)
+                aml_put(p);
+            return;
+        }
+    }
+    uint32_t o = bix ? 1 : 0; /* _BIX has a revision first */
+    b->amps = pkg_u32(p, o) == 1;
+    b->volts = pkg_u32(p, o + 4);
+    b->info.design = energy(b, pkg_u32(p, o + 1));
+    b->info.full = energy(b, pkg_u32(p, o + 2));
+    b->info.low = energy(b, pkg_u32(p, o + 6));
+    b->info.cycles = bix && pkg_u32(p, 8) != UNKNOWN ? pkg_u32(p, 8) : 0;
+    if (!aml_pkg_str(p, bix ? 16 : 9, b->info.model, sizeof(b->info.model)))
+        b->info.model[0] = 0;
+    if (!b->info.full)
+        b->info.full = b->info.design;
+    b->have_static = true;
+    aml_put(p);
+}
+
+static void battery_state(struct battery *b)
+{
+    struct aml_obj *p = NULL;
+    if (!aml_eval(b->node, "_BST", NULL, 0, &p) || !p || aml_type_of(p) != AML_PKG || aml_pkg_count(p) < 4) {
+        if (p)
+            aml_put(p);
+        return;
+    }
+    struct battery_info *i = &b->info;
+    uint32_t state = pkg_u32(p, 0);
+    i->discharging = state != UNKNOWN && (state & 1);
+    i->charging = state != UNKNOWN && (state & 2) && !i->discharging;
+    i->critical = state != UNKNOWN && (state & 4);
+    uint32_t rate = pkg_u32(p, 1);
+    i->rate = rate >= 0x80000000u ? 0 : energy(b, rate); /* some firmware reports a negative rate */
+    i->now = energy(b, pkg_u32(p, 2));
+    aml_put(p);
+    i->percent = i->full ? (int)MIN(100u, (uint32_t)((uint64_t)i->now * 100 / i->full)) : -1;
+    if (i->discharging && i->rate)
+        i->minutes = (int)((uint64_t)i->now * 60 / i->rate);
+    else if (i->charging && i->rate && i->full > i->now)
+        i->minutes = (int)((uint64_t)(i->full - i->now) * 60 / i->rate);
+    else
+        i->minutes = -1;
+}
+
+static void batteries_read(void)
+{
+    if (battery_count < 0) {
+        battery_count = 0;
+        for (struct aml_node *n = aml_find_device("PNP0C0A", NULL); n && battery_count < MAX_BATTERIES;
+             n = aml_find_device("PNP0C0A", n)) {
+            struct battery *b = &batteries[battery_count++];
+            b->node = n;
+            char path[64];
+            aml_path(n, path, sizeof(path));
+            const char *last = path;
+            for (const char *c = path; *c; c++)
+                if (*c == '.' || *c == '\\')
+                    last = c + 1;
+            str_copy(b->info.name, last, sizeof(b->info.name));
+            for (int k = (int)strlen(b->info.name) - 1; k > 0 && b->info.name[k] == '_'; k--)
+                b->info.name[k] = 0;
+        }
+    }
+    bool changed = battery_seen != battery_changes; /* a Notify: a battery came or went, or its data changed */
+    battery_seen = battery_changes;
+    for (int k = 0; k < battery_count; k++) {
+        struct battery *b = &batteries[k];
+        if (changed)
+            b->have_static = false;
+        if (!(aml_status(b->node) & 0x10)) { /* no battery in the bay */
+            b->have_static = false;
+            continue;
+        }
+        if (!b->have_static)
+            battery_static(b);
+        battery_state(b);
+    }
+    struct aml_node *ac = aml_find_device("ACPI0003", NULL);
+    uint64_t psr;
+    ac_state = ac && aml_eval_int(ac, "_PSR", &psr) ? psr != 0 : -1;
+}
+
+static void batteries_refresh(void)
+{
+    uint64_t now = hal_ticks_ms();
+    if (!aml_root() || (battery_count >= 0 && now - battery_read_at < 4000 && battery_seen == battery_changes))
+        return;
+    if (hal_in_interrupt() || __atomic_exchange_n(&busy, 1, __ATOMIC_ACQUIRE))
+        return;
+    battery_read_at = now;
+    batteries_read();
+    __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
+}
+
+int hal_batteries(struct battery_info *out, int max)
+{
+    batteries_refresh();
+    int n = 0;
+    for (int k = 0; k < battery_count && n < max; k++)
+        if (batteries[k].have_static)
+            out[n++] = batteries[k].info;
+    return n;
+}
+
+int hal_ac_online(void)
+{
+    batteries_refresh();
+    return ac_state;
+}
+
 int hal_lid_state(void)
 {
     return lid ? lid_open : -1;

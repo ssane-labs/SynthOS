@@ -116,8 +116,9 @@ int input_getkey(int timeout_ms)
                 return KEY_NONE;
             continue;
         }
-        int key = hal_key_read(break_mode && wait < 0 ? 50 : wait);
+        int key = hal_key_read(break_mode && wait < 0 ? 50 : wait < 0 ? 5000 : wait);
         if (key == KEY_NONE) {
+            power_text_tick(); /* a low battery is said even while nothing is typed */
             if (timeout_ms == 0)
                 return KEY_NONE;
             continue;

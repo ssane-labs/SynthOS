@@ -1404,12 +1404,14 @@ bool gui_open_url(const char *url)
 
 /* Windows programs ask for files and links to be opened while they run; the desktop does it between frames */
 #define OPEN_QUEUE 4
-static char open_queue[OPEN_QUEUE][512];
+static char (*open_queue)[512]; /* from the heap: the 32-bit kernel's image has no room */
 static int open_count;
 
 #if CONFIG_WIN32
 static void queue_open(const char *target)
 {
+    if (!open_queue && !(open_queue = kmalloc(sizeof(*open_queue) * OPEN_QUEUE)))
+        return;
     if (open_count < OPEN_QUEUE)
         str_copy(open_queue[open_count++], target, sizeof(open_queue[0]));
 }
@@ -2044,6 +2046,16 @@ static void pump(int timeout_ms)
         last_scan = now;
         scan_desktop();
     }
+    {
+        char text[128];
+        enum power_note note = power_battery_check(text, sizeof(text));
+        if (note == NOTE_LOW || note == NOTE_CRITICAL)
+            gui_notify(note == NOTE_LOW ? "Low Battery" : "Battery Almost Empty", text);
+        else if (note == NOTE_SHUTDOWN)
+            gui_quit(QUIT_POWEROFF);
+        if (note != NOTE_NONE)
+            chrome_changed();
+    }
     terminal_flush();
     screenshot_tick();
     hotcorner_tick();
@@ -2084,12 +2096,14 @@ static void pump(int timeout_ms)
         in_jobs = false;
     }
     open_queued();
-    /* While something moves, frames start every 16 ms whatever drawing one took; otherwise wait up to 8 ms. */
+    /* While something moves, frames start every 16 ms whatever drawing one took (33 ms in Low Power Mode); otherwise
+       wait up to 8 ms. */
     static uint64_t frame_start;
     uint64_t done = hal_ticks_ms();
     int nap = timeout_ms > 0 ? MIN(timeout_ms, 8) : 8;
+    int period = power_low() ? 33 : 16;
     if (wm_animating())
-        nap = (int)CLAMP((int64_t)frame_start + 16 - (int64_t)done, 0, 8);
+        nap = (int)CLAMP((int64_t)frame_start + period - (int64_t)done, 0, period / 2);
     if (paced) {
         nap = (int)CLAMP((int64_t)last_frame + DRAG_FRAME_MS - (int64_t)done, 0, DRAG_FRAME_MS);
         busy = false;
