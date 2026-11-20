@@ -131,7 +131,7 @@ static bool wh_matrix(const struct whisper *w, const char *name, int cols, int r
     int bytes = 0, per = gguf_block(r->type, &bytes);
     if (!per || cols % per)
         return false;
-    *t = (struct ai_tensor){r->data, r->type, cols, rows, (size_t)(cols / per) * (size_t)bytes};
+    *t = (struct ai_tensor){r->data, r->type, cols, rows, (size_t)(cols / per) * (size_t)bytes, NULL};
     return true;
 }
 

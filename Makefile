@@ -125,7 +125,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-crypto test-gpu test-virgl clean tools programs usb windows update
+.PHONY: all run run-serial run-uefi test test-hw test-ai test-crypto test-gpu test-virgl clean tools programs usb windows update
 all: $(IMAGE)
 
 ESP_LBA     := 8192
@@ -515,6 +515,16 @@ test-gpu:
 	@$(HOSTCC) -O2 -Wall -Wextra -DRS_HOST -Iinclude -o $(BUILD)/tools/gputest tests/gpu/driver.c tests/gpu/dxbc.c tests/gpu/device.c kernel/gpu/raster_fp.c kernel/gpu/dxbc_fp.c kernel/gpu/dxbc_jit_fp.c kernel/gpu/dxbc_tgsi.c \
 		kernel/gpu/gd_fp.c kernel/gpu/texture_fp.c kernel/gpu/bc_fp.c kernel/gpu/tess_fp.c -lm
 	@$(BUILD)/tools/gputest
+
+# the assistant's engine on the host: integer dot products and the F16 cache on every SIMD path of this processor
+# against plain C, then the tiny models of tests/aimodel.py against their numpy reference
+test-ai:
+	@mkdir -p $(BUILD)/tools
+	@$(HOSTCC) -O2 -Wall -Wextra -Wno-unused-function -o $(BUILD)/tools/aitest tests/ai/qdot.c -lm
+	@$(BUILD)/tools/aitest
+	@$(HOSTCC) -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -o $(BUILD)/tools/llmtest tests/ai/llm.c -lm
+	@mkdir -p $(BUILD)/aitest && python3 -I tests/aimodel.py $(BUILD)/aitest > /dev/null
+	@python3 -I tests/ai/check.py $(BUILD)/tools/llmtest $(BUILD)/aitest
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools

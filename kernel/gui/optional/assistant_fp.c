@@ -1,6 +1,7 @@
 /* Assistant: a language model that runs on this computer, nothing goes to the network. The model is a GGUF file
    (the format of llama.cpp) of the Llama, Qwen2 or Qwen3 kind, kept in /home/models; the engine is in assistant/.
    It does floating point, so this module is a *_fp.c file. */
+#include <synth/aibackend.h>
 #include <synth/command.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
@@ -247,9 +248,14 @@ static const char *main_type(void)
 /* how the matrices are computed */
 static const char *accel_name(void)
 {
+    static char buf[128];
     if (!qdot_on)
-        return "floats (exact)";
-    return qdot_avx2 ? "8-bit integers, AVX2" : "8-bit integers";
+        ksnprintf(buf, sizeof(buf), "floats (exact), F16 cache%s", kv_f16c ? " with F16C" : "");
+    else
+        ksnprintf(buf, sizeof(buf), "8-bit integers, %s, F16 cache%s", qdot_path(), kv_f16c ? " with F16C" : "");
+    if (ai_dev)
+        ksnprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", %s", ai_dev->name);
+    return buf;
 }
 
 static void print_info(struct shell *sh)

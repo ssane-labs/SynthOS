@@ -80,7 +80,7 @@ static bool tts_matrix(const struct gguf *g, const char *name, int cols, int row
         ksnprintf(why, cap, "tensor %s has an unsupported type", name);
         return false;
     }
-    *m = (struct ai_tensor){t->data, t->type, cols, rows, (size_t)(cols / per * bytes)};
+    *m = (struct ai_tensor){t->data, t->type, cols, rows, (size_t)(cols / per * bytes), NULL};
     return true;
 }
 
@@ -145,7 +145,7 @@ static int tconv_load(const struct gguf *g, const char *name, int cin, int cout,
             }
     big_free(tmp);
     int cols = c->taps * cin;
-    c->w = (struct ai_tensor){data, t->type, cols, cout, (size_t)cols * (size_t)es};
+    c->w = (struct ai_tensor){data, t->type, cols, cout, (size_t)cols * (size_t)es, NULL};
     ksnprintf(n, sizeof(n), "%s.bias", name);
     if (!(c->b = tts_floats(g, n, (size_t)cout, why, cap)))
         return E_INVAL;

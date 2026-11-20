@@ -7,7 +7,7 @@ qemu=${QEMU:-qemu-system-x86_64}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp "$image" "$work/disk.img"
-dd if=/dev/zero of="$work/fat.img" count=8192 bs=1k 2>/dev/null
+dd if=/dev/zero of="$work/fat.img" count=16384 bs=1k 2>/dev/null
 mkfs.fat -n SYNTHTEST "$work/fat.img" >/dev/null
 echo "hello from fat" > "$work/note.txt"
 mcopy -i "$work/fat.img" "$work/note.txt" "::/Long Name Note.txt"
@@ -60,7 +60,7 @@ fi
 # the assistant's engine: a tiny model with random weights in every quantisation, and what it must compute
 # (tests/aimodel.py works it out with numpy)
 if python3 -I -c "import numpy" 2>/dev/null && python3 -I tests/aimodel.py "$work" >/dev/null; then
-    for m in tiny tiny3 tinyl tinysc; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
+    for m in tiny tiny3 tinyl tinysc tinymc tinyphi tinyg tinyg2 tinyg3; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
     mcopy -i "$work/fat.img" "$work/whisper.bin" ::/whisper.bin && mcopy -i "$work/fat.img" "$work/speech.wav" ::/speech.wav
     mcopy -i "$work/fat.img" "$work/tts.gguf" ::/tts.gguf && mcopy -i "$work/fat.img" "$work/ttscodec.gguf" ::/ttscodec.gguf
 fi

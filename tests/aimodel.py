@@ -450,7 +450,10 @@ def build(arch, rng):
     ttype = [3 if t.startswith("<|") else 1 for t in tokens]
 
     dim, ffn, heads, kv_heads, layers = 256, 256, 4, 2, 2
-    hd = 64 if arch != "qwen3" else 32  # qwen3: head_dim != dim / heads
+    if arch == "gemma3":
+        layers = 6  # five window layers, then one that sees everything
+    hd = 64 if arch not in ("qwen3", "gemma3") else 32  # qwen3, gemma3: head_dim != dim / heads
+    gemma = arch.startswith("gemma")
     nv = len(tokens)
     meta = [
         ("general.architecture", T_STR, arch),
@@ -467,6 +470,14 @@ def build(arch, rng):
          T_F32, 1e-6),
         (arch + ".attention.key_length", T_U32, hd),
         (arch + ".attention.value_length", T_U32, hd),
+    ] + {
+        "minicpm": [(arch + ".embedding_scale", T_F32, 12.0), (arch + ".residual_scale", T_F32, 0.7),
+                    (arch + ".logit_scale", T_F32, 2.0)],
+        "phi3": [(arch + ".rope.dimension_count", T_U32, 32)],
+        "gemma2": [(arch + ".attn_logit_softcapping", T_F32, 3.0), (arch + ".final_logit_softcapping", T_F32, 6.0),
+                   (arch + ".attention.sliding_window", T_U32, 3)],
+        "gemma3": [(arch + ".attention.sliding_window", T_U32, 3), (arch + ".rope.scaling.factor", T_F32, 4.0)],
+    }.get(arch, []) + [
         ("tokenizer.ggml.model", T_STR, "gpt2"),
         ("tokenizer.ggml.pre", T_STR, {"llama": "minicpm5", "starcoder2": "starcoder"}.get(arch, "qwen2")),
         ("tokenizer.ggml.tokens", T_ARR, (T_STR, tokens)),
@@ -491,41 +502,66 @@ def build(arch, rng):
         if rows > 1 and typ in INT_TYPES and cols % 32 == 0 and name != "token_embd.weight":
             W[name] = QMat(W[name])
 
-    add("token_embd.weight", "F16", dim, nv, 1.0)
+    add("token_embd.weight", "F16", dim, nv, 0.1 if arch in ("minicpm", "gemma", "gemma2", "gemma3") else 1.0)
+    if arch == "phi3":  # long-context rope factors (the short ones are used)
+        add("rope_factors_short.weight", "F32", 16, 1, 1.0)
+        W["rope_factors_short.weight"] = np.abs(W["rope_factors_short.weight"]) * 3 + 1
+        tensors[-1] = (tensors[-1][0], "F32", [16], W["rope_factors_short.weight"].astype(np.float32).tobytes())
     for l in range(layers):
         p = "blk.%d." % l
+        pl = plan[l % 2]
         add(p + "attn_norm.weight", "F32", dim, 1, 1.0)
         if arch == "starcoder2":
             add(p + "attn_norm.bias", "F32", dim, 1, 0.2)
-        add(p + "attn_q.weight", plan[l]["attn_q"], dim, heads * hd, 0.08)
-        add(p + "attn_k.weight", plan[l]["attn_k"], dim, kv_heads * hd, 0.08)
-        add(p + "attn_v.weight", plan[l]["attn_v"], dim, kv_heads * hd, 0.08)
+        if arch == "phi3":
+            add(p + "attn_qkv.weight", pl["attn_q"], dim, (heads + 2 * kv_heads) * hd, 0.08)
+            qkv = W[p + "attn_qkv.weight"]
+            a = qkv.a if isinstance(qkv, QMat) else qkv
+            wrap = QMat if isinstance(qkv, QMat) else (lambda x: x)
+            W[p + "attn_q.weight"] = wrap(a[:heads * hd])
+            W[p + "attn_k.weight"] = wrap(a[heads * hd:(heads + kv_heads) * hd])
+            W[p + "attn_v.weight"] = wrap(a[(heads + kv_heads) * hd:])
+        else:
+            add(p + "attn_q.weight", pl["attn_q"], dim, heads * hd, 0.08)
+            add(p + "attn_k.weight", pl["attn_k"], dim, kv_heads * hd, 0.08)
+            add(p + "attn_v.weight", pl["attn_v"], dim, kv_heads * hd, 0.08)
         if arch in ("qwen2", "starcoder2"):
             add(p + "attn_q.bias", "F32", heads * hd, 1, 0.2)
             add(p + "attn_k.bias", "F32", kv_heads * hd, 1, 0.2)
             add(p + "attn_v.bias", "F32", kv_heads * hd, 1, 0.2)
-        if arch == "qwen3":
+        if arch in ("qwen3", "gemma3"):
             add(p + "attn_q_norm.weight", "F32", hd, 1, 1.0)
             add(p + "attn_k_norm.weight", "F32", hd, 1, 1.0)
-        add(p + "attn_output.weight", plan[l]["attn_output"], heads * hd, dim, 0.08)
+        add(p + "attn_output.weight", pl["attn_output"], heads * hd, dim, 0.08)
+        if arch in ("gemma2", "gemma3"):
+            add(p + "post_attention_norm.weight", "F32", dim, 1, 1.0)
         if arch == "starcoder2":
             add(p + "attn_output.bias", "F32", dim, 1, 0.2)
         add(p + "ffn_norm.weight", "F32", dim, 1, 1.0)
         if arch == "starcoder2":
             add(p + "ffn_norm.bias", "F32", dim, 1, 0.2)
-        else:
-            add(p + "ffn_gate.weight", plan[l]["ffn_gate"], dim, ffn, 0.08)
-        add(p + "ffn_up.weight", plan[l]["ffn_up"], dim, ffn, 0.08)
-        add(p + "ffn_down.weight", plan[l]["ffn_down"], ffn, dim, 0.06)
+        elif arch != "phi3":
+            add(p + "ffn_gate.weight", pl["ffn_gate"], dim, ffn, 0.08)
+        add(p + "ffn_up.weight", pl["ffn_up"], dim, ffn * (2 if arch == "phi3" else 1), 0.08)
+        add(p + "ffn_down.weight", pl["ffn_down"], ffn, dim, 0.06)
+        if arch in ("gemma2", "gemma3"):
+            add(p + "post_ffw_norm.weight", "F32", dim, 1, 1.0)
         if arch == "starcoder2":
             add(p + "ffn_up.bias", "F32", ffn, 1, 0.2)
             add(p + "ffn_down.bias", "F32", dim, 1, 0.2)
     add("output_norm.weight", "F32", dim, 1, 1.0)
     if arch == "starcoder2":
         add("output_norm.bias", "F32", dim, 1, 0.2)
-    add("output.weight", "Q6_K", dim, nv, 0.08)
+    if not gemma:  # Gemma ties the output to the embeddings
+        add("output.weight", "Q6_K", dim, nv, 0.08)
     cfg = dict(arch=arch, dim=dim, ffn=ffn, heads=heads, kv=kv_heads, hd=hd, layers=layers, eps=1e-6,
-               base=1000000.0 if arch != "llama" else 500000.0)
+               base=1000000.0 if arch != "llama" else 500000.0, rot=32 if arch == "phi3" else hd,
+               emb=dict(minicpm=12.0).get(arch, math.sqrt(dim) if gemma else 1.0),
+               res=0.7 if arch == "minicpm" else 1.0, logit_div=2.0 if arch == "minicpm" else 1.0,
+               att_cap=3.0 if arch == "gemma2" else 0, final_cap=6.0 if arch == "gemma2" else 0,
+               swa=3 if arch in ("gemma2", "gemma3") else 0, pattern=dict(gemma2=2, gemma3=6).get(arch, 0))
+    if gemma:
+        W["output.weight"] = W["token_embd.weight"]
     return meta, tensors, W, cfg, vocab, ranks
 
 
@@ -533,10 +569,11 @@ def rmsnorm(x, w, eps):
     return x / np.sqrt(np.mean(x * x) + eps) * w
 
 
-def rope(v, pos, hd, base, neox):
+def rope(v, pos, hd, base, neox, factors=None, scale=1.0):
+    """hd: the dimensions that rotate (the rest stay)"""
     out = v.copy()
     for i in range(hd // 2):
-        theta = pos * base ** (-2.0 * i / hd)
+        theta = pos * np.float32(base ** (-2.0 * i / hd)) / (factors[i] if factors is not None else 1.0) / scale
         c, s = math.cos(theta), math.sin(theta)
         a, b = (i, i + hd // 2) if neox else (2 * i, 2 * i + 1)
         out[a] = v[a] * c - v[b] * s
@@ -554,13 +591,20 @@ def norm(W, name, x, cfg):
 def forward(W, cfg, tokens):
     """logits after every position"""
     hd, H, KV = cfg["hd"], cfg["heads"], cfg["kv"]
-    neox = cfg["arch"] != "llama"
+    arch = cfg["arch"]
+    neox = arch not in ("llama", "minicpm")
+    f16 = lambda a: np.asarray(a, dtype=np.float32).astype(np.float16).astype(np.float64)  # the engine's cache
     kc = [[] for _ in range(cfg["layers"])]
     vc = [[] for _ in range(cfg["layers"])]
     res = []
     for pos, t in enumerate(tokens):
-        x = W["token_embd.weight"][t].copy()
+        x = W["token_embd.weight"][t].copy() * cfg["emb"]
         for l in range(cfg["layers"]):
+            window = cfg["swa"] if cfg["swa"] and l % cfg["pattern"] < cfg["pattern"] - 1 else 0
+            base, scale = cfg["base"], 1.0
+            if arch == "gemma3":
+                base, scale = (10000.0, 1.0) if window else (cfg["base"], 4.0)
+            factors = W.get("rope_factors_short.weight")
             p = "blk.%d." % l
             h = norm(W, p + "attn_norm", x, cfg)
             q = W[p + "attn_q.weight"] @ h
@@ -572,33 +616,50 @@ def forward(W, cfg, tokens):
                 v += W[p + "attn_v.bias"]
             q = q.reshape(H, hd)
             k = k.reshape(KV, hd)
-            if cfg["arch"] == "qwen3":
+            if arch in ("qwen3", "gemma3"):
                 q = np.array([rmsnorm(r, W[p + "attn_q_norm.weight"], cfg["eps"]) for r in q])
                 k = np.array([rmsnorm(r, W[p + "attn_k_norm.weight"], cfg["eps"]) for r in k])
-            q = np.array([rope(r, pos, hd, cfg["base"], neox) for r in q])
-            k = np.array([rope(r, pos, hd, cfg["base"], neox) for r in k])
-            kc[l].append(k)
-            vc[l].append(v.reshape(KV, hd))
+            q = np.array([rope(r, pos, cfg["rot"], base, neox, factors, scale) for r in q])
+            k = np.array([rope(r, pos, cfg["rot"], base, neox, factors, scale) for r in k])
+            kc[l].append(f16(k))
+            vc[l].append(f16(v.reshape(KV, hd)))
+            first = max(0, len(kc[l]) - window) if window else 0
             att = np.zeros(H * hd)
             for hh in range(H):
                 g = hh // (H // KV)
-                sc = np.array([q[hh] @ kk[g] for kk in kc[l]]) / math.sqrt(hd)
+                sc = np.array([q[hh] @ kk[g] for kk in kc[l][first:]]) / math.sqrt(hd)
+                if cfg["att_cap"]:
+                    sc = cfg["att_cap"] * np.tanh(sc / cfg["att_cap"])
                 sc = np.exp(sc - sc.max())
                 sc /= sc.sum()
-                att[hh * hd:(hh + 1) * hd] = sum(w * vv[g] for w, vv in zip(sc, vc[l]))
-            x = x + W[p + "attn_output.weight"] @ att
-            if cfg["arch"] == "starcoder2":
-                x = x + W[p + "attn_output.bias"]
+                att[hh * hd:(hh + 1) * hd] = sum(w * vv[g] for w, vv in zip(sc, vc[l][first:]))
+            o = W[p + "attn_output.weight"] @ att
+            if arch == "starcoder2":
+                o = o + W[p + "attn_output.bias"]
+            if arch in ("gemma2", "gemma3"):
+                o = rmsnorm(o, W[p + "post_attention_norm.weight"], cfg["eps"])
+            x = x + cfg["res"] * o
             h = norm(W, p + "ffn_norm", x, cfg)
-            if cfg["arch"] == "starcoder2":
-                x = x + W[p + "ffn_down.weight"] @ gelu(W[p + "ffn_up.weight"] @ h + W[p + "ffn_up.bias"])
-                x = x + W[p + "ffn_down.bias"]
+            if arch == "starcoder2":
+                o = W[p + "ffn_down.weight"] @ gelu(W[p + "ffn_up.weight"] @ h + W[p + "ffn_up.bias"])
+                o = o + W[p + "ffn_down.bias"]
             else:
-                gt = W[p + "ffn_gate.weight"] @ h
-                up = W[p + "ffn_up.weight"] @ h
-                x = x + W[p + "ffn_down.weight"] @ (gt / (1 + np.exp(-gt)) * up)
+                if arch == "phi3":
+                    both = W[p + "ffn_up.weight"] @ h
+                    gt, up = both[:cfg["ffn"]], both[cfg["ffn"]:]
+                else:
+                    gt = W[p + "ffn_gate.weight"] @ h
+                    up = W[p + "ffn_up.weight"] @ h
+                act = gelu(gt) if arch.startswith("gemma") else gt / (1 + np.exp(-gt))
+                o = W[p + "ffn_down.weight"] @ (act * up)
+            if arch in ("gemma2", "gemma3"):
+                o = rmsnorm(o, W[p + "post_ffw_norm.weight"], cfg["eps"])
+            x = x + cfg["res"] * o
         x = norm(W, "output_norm", x, cfg)
-        res.append(W["output.weight"] @ x)
+        lg = (W["output.weight"] @ x) / cfg["logit_div"]
+        if cfg["final_cap"]:
+            lg = cfg["final_cap"] * np.tanh(lg / cfg["final_cap"])
+        res.append(lg)
     return res
 
 
@@ -1303,7 +1364,9 @@ def make_tts(out):
 def main():
     out = sys.argv[1]
     cases = make(out, "qwen2", "tiny", True) + make(out, "qwen3", "tiny3", False) + make(out, "llama", "tinyl", False) + \
-        make(out, "starcoder2", "tinysc", False)
+        make(out, "starcoder2", "tinysc", False) + make(out, "minicpm", "tinymc", False) + \
+        make(out, "phi3", "tinyphi", False) + make(out, "gemma", "tinyg", False) + \
+        make(out, "gemma2", "tinyg2", False) + make(out, "gemma3", "tinyg3", False)
     # a whole turn of the assistant (system prompt with the tools, the chat format) on the last model loaded
     cases += ["ai ask -n 5 --no-tools hello there", "[5 tokens, 0 tool calls"]
     cases += make_whisper(out)
