@@ -258,6 +258,7 @@ struct w32_thread {
     bool boot;
     struct w32_fiber *fiber;
     uint8_t com_apartment;
+    int8_t priority; /* SetThreadPriority; THREAD_PRIORITY_HIGHEST and up wake at once (w32_urgent_turn) */
     int com_inits;
     void *cxx_object, *cxx_type;
     uint32_t token[3];
@@ -543,6 +544,8 @@ bool w32_logging_errors(void);
 void w32_io_forget(struct w32_process *p);
 void w32_io_drop(HANDLE h);
 void w32_signal(void);
+void w32_urgent_turn(void);
+void w32_set_urgent(struct w32_thread *t, bool on);
 void w32_sock_poll(void);
 void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face);
 struct w32_object *w32_handle_get(HANDLE h);

@@ -71,8 +71,66 @@ bool w32_threads_start(void)
     return true;
 }
 
+/* Threads that must answer within milliseconds (audio, MMCSS): when one's wait ends it runs on the next timer tick,
+   before the busy threads' turns. */
+#define URGENT_MAX 16
+static void switch_to(struct w32_thread *next);
+static struct w32_thread *urgent[URGENT_MAX];
+static int urgent_count;
+
+void w32_set_urgent(struct w32_thread *t, bool on)
+{
+    int at = -1;
+    for (int i = 0; i < urgent_count; i++)
+        if (urgent[i] == t)
+            at = i;
+    if (on && at < 0 && urgent_count < URGENT_MAX)
+        urgent[urgent_count++] = t;
+    else if (!on && at >= 0)
+        urgent[at] = urgent[--urgent_count];
+}
+
+static bool object_ready(struct w32_object *o, const struct w32_thread *t);
+
+/* only what it waits for: its objects or its deadline (the other reasons to look again are left to the turns) */
+static bool urgent_wait_over(const struct w32_thread *t)
+{
+    const struct w32_wait *w = &t->wait;
+    if (w->deadline && hal_ticks_ms() >= w->deadline)
+        return true;
+    if (w->kind != W32_WAIT_OBJECTS)
+        return false;
+    for (int i = 0; i < w->count; i++)
+        if (object_ready(w->objects[i], t) != w->all)
+            return !w->all;
+    return w->all;
+}
+
+static struct w32_thread *urgent_ready(void)
+{
+    for (int i = 0; i < urgent_count; i++) {
+        struct w32_thread *t = urgent[i];
+        if (t != w32->current && t->waiting && !t->done && !t->suspended && !t->proc->dead && !t->proc->frozen &&
+            urgent_wait_over(t))
+            return t;
+    }
+    return NULL;
+}
+
+void w32_urgent_turn(void)
+{
+    if (!urgent_count || !w32 || !w32->current)
+        return;
+    struct w32_thread *t = urgent_ready();
+    if (t)
+        switch_to(t);
+}
+
 void w32_threads_end(void)
 {
+    for (int i = urgent_count - 1; i >= 0; i--)
+        if (urgent[i]->proc == w32)
+            urgent[i] = urgent[--urgent_count];
     struct w32_thread *t = w32->threads;
     if (t) {
         do {
@@ -500,7 +558,9 @@ void w32_block(void)
         cur->waiting = true;
         cur->seen = signal_gen;
         cur->seen_local = cur->proc->signal_gen;
-        struct w32_thread *next = sweep_next(cur);
+        struct w32_thread *next = urgent_count ? urgent_ready() : NULL;
+        if (!next)
+            next = sweep_next(cur);
         /* a thread whose wait just ended goes before busy ones, like the boost Windows gives it */
         if (!next && precise_waits)
             next = pick_stale(cur);
@@ -560,7 +620,9 @@ void w32_preempt(void)
     if (!w32 || !w32->current)
         return;
     sweep_left = 64;
-    struct w32_thread *next = sweep_next(w32->current);
+    struct w32_thread *next = urgent_count ? urgent_ready() : NULL;
+    if (!next)
+        next = sweep_next(w32->current);
     if (!next && ++turn % 2 == 0)
         next = pick_other(true);
     if (!next && w32->live_threads > 1) {
@@ -872,8 +934,12 @@ static DWORD WINAPI GetThreadId(HANDLE h)
 
 static BOOL WINAPI SetThreadPriority(HANDLE h, int priority)
 {
-    UNUSED(priority);
-    return thread_of(h) != NULL;
+    struct w32_thread *t = thread_of(h);
+    if (!t)
+        return FALSE;
+    t->priority = (int8_t)CLAMP(priority, -15, 15);
+    w32_set_urgent(t, priority >= 2 /* THREAD_PRIORITY_HIGHEST, TIME_CRITICAL */);
+    return TRUE;
 }
 
 static BOOL WINAPI GetThreadPriorityBoost(HANDLE h, BOOL *disabled)
@@ -920,8 +986,8 @@ static LONG WINAPI WerGetFlags(HANDLE process, DWORD *flags)
 
 static int WINAPI GetThreadPriority(HANDLE h)
 {
-    UNUSED(h);
-    return 0;
+    struct w32_thread *t = thread_of(h);
+    return t ? t->priority : 0x7fffffff;
 }
 
 static BOOL WINAPI SwitchToThread(void)

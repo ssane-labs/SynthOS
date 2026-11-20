@@ -57,8 +57,25 @@ STUB(DestroyPrivateObjectSecurity, 1, 1, 0)
 STUB(SetKernelObjectSecurity, 3, 1, 0)
 
 /* avrt, ktmw32, cfgmgr32 */
-STUB(AvSetMmThreadCharacteristicsA, 2, 1, 0)
-STUB(AvRevertMmThreadCharacteristics, 1, 1, 0)
+/* MMCSS: the thread answers in time (audio): it wakes ahead of busy threads */
+static HANDLE WINAPI AvSetMmThreadCharacteristicsA(const char *task, DWORD *index)
+{
+    UNUSED(task);
+    if (index)
+        *index = 1;
+    if (w32->current)
+        w32_set_urgent(w32->current, true);
+    return (HANDLE)(uintptr_t)(w32->current ? w32->current->id : 1);
+}
+
+static BOOL WINAPI AvRevertMmThreadCharacteristics(HANDLE h)
+{
+    UNUSED(h);
+    if (w32->current && w32->current->priority < 2)
+        w32_set_urgent(w32->current, false);
+    return TRUE;
+}
+
 STUB(CreateTransaction, 7, (uint32_t)-1, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(CommitTransaction, 1, 0, ERROR_CALL_NOT_IMPLEMENTED)
 STUB(CM_Register_Notification, 4, 19, 0)

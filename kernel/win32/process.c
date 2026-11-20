@@ -534,6 +534,8 @@ static void on_tick(uint32_t eip)
         w32_preempt();
     else if (ticks % 2 == 0 && hal_input_pending())
         w32_input_boost();
+    else
+        w32_urgent_turn();
 }
 
 static bool needs_quotes(const char *s)

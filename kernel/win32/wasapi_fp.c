@@ -212,6 +212,7 @@ struct astream {
     bool mute;
     uint32_t event;       /* the program's event handle */
     uint32_t frozen;      /* padding while stopped */
+    uint32_t calls, silent, underruns; /* for the log line at the end */
     struct astream *next;
 };
 
@@ -276,8 +277,12 @@ static void frame_stereo(struct astream *s, const uint8_t *p, int32_t out[2])
 static void stream_mix(struct astream *s, const uint8_t *data, uint32_t n, bool silent)
 {
     mix_pump();
-    if (s->wpos < mix.flushed) /* it fell behind: what is gone is gone */
+    if (s->wpos < mix.flushed) { /* it fell behind: what is gone is gone */
+        s->underruns += s->running;
         s->wpos = mix.flushed;
+    }
+    s->calls++;
+    s->silent += silent ? n : 0;
     uint64_t limit = mix.flushed + MIX_FRAMES - 1;
     uint32_t step = (uint32_t)(((uint64_t)s->rate << 16) / (uint32_t)mix.rate);
     for (uint32_t i = 0; i < n;) {
@@ -318,8 +323,11 @@ static void stream_drop(struct astream *s)
         return;
     if (s->running)
         stream_arm(s, false);
-    if (s->init)
+    if (s->init) {
         mix_leave();
+        klog("wasapi: a stream of %u Hz, %u channels ends: %u frames in %u writes, %u silent, %u late",
+             s->rate, s->channels, (uint32_t)s->written, s->calls, s->silent, s->underruns);
+    }
     for (struct astream **p = &streams; *p; p = &(*p)->next)
         if (*p == s) {
             *p = s->next;
