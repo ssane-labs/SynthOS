@@ -414,6 +414,103 @@ static bool survived(void)
     return false;
 }
 
+/* bytes [at, at + len) of a buffer to the host: in the stream when small, else a transfer after what was sent */
+static void send_bytes(struct gd_resource *r, uint32_t at, uint32_t len)
+{
+    const uint8_t *src = (const uint8_t *)r->data + r->off[0];
+    if (len > INLINE_BYTES) {
+        flush(false);
+        uint32_t box[6] = {at, 0, 0, len, 1, 1};
+        virtio_gpu_transfer_box(H.gpu, H.ctx, r->host, true, 0, box, r->off[0] + at, 0, 0, false);
+        return;
+    }
+    for (uint32_t end = at + len, chunk; at < end; at += chunk) {
+        chunk = MIN(end - at, 4096u);
+        cmd(C_INLINE_WRITE, 0, 11 + (chunk + 3) / 4);
+        put(r->host), put(0), put(2 /* write */), put(0), put(0);
+        put(at), put(0), put(0), put(chunk), put(1), put(1);
+        for (uint32_t i = 0; i < chunk; i += 4) {
+            uint32_t w = 0;
+            memcpy(&w, src + at + i, MIN(4u, chunk - i));
+            put(w);
+        }
+    }
+}
+
+/* the program's view of a resource's pages, when it is in the address space running now */
+static bool user_view(const struct gd_resource *r)
+{
+    return r->user_va && r->user_space == vmm_space_current();
+}
+
+static size_t user_pages(const struct gd_resource *r)
+{
+    return (r->off[0] + r->d.width + 4095) / 4096;
+}
+
+/* the bytes the program changed in the pages it wrote since the last time: the dirty pages, narrowed to what
+   differs from the host's copy (the shadow); runs closer than 256 bytes are sent as one */
+static void send_dirty(struct gd_resource *r)
+{
+    uint8_t dirty[256];
+    size_t n = user_pages(r);
+    uint32_t run_at = 0, run_end = 0, base = (uint32_t)r->off[0];
+    const uint8_t *now = r->data + base;
+    for (size_t p = 0; p < n; p += 256) {
+        size_t k = MIN(n - p, (size_t)256);
+        if (!vmm_take_dirty(r->user_va + p * 4096, k, dirty))
+            continue;
+        for (size_t i = 0; i < k; i++) {
+            if (!dirty[i])
+                continue;
+            uint32_t from = (uint32_t)(p + i) * 4096, to = from + 4096; /* in the pages; the buffer starts at base */
+            from = from > base ? from - base : 0;
+            to = to > base ? to - base : 0;
+            to = MIN(to, r->d.width);
+            if (r->shadow) {
+                while (from < to && now[from] == r->shadow[from])
+                    from++;
+                while (to > from && now[to - 1] == r->shadow[to - 1])
+                    to--;
+                memcpy(r->shadow + from, now + from, to - from);
+            }
+            if (from >= to)
+                continue;
+            if (run_end > run_at && from <= run_end + 256) {
+                run_end = to;
+                continue;
+            }
+            if (run_end > run_at)
+                send_bytes(r, run_at, run_end - run_at);
+            run_at = from, run_end = to;
+        }
+    }
+    if (run_end > run_at)
+        send_bytes(r, run_at, run_end - run_at);
+}
+
+void gd_host_user_view(struct gd_resource *r, uintptr_t va)
+{
+    r->user_va = va;
+    r->user_space = va ? vmm_space_current() : NULL;
+    if (!va || r->d.dim != GD_BUFFER) {
+        kfree(r->shadow);
+        r->shadow = NULL;
+    } else if (!r->shadow) {
+        r->shadow = kmalloc(r->d.width); /* filled at the next whole send */
+    }
+    r->cpu_wrote = true; /* what is dirty from here on is measured after the next whole send */
+}
+
+void gd_host_mapped(struct gd_resource *r)
+{
+    if (!r)
+        return;
+    gd_host_cpu(r, false);
+    if (r->host)
+        r->where = HOST_CPU_NEWER;
+}
+
 /* the host's copy, made and brought up to date; 0 when the host cannot have it */
 static uint32_t to_gpu(struct gd_resource *r)
 {
@@ -438,36 +535,37 @@ static uint32_t to_gpu(struct gd_resource *r)
         if (!r->host)
             return 0;
         r->where = HOST_CPU_NEWER;
+        r->cpu_wrote = true; /* all of it goes */
+    }
+    if (r->where == HOST_CPU_NEWER && r->d.dim == GD_BUFFER && !r->cpu_wrote && user_view(r)) {
+        send_dirty(r); /* only what the program wrote through its Map */
+        r->where = HOST_SAME;
     }
     if (r->where == HOST_CPU_NEWER && r->d.dim == GD_BUFFER && r->d.width <= INLINE_BYTES) {
         /* small buffers (constants written before each draw) go in the stream, in order with the draws: no
            transfer and no wait */
-        const uint8_t *src = (const uint8_t *)r->data + r->off[0];
-        for (uint32_t at = 0, chunk; at < r->d.width; at += chunk) {
-            chunk = MIN(r->d.width - at, 4096u);
-            uint32_t words = (chunk + 3) / 4;
-            cmd(C_INLINE_WRITE, 0, 11 + words);
-            put(r->host), put(0), put(2 /* write */), put(0), put(0);
-            put(at), put(0), put(0), put(chunk), put(1), put(1);
-            uint32_t w = 0;
-            for (uint32_t i = 0; i < chunk; i += 4) {
-                w = 0;
-                memcpy(&w, src + at + i, MIN(4u, chunk - i));
-                put(w);
-            }
-        }
+        send_bytes(r, 0, r->d.width);
         r->where = HOST_SAME;
-    }
-    if (r->where == HOST_CPU_NEWER) {
+    }    if (r->where == HOST_CPU_NEWER) {
         flush(false); /* draws sent before see the old contents */
         transfer(r, true);
         r->where = HOST_SAME;
     }
+    if (r->cpu_wrote && r->shadow) /* all of it went */
+        memcpy(r->shadow, r->data + r->off[0], r->d.width);
+    if (r->cpu_wrote && user_view(r)) { /* and what the program dirtied before is there too */
+        uint8_t dirty[256];
+        for (size_t p = 0, n = user_pages(r); p < n; p += 256)
+            vmm_take_dirty(r->user_va + p * 4096, MIN(n - p, (size_t)256), dirty);
+    }
+    r->cpu_wrote = false;
     return r->host;
 }
 
 void gd_host_cpu(struct gd_resource *r, bool write)
 {
+    if (r && write)
+        r->cpu_wrote = true;
     if (!r || !r->host)
         return;
     lock();
@@ -476,6 +574,8 @@ void gd_host_cpu(struct gd_resource *r, bool write)
         flush(false);
         transfer(r, false);
         r->where = HOST_SAME;
+        if (r->shadow)
+            memcpy(r->shadow, r->data + r->off[0], r->d.width);
     }
     if (write)
         r->where = HOST_CPU_NEWER;
@@ -484,6 +584,8 @@ void gd_host_cpu(struct gd_resource *r, bool write)
 
 void gd_host_forget_resource(struct gd_resource *r)
 {
+    kfree(r->shadow);
+    r->shadow = NULL;
     if (!r->host)
         return;
     lock();
@@ -1642,6 +1744,8 @@ bool gd_host_update(struct gd_resource *r, uint32_t sub, const struct gd_box *b)
     if (r->d.dim == GD_BUFFER) {
         box[0] = b->left, box[1] = box[2] = 0, box[3] = b->right - b->left, box[4] = box[5] = 1;
         offset += b->left;
+        if (r->shadow)
+            memcpy(r->shadow + b->left, r->data + offset, b->right - b->left);
     } else {
         box[0] = b->left, box[1] = b->top, box[2] = b->front;
         box[3] = b->right - b->left, box[4] = b->bottom - b->top, box[5] = b->back - b->front;

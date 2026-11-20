@@ -181,7 +181,6 @@ void gd_resource_unref(struct gd_resource *r)
 uint8_t *gd_resource_memory(struct gd_resource *r, uint32_t *bytes)
 {
     *bytes = (uint32_t)r->alloc;
-    gd_host_cpu(r, true);
     return r->data;
 }
 
@@ -203,6 +202,21 @@ uint8_t *gd_subresource(struct gd_resource *r, uint32_t sub, struct gd_layout *l
         *layout = r->lay[sub];
     gd_host_cpu(r, true);
     return r->data + r->off[sub];
+}
+
+uint8_t *gd_subresource_mapped(struct gd_resource *r, uint32_t sub, struct gd_layout *layout)
+{
+    if (!r || sub >= r->subs)
+        return NULL;
+    if (layout)
+        *layout = r->lay[sub];
+    gd_host_mapped(r);
+    return r->data + r->off[sub];
+}
+
+void gd_resource_user_view(struct gd_resource *r, uintptr_t va)
+{
+    gd_host_user_view(r, va);
 }
 
 static uint32_t res_block(const struct gd_resource *r, uint32_t *bytes)

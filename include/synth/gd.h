@@ -120,7 +120,8 @@ uint32_t gd_subresources(const struct gd_resource *r);
    shown that way. */
 bool gd_scanout(struct gd_resource *r, uint32_t w, uint32_t h);
 
-/* all of a resource's subresources: whole pages of kernel memory, so a program's Map can see them in place */
+/* all of a resource's subresources: whole pages of kernel memory, so a program's Map can see them in place (with
+   gd_subresource_mapped first) */
 uint8_t *gd_resource_memory(struct gd_resource *r, uint32_t *bytes);
 struct gd_layout {
     uint32_t row_pitch, slice_pitch, size; /* rows of texels (blocks), slices of rows */
@@ -129,6 +130,10 @@ struct gd_layout {
 
 /* where a subresource is: its bytes in kernel memory, or NULL for a subresource that does not exist */
 uint8_t *gd_subresource(struct gd_resource *r, uint32_t sub, struct gd_layout *layout);
+/* the same for a program's Map through the view of the pages gd_resource_user_view names (at va in the current
+   address space): only the pages the program dirties there go to the host's graphics card */
+uint8_t *gd_subresource_mapped(struct gd_resource *r, uint32_t sub, struct gd_layout *layout);
+void gd_resource_user_view(struct gd_resource *r, uintptr_t va);
 
 struct gd_box {
     uint32_t left, top, front, right, bottom, back;

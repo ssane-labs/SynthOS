@@ -682,6 +682,7 @@ static void unmap_user(struct cobj *o)
     if (o->res.user) {
         w32_vm_unmap_shared(o->res.user);
         o->res.user = 0;
+        gd_resource_user_view(o->res.r, 0);
     }
 }
 
@@ -831,7 +832,7 @@ static uint32_t mip_count(uint32_t w, uint32_t h, uint32_t d)
 /* where the program sees subresource sub (Map): the resource's pages, put in its memory the first time */
 static uint64_t map_sub(struct cobj *o, uint32_t sub, struct gd_layout *l)
 {
-    uint8_t *p = gd_subresource(o->res.r, sub, l);
+    uint8_t *p = gd_subresource_mapped(o->res.r, sub, l);
     if (!p)
         return 0;
     uint32_t bytes;
@@ -848,6 +849,7 @@ static uint64_t map_sub(struct cobj *o, uint32_t sub, struct gd_layout *l)
         kfree(pages);
         if (!o->res.user)
             return 0;
+        gd_resource_user_view(o->res.r, o->res.user);
     }
     return o->res.user + (uint32_t)(p - mem);
 }

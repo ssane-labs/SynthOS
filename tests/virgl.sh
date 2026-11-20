@@ -67,7 +67,7 @@ case "$line" in
 *) echo "virgl: FAIL"; rc=1 ;;
 esac
 case "$d3d" in
-*"map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1 newer=1"*) echo "virgl d3d11: ok" ;;
+*"map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1 newer=1 dynamic=1"*) echo "virgl d3d11: ok" ;;
 *) echo "virgl d3d11: FAIL"; rc=1 ;;
 esac
 case "$host" in

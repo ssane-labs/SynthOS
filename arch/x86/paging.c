@@ -786,6 +786,23 @@ void vmm_make_cow(uintptr_t vaddr, size_t size)
     flush_range((uint32_t)vaddr, size);
 }
 
+size_t vmm_take_dirty(uintptr_t vaddr, size_t count, uint8_t *dirty)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < count; i++) {
+        uint32_t v = ((uint32_t)vaddr & ~4095u) + (uint32_t)i * 4096u;
+        void *t = enabled ? tables[v >> shift()] : NULL;
+        uint64_t e = t ? pte_get(t, v) : 0;
+        dirty[i] = (e & PTE_PRESENT) && (e & 0x40u);
+        if (dirty[i]) {
+            set_pte(v, e & 0x000ffffffffff000ull, (uint32_t)(e & 0xfffu & ~0x40u));
+            invlpg(v);
+            n++;
+        }
+    }
+    return n;
+}
+
 bool vmm_cow_fault(uintptr_t address)
 {
     uint32_t v = (uint32_t)address & ~4095u;

@@ -747,6 +747,26 @@ void vmm_make_cow(uintptr_t vaddr, size_t size)
     flush_range(vaddr, size);
 }
 
+size_t vmm_take_dirty(uintptr_t vaddr, size_t count, uint8_t *dirty)
+{
+    size_t n = 0;
+    uint64_t va = vaddr & ~4095ull;
+    for (size_t i = 0; i < count;) {
+        /* the entries of one page table follow each other: one walk for up to 512 pages */
+        uint64_t *e = enabled ? pte(va + i * 4096, false) : NULL;
+        size_t in_table = 512 - (((va + i * 4096) >> 12) & 511), k = MIN(in_table, count - i);
+        for (size_t j = 0; j < k; j++, i++) {
+            dirty[i] = e && (e[j] & P_PRESENT) && (e[j] & 0x40ull);
+            if (dirty[i]) {
+                __atomic_and_fetch(&e[j], ~0x40ull, __ATOMIC_SEQ_CST);
+                invlpg(va + i * 4096);
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
 bool vmm_cow_fault(uintptr_t address)
 {
     uintptr_t v = address & ~4095ull;

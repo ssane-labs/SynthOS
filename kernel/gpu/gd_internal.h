@@ -19,6 +19,12 @@ struct gd_resource {
     uint32_t host;
     uint32_t host_gen; /* the host context it was last used in (a lost context leaves the resource to attach again) */
     uint8_t where; /* HOST_SAME, HOST_CPU_NEWER, HOST_GPU_NEWER */
+    /* a program's view of the pages (Map) in its address space: buffers send only the pages it dirtied, unless the
+       kernel wrote too (cpu_wrote) */
+    bool cpu_wrote;
+    uintptr_t user_va;
+    void *user_space;
+    uint8_t *shadow; /* buffers with a view: what the host has, to send only the changed bytes of a dirty page */
 };
 
 enum { HOST_SAME, HOST_CPU_NEWER, HOST_GPU_NEWER };
@@ -122,6 +128,14 @@ static inline void gd_host_cpu(struct gd_resource *r, bool write)
 {
     (void)r, (void)write;
 }
+static inline void gd_host_mapped(struct gd_resource *r)
+{
+    (void)r;
+}
+static inline void gd_host_user_view(struct gd_resource *r, uintptr_t va)
+{
+    (void)r, (void)va;
+}
 static inline bool gd_host_clear_rtv(struct gd_view *v, const float color[4])
 {
     (void)v, (void)color;
@@ -181,6 +195,9 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
                   uint32_t instances, uint32_t first_instance);
 /* before the CPU reads (write false) or changes a resource */
 void gd_host_cpu(struct gd_resource *r, bool write);
+/* before a program's Map: what it writes there is found from the pages it dirties */
+void gd_host_mapped(struct gd_resource *r);
+void gd_host_user_view(struct gd_resource *r, uintptr_t va);
 bool gd_host_clear_rtv(struct gd_view *v, const float color[4]);
 bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil);
 /* a copy done on the host when either resource is there (dsub < 0: every subresource); false: the CPU copies */

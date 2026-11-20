@@ -258,6 +258,42 @@ int main(int argc, char **argv)
             sor->Release();
     }
 
+    /* a large dynamic vertex buffer: a triangle written with WRITE_DISCARD at the start, then one with NO_OVERWRITE
+       far into it; each drawn into its half of the target, both must arrive */
+    int dynamic = 0;
+    {
+        D3D11_BUFFER_DESC dd = {1 << 20, D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+        ID3D11Buffer *dvb = NULL;
+        const UINT far_off = 600000;
+        if (SUCCEEDED(dev->CreateBuffer(&dd, NULL, &dvb))) {
+            const float cyan[4] = {0, 1, 1, 1}, black[4] = {0, 0, 0, 1};
+            if (SUCCEEDED(ctx->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+                memcpy(m.pData, cyan, sizeof(cyan));
+                ctx->Unmap(cb, 0);
+            }
+            ctx->OMSetRenderTargets(1, &rtv, NULL);
+            ctx->ClearRenderTargetView(rtv, black);
+            D3D11_VIEWPORT halves[2] = {{0, 0, 32, 64, 0, 1}, {32, 0, 32, 64, 0, 1}};
+            for (int i = 0; i < 2; i++) {
+                UINT at = i ? far_off : 0;
+                if (SUCCEEDED(ctx->Map(dvb, 0, i ? D3D11_MAP_WRITE_NO_OVERWRITE : D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+                    memcpy((unsigned char *)m.pData + at, v, sizeof(v));
+                    ctx->Unmap(dvb, 0);
+                }
+                ctx->RSSetViewports(1, &halves[i]);
+                ctx->IASetVertexBuffers(0, 1, &dvb, &stride, &at);
+                ctx->Draw(3, 0);
+            }
+            unsigned l = pixel(dev, ctx, back, 8, 32), r = pixel(dev, ctx, back, 56, 32);
+            dynamic = l == 0x00ffff && r == 0x00ffff;
+            if (!dynamic)
+                printf("d3d11 dynamic left=%06x right=%06x\n", l, r);
+            ctx->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+            ctx->RSSetViewports(1, &vp);
+            dvb->Release();
+        }
+    }
+
     /* the newer interfaces: a fence signalled on the immediate context, and the device's lock */
     int newer = 0;
     ID3D11Device5 *dev5 = NULL;
@@ -303,9 +339,10 @@ int main(int argc, char **argv)
     char name[64] = "";
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name), NULL, NULL);
     printf("d3d11 level=%x adapter=%s modes=%d shaders=%d map=%d samples=%llu left=%06x right=%06x present=%d "
-           "get=%d deferred=%d drawn=%06x so=%d newer=%d\n",
+           "get=%d deferred=%d drawn=%06x so=%d newer=%d dynamic=%d\n",
            (unsigned)level, name, modes > 0, SUCCEEDED(shaders), mapped, (unsigned long long)samples,
-           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after, streamed, newer);
+           left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after, streamed, newer,
+           dynamic);
     /* d3d64 bench: frames of 1000 draws, each after its own constant buffer write, the way games draw; the last
        frame is read back so the time includes the host's work */
     if (argc > 1 && !strcmp(argv[1], "bench")) {
@@ -329,6 +366,35 @@ int main(int argc, char **argv)
         unsigned last = pixel(dev, ctx, back, 1, 1);
         printf("d3d11 bench %d frames of 1000 draws in %lu ms pixel=%06x\n", frames,
                (unsigned long)(GetTickCount() - t0), last);
+        /* the same with each draw's triangle appended to a 4 MB dynamic vertex buffer (NO_OVERWRITE) */
+        D3D11_BUFFER_DESC dd = {4 << 20, D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+        ID3D11Buffer *dvb = NULL;
+        if (SUCCEEDED(dev->CreateBuffer(&dd, NULL, &dvb))) {
+            t0 = GetTickCount();
+            UINT at = dd.ByteWidth;
+            for (frames = 0; frames < 20; frames++) {
+                ctx->ClearRenderTargetView(rtv, blue);
+                for (int i = 0; i < 1000; i++) {
+                    bool wrap = at + sizeof(v) > dd.ByteWidth;
+                    if (wrap)
+                        at = 0;
+                    if (SUCCEEDED(ctx->Map(dvb, 0, wrap ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0,
+                                           &m))) {
+                        memcpy((unsigned char *)m.pData + at, v, sizeof(v));
+                        ctx->Unmap(dvb, 0);
+                    }
+                    ctx->IASetVertexBuffers(0, 1, &dvb, &stride, &at);
+                    ctx->Draw(3, 0);
+                    at += sizeof(v);
+                }
+                if (chain)
+                    chain->Present(0, 0);
+            }
+            last = pixel(dev, ctx, back, 1, 1);
+            printf("d3d11 bench %d frames of 1000 appended draws in %lu ms pixel=%06x\n", frames,
+                   (unsigned long)(GetTickCount() - t0), last);
+            dvb->Release();
+        }
     }
     /* d3d64 show: the triangle stays on screen, its tint changing every frame; d3d64 full: the same on the whole
        screen for five seconds */
