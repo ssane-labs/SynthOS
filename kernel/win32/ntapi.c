@@ -1,4 +1,5 @@
 #include <synth/hal.h>
+#include <synth/log.h>
 #include <synth/string.h>
 #include <synth/vfs.h>
 
@@ -171,6 +172,9 @@ static BOOL WINAPI copy_memory(HANDLE process, void *a, const void *b, SIZE_T n,
     if (p == w32)
         memcpy(a, b, n);
     else if (!w32_cross_copy(p, a, b, n, write)) {
+        if (w32_logging_errors())
+            klog("win32: %s pid %u at %p (%u bytes) failed", write ? "WriteProcessMemory" : "ReadProcessMemory",
+             p->child ? p->child->pid : 0, write ? a : b, (unsigned)n);
         if (done)
             *done = 0;
         w32_set_error(299);

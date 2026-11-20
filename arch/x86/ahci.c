@@ -302,4 +302,6 @@ static void probe_controller(const struct pci_device *d, void *ctx)
 void ahci_init(void)
 {
     pci_foreach_storage(probe_controller, NULL);
+    if (port_count)
+        resume_register("AHCI disks", NULL);
 }

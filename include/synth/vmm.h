@@ -38,6 +38,9 @@ bool vmm_commit_fault(uintptr_t address);
 bool vmm_mapped(uintptr_t address);
 int vmm_map_pages(uintptr_t vaddr, void *const *pages, size_t count, bool cow);
 void vmm_make_cow(uintptr_t vaddr, size_t size);
+/* which of count pages from vaddr (this address space) were written since the last call: dirty[i] set to 1 or 0, the
+   processor's dirty bits cleared; returns how many were */
+size_t vmm_take_dirty(uintptr_t vaddr, size_t count, uint8_t *dirty);
 bool vmm_cow_fault(uintptr_t address);
 void vmm_set_commit_hook(bool (*fn)(uintptr_t address));
 void vmm_set_map_hook(bool (*fn)(uintptr_t address));

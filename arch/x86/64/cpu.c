@@ -301,6 +301,16 @@ void cpu_init(void)
     }
 }
 
+/* after sleep (S3): the boot processor's GDT, task register, IDT and control registers as cpu_init left them */
+void cpu_resume(void)
+{
+    struct table_ptr gp = {sizeof(gdt) - 1, (uint64_t)(uintptr_t)gdt};
+    gdt_load(&gp);
+    tss_load();
+    __asm__ volatile("lidt %0" : : "m"(idt_ptr));
+    cpu_local_init();
+}
+
 void cpu_set_gate(int vector, uintptr_t handler)
 {
     uint64_t a = handler;

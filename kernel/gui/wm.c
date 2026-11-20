@@ -42,7 +42,7 @@ static unsigned mouse_buttons;
 static int mouse_speed = 5, accel_x, accel_y;
 static bool natural_scroll, left_handed;
 static int double_click_ms = 400, scroll_lines = 1;
-static bool cursor_visible = true;
+static bool cursor_visible = true, cursor_app_hidden; /* the lock screen's; a program's (ShowCursor) */
 
 enum cursor_kind {
     CUR_ARROW,
@@ -109,7 +109,7 @@ void wm_set_filter(int f)
 
 void wm_set_tint(int brightness, int warmth)
 {
-    brightness = CLAMP(brightness, 10, 100);
+    brightness = CLAMP(brightness, 0, 100);
     warmth = CLAMP(warmth, 0, 100);
     last_brightness = brightness;
     last_warmth = warmth;
@@ -308,11 +308,49 @@ static void fb_compose(struct screen *s, struct rect r)
     fb_present(s, r);
 }
 
+/* A pointer the display draws itself (virtio-gpu, one screen at scale 1): only its place and picture are sent.
+   hw_kind: the picture the display has (-1: none, or hidden); hw_none: this display has no such pointer. */
+static int hw_kind = -1;
+static bool hw_none;
+
+static bool hw_hardware(void)
+{
+    if (hw_none || screen_count != 1 || screens[0].scale != 1 || screens[0].turn)
+        return false;
+    struct screen *s = &screens[0];
+    bool show = hw_live && cursor_visible && !cursor_app_hidden && cursor_px[cursor_kind];
+    int x = hw_x - s->area.x, y = hw_y - s->area.y;
+    if (show && hw_kind != cursor_kind) {
+        if (!hal_cursor_image(&s->fb, cursor_px[cursor_kind], CURSOR_SIZE, CURSOR_SIZE, cursor_hot[cursor_kind][0],
+                              cursor_hot[cursor_kind][1], x, y)) {
+            hw_none = true;
+            return false;
+        }
+        hw_kind = cursor_kind;
+        return true;
+    }
+    if (hw_kind < 0)
+        return true;
+    hal_cursor_move(&s->fb, x, y, show);
+    if (!show)
+        hw_kind = -1; /* hidden: the picture is sent again to show it */
+    return true;
+}
+
 /* Puts the pointer where hw_x, hw_y say: one pass over the old and new places (they overlap while it moves). */
 static void hw_cursor_move(void)
 {
+    if (hw_hardware()) {
+        if (!rect_empty(hw_drawn)) { /* drawn by us before: put back what it covered */
+            struct rect was = hw_drawn;
+            hw_drawn = (struct rect){0, 0, 0, 0};
+            for (int i = 0; i < screen_count; i++)
+                fb_compose(&screens[i], was);
+        }
+        return;
+    }
     struct rect old = hw_drawn;
-    hw_drawn = hw_live && cursor_visible && cursor_px[cursor_kind]
+    hw_drawn = hw_live && cursor_visible && !cursor_app_hidden && cursor_px[cursor_kind]
                    ? (struct rect){hw_x - cursor_hot[cursor_kind][0], hw_y - cursor_hot[cursor_kind][1], CURSOR_SIZE,
                                    CURSOR_SIZE}
                    : (struct rect){0, 0, 0, 0};
@@ -1802,10 +1840,29 @@ void wm_toggle_fullscreen(struct window *w)
     wm_damage_all();
 }
 
+/* a frameless window that covers a screen (a game's borderless one) counts as full screen */
+static bool covers_screen(const struct window *w)
+{
+    return (w->flags & (WIN_BARE | WIN_FULLSCREEN)) == (WIN_BARE | WIN_FULLSCREEN);
+}
+
+void wm_cover_screen(struct window *w, bool on)
+{
+    if (!w || !(w->flags & WIN_BARE) || on == !!(w->flags & WIN_FULLSCREEN))
+        return;
+    if (on) {
+        set_frame(w, wm_screen_rect(wm_screen_at(w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2)));
+        w->flags |= WIN_FULLSCREEN;
+    } else {
+        w->flags &= ~WIN_FULLSCREEN;
+    }
+    wm_damage_all();
+}
+
 static struct window *fullscreen_window(void)
 {
     for (struct window *w = top; w; w = w->below)
-        if (visible(w) && !w->anim_hold && framed(w))
+        if (visible(w) && !w->anim_hold && (framed(w) || covers_screen(w)))
             return (w->flags & WIN_FULLSCREEN) &&
                            rect_contains(screens[0].area, w->frame.x + w->frame.w / 2, w->frame.y + w->frame.h / 2)
                        ? w
@@ -2761,8 +2818,15 @@ static void mouse_moved(void)
         client_event(w, EV_MOUSE_MOVE, 0, 0, 0);
 }
 
+/* Where a program keeps the pointer (ClipCursor); w == 0: anywhere */
+static struct rect pointer_clip;
+
 static void nearest_point(int *px, int *py)
 {
+    if (pointer_clip.w > 0 && pointer_clip.h > 0) {
+        *px = CLAMP(*px, pointer_clip.x, pointer_clip.x + pointer_clip.w - 1);
+        *py = CLAMP(*py, pointer_clip.y, pointer_clip.y + pointer_clip.h - 1);
+    }
     int x = *px, y = *py;
     for (int i = 0; i < screen_count; i++)
         if (rect_contains(screens[i].area, x, y))
@@ -2840,8 +2904,82 @@ static void pointer_irq(struct pointer_event *ev)
         hw_cursor_move();
 }
 
+/* Raw motion for programs that ask for it (WM_INPUT): what the mouse reported, before acceleration and the edges of
+   the screen (a tablet's absolute points give their steps); kept in a ring, numbered */
+#define RAW_RING 256
+static struct wm_raw *raw_ring; /* made at the first motion */
+static uint32_t raw_next;
+static unsigned raw_buttons;
+static int raw_abs_x = -1, raw_abs_y;
+
+static void raw_record(const struct pointer_event *ev)
+{
+    int dx = ev->dx, dy = ev->dy;
+    if (ev->absolute) {
+        int x = ev->x, y = ev->y;
+        if (!ev->placed)
+            absolute_point(ev, &x, &y);
+        dx = raw_abs_x < 0 ? 0 : x - raw_abs_x, dy = raw_abs_x < 0 ? 0 : y - raw_abs_y;
+        raw_abs_x = x, raw_abs_y = y;
+    }
+    if ((!dx && !dy && !ev->wheel && ev->buttons == raw_buttons) ||
+        (!raw_ring && !(raw_ring = kmalloc(sizeof(*raw_ring) * RAW_RING))))
+        return;
+    raw_ring[raw_next % RAW_RING] = (struct wm_raw){dx, dy, ev->wheel, ev->buttons, ev->buttons ^ raw_buttons};
+    raw_buttons = ev->buttons;
+    __atomic_store_n(&raw_next, raw_next + 1, __ATOMIC_RELEASE);
+}
+
+void wm_pointer_clip(const struct rect *r)
+{
+    pointer_clip = r ? *r : (struct rect){0};
+    if (r)
+        wm_pointer_warp(mouse_x, mouse_y);
+}
+
+bool wm_pointer_clipped(struct rect *r)
+{
+    *r = pointer_clip;
+    return pointer_clip.w > 0;
+}
+
+/* SetCursorPos: the pointer jumps; no raw motion (a game recentring the cursor must not see its own jump) */
+void wm_pointer_warp(int x, int y)
+{
+    int old_x = mouse_x, old_y = mouse_y;
+    clamp_mouse(x, y);
+    if (old_x == mouse_x && old_y == mouse_y)
+        return;
+    hw_x = mouse_x;
+    hw_y = mouse_y;
+    hw_cursor_refresh();
+    mouse_moved();
+}
+
+/* SendInput's mouse: motion and buttons a program made, recorded as if the mouse had reported them */
+void wm_raw_inject(int dx, int dy, int wheel, unsigned press, unsigned release)
+{
+    struct pointer_event ev = {.dx = dx, .dy = dy, .wheel = wheel, .buttons = (raw_buttons | press) & ~release};
+    raw_record(&ev);
+}
+
+uint32_t wm_raw_count(void)
+{
+    return __atomic_load_n(&raw_next, __ATOMIC_ACQUIRE);
+}
+
+bool wm_raw_get(uint32_t seq, struct wm_raw *out)
+{
+    uint32_t n = wm_raw_count();
+    if (seq >= n || n - seq > RAW_RING || !raw_ring)
+        return false;
+    *out = raw_ring[seq % RAW_RING];
+    return true;
+}
+
 void wm_pointer(const struct pointer_event *ev)
 {
+    raw_record(ev);
     int old_x = mouse_x, old_y = mouse_y;
     if (ev->placed) {
         clamp_mouse(ev->x, ev->y);
@@ -2985,6 +3123,14 @@ void wm_set_cursor_visible(bool on)
     hw_cursor_refresh();
 }
 
+void wm_pointer_hide(bool hide)
+{
+    if (cursor_app_hidden == hide)
+        return;
+    cursor_app_hidden = hide;
+    hw_cursor_refresh();
+}
+
 static bool inside_poly(const int *pts, int n, int x, int y)
 {
     bool in = false;
@@ -3117,6 +3263,7 @@ bool wm_start(const struct framebuffer *fbs, const struct rect *origins, int cou
     hw_x = mouse_x;
     hw_y = mouse_y;
     hw_drawn = (struct rect){0, 0, 0, 0};
+    hw_kind = -1, hw_none = false;
     hw_live = true;
     hw_dirty = true;
     hal_pointer_hook(pointer_irq);
@@ -3129,6 +3276,9 @@ static void hw_cursor_off(void)
     uint32_t flags = hal_irq_save();
     hw_live = false;
     hw_drawn = (struct rect){0, 0, 0, 0};
+    if (hw_kind >= 0 && screen_count)
+        hal_cursor_move(&screens[0].fb, 0, 0, false);
+    hw_kind = -1;
     hal_irq_restore(flags);
 }
 

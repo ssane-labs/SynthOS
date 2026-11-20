@@ -237,56 +237,49 @@ static uint32_t low_page(void)
     return best;
 }
 
-int hal_start_cpus(void)
+static uint32_t boot_page;
+
+uint32_t smp_trampoline(void (*entry)(int), void **stacks, int first, int max)
 {
-#ifndef __x86_64__
-    cpu_df_init();
-#endif
-    if (!cpu_info()->apic || !cpu_info()->sse || !vmm_pae())
-        return 1;
-    uint64_t base = rdmsr(APIC_BASE_MSR);
-    x2apic = base & APIC_X2;
-    if (!x2apic && !(lapic = vmm_map_uncached(base & 0xfffff000u, 4096)))
-        return 1;
-    smp_eoi = x2apic ? NULL : lapic + REG_EOI / 4;
-    cpu_set_gate(WAKE_VECTOR, (uintptr_t)smp_wake_stub);
-    cpu_set_gate(SPURIOUS_VECTOR, (uintptr_t)smp_spurious_stub);
-    wrmsr(APIC_BASE_MSR, base | APIC_ENABLE);
-    apic_local_enable();
-    uint32_t page = low_page();
+    if (!boot_page)
+        boot_page = low_page();
     size_t size = (size_t)(smp_boot_end - smp_boot_start);
-    if (!page || size > 4096)
-        return 1;
-    uint8_t *code = (uint8_t *)(uintptr_t)page;
+    if (!boot_page || size > 4096)
+        return 0;
+    uint8_t *code = (uint8_t *)(uintptr_t)boot_page;
     memcpy(code, smp_boot_start, size);
     const uint16_t *off = (const uint16_t *)(code + 2038);
     uint32_t *vars = (uint32_t *)(code + off[4]);
-    *(uint32_t *)(code + off[0]) = page + off[3];
-    *(uint32_t *)(code + off[1]) = page + off[2];
+    *(uint32_t *)(code + off[0]) = boot_page + off[3];
+    *(uint32_t *)(code + off[1]) = boot_page + off[2];
     uintptr_t cr3, cr4;
     __asm__ volatile("mov %%cr3, %0; mov %%cr4, %1" : "=r"(cr3), "=r"(cr4));
-    void **stacks = kzalloc(sizeof(void *) * MAX_CPUS);
-    if (!stacks)
-        return 1;
-    for (int i = 1; i < MAX_CPUS; i++) {
-        uint8_t *s = kmalloc(AP_STACK);
-        stacks[i] = s ? s + AP_STACK : NULL;
-    }
     vars[0] = (uint32_t)cr3;
     vars[1] = (uint32_t)cr4;
 #ifdef __x86_64__
     /* the 64-bit start-up code keeps 8-byte entry and stack pointers */
-    uint64_t entry = (uintptr_t)ap_entry, stack_list = (uintptr_t)stacks;
-    memcpy(&vars[2], &entry, 8);
+    uint64_t entry64 = (uintptr_t)entry, stack_list = (uintptr_t)stacks;
+    memcpy(&vars[2], &entry64, 8);
     memcpy(&vars[4], &stack_list, 8);
-    vars[6] = 1;
-    vars[7] = MAX_CPUS;
+    vars[6] = (uint32_t)first;
+    vars[7] = (uint32_t)max;
 #else
-    vars[2] = (uint32_t)(uintptr_t)ap_entry;
+    vars[2] = (uint32_t)(uintptr_t)entry;
     vars[3] = (uint32_t)(uintptr_t)stacks;
-    vars[4] = 1;
-    vars[5] = MAX_CPUS;
+    vars[4] = (uint32_t)first;
+    vars[5] = (uint32_t)max;
 #endif
+    return boot_page;
+}
+
+static void **ap_stacks;
+
+/* INIT and two startup IPIs to every other processor; the number that checked in */
+static int wake_others(void)
+{
+    uint32_t page = smp_trampoline(ap_entry, ap_stacks, 1, MAX_CPUS);
+    if (!page)
+        return 1;
     send_ipi(ICR_ALL_BUT_SELF | ICR_INIT | ICR_ASSERT);
     hal_sleep_ms(10);
     for (int i = 0; i < 2; i++) {
@@ -301,9 +294,54 @@ int hal_start_cpus(void)
         quiet = now == seen ? quiet + 1 : 0;
         seen = now;
     }
-    klog("smp: %d processor%s (APIC %s, start-up page %05x), %d help%s draw", seen, seen == 1 ? "" : "s",
-         x2apic ? "x2" : "xAPIC", page, helpers, helpers == 1 ? "s" : "");
     return seen;
+}
+
+static void apic_on(void)
+{
+    uint64_t base = rdmsr(APIC_BASE_MSR);
+    wrmsr(APIC_BASE_MSR, base | APIC_ENABLE | (x2apic ? APIC_X2 : 0));
+    apic_local_enable();
+}
+
+int hal_start_cpus(void)
+{
+#ifndef __x86_64__
+    cpu_df_init();
+#endif
+    if (!cpu_info()->apic || !cpu_info()->sse || !vmm_pae())
+        return 1;
+    uint64_t base = rdmsr(APIC_BASE_MSR);
+    x2apic = base & APIC_X2;
+    if (!x2apic && !(lapic = vmm_map_uncached(base & 0xfffff000u, 4096)))
+        return 1;
+    smp_eoi = x2apic ? NULL : lapic + REG_EOI / 4;
+    cpu_set_gate(WAKE_VECTOR, (uintptr_t)smp_wake_stub);
+    cpu_set_gate(SPURIOUS_VECTOR, (uintptr_t)smp_spurious_stub);
+    apic_on();
+    if (!(ap_stacks = kzalloc(sizeof(void *) * MAX_CPUS)))
+        return 1;
+    for (int i = 1; i < MAX_CPUS; i++) {
+        uint8_t *st = kmalloc(AP_STACK);
+        ap_stacks[i] = st ? st + AP_STACK : NULL;
+    }
+    int seen = wake_others();
+    klog("smp: %d processor%s (APIC %s, start-up page %05x), %d help%s draw", seen, seen == 1 ? "" : "s",
+         x2apic ? "x2" : "xAPIC", boot_page, helpers, helpers == 1 ? "s" : "");
+    return seen;
+}
+
+/* after sleep the other processors are off: the same start as at boot, on the same stacks */
+void smp_resume(void)
+{
+    if (!ap_stacks)
+        return;
+    apic_on();
+    __atomic_store_n(&online, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&helpers, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&job_gen, JOB_NONE, __ATOMIC_SEQ_CST);
+    int seen = wake_others();
+    klog("smp: %d processor%s after sleep", seen, seen == 1 ? "" : "s");
 }
 
 int hal_cpu_count(void)

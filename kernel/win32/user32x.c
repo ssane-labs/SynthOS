@@ -849,37 +849,28 @@ static BOOL WINAPI GetCursorInfo(uint32_t *info)
     return TRUE;
 }
 
-static UINT WINAPI SendInput(UINT count, void *inputs, int size)
+/* INPUT records: a mouse's relative motion, buttons and wheel go where the mouse's own would (raw input); keys and
+   absolute moves are taken and dropped */
+static UINT WINAPI SendInput(UINT count, const uint8_t *inputs, int size)
 {
-    UNUSED(inputs);
-    UNUSED(size);
-    return count;
-}
-
-static UINT WINAPI GetRawInputDeviceList(void *list, UINT *count, UINT size)
-{
-    UNUSED(size);
-    if (!list) {
-        *count = 0;
+    if (!inputs || (size != 28 && size != 40))
         return 0;
+    uint32_t at = size == 40 ? 8 : 4; /* MOUSEINPUT after the type (and padding in 64-bit programs) */
+    for (UINT i = 0; i < count; i++) {
+        const uint8_t *in = inputs + (size_t)i * (uint32_t)size;
+        uint32_t type, flags;
+        int32_t dx, dy, data;
+        memcpy(&type, in, 4);
+        memcpy(&dx, in + at, 4), memcpy(&dy, in + at + 4, 4), memcpy(&data, in + at + 8, 4);
+        memcpy(&flags, in + at + 12, 4);
+        if (type != 0 /* INPUT_MOUSE */)
+            continue;
+        unsigned press = (flags & 2 ? BUTTON_LEFT : 0) | (flags & 8 ? BUTTON_RIGHT : 0) | (flags & 0x20 ? 4u : 0);
+        unsigned release = (flags & 4 ? BUTTON_LEFT : 0) | (flags & 0x10 ? BUTTON_RIGHT : 0) | (flags & 0x40 ? 4u : 0);
+        bool moved = (flags & 1) && !(flags & 0x8000);
+        wm_raw_inject(moved ? dx : 0, moved ? dy : 0, flags & 0x800 ? -data / 120 : 0, press, release);
     }
-    *count = 0;
-    return 0;
-}
-
-static UINT WINAPI raw_input_fail4(HANDLE a, UINT b, void *c, UINT *d)
-{
-    UNUSED(a);
-    UNUSED(b);
-    UNUSED(c);
-    UNUSED(d);
-    return 0xffffffffu;
-}
-
-static UINT WINAPI raw_input_fail5(HANDLE a, UINT b, void *c, UINT *d, UINT e)
-{
-    UNUSED(e);
-    return raw_input_fail4(a, b, c, d);
+    return count;
 }
 
 static BOOL WINAPI GetPointerDevices(uint32_t *count, void *devices)
@@ -1718,14 +1709,9 @@ static const struct w32_export user32x_exports[] = {
     W32_AS("GetMessageExtraInfo", w32_zero0),
     W32_FN(GetMessageTime),
     W32_FN(GetCursorInfo),
-    W32_AS("ClipCursor", w32_one1),
     W32_FN(SendInput),
     W32_AS("RegisterHotKey", w32_one4),
     W32_AS("UnregisterHotKey", w32_one2),
-    W32_AS("RegisterRawInputDevices", w32_one3),
-    W32_AS("GetRawInputData", raw_input_fail5),
-    W32_AS("GetRawInputDeviceInfoW", raw_input_fail4),
-    W32_FN(GetRawInputDeviceList),
     W32_AS("DefRawInputProc", w32_zero3),
     W32_AS("GetPointerDevice", w32_zero2),
     W32_FN(GetPointerDevices),

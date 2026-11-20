@@ -344,6 +344,45 @@ void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h
 #endif
 }
 
+bool hal_screen_show_host(int gpu, uint32_t id, int w, int h)
+{
+#ifdef __x86_64__
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_VIRTIO && outputs[i].active && outputs[i].vs.gpu == gpu && outputs[i].vs.resource) {
+            virtio_gpu_scanout_3d(&outputs[i].vs, id, w, h);
+            return true;
+        }
+#else
+    UNUSED(gpu), UNUSED(id), UNUSED(w), UNUSED(h);
+#endif
+    return false;
+}
+
+bool hal_cursor_image(const struct framebuffer *fb, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x,
+                      int y)
+{
+#ifdef __x86_64__
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_VIRTIO && outputs[i].active && outputs[i].vs.pixels == fb->base)
+            return virtio_gpu_cursor_image(outputs[i].vs.gpu, outputs[i].vs.scanout, argb, w, h, hot_x, hot_y, x, y);
+#else
+    UNUSED(fb), UNUSED(argb), UNUSED(w), UNUSED(h), UNUSED(hot_x), UNUSED(hot_y), UNUSED(x), UNUSED(y);
+#endif
+    return false;
+}
+
+bool hal_cursor_move(const struct framebuffer *fb, int x, int y, bool show)
+{
+#ifdef __x86_64__
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_VIRTIO && outputs[i].active && outputs[i].vs.pixels == fb->base)
+            return virtio_gpu_cursor_move(outputs[i].vs.gpu, outputs[i].vs.scanout, x, y, show);
+#else
+    UNUSED(fb), UNUSED(x), UNUSED(y), UNUSED(show);
+#endif
+    return false;
+}
+
 bool hal_graphics_enter(struct framebuffer *fb)
 {
     return hal_screen_open(0, 0, 0, fb);
@@ -355,39 +394,137 @@ void hal_graphics_leave(void)
         hal_screen_close(i);
 }
 
+/* ---- sleep in S3: the displays lose their mode; those this driver sets itself are set again */
+
+bool display_can_sleep(char *why, size_t cap)
+{
+    probe();
+    for (int i = 0; i < output_count; i++)
+        if (outputs[i].kind == K_GOP || outputs[i].kind == K_VIRTIO) {
+            ksnprintf(why, cap, "the %s cannot be set up again after sleep", outputs[i].name);
+            return false;
+        }
+    return true;
+}
+
+void display_resume(void)
+{
+    bool any = false;
+    for (int i = 0; i < output_count; i++) {
+        struct output *o = &outputs[i];
+        struct framebuffer fb;
+        if (!o->active)
+            continue;
+        any |= o->primary;
+        if (o->kind == K_BOCHS && !bochs_set(o, (int)o->fb.width, (int)o->fb.height, &fb))
+            klog("display: %s did not come back", o->name);
+        if (o->kind == K_VBE && !vbe_enter((int)o->fb.width, (int)o->fb.height, &fb))
+            klog("display: %s did not come back", o->name);
+    }
+    if (any || !output_count)
+        return;
+    /* the text console: on the firmware's framebuffer (UEFI) or in VGA text mode */
+    if (is_uefi() && outputs[0].kind == K_BOCHS) {
+        struct framebuffer fb;
+        bochs_set(&outputs[0], outputs[0].boot_w, outputs[0].boot_h, &fb);
+        fbcon_invalidate();
+    } else if (!is_uefi()) {
+        vbe_leave();
+    }
+}
+
 /* The backlight of a laptop's built-in panel on Intel graphics: the PWM the firmware set up is left running at its
-   frequency and only its duty cycle changes. Two register layouts: Haswell to Kaby Lake keep the period and the duty
-   in the high and low halves of one register, Broxton and Cannon Point onwards in two registers. */
-static volatile uint32_t *intel_mmio;
+   frequency and only its duty cycle changes. The registers moved over the generations: GM45 and Pineview keep period
+   and duty in one register of the display engine (0x61254), Bay Trail and Cherry Trail in the same one 0x180000
+   further on, Ironlake to Ivy Bridge the period in the PCH (0xc8254) and the duty in the CPU (0x48254), Haswell to
+   Kaby Lake both halves in 0xc8254, Broxton and Cannon Point onwards in two registers (0xc8254, 0xc8258). Without
+   Intel graphics, or when the firmware left the PWM off, ACPI's _BCM sets the level (acpi.c). */
+static uint64_t intel_base;
+static uint16_t intel_id;
 static bool intel_probed;
+static struct {
+    uint32_t page;
+    volatile uint32_t *map;
+} intel_pages[4];
 
 static void find_intel(const struct pci_device *d, void *ctx)
 {
     (void)ctx;
     uint64_t base;
-    if (intel_mmio || d->vendor != 0x8086 || d->class_code != 0x03 || !pci_bar_base(d, 0x10, &base) || !base)
+    if (intel_base || d->vendor != 0x8086 || d->class_code != 0x03 || !pci_bar_base(d, 0x10, &base) || !base)
         return;
-    intel_mmio = vmm_map_uncached(base + 0xc8000, 0x1000);
+    intel_base = base;
+    intel_id = d->device;
 }
 
-bool hal_backlight(int percent)
+static volatile uint32_t *intel_reg(uint32_t offset)
+{
+    uint32_t page = offset & ~0xfffu;
+    for (size_t i = 0; i < ARRAY_SIZE(intel_pages); i++) {
+        if (!intel_pages[i].map) {
+            intel_pages[i].page = page;
+            intel_pages[i].map = vmm_map_uncached(intel_base + page, 0x1000);
+        }
+        if (intel_pages[i].page == page)
+            return intel_pages[i].map ? intel_pages[i].map + (offset & 0xfff) / 4 : NULL;
+    }
+    return NULL;
+}
+
+/* period and duty in the halves of one register (GM45, Bay Trail, Haswell to Kaby Lake) */
+static bool halves(uint32_t offset, int percent, int shift)
+{
+    volatile uint32_t *r = intel_reg(offset);
+    if (!r)
+        return false;
+    uint32_t v = *r, max = v >> (16 + shift);
+    if (!max || (shift && (v & 0x10000))) /* (legacy mode also goes through PCI configuration space) */
+        return false;
+    uint32_t duty = max * (uint32_t)percent / 100;
+    *r = (v & ~(0xffffu >> shift << shift)) | duty << shift;
+    return true;
+}
+
+static bool intel_backlight(int percent)
 {
     if (!intel_probed) {
         intel_probed = true;
         pci_foreach(find_intel, NULL);
     }
-    if (!intel_mmio || !(intel_mmio[0x250 / 4] & 0x80000000u))
+    if (!intel_base)
         return false;
-    percent = percent < 5 ? 5 : percent > 100 ? 100 : percent;
-    uint32_t ctl2 = intel_mmio[0x254 / 4], duty = intel_mmio[0x258 / 4];
-    uint32_t max = ctl2 >> 16;
+    uint16_t id = intel_id;
+    if (id == 0x2a02 || id == 0x2a12 || id == 0x2a42) /* GM965, GME965, GM45 */
+        return halves(0x61254, percent, 0);
+    if (id == 0xa001 || id == 0xa011) /* Pineview: the duty in bits 15..1 */
+        return halves(0x61254, percent, 1);
+    if ((id & 0xfffc) == 0x0f30 || (id & 0xfffc) == 0x22b0) /* Bay Trail, Cherry Trail */
+        return halves(0x180000 + 0x61254, percent, 0);
+    volatile uint32_t *pch1 = intel_reg(0xc8250), *pch2 = intel_reg(0xc8254), *duty_reg = intel_reg(0xc8258);
+    if (!pch1 || !pch2 || !duty_reg || !(*pch1 & 0x80000000u))
+        return false;
+    uint32_t ctl2 = *pch2, max = ctl2 >> 16;
+    if (id == 0x0046 || (id & 0xff00) == 0x0100) { /* Ironlake, Sandy Bridge, Ivy Bridge */
+        volatile uint32_t *cpu = intel_reg(0x48254);
+        if (!max || !cpu)
+            return false;
+        *cpu = (*cpu & 0xffff0000u) | (max * (uint32_t)percent / 100);
+        return true;
+    }
+    uint32_t duty = *duty_reg;
     if (max && (ctl2 & 0xffff) <= max && !duty) {
-        intel_mmio[0x254 / 4] = (max << 16) | (max * (uint32_t)percent / 100);
+        *pch2 = (max << 16) | (max * (uint32_t)percent / 100);
         return true;
     }
     if (ctl2 && duty <= ctl2) {
-        intel_mmio[0x258 / 4] = (uint32_t)((uint64_t)ctl2 * (uint32_t)percent / 100);
+        *duty_reg = (uint32_t)((uint64_t)ctl2 * (uint32_t)percent / 100);
         return true;
     }
     return false;
+}
+
+bool hal_backlight(int percent)
+{
+    percent = percent <= 0 ? 0 : percent < 5 ? 5 : percent > 100 ? 100 : percent;
+    return intel_backlight(percent) || acpi_backlight(percent);
 }

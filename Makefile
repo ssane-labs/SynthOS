@@ -125,7 +125,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-crypto test-gpu clean tools programs usb windows update
+.PHONY: all run run-serial run-uefi test test-hw test-ai test-crypto test-touch fuzz test-gpu test-virgl clean tools programs usb windows update
 all: $(IMAGE)
 
 ESP_LBA     := 8192
@@ -137,6 +137,9 @@ SYSTEM_SECTORS := $(shell echo $$(( $(ESP_LBA) + $(ESP_SECTORS) )))
 # own 32-bit Windows snapshot, BSD-licensed): Obscura is a 64-bit program. BUNDLE=0 or no network leaves it out.
 CHROMIUM_REV ?= 1721499
 OBSCURA_VER  ?= 0.2.2
+# what the downloads must hash to (checked before they go into an image); another revision or version needs its own
+CHROMIUM_SHA256 ?= $(if $(filter 1721499,$(CHROMIUM_REV)),d5abe94ac0d3ba1b5b1a3b40e3046a65a1f74107be43227c800eeeadde3721cf)
+OBSCURA_SHA256  ?= $(if $(filter 0.2.2,$(OBSCURA_VER)),db5a3c951f7172eb8f25e6d71bd7120c7128f70f6daed55a6cc4caaabe1674d6)
 BROWSER      ?= $(if $(filter i686,$(ARCH)),chromium,obscura)
 BUNDLE       ?= $(if $(SERIAL),0,1)
 BUNDLE_NAME  := $(if $(filter obscura,$(BROWSER)),obscura-$(OBSCURA_VER),chromium-$(CHROMIUM_REV))
@@ -147,8 +150,10 @@ DISK_SECTORS   = $(if $(filter 0,$(BUNDLE_SECTORS)),$(IMAGE_SECTORS),$(shell ech
 $(BUILD)/cache/chrome-win-$(CHROMIUM_REV).zip:
 	@mkdir -p $(@D)
 	@echo "  FETCH   Chromium $(CHROMIUM_REV) (32-bit Windows snapshot)"
-	@curl -fsSL --retry 3 -o $@.part https://commondatastorage.googleapis.com/chromium-browser-snapshots/Win/$(CHROMIUM_REV)/chrome-win.zip \
-	    && mv $@.part $@ || (rm -f $@.part; echo "  SKIP    no network: the image goes without Chromium"; : > $@)
+	@if curl -fsSL --retry 3 -o $@.part https://commondatastorage.googleapis.com/chromium-browser-snapshots/Win/$(CHROMIUM_REV)/chrome-win.zip; then \
+	    if [ -z "$(CHROMIUM_SHA256)" ] || echo "$(CHROMIUM_SHA256)  $@.part" | sha256sum -c --quiet -; then mv $@.part $@; \
+	    else rm -f $@.part; echo "Chromium $(CHROMIUM_REV) does not match its SHA-256: not using it"; exit 1; fi; \
+	else rm -f $@.part; echo "  SKIP    no network: the image goes without Chromium"; : > $@; fi
 
 $(BUILD)/cache/chromium-$(CHROMIUM_REV).bundle: $(BUILD)/cache/chrome-win-$(CHROMIUM_REV).zip tools/mkbundle.py
 	@if [ -s $< ]; then python3 -I tools/mkbundle.py $< $@ "Chromium" chrome-win/ _tests.exe; else : > $@; fi
@@ -156,8 +161,10 @@ $(BUILD)/cache/chromium-$(CHROMIUM_REV).bundle: $(BUILD)/cache/chrome-win-$(CHRO
 $(BUILD)/cache/obscura-$(OBSCURA_VER).zip:
 	@mkdir -p $(@D)
 	@echo "  FETCH   Obscura $(OBSCURA_VER) (64-bit Windows engine)"
-	@curl -fsSL --retry 3 -o $@.part https://github.com/h4ckf0r0day/obscura/releases/download/v$(OBSCURA_VER)/obscura-x86_64-windows.zip \
-	    && mv $@.part $@ || (rm -f $@.part; echo "  SKIP    no network: the image goes without Obscura"; : > $@)
+	@if curl -fsSL --retry 3 -o $@.part https://github.com/h4ckf0r0day/obscura/releases/download/v$(OBSCURA_VER)/obscura-x86_64-windows.zip; then \
+	    if [ -z "$(OBSCURA_SHA256)" ] || echo "$(OBSCURA_SHA256)  $@.part" | sha256sum -c --quiet -; then mv $@.part $@; \
+	    else rm -f $@.part; echo "Obscura $(OBSCURA_VER) does not match its SHA-256: not using it"; exit 1; fi; \
+	else rm -f $@.part; echo "  SKIP    no network: the image goes without Obscura"; : > $@; fi
 
 $(BUILD)/cache/obscura-$(OBSCURA_VER).bundle: $(BUILD)/cache/obscura-$(OBSCURA_VER).zip tools/mkbundle.py
 	@if [ -s $< ]; then python3 -I tools/mkbundle.py $< $@ "Obscura" ""; else : > $@; fi
@@ -166,7 +173,8 @@ HAVE_ESP    := $(and $(shell command -v mkfs.fat 2>/dev/null),$(shell command -v
 
 $(IMAGE): $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin $(if $(HAVE_ESP),$(OUT)/esp.img) $(BUNDLE_FILE)
 	@echo "  IMAGE   $@"
-	@$(if $(HAVE_ESP),,test $$(( $$(wc -c < $(OUT)/kernel.bin) / 512 + 17 )) -le $(ESP_LBA) || (echo "kernel too large for the disk layout without an EFI partition"; exit 1))
+	@$(if $(HAVE_ESP),,test $$(( $$(wc -c < $(OUT)/kernel.bin) / 512 + 17 )) -le $(ESP_LBA) || (echo "the kernel needs the EFI partition, and making it needs mkfs.fat and mcopy:"; \
+	    echo "install dosfstools and mtools (apt install dosfstools mtools, dnf install dosfstools mtools, pacman -S dosfstools mtools)"; exit 1))
 	@cat $(OUT)/stage1.bin $(OUT)/stage2.bin $(OUT)/kernel.bin > $@
 	@dd if=/dev/zero of=$@ bs=512 count=0 seek=$(DISK_SECTORS) 2>/dev/null
 	@if [ -s "$(BUNDLE_FILE)" ]; then dd if=$(BUNDLE_FILE) of=$@ bs=1M oflag=seek_bytes seek=$$(($(SYSTEM_SECTORS) * 512)) conv=notrunc,sparse 2>/dev/null; fi
@@ -331,7 +339,7 @@ GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.
              dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o \
              sysupdate.o progress.o focus.o session.o aiconf.o)
 CORE_SMALL := $(addprefix $(OUT)/obj/kernel/,core/install.o core/update.o core/recovery.o core/store.o core/rules.o \
-              core/timeline.o core/trash.o fs/versions.o) $(OUT)/obj/arch/x86/e1000.o $(OUT)/obj/arch/x86/realtek.o $(OUT)/obj/arch/x86/acpi.o $(OUT)/obj/arch/x86/virtio_gpu.o
+              core/timeline.o core/trash.o core/power.o acpi/aml.o fs/versions.o) $(OUT)/obj/arch/x86/e1000.o $(OUT)/obj/arch/x86/realtek.o $(OUT)/obj/arch/x86/acpi.o $(OUT)/obj/arch/x86/virtio_gpu.o
 $(OUT)/obj/kernel/gui/apps/%.o $(OUT)/obj/kernel/cmds/%.o $(GUI_SMALL) $(CORE_SMALL): CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
@@ -504,17 +512,57 @@ run-serial:
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
 	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(SUFFIX)/synthos.img
+	@python3 -I tests/acpi.py $(BUILD)/serial$(SUFFIX)/synthos.img
+
+# 3D through the host's graphics card (virtio-gpu with virgl); llvmpipe in Xvfb when the host has none
+test-virgl:
+	@$(MAKE) --no-print-directory SERIAL=1
+	@tests/virgl.sh $(BUILD)/serial/synthos.img
 
 test-gpu:
 	@mkdir -p $(BUILD)/tools
-	@$(HOSTCC) -O2 -Wall -Wextra -DRS_HOST -Iinclude -o $(BUILD)/tools/gputest tests/gpu/driver.c kernel/gpu/raster_fp.c -lm
+	@$(HOSTCC) -O2 -Wall -Wextra -DRS_HOST -Iinclude -o $(BUILD)/tools/gputest tests/gpu/driver.c tests/gpu/dxbc.c tests/gpu/device.c kernel/gpu/raster_fp.c kernel/gpu/dxbc_fp.c kernel/gpu/dxbc_jit_fp.c kernel/gpu/dxbc_tgsi.c \
+		kernel/gpu/gd_fp.c kernel/gpu/texture_fp.c kernel/gpu/bc_fp.c kernel/gpu/tess_fp.c -lm
 	@$(BUILD)/tools/gputest
+
+# the assistant's engine on the host: integer dot products and the F16 cache on every SIMD path of this processor
+# against plain C, then the tiny models of tests/aimodel.py against their numpy reference
+test-ai:
+	@mkdir -p $(BUILD)/tools
+	@$(HOSTCC) -O2 -Wall -Wextra -Wno-unused-function -o $(BUILD)/tools/aitest tests/ai/qdot.c -lm
+	@$(BUILD)/tools/aitest
+	@$(HOSTCC) -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -o $(BUILD)/tools/llmtest tests/ai/llm.c -lm
+	@mkdir -p $(BUILD)/aitest && python3 -I tests/aimodel.py $(BUILD)/aitest > /dev/null
+	@python3 -I tests/ai/check.py $(BUILD)/tools/llmtest $(BUILD)/aitest
+
+# the file parsers on the host with AddressSanitizer and UndefinedBehaviorSanitizer, coverage-guided (tests/fuzz):
+# FUZZ_SECONDS in all, FUZZ_TARGET for one of them; a failing input is left in build/fuzz/crash-<target>.bin
+FUZZ_SECONDS ?= 60
+FUZZ_SAN := -fsanitize=address,undefined -fno-sanitize=shift,alignment -fno-sanitize-recover=all -fwrapv
+FUZZ_SRC := tests/fuzz/t_pe.c tests/fuzz/t_lib.c tests/fuzz/t_codecs.c tests/fuzz/t_media.c tests/fuzz/t_doc.c \
+	tests/fuzz/t_archive.c $(addprefix kernel/lib/,picture.c png.c jpeg.c gif.c zip.c inflate.c deflate.c lnk.c lzma.c \
+	strutil.c fmt.c path.c) tests/fuzz/t_aml.c kernel/acpi/aml.c tests/fuzz/t_hid.c kernel/core/hidmt.c kernel/core/touch.c
+fuzz:
+	@mkdir -p $(BUILD)/fuzz
+	@$(HOSTCC) -O1 -g -Wall -Wextra -Iinclude $(FUZZ_SAN) -c -o $(BUILD)/fuzz/driver.o tests/fuzz/fuzz.c
+	@$(HOSTCC) -O1 -g -Wall -Wextra -Iinclude $(FUZZ_SAN) -c -o $(BUILD)/fuzz/host.o tests/fuzz/host.c
+	@$(HOSTCC) -O1 -g -Wall -Wextra -Wno-unused-parameter -Iinclude $(FUZZ_SAN) -fsanitize-coverage=trace-pc \
+		-o $(BUILD)/fuzz/fuzz $(BUILD)/fuzz/driver.o $(BUILD)/fuzz/host.o $(FUZZ_SRC)
+	@python3 -I tests/fuzz/seeds.py $(BUILD)/fuzz/seeds
+	@FUZZ_OUT=$(BUILD)/fuzz $(BUILD)/fuzz/fuzz $(FUZZ_SECONDS) $(BUILD)/fuzz/seeds $(FUZZ_TARGET)
 
 test-crypto:
 	@mkdir -p $(BUILD)/tools
 	@$(HOSTCC) -O2 -Iinclude -o $(BUILD)/tools/cryptotest tests/crypto/driver.c kernel/crypto/hash.c kernel/crypto/blake2s.c kernel/crypto/aes.c \
 	    kernel/crypto/chacha.c kernel/crypto/x25519.c kernel/crypto/pk.c kernel/lib/sha256.c kernel/lib/sha1.c kernel/lib/md5.c
 	@python3 -I tests/crypto/check.py $(BUILD)/tools/cryptotest
+
+# the HID multi-touch parser and the gestures on the host (tests/touch)
+test-touch:
+	@mkdir -p $(BUILD)/tools
+	@$(HOSTCC) -O1 -g -Wall -Wextra -Iinclude -fsanitize=address,undefined -o $(BUILD)/tools/touchtest \
+	    tests/touch/check.c kernel/core/hidmt.c kernel/core/touch.c
+	@$(BUILD)/tools/touchtest
 
 test-hw:
 	@$(MAKE) --no-print-directory SERIAL=1

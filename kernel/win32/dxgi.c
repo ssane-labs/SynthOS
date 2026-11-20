@@ -223,6 +223,10 @@ static const struct w32_export dxgi_exports[] = {
 
 W32_EXPORTS(dxgi_module, "dxgi.dll", dxgi_exports);
 
+/* 64-bit programs: d3d11_fp.c on the 64-bit kernel; on the 32-bit kernel the factory and adapter below, which
+   have no device behind them (D3D11CreateDevice answers "class not registered", win64out.c) */
+#ifndef SYNTH_X32
+
 /* 64-bit programs: the same objects behind vtables of 64-bit stubs */
 
 struct obj64 {
@@ -437,3 +441,5 @@ static const struct w64_export dxgi64_exports[] = {
 };
 
 W64_EXPORTS(dxgi64_module, "dxgi.dll", dxgi64_exports);
+
+#endif

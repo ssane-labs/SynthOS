@@ -3,6 +3,7 @@
 #include <synth/fmt.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/log.h>
 #include <synth/input.h>
 #include <synth/keys.h>
 #include <synth/lineedit.h>
@@ -15,7 +16,17 @@
 
 #define ITERATIONS 2000
 
-static struct user users[USERS_MAX];
+/* from the heap on first use: the 32-bit kernel's image has no room */
+static struct user *users_mem;
+#define users (users_mem ? users_mem : users_alloc())
+
+static struct user *users_alloc(void)
+{
+    users_mem = kzalloc(sizeof(struct user) * USERS_MAX);
+    if (!users_mem)
+        panic("users: out of memory");
+    return users_mem;
+}
 static int count;
 static int current;
 static char autologin[USER_NAME_MAX];

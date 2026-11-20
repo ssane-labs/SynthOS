@@ -60,6 +60,12 @@ static void unclaimed(const struct pci_device *d, void *ctx)
               d->subclass == 0x00 ? "Ethernet" : d->subclass == 0x80 ? "Wi-Fi" : "network");
 }
 
+void hal_input_init(void)
+{
+    virtio_input_init();
+    i2c_hid_init();
+}
+
 void hal_net_init(void)
 {
     e1000_init();
@@ -91,7 +97,10 @@ int hal_key_read(int timeout_ms)
         usb_service();
         if (idle_hook && !hal_in_interrupt())
             idle_hook();
-        int key = keyboard_read();
+        int key = acpi_service();
+        if (key != KEY_NONE)
+            return key;
+        key = keyboard_read();
         if (key == KEY_NONE)
             key = serial_key();
         if (key != KEY_NONE)

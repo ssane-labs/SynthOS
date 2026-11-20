@@ -1,5 +1,6 @@
 #include <synth/heap.h>
 #include <synth/log.h>
+#include <synth/shell.h>
 #include <synth/string.h>
 #include <synth/vmm.h>
 
@@ -200,6 +201,45 @@ static uint32_t dispatch_simple(const struct w32_sig *s, const uint8_t *g, struc
     return s->pop;
 }
 
+/* config w32calls Token,Job: every call of a built-in whose name contains one of the words is logged with its first
+   arguments and its result (it turns w32trace on) */
+static char calls_filter[128];
+
+static bool calls_match(const char *name)
+{
+    const char *w = calls_filter;
+    if (!strcmp(w, "*"))
+        return true;
+    while (*w) {
+        const char *end = strchr(w, ',');
+        size_t n = end ? (size_t)(end - w) : strlen(w);
+        for (const char *p = name; n && *p; p++)
+            if (!strncmp(p, w, n))
+                return true;
+        w += n + (end ? 1 : 0);
+    }
+    return false;
+}
+
+static void get_calls(char *buf, size_t cap)
+{
+    str_copy(buf, calls_filter[0] ? calls_filter : "off", cap);
+}
+
+static int set_calls(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    str_copy(calls_filter, strcmp(value, "off") ? value : "", sizeof(calls_filter));
+    if (calls_filter[0])
+        w32_trace = true;
+    return 0;
+}
+
+static const struct setting s_calls = {"w32calls", "<word,word...>|off",
+                                       "log every call of a built-in function whose name contains one of the words",
+                                       get_calls, set_calls};
+SETTING(s_calls);
+
 uint32_t w32_gate_dispatch(uint32_t index, uint32_t args, struct gate_ret *r)
 {
     const struct w32_sig *s = sigs[index];
@@ -259,10 +299,18 @@ uint32_t w32_gate_dispatch(uint32_t index, uint32_t args, struct gate_ret *r)
                 w32_trace_api(names[index]);
         }
     }
+    const char *logged = NULL;
+    if (w32_trace && calls_filter[0] && index < sig_count && (logged = w32_builtin_name(s->fn)) &&
+        !calls_match(logged))
+        logged = NULL;
     const void *outer = w32_gate_current;
     w32_gate_current = s->fn;
     w32_native_call(s->fn, ints, sse, stack, ns, r);
     w32_gate_current = outer;
+    if (logged)
+        klog("win32: pid %u %s(%llx, %llx, %llx, %llx) = %llx (error %u)", w32_current_pid(), logged,
+             (unsigned long long)ints[0], (unsigned long long)ints[1], (unsigned long long)ints[2],
+             (unsigned long long)ints[3], (unsigned long long)r->rax, w32_error());
     switch (s->ret) {
     case R_VOID: r->kind = 0; break;
     case R_I32:

@@ -74,15 +74,17 @@ typedef int (*esp_fn)(const char *root, void *ctx);
 /* Calls fn for each EFI partition until one answers other than E_NOENT; mounts the ones nobody has mounted. */
 static int each_esp(esp_fn fn, void *ctx)
 {
-    static struct disk_map map;
+    struct disk_map *map = kmalloc(sizeof(*map)); /* from the heap: the 32-bit kernel's image has no room */
+    if (!map)
+        return E_NOMEM;
     int err = E_NOENT;
     for (struct blockdev *disk = block_list(); disk && err == E_NOENT; disk = disk->next) {
-        if (disk->parent || disk_map_read(disk, &map))
+        if (disk->parent || disk_map_read(disk, map))
             continue;
-        for (int i = 0; i < map.count && err == E_NOENT; i++) {
-            if (map.parts[i].kind != PART_EFI)
+        for (int i = 0; i < map->count && err == E_NOENT; i++) {
+            if (map->parts[i].kind != PART_EFI)
                 continue;
-            struct blockdev *esp = block_add_partition(disk, "recesp", map.parts[i].start, map.parts[i].count);
+            struct blockdev *esp = block_add_partition(disk, "recesp", map->parts[i].start, map->parts[i].count);
             if (!esp)
                 continue;
             const char *root = mounted_at(esp);
@@ -100,6 +102,7 @@ static int each_esp(esp_fn fn, void *ctx)
             block_unregister(esp);
         }
     }
+    kfree(map);
     return err;
 }
 

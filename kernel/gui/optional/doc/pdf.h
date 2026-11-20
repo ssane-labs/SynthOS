@@ -61,6 +61,8 @@ static bool pdf_delim(uint8_t c)
 
 static const uint8_t *skip_ws(const uint8_t *p, const uint8_t *end)
 {
+    if (!p) /* a value that was not there (a reference to a missing object): nothing to read */
+        return end;
     while (p < end) {
         if (pdf_ws(*p))
             p++;
@@ -173,7 +175,8 @@ static long pdf_int(const uint8_t *p, const uint8_t *end)
         p++;
     long v = 0;
     for (; p < end && *p >= '0' && *p <= '9'; p++)
-        v = v * 10 + (*p - '0');
+        if (v < 100000000L) /* more digits than any count or offset in a file: it stops growing */
+            v = v * 10 + (*p - '0');
     return neg ? -v : v;
 }
 

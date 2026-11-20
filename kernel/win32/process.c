@@ -4,6 +4,7 @@
 #include <synth/console.h>
 #include <synth/error.h>
 #include <synth/fmt.h>
+#include <synth/gd.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
 #include <synth/input.h>
@@ -533,6 +534,8 @@ static void on_tick(uint32_t eip)
         w32_preempt();
     else if (ticks % 2 == 0 && hal_input_pending())
         w32_input_boost();
+    else
+        w32_urgent_turn();
 }
 
 static bool needs_quotes(const char *s)
@@ -545,10 +548,10 @@ static bool needs_quotes(const char *s)
     return false;
 }
 
-/* Chromium's sandbox needs restricted tokens and job objects, its GPU process needs Direct3D: a Chromium-family
-   browser (and Steam's CEF browser, steamwebhelper.exe) started as a browser gets the switches that run it without
-   them. */
-static const char *const chromium_switches[] = {"--no-sandbox", "--test-type", "--in-process-gpu", "--disable-gpu",
+/* Chromium's GPU process needs Direct3D: a Chromium-family browser (and Steam's CEF browser, steamwebhelper.exe)
+   started as a browser gets the switches that keep the GPU work in the browser process. Its sandbox runs as on
+   Windows: restricted and AppContainer tokens, job objects and the broker patching the child's ntdll stubs. */
+static const char *const chromium_switches[] = {"--test-type", "--in-process-gpu", "--disable-gpu",
                                                 "--disable-software-rasterizer", "--no-first-run",
                                                 "--no-default-browser-check"};
 
@@ -572,9 +575,13 @@ static int command_args(struct exec_ctx *ctx, const char **list)
     bool chrome = w32->engine == W32_ENGINE_CHROMIUM;
     bool child = has_arg(ctx, "--type=", 7);
     if (chrome && !child)
-        for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++)
+        for (size_t i = 0; i < ARRAY_SIZE(chromium_switches); i++) {
+            /* with "w32d3d11 on" it draws through ANGLE on Direct3D 11 */
+            if (w32_d3d11_chromium() && !strncmp(chromium_switches[i], "--disable-", 10))
+                continue;
             if (!has_arg(ctx, chromium_switches[i], strlen(chromium_switches[i]) + 1))
                 list[n++] = chromium_switches[i];
+        }
     if (chrome && child && !has_arg(ctx, "--ipc-connection-timeout", 24))
         for (size_t i = 0; i < ARRAY_SIZE(chromium_child_switches); i++)
             list[n++] = chromium_child_switches[i];
@@ -887,6 +894,9 @@ static void cleanup(void)
         if (w32->handles[i].type != WH_FREE)
             w32_handle_close((HANDLE)(uintptr_t)(HANDLE_BASE + i * 4));
     w32_registry_flush();
+#ifdef SYNTH_X32
+    w32_d3d_cleanup();
+#endif
     w32_vm_cleanup();
     w32_unload_all();
     vmm_release(w32->arena_base, w32->arena_size);
@@ -925,7 +935,7 @@ static int run(struct exec_ctx *ctx)
     w32->engine = w32_browser_engine(ctx->path);
     build_command_line(ctx);
     build_environment(ctx);
-    if (!w32->stack || !build_teb_peb() || (kuser_map(), false) || !w32_threads_start() || (w32->win64 && !w64_setup()))
+    if (!w32->stack || !build_teb_peb() || (kuser_map(), w32_nt_stubs_map(), false) || !w32_threads_start() || (w32->win64 && !w64_setup()))
         return E_NOMEM;
 
     /* the loader reads the pages of cached images it maps, so they have to come in from the start */
@@ -1920,6 +1930,38 @@ static int set_headless(struct shell *sh, const char *value)
     w32_headless = !strcmp(value, "on");
     return 0;
 }
+
+int w32_d3d11_for;
+
+/* Chromium draws through ANGLE on our Direct3D 11 when asked to, or by itself when the host's card does the work */
+bool w32_d3d11_chromium(void)
+{
+#ifdef __x86_64__
+    return w32_d3d11_for == 1 || (!w32_d3d11_for && gd_host_gpu());
+#else
+    return w32_d3d11_for == 1; /* no host graphics card here */
+#endif
+}
+
+static void get_d3d11_for(char *buf, size_t cap)
+{
+    str_copy(buf, w32_d3d11_for == 1 ? "on" : w32_d3d11_for == 2 ? "off" : "auto", cap);
+}
+
+static int set_d3d11_for(struct shell *sh, const char *value)
+{
+    UNUSED(sh);
+    int v = !strcmp(value, "auto") ? 0 : !strcmp(value, "on") ? 1 : !strcmp(value, "off") ? 2 : -1;
+    if (v < 0)
+        return E_INVAL;
+    w32_d3d11_for = v;
+    return 0;
+}
+
+static const struct setting s_d3d11 = {"w32d3d11", "auto|on|off",
+                                       "which Windows programs get a Direct3D 11 device (auto: not Chromium's)",
+                                       get_d3d11_for, set_d3d11_for};
+SETTING(s_d3d11);
 
 static const struct setting s_headless = {"w32headless", "on|off",
                                           "let Windows programs create windows without the desktop (headless mode)",

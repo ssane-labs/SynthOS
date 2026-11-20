@@ -90,9 +90,10 @@ Microsoft и один экран MokManager), SATA может быть в реж
 
 ## Собрать самому
 
-Нужны `gcc`, `binutils`, `nasm`, `make`, `qemu-system-x86`; по желанию `clang`, `mingw-w64` (программы Windows,
-UEFI-загрузчик), `dosfstools` + `mtools` (раздел UEFI), `ovmf` (UEFI в QEMU), `openssl` и `python3`
-(тесты HTTPS).
+Нужны `gcc`, `binutils`, `nasm`, `make`, `qemu-system-x86`, `dosfstools` и `mtools` (раздел UEFI: без него
+ядро на диск не помещается); по желанию `clang`, `mingw-w64` (программы Windows, UEFI-загрузчик), `ovmf` (UEFI в
+QEMU), `openssl` и `python3` (тесты HTTPS, `numpy` — тесты ассистента). Chromium и Obscura скачиваются при сборке и
+проверяются по SHA-256 (`CHROMIUM_SHA256`, `OBSCURA_SHA256` в `Makefile`).
 
 ```sh
 make              # загрузочный образ build/vga/synthos.img (BIOS + UEFI)

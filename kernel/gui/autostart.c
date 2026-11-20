@@ -280,7 +280,9 @@ void autostart_run(void)
 COMMAND(autostart, NULL, "system", "autostart [list|folder|add <app|file|!command>|remove <n>]",
         "programs that start when you log in: the Startup folder and the Run key")
 {
-    static char list[AUTOSTART_MAX][AUTOSTART_LEN];
+    static char (*list)[AUTOSTART_LEN]; /* from the heap: the 32-bit kernel's image has no room */
+    if (!list && !(list = kmalloc(sizeof(*list) * AUTOSTART_MAX)))
+        return sh_error(sh, "autostart", "%s", err_str(E_NOMEM));
     const char *op = argc > 1 ? argv[1] : "list";
     if (!strcmp(op, "add") && argc > 2) {
         char item[AUTOSTART_LEN] = "";

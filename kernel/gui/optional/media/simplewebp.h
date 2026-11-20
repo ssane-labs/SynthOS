@@ -659,7 +659,8 @@ static size_t swebp__proxy_read(size_t size, void *dest, void *userdata)
 
 	if (nextpos >= proxy->length)
 	{
-		readed = size - (proxy->length - nextpos);
+		/* what is left of the chunk (upstream had size - (length - nextpos): more than asked for) */
+		readed = pos < proxy->length ? proxy->length - pos : 0;
 		nextpos = proxy->length;
 	}
 	else
@@ -1203,7 +1204,7 @@ void simplewebp_unload(simplewebp *simplewebp)
 
 	if (simplewebp->webp_type)
 	{
-		/* TODO: Clear lossless data*/
+		/* the lossless decoder state is only width, height and has_alpha: nothing was allocated for it */
 	}
 	else
 	{
@@ -3002,6 +3003,10 @@ static simplewebp_error swebp__load_vp8_header(struct swebp__vp8 *vp8d, simplewe
 	memset(&vp8d->segment_header.quantizer, 0, sizeof(vp8d->segment_header.quantizer));
 	memset(&vp8d->segment_header.filter_strength, 0, sizeof(vp8d->segment_header.filter_strength));
 
+	/* the first partition must be inside what is left of the chunk */
+	if (vp8d->frame_header.partition_length > bufsize)
+		return SIMPLEWEBP_CORRUPT_ERROR;
+
 	/* Initialize bitreader */
 	swebp__bitread_init(&br, buf, vp8d->frame_header.partition_length);
 	buf += vp8d->frame_header.partition_length;
@@ -4227,8 +4232,8 @@ static simplewebp_error swebp__decode_lossy(simplewebp *simplewebp, struct swebp
 		return SIMPLEWEBP_IO_ERROR;
 
 	vp8size = swebp__proxy_size(input.userdata);
-	/* Sanity check */
-	if (vp8d->frame_header.partition_length > vp8size)
+	/* Sanity check (the frame header is the first 10 bytes) */
+	if (vp8size < 10 || vp8d->frame_header.partition_length > vp8size)
 		return SIMPLEWEBP_CORRUPT_ERROR;
 
 	/* Read all VP8 chunk */

@@ -8,7 +8,7 @@
 
 #define UDP_QUEUE 16
 
-struct sock net_socks[NET_MAX_SOCKETS];
+struct sock *net_socks; /* NET_MAX_SOCKETS, on the heap from net_init: the kernel image has little room */
 
 static struct sock *get(int s)
 {

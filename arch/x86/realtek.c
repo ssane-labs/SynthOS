@@ -345,6 +345,7 @@ static void found(const struct pci_device *d, void *ctx)
     n->dev.priv = n;
     big_count++;
     net_register(&n->dev);
+    resume_register("Realtek network", NULL);
 }
 
 void realtek_init(void)

@@ -78,6 +78,30 @@ bool hal_graphics_enter(struct framebuffer *fb);
 void hal_graphics_leave(void);
 /* the built-in panel's backlight in percent; false when the kernel cannot drive it (dim in software then) */
 bool hal_backlight(int percent);
+/* ACPI at boot: the firmware's AML, the power and sleep buttons and the lid (they arrive as KEY_POWER, KEY_SLEEP,
+   KEY_LID_CLOSE and KEY_LID_OPEN). A line for the boot screen, or NULL without ACPI. */
+const char *hal_power_init(void);
+/* input devices found through ACPI or that need it on: I2C HID touchpads, virtio-input */
+void hal_input_init(void);
+/* 1 open, 0 closed, -1 when there is no lid */
+int hal_lid_state(void);
+/* A laptop's batteries (ACPI control-method batteries): energy in mWh, power in mW (batteries that count in mAh are
+   converted with their design voltage), 0 or -1 where the firmware does not say. Read at most every few seconds. */
+struct battery_info {
+    char name[8];   /* "BAT0" */
+    char model[24];
+    bool charging, discharging, critical;
+    int percent;    /* of the last full charge; -1 unknown */
+    int minutes;    /* to empty when discharging, to full when charging; -1 unknown */
+    uint32_t now, full, design, rate, low;
+    uint32_t cycles;
+};
+/* the batteries present (up to max), 0 when there are none */
+int hal_batteries(struct battery_info *out, int max);
+/* the AC adapter: 1 plugged in, 0 not, -1 no adapter is described */
+int hal_ac_online(void);
+/* the state of the SCI, GPEs and embedded controller, for the acpi command */
+void hal_acpi_info(char *buf, size_t cap);
 
 struct display_mode {
     uint16_t width, height;
@@ -88,6 +112,14 @@ const char *hal_screen_name(int index);
 int hal_screen_modes(int index, struct display_mode *out, int max);
 bool hal_screen_open(int index, int width, int height, struct framebuffer *fb);
 void hal_screen_present(const struct framebuffer *fb, int x, int y, int w, int h);
+/* The first screen of virtio-gpu gpu shows its 3D resource id (w x h) instead of its framebuffer, or the
+   framebuffer again with id 0; false when no screen of that card is open */
+bool hal_screen_show_host(int gpu, uint32_t id, int w, int h);
+/* a pointer the display hardware draws over the screen (virtio-gpu): its picture and hot spot, then where it is;
+   false: this screen has none, the pointer is drawn into the picture */
+bool hal_cursor_image(const struct framebuffer *fb, const uint32_t *argb, int w, int h, int hot_x, int hot_y, int x,
+                      int y);
+bool hal_cursor_move(const struct framebuffer *fb, int x, int y, bool show);
 void hal_screen_close(int index);
 int hal_key_read(int timeout_ms);
 int hal_key_modifiers(void);
@@ -136,6 +168,8 @@ const char *hal_audio_name(void);
 #define HAL_SIMD_AVX512 0x100u /* F, BW */
 #define HAL_SIMD_AVX512VNNI 0x200u
 uint32_t hal_simd(void);
+/* whether a microphone input can be recorded from (HD Audio); recording: in use now */
+bool hal_audio_record_present(bool *recording);
 int hal_audio_record_open(void);
 int hal_audio_record_read(int16_t *frames, int max);
 void hal_audio_record_close(void);
@@ -163,6 +197,10 @@ int hal_cpu_count(void);
    all address spaces share and call nothing that locks, sleeps or allocates */
 void hal_parallel(void (*fn)(void *ctx, int from, int to), void *ctx, int count, int grain);
 int hal_parallel_cpus(void);
+/* sleep in S3 (suspend to RAM): false with the reason when the firmware or a device in use cannot */
+bool hal_can_suspend(char *why, size_t cap);
+/* 0 once the machine is awake again, or an error before it slept */
+int hal_suspend(void);
 NORETURN void hal_reboot(void);
 NORETURN void hal_poweroff(void);
 

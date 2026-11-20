@@ -89,7 +89,7 @@ static struct {
     unsigned rirb_rp;
     int codec, afg, rate;
     uint16_t format;
-    struct node nodes[MAX_NODES];
+    struct node *nodes; /* MAX_NODES, on the heap: the kernel image has little room */
     struct output outs[MAX_OUTS];
     int nouts;
     uint8_t *ring;
@@ -429,7 +429,9 @@ static bool setup_codec(int codec)
     power_up(hd.afg);
     uint32_t vendor = param(0, 0x00);
     uint32_t afg_out = param(hd.afg, 0x12), afg_in = param(hd.afg, 0x0d), rates = param(hd.afg, 0x0a);
-    memset(hd.nodes, 0, sizeof(hd.nodes));
+    if (!hd.nodes && !(hd.nodes = kmalloc(sizeof(*hd.nodes) * MAX_NODES)))
+        return false;
+    memset(hd.nodes, 0, sizeof(*hd.nodes) * MAX_NODES);
     sub = param(hd.afg, 0x04);
     start = (int)(sub >> 16 & 0xff);
     count = (int)(sub & 0xff);
@@ -612,6 +614,8 @@ bool hda_probe(int rate)
     pci_foreach(collect, &c);
     for (int i = 0; i < c.count && !hd.ready; i++)
         hd.ready = try_controller(&c.dev[i], rate);
+    if (hd.ready)
+        resume_register("HD Audio", NULL);
     return hd.ready;
 }
 
@@ -698,6 +702,18 @@ void hda_close(void)
 }
 
 /* Recording: 16-bit stereo frames at the playback rate */
+/* whether there is a microphone (or line) input to record from; recording: whether it is on now */
+bool hda_record_present(bool *recording)
+{
+    if (recording)
+        *recording = hd.in_running;
+    if (!hd.ready)
+        return false;
+    if (!hd.in_found)
+        hd.in_found = setup_input();
+    return hd.in_found;
+}
+
 int hda_record_open(void)
 {
     if (!hd.ready)

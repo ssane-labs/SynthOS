@@ -1,3 +1,4 @@
+#include <synth/fmt.h>
 #include <synth/string.h>
 
 #include "win32.h"
@@ -251,23 +252,69 @@ static DWORD basic_info(HANDLE h, uint32_t *buf, ULONG len, ULONG *ret)
     return 0;
 }
 
+/* ObjectNameInformation: a file's NT path (\Device\HarddiskVolume1\..., as QueryDosDevice maps C:), a named pipe's
+   \Device\NamedPipe\name, a named kernel object's name in the session's namespace; an unnamed object has an empty
+   name. Sandboxes turn the files they give a child into NT paths this way. */
+static void object_name(HANDLE h, char *out, size_t cap)
+{
+    out[0] = 0;
+    struct w32_object *o = h == (HANDLE)(intptr_t)-1 || h == (HANDLE)(intptr_t)-2 ? NULL : w32_handle_get(h);
+    const char *pipe = w32_pipe_name(h);
+    if (pipe) {
+        ksnprintf(out, cap, "\\Device\\NamedPipe\\%s", pipe);
+        return;
+    }
+    if (!o || !o->path)
+        return;
+    if (o->type == WH_FILE || o->type == WH_FIND) {
+        char win[PATH_MAX_LEN];
+        w32_path_to_win(o->path, win, sizeof(win));
+        ksnprintf(out, cap, "\\Device\\HarddiskVolume1%s", win[0] && win[1] == ':' ? win + 2 : win);
+    } else if (o->type == WH_KEY) {
+        ksnprintf(out, cap, "\\REGISTRY\\%s", o->path);
+    } else if (o->type == WH_EVENT || o->type == WH_MUTEX || o->type == WH_SEMAPHORE || o->type == WH_SECTION ||
+               o->type == WH_TIMER || o->type == WH_JOB) {
+        ksnprintf(out, cap, "\\Sessions\\1\\BaseNamedObjects\\%s", o->path);
+    }
+}
+
 static DWORD WINAPI NtQueryObject(HANDLE h, ULONG cls, void *buf, ULONG len, ULONG *ret)
 {
     if (cls == 0)
         return basic_info(h, buf, len, ret);
-    if (cls != 2)
-        return 0xc00000bbu;
-    const char *name = type_name(h);
-    if (!name)
+    if (cls == 4) { /* ObjectHandleFlagInformation: inherit, protect from close */
+        struct w32_object *o = w32_handle_get(h);
+        if (!o)
+            return 0xc0000008u;
+        if (ret)
+            *ret = 2;
+        if (!buf || len < 2)
+            return 0xc0000004u;
+        ((uint8_t *)buf)[0] = o->inherit;
+        ((uint8_t *)buf)[1] = 0;
+        return 0;
+    }
+    if (cls != 1 && cls != 2)
+        return 0xc0000003u;
+    const char *type = type_name(h);
+    if (!type)
         return 0xc0000008u;
-    ULONG n = (ULONG)strlen(name), need = 96 + (n + 1) * 2;
+    char path[PATH_MAX_LEN + 64];
+    const char *name = type;
+    ULONG head = 96;
+    if (cls == 1) {
+        object_name(h, path, sizeof(path));
+        name = path;
+        head = 8;
+    }
+    ULONG n = (ULONG)strlen(name), need = head + (n + 1) * 2;
     if (ret)
         *ret = need;
     if (!buf || len < need)
         return 0xc0000004u;
-    memset(buf, 0, 96);
+    memset(buf, 0, head);
     struct unicode_string *u = buf;
-    WCHAR *text = (WCHAR *)((uint8_t *)buf + 96);
+    WCHAR *text = (WCHAR *)((uint8_t *)buf + head);
     for (ULONG i = 0; i <= n; i++)
         text[i] = (uint8_t)name[i];
     *u = (struct unicode_string){(uint16_t)(n * 2), (uint16_t)(n * 2 + 2), text};

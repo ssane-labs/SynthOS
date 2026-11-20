@@ -206,11 +206,22 @@ static uint64_t h_no_filter(uint64_t *a, const uint64_t *f, void *t)
     return no_object(a, 1, 0);
 }
 
+/* CoCreateInstance(clsid, outer, context, iid, out): the built-in classes (Core Audio) */
+static uint64_t h_co_create(uint64_t *a, const uint64_t *f, void *t)
+{
+    uint64_t hr;
+    if (a[0] && w64_audio_create(w64_ptr(a[0]), a[3] ? w64_ptr(a[3]) : NULL, a[4], &hr))
+        return hr;
+    return no_object(a, 4, CLASS_NOT_REGISTERED);
+}
+
+#ifndef SYNTH_X32 /* the 64-bit kernel has Direct3D 11 (d3d11_fp.c) */
 static uint64_t h_no_d3d11(uint64_t *a, const uint64_t *f, void *t)
 {
     no_object(a, 7, 0);
     return no_object(a, 9, CLASS_NOT_REGISTERED);
 }
+#endif
 
 static const struct w64_export com_exports[] = {
     W64_FN("SHGetDesktopFolder", h_no_object0),
@@ -235,11 +246,13 @@ static const struct w64_export com_exports[] = {
     W64_FN("CoGetObject", h_no_object3),
     W64_FN("AccessibleObjectFromWindow", h_no_object3),
     W64_FN("CreateStdAccessibleObject", h_no_object3),
-    W64_FN("CoCreateInstance", h_no_object4),
+    W64_FN("CoCreateInstance", h_co_create),
     W64_FN("CoGetClassObject", h_no_object4),
     W64_FN("LoadRegTypeLib", h_no_object4),
     W64_FN("OleLoadPicturePath", h_no_object5),
+#ifndef SYNTH_X32
     W64_FN("D3D11CreateDevice", h_no_d3d11),
+#endif
     W64_FN("GetErrorInfo", h_no_error_info),
     W64_FN("SetErrorInfo", h_set_error_info),
     W64_FN("CoRegisterMessageFilter", h_no_filter),

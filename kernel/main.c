@@ -199,6 +199,13 @@ void kmain(const struct boot_info *bi)
     int cpus = safe_mode() ? 1 : hal_start_cpus();
     if (cpus > 1)
         boot_step(true, "Processors: %d cores", cpus);
+    if (!safe_mode() && !cmdline_flag(bi->cmdline, "noacpi")) {
+        const char *power = hal_power_init();
+        if (power)
+            boot_step(true, "Power: %s", power);
+    }
+    if (!safe_mode())
+        hal_input_init();
     if (con_is_grid())
         boot_step(true, "Display: %s %dx%d, 16-color palette", d->name, d->cols, d->rows);
     else

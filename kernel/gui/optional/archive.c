@@ -427,9 +427,18 @@ static bool is_tar(const uint8_t *d, size_t n)
     return d[0] && sum == octal(d + 148, 8);
 }
 
-/* a name from the archive, made safe: no leading "/", no ".." */
+/* a name from the archive, made safe: "\" read as "/" (an archive made on Windows), no drive or stream ":", no
+   leading "/", no ".." */
 static bool safe_name(const char *name, char *out, size_t cap)
 {
+    char tmp[PATH_MAX_LEN];
+    str_copy(tmp, name, sizeof(tmp));
+    for (char *p = tmp; *p; p++)
+        if (*p == '\\')
+            *p = '/';
+    if (strchr(tmp, ':'))
+        return false;
+    name = tmp;
     while (*name == '/' || (name[0] == '.' && name[1] == '/'))
         name += *name == '/' ? 1 : 2;
     str_copy(out, name, cap);
@@ -442,6 +451,15 @@ static bool safe_name(const char *name, char *out, size_t cap)
         if ((p == out || p[-1] == '/') && (!p[2] || p[2] == '/'))
             return false;
     return true;
+}
+
+/* at most n bytes of a field that ends at its first NUL or at n (tar fields need not have one), as a string */
+static void field(char *out, size_t cap, const uint8_t *src, size_t n)
+{
+    const uint8_t *z = memchr(src, 0, n);
+    size_t len = MIN(z ? (size_t)(z - src) : n, cap - 1);
+    memcpy(out, src, len);
+    out[len] = 0;
 }
 
 struct tar_result {
@@ -464,18 +482,20 @@ static int untar(struct shell *sh, const uint8_t *d, size_t n, const char *dir, 
             return E_INVAL;
         char name[PATH_MAX_LEN];
         if (type == 'L') { /* GNU long name for the next entry */
-            str_copy(longname, (const char *)d + data, MIN(sizeof(longname), (size_t)size + 1));
+            field(longname, sizeof(longname), d + data, (size_t)size);
             continue;
         }
         if (type == 'x') { /* pax: take path= */
             const char *p = (const char *)d + data, *e = p + size;
             while (p < e) {
-                long len = str_to_long(p, NULL, 10);
+                long len = 0; /* the record length, read only inside the data */
+                for (const char *q = p; q < e && *q >= '0' && *q <= '9' && len < 1000000; q++)
+                    len = len * 10 + (*q - '0');
                 const char *kv = memchr(p, ' ', (size_t)(e - p));
                 if (len <= 0 || !kv || p + len > e)
                     break;
-                if (!strncmp(kv + 1, "path=", 5))
-                    str_copy(longname, kv + 6, MIN(sizeof(longname), (size_t)(p + len - kv - 6)));
+                if (p + len - kv >= 7 && !strncmp(kv + 1, "path=", 5)) /* "path=value\n" */
+                    field(longname, sizeof(longname), (const uint8_t *)kv + 6, (size_t)(p + len - kv - 7));
                 p += len;
             }
             continue;
@@ -488,11 +508,11 @@ static int untar(struct shell *sh, const uint8_t *d, size_t n, const char *dir, 
         } else {
             char raw[260] = "";
             if (!memcmp(h + 257, "ustar", 5) && h[345]) {
-                str_copy(raw, (const char *)h + 345, MIN(sizeof(raw), (size_t)156));
+                field(raw, sizeof(raw), h + 345, 155);
                 str_append(raw, "/", sizeof(raw));
             }
             size_t at = strlen(raw);
-            str_copy(raw + at, (const char *)h, MIN(sizeof(raw) - at, (size_t)101));
+            field(raw + at, sizeof(raw) - at, h, 100);
             str_copy(name, raw, sizeof(name));
         }
         char rel[PATH_MAX_LEN], path[PATH_MAX_LEN];

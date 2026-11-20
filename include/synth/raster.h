@@ -8,9 +8,11 @@
 
 #include <synth/types.h>
 
-#define RS_MAX_VARY 16 /* float4 outputs of a vertex shader besides the position */
+#define RS_MAX_VARY 32 /* float4 outputs of a vertex shader besides the position */
 
-enum rs_topology { RS_TRIANGLES, RS_STRIP };
+enum rs_topology {
+    RS_TRIANGLES, RS_STRIP, RS_POINTS, RS_LINES, RS_LINE_STRIP, RS_LINES_ADJ, RS_LINE_STRIP_ADJ, RS_TRIANGLES_ADJ
+};
 enum rs_cull { RS_CULL_NONE, RS_CULL_BACK, RS_CULL_FRONT };
 /* the Direct3D comparison functions */
 enum rs_compare { RS_NEVER = 1, RS_LESS, RS_EQUAL, RS_LESS_EQUAL, RS_GREATER, RS_NOT_EQUAL, RS_GREATER_EQUAL, RS_ALWAYS };
@@ -28,26 +30,39 @@ struct rs_target {
    the shader can take differences across the quad (ddx, ddy, the mip level) */
 struct rs_quad {
     int x, y;
+    bool front; /* the triangle faces the viewer */
     float depth[4];
+    float w[4]; /* the clip-space w */
     float in[4][RS_MAX_VARY * 4];
 };
 
-/* out: the clip-space position (x, y, z, w), then nvary float4s */
-typedef void (*rs_vertex_fn)(const void *ctx, uint32_t index, float *out);
+/* shades vertices first .. first + n - 1 (n is 1 to 4); for each: the clip-space position (x, y, z, w), then nvary
+   float4s, at out + i * (4 + nvary * 4). scratch: rs_state.scratch bytes of this processor's own. */
+typedef void (*rs_vertex_fn)(const void *ctx, uint32_t first, int n, float *out, void *scratch);
 /* writes four colors (r, g, b, a in 0..1); clears bits of *mask to discard pixels */
-typedef void (*rs_pixel_fn)(const void *ctx, const struct rs_quad *q, float color[4][4], unsigned *mask);
+typedef void (*rs_pixel_fn)(const void *ctx, const struct rs_quad *q, float color[4][4], unsigned *mask, void *scratch);
+/* instead of ps and the built-in depth test and output: does everything for the covered pixels in mask */
+typedef void (*rs_quad_fn)(const void *ctx, const struct rs_quad *q, unsigned mask, void *scratch);
 
 struct rs_state {
     rs_vertex_fn vs;
     rs_pixel_fn ps;
+    rs_quad_fn quad;
     const void *ctx;
+    size_t scratch; /* bytes of scratch memory each processor's shader calls get */
     int nvary;
+    uint32_t flat;          /* varyings (bit per float4) taken from the first vertex, not interpolated */
+    uint32_t noperspective; /* varyings interpolated in screen space */
+    /* clip distances (clipped where negative) and cull distances (a primitive negative at every corner is dropped),
+       as float indices into the varyings */
+    uint8_t nclip, ncull, clip_at[8], cull_at[8];
     enum rs_cull cull;
     bool front_ccw;
     bool depth_test, depth_write;
     enum rs_compare depth_func;
     enum rs_blend blend;
     unsigned write_mask; /* 1 red, 2 green, 4 blue, 8 alpha; 0 means all */
+    bool wireframe;      /* triangles: only their edges, as lines */
     bool scissor;
     int sx, sy, sw, sh;
     float vx, vy, vw, vh, min_z, max_z; /* the viewport; vw 0: the whole target */
@@ -57,7 +72,8 @@ struct rs_stats {
     uint64_t triangles, culled, clipped, quads, pixels;
 };
 
-/* Draws count vertices (or count indices, when indices is not NULL) as triangles. */
+/* Draws count vertices (or count indices, when indices is not NULL) as triangles, lines or points; lines are one
+   pixel wide. */
 int rs_draw(struct rs_target *t, const struct rs_state *s, enum rs_topology topology, uint32_t count,
             const uint32_t *indices, int32_t base_vertex);
 void rs_clear(struct rs_target *t, uint32_t color, bool clear_color, float depth, bool clear_depth);

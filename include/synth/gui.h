@@ -449,6 +449,19 @@ void wm_show_passive(struct window *w);
 void wm_hide(struct window *w);
 void wm_focus(struct window *w);
 struct window *wm_focused(void);
+/* the mouse's raw motion, numbered from 0: wm_raw_count is the number recorded so far, wm_raw_get one of the last
+   256 (false when it is older or not there yet) */
+struct wm_raw {
+    int dx, dy, wheel;
+    unsigned buttons, changed;
+};
+uint32_t wm_raw_count(void);
+void wm_raw_inject(int dx, int dy, int wheel, unsigned press, unsigned release);
+void wm_pointer_warp(int x, int y);
+void wm_pointer_clip(const struct rect *r); /* NULL: free */
+bool wm_pointer_clipped(struct rect *r);
+void wm_pointer_hide(bool hide); /* a program in front hides the pointer (ShowCursor) */
+bool wm_raw_get(uint32_t seq, struct wm_raw *out);
 void wm_invalidate(struct window *w);
 int wm_controls_width(void);
 void wm_controls_paint(struct canvas *c, const struct window *w, int x, int cy, int hot);
@@ -486,6 +499,8 @@ void wm_resize_client(struct window *w, int cw, int ch);
 void wm_toggle_maximize(struct window *w);
 void wm_begin_move(struct window *w);
 void wm_toggle_fullscreen(struct window *w);
+/* A window without a frame over a whole screen (a game's borderless one): in front of the menu bar and the Dock */
+void wm_cover_screen(struct window *w, bool on);
 bool wm_fullscreen_front(void);
 bool wm_fullscreen_menu(void);
 void wm_minimize(struct window *w);

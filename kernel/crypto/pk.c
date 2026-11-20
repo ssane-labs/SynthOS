@@ -1,4 +1,5 @@
 #include <synth/crypto.h>
+#include <synth/heap.h>
 #include <synth/string.h>
 
 #define MP_MAX 128
@@ -466,7 +467,8 @@ struct point {
     uint32_t x[12], y[12], z[12];
 };
 
-static struct curve curves[2];
+/* both curves in one block on the heap when first used: 6.5 KB the 32-bit kernel image has no room for */
+static struct curve *curves;
 
 static void hex_mp(uint32_t *r, int n, const char *hex)
 {
@@ -495,6 +497,13 @@ static struct curve *curve_get(enum ec_curve id)
          "aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7",
          "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f"},
     };
+    if (!curves) {
+        struct curve *all = kzalloc(2 * sizeof(*all)), *none = NULL;
+        if (!all)
+            return NULL;
+        if (!__atomic_compare_exchange_n(&curves, &none, all, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            kfree(all); /* another thread was first */
+    }
     struct curve *c = &curves[id];
     if (c->ready)
         return c;
@@ -694,6 +703,8 @@ size_t ec_size(enum ec_curve id)
 bool ec_public_key(enum ec_curve id, const uint8_t *secret, uint8_t *point)
 {
     struct curve *c = curve_get(id);
+    if (!c)
+        return false;
     uint32_t k[12], x[12], y[12];
     struct point g, r;
     mp_from_be(k, c->n, secret, c->bytes);
@@ -712,6 +723,8 @@ bool ec_public_key(enum ec_curve id, const uint8_t *secret, uint8_t *point)
 bool ec_shared_secret(enum ec_curve id, const uint8_t *secret, const uint8_t *point, size_t point_len, uint8_t *out)
 {
     struct curve *c = curve_get(id);
+    if (!c)
+        return false;
     struct point p, r;
     uint32_t k[12], x[12];
     if (!decode_point(c, point, point_len, &p))
@@ -737,6 +750,8 @@ bool ecdsa_verify(enum ec_curve id, const uint8_t *point, size_t point_len, cons
                   const uint8_t *rb, size_t r_len, const uint8_t *sb, size_t s_len)
 {
     struct curve *c = curve_get(id);
+    if (!c)
+        return false;
     struct point q, g, gq, acc;
     uint32_t r[12], s[12], e[12], w[12], u1[12], u2[12], t[12], exp[12], two[12] = {2}, x[12];
     if (!decode_point(c, point, point_len, &q) || !scalar_from(c, r, rb, r_len) || !scalar_from(c, s, sb, s_len))

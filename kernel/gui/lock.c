@@ -226,6 +226,7 @@ static void frame(struct ui *ui, void *data)
         if (ui->e && (ui->e->type == EV_KEY || ui->e->type == EV_MOUSE_DOWN || ui->e->type == EV_MOUSE_MOVE)) {
             ui->consumed = true;
             l->asleep = false;
+            display_screen(true);
             wm_set_cursor_visible(true);
             wm_crossfade();
             wm_invalidate(w);
@@ -365,10 +366,9 @@ static void frame(struct ui *ui, void *data)
             }
             if (ui->e && ui->e->type == EV_MOUSE_DOWN && hot) {
                 ui->consumed = true;
-                if (i == 0) {
-                    l->asleep = true;
-                    wm_set_cursor_visible(false);
-                } else
+                if (i == 0)
+                    gui_sleep();
+                else
                     gui_quit(i == 2 ? QUIT_POWEROFF : QUIT_REBOOT);
                 return;
             }
@@ -467,6 +467,25 @@ static void show(bool login)
 void gui_lock(void)
 {
     show(false);
+}
+
+/* Sleep: behind the lock screen, in S3 when the machine can (the whole screen is drawn again on waking); otherwise
+   the screen goes off and the lock screen waits for a key or the mouse, which is all the sleep there is */
+void gui_sleep(void)
+{
+    gui_lock();
+    if (!lock_win)
+        return;
+    struct lockscreen *l = lock_win->data;
+    if (hal_suspend() == 0) {
+        display_screen(true);
+        wm_damage_all();
+        return;
+    }
+    l->asleep = true;
+    wm_set_cursor_visible(false);
+    display_screen(false);
+    wm_invalidate(lock_win);
 }
 
 void gui_login(void)

@@ -68,6 +68,8 @@ void *w64_high_ptr(uint64_t v);
 uint64_t w64_high_back(uint64_t v);
 bool w64_high_fault(uint64_t address);
 void w64_mem_cleanup(void);
+bool w64_audio_create(const void *clsid, const void *iid, uint64_t out, uint64_t *hr);
+void w64_audio_cleanup(void);
 
 static inline void *w64_ptr(uint64_t v)
 {

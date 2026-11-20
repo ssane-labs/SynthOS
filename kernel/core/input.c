@@ -1,6 +1,7 @@
 #include <synth/console.h>
 #include <synth/hal.h>
 #include <synth/input.h>
+#include <synth/power.h>
 
 #define QUEUE_SIZE 64
 
@@ -55,6 +56,8 @@ static bool push(int key)
         struct display *d = hal_display();
         con_resize(d->cols, d->rows);
     }
+    if (!pump && power_key_text(key))
+        return false;
     if (break_mode && key == KEY_CTRL('t')) {
         info_flag = true;
         return false;
@@ -113,8 +116,9 @@ int input_getkey(int timeout_ms)
                 return KEY_NONE;
             continue;
         }
-        int key = hal_key_read(break_mode && wait < 0 ? 50 : wait);
+        int key = hal_key_read(break_mode && wait < 0 ? 50 : wait < 0 ? 5000 : wait);
         if (key == KEY_NONE) {
+            power_text_tick(); /* a low battery is said even while nothing is typed */
             if (timeout_ms == 0)
                 return KEY_NONE;
             continue;

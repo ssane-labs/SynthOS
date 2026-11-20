@@ -1,4 +1,5 @@
 #include <synth/versions.h>
+#include <synth/power.h>
 #include <synth/module.h>
 #include <synth/log.h>
 #include <synth/config.h>
@@ -63,7 +64,7 @@ struct desktop_icon {
     bool selected;
 };
 
-static struct volume known_volumes[8];
+static struct volume *known_volumes; /* 8, on the heap: the kernel image has little room */
 static int known_count = -1;
 
 static struct desktop_icon *icons; /* MAX_ICONS of them, from the heap: the 32-bit kernel image is full */
@@ -434,8 +435,10 @@ static void scan_desktop(void)
                 gui_notify(volumes[i].label, "The drive is connected and ready to use.");
         }
     }
-    memcpy(known_volumes, volumes, sizeof(volumes[0]) * (size_t)volume_count);
-    known_count = volume_count;
+    if (known_volumes || (known_volumes = kmalloc(sizeof(volumes)))) {
+        memcpy(known_volumes, volumes, sizeof(volumes[0]) * (size_t)volume_count);
+        known_count = volume_count;
+    }
     struct vdir d;
     if (vfs_opendir(dir, &d) == 0) {
         struct vfs_dirent ent;
@@ -736,13 +739,15 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
 static struct program_icon {
     char path[PATH_MAX_LEN];
     struct image img;
-} program_icons[PROGRAM_ICONS];
+} *program_icons; /* PROGRAM_ICONS of them, on the heap: the kernel image has little room */
 static int program_icon_next;
 
 static const struct image *program_icon(const char *path)
 {
     const char *ext = path_ext(path);
     if (!ext || (str_casecmp(ext, ".exe") && str_casecmp(ext, ".lnk")))
+        return NULL;
+    if (!program_icons && !(program_icons = kzalloc(sizeof(*program_icons) * PROGRAM_ICONS)))
         return NULL;
     for (int i = 0; i < PROGRAM_ICONS; i++)
         if (!strcmp(program_icons[i].path, path))
@@ -1399,12 +1404,14 @@ bool gui_open_url(const char *url)
 
 /* Windows programs ask for files and links to be opened while they run; the desktop does it between frames */
 #define OPEN_QUEUE 4
-static char open_queue[OPEN_QUEUE][512];
+static char (*open_queue)[512]; /* from the heap: the 32-bit kernel's image has no room */
 static int open_count;
 
 #if CONFIG_WIN32
 static void queue_open(const char *target)
 {
+    if (!open_queue && !(open_queue = kmalloc(sizeof(*open_queue) * OPEN_QUEUE)))
+        return;
     if (open_count < OPEN_QUEUE)
         str_copy(open_queue[open_count++], target, sizeof(open_queue[0]));
 }
@@ -1867,8 +1874,64 @@ static void cmd_key(int key)
     wm_key(base | mods);
 }
 
+/* the power and sleep buttons and the lid (ACPI), as the "powerbutton" and "lidclose" settings say */
+static bool power_key(int key)
+{
+    switch (key) {
+    case KEY_POWER:
+        if (power_button_action() == POWER_SHUTDOWN)
+            gui_quit(QUIT_POWEROFF);
+        else if (power_button_action() == POWER_ASK)
+            shell_power_menu(false);
+        else if (power_button_action() == POWER_SLEEP)
+            gui_sleep();
+        return true;
+    case KEY_SLEEP:
+        gui_sleep();
+        return true;
+    case KEY_LID_CLOSE:
+        if (power_lid_action() == LID_SLEEP) {
+            gui_sleep();
+        } else if (power_lid_action() == LID_LOCK) {
+            if (user_current()->has_password && !gui_locked())
+                gui_lock();
+            display_screen(false);
+        }
+        return true;
+    case KEY_LID_OPEN:
+        display_screen(true);
+        last_input = hal_ticks_ms();
+        return true;
+    case KEY_SWIPE_LEFT: /* the fingers go left: the space to the right comes in, as on macOS */
+    case KEY_SWIPE_RIGHT:
+        if (!gui_locked())
+            wm_space_switch(wm_space_current() + (key == KEY_SWIPE_LEFT ? 1 : -1));
+        return true;
+    case KEY_SWIPE_UP:
+        if (!gui_locked())
+            mission_toggle();
+        return true;
+    case KEY_SWIPE_DOWN:
+        if (!gui_locked())
+            launchpad_toggle();
+        return true;
+    case KEY_BRIGHTNESS_UP:
+    case KEY_BRIGHTNESS_DOWN: { /* sixteen steps, as on a Mac */
+        char level[8];
+        int v = display_brightness() + (key == KEY_BRIGHTNESS_UP ? 6 : -6);
+        ksnprintf(level, sizeof(level), "%d", CLAMP(v, 10, 100));
+        gui_setting("brightness", level);
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 static void handle_key(int key)
 {
+    if (power_key(key))
+        return;
     if (KEY_BASE(key) == ' ' && (key & KEY_MOD_SUPER) &&
         ((key & KEY_MOD_SHIFT) || (hal_key_modifiers() & KEY_MOD_SHIFT))) { /* the Assistant, in every key set */
         assistant_toggle();
@@ -2004,6 +2067,16 @@ static void pump(int timeout_ms)
         last_scan = now;
         scan_desktop();
     }
+    {
+        char text[128];
+        enum power_note note = power_battery_check(text, sizeof(text));
+        if (note == NOTE_LOW || note == NOTE_CRITICAL)
+            gui_notify(note == NOTE_LOW ? "Low Battery" : "Battery Almost Empty", text);
+        else if (note == NOTE_SHUTDOWN)
+            gui_quit(QUIT_POWEROFF);
+        if (note != NOTE_NONE)
+            chrome_changed();
+    }
     terminal_flush();
     screenshot_tick();
     hotcorner_tick();
@@ -2044,12 +2117,14 @@ static void pump(int timeout_ms)
         in_jobs = false;
     }
     open_queued();
-    /* While something moves, frames start every 16 ms whatever drawing one took; otherwise wait up to 8 ms. */
+    /* While something moves, frames start every 16 ms whatever drawing one took (33 ms in Low Power Mode); otherwise
+       wait up to 8 ms. */
     static uint64_t frame_start;
     uint64_t done = hal_ticks_ms();
     int nap = timeout_ms > 0 ? MIN(timeout_ms, 8) : 8;
+    int period = power_low() ? 33 : 16;
     if (wm_animating())
-        nap = (int)CLAMP((int64_t)frame_start + 16 - (int64_t)done, 0, 8);
+        nap = (int)CLAMP((int64_t)frame_start + period - (int64_t)done, 0, period / 2);
     if (paced) {
         nap = (int)CLAMP((int64_t)last_frame + DRAG_FRAME_MS - (int64_t)done, 0, DRAG_FRAME_MS);
         busy = false;
@@ -2149,7 +2224,7 @@ int gui_run(struct shell *sh)
     }
     input_set_pump(pump);
 #if CONFIG_WIN32
-    winshell_open_hook = queue_open;
+    winshell_set_open_hook(queue_open);
 #endif
     last_input = hal_ticks_ms();
     if (gui_setup_needed()) {
@@ -2169,7 +2244,7 @@ int gui_run(struct shell *sh)
     sh->ctl = CTL_NONE;
     input_set_pump(NULL);
 #if CONFIG_WIN32
-    winshell_open_hook = NULL;
+    winshell_set_open_hook(NULL);
 #endif
     media_stop();
     widgets_stop();

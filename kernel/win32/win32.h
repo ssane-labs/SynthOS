@@ -171,6 +171,7 @@ struct w32_object {
     uint32_t max;
     struct w32_thread *thread;
     uint64_t due;
+    uint32_t period; /* an event that turns signaled by itself every period ms from due (WASAPI) */
     char *path;
     bool inherit;
     bool skip_port;
@@ -257,6 +258,7 @@ struct w32_thread {
     bool boot;
     struct w32_fiber *fiber;
     uint8_t com_apartment;
+    int8_t priority; /* SetThreadPriority; THREAD_PRIORITY_HIGHEST and up wake at once (w32_urgent_turn) */
     int com_inits;
     void *cxx_object, *cxx_type;
     uint32_t token[3];
@@ -358,6 +360,7 @@ struct w32_process {
     struct w32_thread *boot;
     struct exec_ctx *spawn_ctx;
     unsigned own_streams;
+    bool nt_stubs; /* ntdll's system call stubs are mapped (w32_nt_stubs_map) */
     bool dead;
     bool frozen;
     bool detached;
@@ -391,6 +394,8 @@ void w32_trace_note(const char *module, const char *name);
 const char *w32_builtin_name(const void *fn);
 void w32_trace_api(const char *name);
 extern bool w32_headless;
+extern int w32_d3d11_for;
+bool w32_d3d11_chromium(void); /* the "w32d3d11" setting: 0 auto (not Chromium's programs), 1 every program, 2 none */
 bool w32_vm_committed(uintptr_t address);
 bool w32_vm_overlaps(uint32_t base, uint32_t size);
 
@@ -539,6 +544,8 @@ bool w32_logging_errors(void);
 void w32_io_forget(struct w32_process *p);
 void w32_io_drop(HANDLE h);
 void w32_signal(void);
+void w32_urgent_turn(void);
+void w32_set_urgent(struct w32_thread *t, bool on);
 void w32_sock_poll(void);
 void w32_logfont(void *out, bool wide, LONG height, LONG weight, BYTE italic, BYTE underline, const char *face);
 struct w32_object *w32_handle_get(HANDLE h);
@@ -594,6 +601,7 @@ uint32_t w32_int_args(const void *fn);
 void w32_builtin_names(const char *module, void (*fn)(const char *name, void *arg), void *arg);
 uint32_t w64_builtin_image(const char *name, uint32_t *size);
 uint32_t w32_vm_alloc_at(uint32_t base, uint32_t size);
+void w32_nt_stubs_map(void);
 #ifdef __x86_64__
 void *w32_guest_addr(const void *fn);
 bool w32_native_code(const void *fn);
@@ -715,6 +723,9 @@ uint32_t w32_thread_id(void);
 bool w32_readable(const void *p, size_t size);
 void w32_idle(int ms);
 void w32_gui_cleanup(void);
+#ifdef SYNTH_X32
+void w32_d3d_cleanup(void); /* d3d11_fp.c */
+#endif
 void w32_winsock_cleanup(void);
 void w32_inet_cleanup(void);
 HANDLE w32_create_thread(SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id);

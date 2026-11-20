@@ -7,7 +7,7 @@ qemu=${QEMU:-qemu-system-x86_64}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp "$image" "$work/disk.img"
-dd if=/dev/zero of="$work/fat.img" count=8192 bs=1k 2>/dev/null
+dd if=/dev/zero of="$work/fat.img" count=16384 bs=1k 2>/dev/null
 mkfs.fat -n SYNTHTEST "$work/fat.img" >/dev/null
 echo "hello from fat" > "$work/note.txt"
 mcopy -i "$work/fat.img" "$work/note.txt" "::/Long Name Note.txt"
@@ -55,12 +55,23 @@ if command -v xz >/dev/null; then
     (cd "$work/tar" && tar --format=gnu -cf ../t.tar proj && tar -czf ../t.tgz proj && tar -cJf ../t.tar.xz proj &&
         xz -k -c proj/notes.txt > ../notes.txt.xz && xz --format=lzma -k -c proj/notes.txt > ../notes.txt.lzma)
     for a in t.tar t.tgz t.tar.xz notes.txt.xz notes.txt.lzma; do mcopy -i "$work/fat.img" "$work/$a" ::/$a; done
+    # names that leave the folder the Windows way, or name a drive: only ok\inner.txt comes out (as ok/inner.txt)
+    python3 -I - "$work/evil.tar" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], "w", format=tarfile.GNU_FORMAT) as t:
+    for name in ("..\\..\\evil1.txt", "C:evil2.txt", "ok\\inner.txt", "a\\..\\..\\evil3.txt"):
+        data = b"inner ok\n"
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+PY
+    mcopy -i "$work/fat.img" "$work/evil.tar" ::/evil.tar
 fi
 
 # the assistant's engine: a tiny model with random weights in every quantisation, and what it must compute
 # (tests/aimodel.py works it out with numpy)
 if python3 -I -c "import numpy" 2>/dev/null && python3 -I tests/aimodel.py "$work" >/dev/null; then
-    for m in tiny tiny3 tinyl tinysc; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
+    for m in tiny tiny3 tinyl tinysc tinymc tinyphi tinyg tinyg2 tinyg3; do mcopy -i "$work/fat.img" "$work/$m.gguf" ::/$m.gguf; done
     mcopy -i "$work/fat.img" "$work/whisper.bin" ::/whisper.bin && mcopy -i "$work/fat.img" "$work/speech.wav" ::/speech.wav
     mcopy -i "$work/fat.img" "$work/tts.gguf" ::/tts.gguf && mcopy -i "$work/fat.img" "$work/ttscodec.gguf" ::/ttscodec.gguf
 fi
@@ -441,7 +452,7 @@ config docksleep 5; config docksleep; config docksleep 30
 docksleep = 5
 config dockhalo off; config dockhalo; config dockhalo on
 dockhalo = off
-config dockfx vivid; config dockglow off; config dockfx; config dockglow; config dockglow on; config dockfx normal
+config dockfx vivid; config dockfx; config dockfx normal
 dockfx = vivid
 config statusbar islands; config statusbar; config statusbar menubar
 statusbar = islands
@@ -1055,6 +1066,8 @@ hello64 | grep sockets
 sockets: SynthOS sockets 127.0.0.1 port 80, select 1 set 1
 hello64 | grep 'window class'
 window class: proc same, extra 16
+hello64 | grep 'raw input'
+raw input: registered 1, sent 2, messages 2, moved 7 -3, button 1, buffer 1 up 1
 hello64u a | grep math
 math 1.4142 0.8415 3.162e+20
 hello64u a | grep sockets
@@ -1288,6 +1301,10 @@ rm /tmp/notes.txt; tar -C /tmp /mnt/hdb/notes.txt.lzma; sha256sum /tmp/notes.txt
 $(sha256sum "$work/tar/proj/notes.txt" | cut -c1-64)
 tar /mnt/hdb/page.html
 not an archive
+tar -t /mnt/hdb/evil.tar | wc -l
+1
+tar -C /tmp/te/a /mnt/hdb/evil.tar; cat /tmp/te/a/ok/inner.txt
+inner ok
 zip /tmp/z.zip /tmp/tc/proj; unzip -l /tmp/z.zip | grep notes
 proj/notes.txt
 unzip -q -d /tmp/zx /tmp/z.zip; sha256sum /tmp/zx/proj/data.bin
@@ -1579,9 +1596,20 @@ df | grep hdcp
 /mnt/hdcp2 ntfs
 echo x > /mnt/hdcp2/new.txt
 permission denied
+d3d64
+d3d11 level=b000 adapter=SynthOS Graphics modes=1 shaders=1 map=1 samples=2048 left=ff8040 right=0000ff present=-1 get=1 deferred=1 drawn=40ff00 so=1 newer=1 dynamic=1
+audio64
+wasapi: Speakers (SynthOS Audio), flow 0, 1 device, mic no, 48000 Hz 2 ch float, buffer ok, again refused, early refused, full refused, volume 0.5, wakes ok, paced 1, clock 1, after stop kept, s16 ok, mp3 refused, resampled 1
 EOF
 else
+    # Direct3D 11 and Core Audio for 64-bit programs are in the 64-bit kernel only: here they say so and stop
     sed -i 's/ afd=AFD$/ afd=0/' "$work/cases"
+    cat >> "$work/cases" <<'EOF'
+d3d64
+d3d11 create failed
+audio64
+wasapi: no enumerator
+EOF
 fi
 # an OpenVPN server on the host when the tests run as root with openvpn and a tun device (tests/ovpnserver.sh)
 ovpn=""
@@ -1714,12 +1742,12 @@ call: open {"target": "x"}
 EOF
 if [ "$NO_WIN32" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(win[a-z0-9]+|w32ps|hello64u?|cpp64|dll64|himem64|dwrite64|d3d64|audio64|spawn64|sock6|menu64|time64|proc64|sys64|msiexec|reg|start)( |$)|C:\/|config w32|autostart remove/ { print cmd; print }' \
         "$work/cases" | sed -e 's|^1  /tmp/auto.txt$|  /tmp/auto.txt|' > "$work/cases.native" &&
         mv "$work/cases.native" "$work/cases"
 elif [ "$NO_WIN64" = 1 ]; then
     awk 'NR % 2 == 1 { cmd = $0; next }
-         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|spawn64|sock6|winnet64|menu64|time64|proc64|sys64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
+         cmd !~ /(^|[ ;|(])(hello64u?|cpp64|dll64|himem64|dwrite64|d3d64|audio64|spawn64|sock6|winnet64|menu64|time64|proc64|sys64)( |$)|wininst \| grep wow|w32wow64/ { print cmd; print }' \
         "$work/cases" > "$work/cases.native" && mv "$work/cases.native" "$work/cases"
 fi
 

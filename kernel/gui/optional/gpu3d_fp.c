@@ -85,7 +85,7 @@ static void make_cube(struct demo *d)
     }
 }
 
-static void vs(const void *ctx, uint32_t i, float *out)
+static void vs1(const void *ctx, uint32_t i, float *out)
 {
     const struct demo *d = ctx;
     const struct vtx *v = &d->cube[i];
@@ -96,10 +96,18 @@ static void vs(const void *ctx, uint32_t i, float *out)
     out[8] = v->uv[0], out[9] = v->uv[1], out[10] = 0, out[11] = 0;
 }
 
-static void ps(const void *ctx, const struct rs_quad *q, float c[4][4], unsigned *mask)
+static void vs(const void *ctx, uint32_t first, int n, float *out, void *scratch)
+{
+    UNUSED(scratch);
+    for (int i = 0; i < n; i++)
+        vs1(ctx, first + (uint32_t)i, out + i * 12);
+}
+
+static void ps(const void *ctx, const struct rs_quad *q, float c[4][4], unsigned *mask, void *scratch)
 {
     const struct demo *d = ctx;
     UNUSED(mask);
+    UNUSED(scratch);
     uint32_t tone = gfx_halo_tone((int)d->hue);
     float tr = (float)(tone >> 16 & 255) / 255.0f, tg = (float)(tone >> 8 & 255) / 255.0f, tb = (float)(tone & 255) / 255.0f;
     for (int p = 0; p < 4; p++) {

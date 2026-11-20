@@ -50,7 +50,7 @@ struct sock {
     int accept_count;
 };
 
-extern struct sock net_socks[NET_MAX_SOCKETS];
+extern struct sock *net_socks;
 
 uint16_t net_checksum(const void *data, size_t length, uint32_t sum);
 uint32_t net_pseudo_sum(uint32_t src, uint32_t dst, uint8_t proto, uint16_t length);

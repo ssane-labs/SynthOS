@@ -363,12 +363,15 @@ static bool setup(struct e1000 *n)
     for (int i = 0; i < 128; i++)
         wr(n, MTA + (uint32_t)i * 4, 0);
 
-    n->rx = kmalloc_pages(4096);
-    n->tx = kmalloc_pages(4096);
-    n->rx_buf = kmalloc_pages(RX_COUNT * BUFFER);
-    n->tx_buf = kmalloc_pages(TX_COUNT * BUFFER);
+    if (!n->rx) { /* the first time; after a sleep the same rings are set up again */
+        n->rx = kmalloc_pages(4096);
+        n->tx = kmalloc_pages(4096);
+        n->rx_buf = kmalloc_pages(RX_COUNT * BUFFER);
+        n->tx_buf = kmalloc_pages(TX_COUNT * BUFFER);
+    }
     if (!n->rx || !n->tx || !n->rx_buf || !n->tx_buf)
         return false;
+    n->rx_next = n->tx_next = n->rx_unposted = 0;
     memset((void *)n->rx, 0, 4096);
     memset((void *)n->tx, 0, 4096);
     uint32_t rctl = (1u << 1) | (1u << 4) | (1u << 15) | (1u << 26);
@@ -472,6 +475,15 @@ bool e1000_supports(uint16_t device)
     return supported(device, &kind);
 }
 
+/* after a sleep in S3 the card has been reset: the same set-up again, on the rings it had */
+static bool e1000_resume(void)
+{
+    bool ok = true;
+    for (int i = 0; i < nic_count; i++)
+        ok &= setup(&nics[i]);
+    return ok;
+}
+
 static void found(const struct pci_device *d, void *ctx)
 {
     UNUSED(ctx);
@@ -500,6 +512,7 @@ static void found(const struct pci_device *d, void *ctx)
     n->dev.priv = n;
     nic_count++;
     net_register(&n->dev);
+    resume_register("e1000", e1000_resume);
 }
 
 void e1000_init(void)

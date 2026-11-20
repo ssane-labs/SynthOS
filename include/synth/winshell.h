@@ -14,8 +14,9 @@ struct winshell_browser {
     char program[PATH_MAX_LEN];
 };
 
-/* the desktop opens what no registered program claims (set while it runs) */
-extern void (*winshell_open_hook)(const char *target);
+/* the desktop opens what no registered program claims (set while it runs, NULL after). A function, not a shared
+   variable: this side's pointers are 4 bytes, the kernel's 8, and an 8-byte store would overwrite its neighbour. */
+void winshell_set_open_hook(void (*hook)(const char *target));
 
 bool winshell_class(const char *assoc, char *cls, size_t cap);
 bool winshell_assoc_command(const char *assoc, const char *verb, char *out, size_t cap);
