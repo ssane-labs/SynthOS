@@ -73,6 +73,11 @@ void input_yield(void)
 {
 }
 
+void sh_puts(struct shell *sh, const char *s)
+{
+    (void)sh, (void)s;
+}
+
 int sh_printf(struct shell *sh, const char *fmt, ...)
 {
     (void)sh;

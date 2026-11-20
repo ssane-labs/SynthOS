@@ -81,6 +81,8 @@ bool hal_backlight(int percent);
 /* ACPI at boot: the firmware's AML, the power and sleep buttons and the lid (they arrive as KEY_POWER, KEY_SLEEP,
    KEY_LID_CLOSE and KEY_LID_OPEN). A line for the boot screen, or NULL without ACPI. */
 const char *hal_power_init(void);
+/* input devices found through ACPI or that need it on: I2C HID touchpads, virtio-input */
+void hal_input_init(void);
 /* 1 open, 0 closed, -1 when there is no lid */
 int hal_lid_state(void);
 /* A laptop's batteries (ACPI control-method batteries): energy in mWh, power in mW (batteries that count in mAh are

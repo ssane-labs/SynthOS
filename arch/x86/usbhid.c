@@ -1,6 +1,8 @@
 #include <synth/error.h>
 #include <synth/hal.h>
 #include <synth/heap.h>
+#include <synth/hidmt.h>
+#include <synth/log.h>
 #include <synth/string.h>
 
 #include "io.h"
@@ -11,6 +13,7 @@
 enum {
     HID_SET_IDLE = 0x0a,
     HID_SET_PROTOCOL = 0x0b,
+    HID_SET_REPORT = 0x09,
 };
 
 struct field {
@@ -28,6 +31,9 @@ struct hid {
     bool absolute;
     struct field x, y, wheel, buttons;
     uint8_t button_count;
+#ifdef __x86_64__
+    struct hidmt *mt; /* a touchpad or touch screen */
+#endif
 };
 
 static const uint8_t scancodes[0x66] = {
@@ -148,6 +154,12 @@ static void hid_complete(struct usb_device *dev, void *ctx, const uint8_t *data,
 {
     UNUSED(dev);
     struct hid *h = ctx;
+#ifdef __x86_64__
+    if (h->mt) {
+        hidmt_input(h->mt, data, (size_t)length, hal_ticks_ms());
+        return;
+    }
+#endif
     if (h->keyboard) {
         if (length >= 8)
             keyboard_report(h, data);
@@ -287,6 +299,37 @@ static void boot_mouse(struct hid *h)
     h->wheel = (struct field){0};
 }
 
+#ifdef __x86_64__
+static void touch_pointer(int dx, int dy, int wheel, unsigned buttons)
+{
+    mouse_report(dx, dy, wheel, buttons);
+}
+
+static void touch_absolute(int x, int y, unsigned buttons)
+{
+    mouse_absolute(x, y, 0, buttons);
+}
+
+/* a multi-touch descriptor: the fingers go to the gesture engine once the device is in multi-touch mode */
+static bool touch_attach(struct hid *h, const struct usb_interface *intf, const uint8_t *desc, int length)
+{
+    struct hidmt *m = kmalloc(sizeof(*m));
+    if (!m || !hidmt_parse(m, desc, (size_t)length)) {
+        kfree(m);
+        return false;
+    }
+    uint8_t buf[64];
+    for (int i = 0, n; (n = hidmt_setting_report(m, i, buf, sizeof(buf))) > 0; i++)
+        usb_control(h->dev, USB_REQ_CLASS | USB_REQ_INTERFACE, HID_SET_REPORT, (uint16_t)(0x300 | buf[0]),
+                    intf->number, buf, (uint16_t)n);
+    m->pad.out = (struct touch_out){touch_pointer, touch_absolute, keyboard_inject};
+    h->mt = m;
+    touch_add(m->direct ? "USB touch screen" : "USB touchpad", m->direct);
+    klog("usb: %s %s with %d fingers", h->dev->name, m->direct ? "touch screen" : "touchpad", m->fingers);
+    return true;
+}
+#endif
+
 static bool hid_match(const struct usb_device *dev, const struct usb_interface *intf)
 {
     UNUSED(dev);
@@ -313,7 +356,11 @@ static int hid_attach(struct usb_device *dev, int index)
         uint8_t *desc = length && length <= 1024 ? kmalloc(length) : NULL;
         if (desc && usb_control(dev, USB_DIR_IN | USB_REQ_INTERFACE, USB_GET_DESCRIPTOR, 0x2200, intf->number, desc,
                                 length) == 0)
-            parsed = parse_report(h, desc, length);
+            parsed =
+#ifdef __x86_64__
+                touch_attach(h, intf, desc, length) ||
+#endif
+                parse_report(h, desc, length);
         kfree(desc);
         if (!parsed) {
             if (intf->subclass != 1 || intf->protocol != 2) {
@@ -334,6 +381,9 @@ static int hid_attach(struct usb_device *dev, int index)
     int err = dev->host->ops->interrupt(dev, e->address, length, hid_complete, h);
     if (err) {
         dev->priv[index] = NULL;
+#ifdef __x86_64__
+        kfree(h->mt);
+#endif
         kfree(h);
     }
     return err;
@@ -353,6 +403,9 @@ static void hid_detach(struct usb_device *dev, int index)
             if (h->last[0] & (1u << bit))
                 send(modifier_codes[bit], true);
     dev->priv[index] = NULL;
+#ifdef __x86_64__
+    kfree(h->mt);
+#endif
     kfree(h);
 }
 

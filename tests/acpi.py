@@ -30,6 +30,19 @@ def test_table():
                      Method("_BST", 0, Return(N("BSTV"))),
                      Method("LOWB", 0, Store(Int(4000), Index(N("BSTV"), Int(2))), Notify(N("BAT0"), Int(0x80))))
     adapter = Device("ADP0", Name("_HID", Str("ACPI0003")), Method("_PSR", 0, Return(Zero)))
+    # an I2C HID touchpad at 0x2c on a controller that is not there (QEMU has no DesignWare I2C): the enumeration only
+    source = b"\\_SB.I2C1\x00"
+    i2c = bytes([1, 0, 1, 2, 0, 0, 1, 6, 0]) + (400000).to_bytes(4, "little") + (0x2c).to_bytes(2, "little") + source
+    touchpad = Device("TPD0", Name("_HID", Str("SYNA0001")), Name("_CID", EisaId("PNP0C50")),
+                      Name("_CRS", Buffer(b"\x8e" + len(i2c).to_bytes(2, "little") + i2c + b"\x79\x00")),
+                      Method("_DSM", 4, If(LEqual(Arg(2), One), Return(Int(0x20))), Return(Buffer([0]))))
+    controller = Device("I2C1", Name("_ADR", Int(0x00150001)))
+    # an ACPI video panel (QEMU's display is not Intel's): _BCM takes the level nearest the brightness asked for
+    video = Device("GFX0", Name("_ADR", Int(0x00020000)), Method("_DOS", 1, Store(Arg(0), N("\\DOSV"))),
+                   Device("LCD0", Name("_ADR", Int(0x400)),
+                          Method("_BCL", 0, Return(Package(*[Int(v) for v in (100, 50, 10, 25, 50, 75, 100)]))),
+                          Method("_BCM", 1, Store(Arg(0), N("\\BCMV"))),
+                          Method("UPKY", 0, Notify(N("LCD0"), Int(0x86)))))
     button = Device("PBTN", Name("_HID", EisaId("PNP0C0C")), Method("PRES", 0, Notify(N("PBTN"), Int(0x80))))
     checks = Method(
         "\\TST1", 0,
@@ -66,7 +79,9 @@ def test_table():
         check(24, Add(Ones, One), Zero),
         Return(Zero))
     return ssdt(
-        Scope("\\_SB", lid, button, battery, adapter),
+        Scope("\\_SB", lid, button, battery, adapter, touchpad, controller, video),
+        Name("\\BCMV", Zero),
+        Name("\\DOSV", Zero),
         Name("\\BUF0", Buffer([1, 2, 3, 4, 5, 6, 7, 8])),
         Name("\\PKG0", Package(Int(10), Str("ab"), Package(Int(7)), N("\\_SB.LID0"))),
         Name("\\PKG1", Package(Int(10), Int(20), Int(30))),
@@ -93,6 +108,7 @@ class Machine:
             [os.environ.get("QEMU", "qemu-system-x86_64"),
              "-drive", "format=raw,file=" + os.path.join(work, "disk.img"),
              "-m", "64", "-smp", "2", "-display", "none", "-serial", "stdio", "-nic", "user,model=e1000",
+             "-device", "virtio-multitouch-pci",
              "-acpitable", "file=" + os.path.join(work, "test.aml"),
              "-qmp", "unix:%s,server=on,wait=off" % self.qmp_path],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -150,6 +166,27 @@ class Machine:
         s.close()
         return replies[1:]
 
+    def touch(self, *frames):
+        """Sends frames of fingers (lists of (x, y), 0..0x7fff) to the touch screen, each one input event; an empty
+        frame lifts every finger of the frame before it."""
+        commands, last = [], []
+        for fingers in frames:
+            events = []
+            for slot in range(max(len(fingers), len(last))):
+                if slot >= len(fingers):
+                    events.append(mtt("end", slot, -1))
+                    continue
+                events.append(mtt("begin" if slot >= len(last) else "update", slot, slot + 1))
+                events.append(mtt("data", slot, slot + 1, "x", fingers[slot][0]))
+                events.append(mtt("data", slot, slot + 1, "y", fingers[slot][1]))
+            commands.append({"execute": "input-send-event", "arguments": {"events": events}})
+            last = fingers
+        return self.qmp(*commands)
+
+
+def mtt(kind, slot, tracking, axis="x", value=0):
+    return {"type": "mtt", "data": {"type": kind, "slot": slot, "tracking-id": tracking, "axis": axis, "value": value}}
+
 
 def main():
     image = sys.argv[1]
@@ -186,6 +223,34 @@ def main():
         m.run("acpi eval _SB.BAT0.LOWB")
         expect("low battery warning", "Battery: 8% of the battery is left (about 48 min)",
                m.out[start:] if m.wait_for("Battery: 8%", start, 20) else m.out[start:])
+        # 64-bit only: a tap, a two-finger tap, scrolling and a three-finger swipe up on the touch screen
+        if "virtio-input:" in m.run("dmesg | grep virtio-input"):
+            m.touch([(8000, 8000)], [])
+            time.sleep(0.4)
+            m.touch([(8000, 8000), (12000, 8000)], [])
+            time.sleep(0.4)
+            pts = [(10000, 10000), (14000, 10000)]
+            m.touch(*[[(x, y + i * 1000) for x, y in pts] for i in range(11)], [])
+            time.sleep(0.4)
+            pts = [(12000, 24000), (16000, 25000), (20000, 24000)]
+            m.touch(*[[(x, y - i * 1200) for x, y in pts] for i in range(11)], [])
+            time.sleep(0.4)
+            out = m.run("touchpad")
+            expect("touch screen", "QEMU Virtio MultiTouch (touch screen)", out)
+            expect("touch gestures", "gestures: taps 2, scroll steps 7, swipes 1", out)
+            expect("three-finger swipe", "touch: three-finger swipe up", m.run("dmesg | grep swipe"))
+            out = m.run("dmesg | grep i2c-hid")
+            expect("I2C HID touchpad",
+                   "i2c-hid: \\_SB_.TPD0 at 0x2c on \\_SB.I2C1 (400 kHz), descriptor at 0x0020", out)
+            expect("I2C controller", "i2c-hid: \\_SB.I2C1: no controller on PCI", out)
+        expect("ACPI backlight", "acpi: backlight \\_SB_.GFX0.LCD0, 5 levels", m.run("dmesg | grep backlight"))
+        expect("_DOS: the system sets the level", "0x4", m.run("acpi eval DOSV"))
+        m.run("config brightness 40")
+        expect("_BCM nearest level", "0x32", m.run("acpi eval BCMV"))
+        m.run("config brightness 20")
+        expect("_BCM lower level", "0x19", m.run("acpi eval BCMV"))
+        m.run("acpi eval _SB.GFX0.LCD0.UPKY")
+        expect("brightness key", "acpi: brightness up", m.run("dmesg | grep brightness"))
         m.run("acpi eval _SB.LID0.TOGL")
         expect("lid closed", "lid: closed", m.run("acpi"))
         expect("lid in the log", "acpi: lid closed", m.run("dmesg | grep lid"))

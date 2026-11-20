@@ -1902,6 +1902,27 @@ static bool power_key(int key)
         display_screen(true);
         last_input = hal_ticks_ms();
         return true;
+    case KEY_SWIPE_LEFT: /* the fingers go left: the space to the right comes in, as on macOS */
+    case KEY_SWIPE_RIGHT:
+        if (!gui_locked())
+            wm_space_switch(wm_space_current() + (key == KEY_SWIPE_LEFT ? 1 : -1));
+        return true;
+    case KEY_SWIPE_UP:
+        if (!gui_locked())
+            mission_toggle();
+        return true;
+    case KEY_SWIPE_DOWN:
+        if (!gui_locked())
+            launchpad_toggle();
+        return true;
+    case KEY_BRIGHTNESS_UP:
+    case KEY_BRIGHTNESS_DOWN: { /* sixteen steps, as on a Mac */
+        char level[8];
+        int v = display_brightness() + (key == KEY_BRIGHTNESS_UP ? 6 : -6);
+        ksnprintf(level, sizeof(level), "%d", CLAMP(v, 10, 100));
+        gui_setting("brightness", level);
+        return true;
+    }
     default:
         return false;
     }

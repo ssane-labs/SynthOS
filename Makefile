@@ -125,7 +125,7 @@ TOOLS := $(BUILD)/tools/mkrd $(BUILD)/tools/sasm
 SASM_SRC := tools/sasm.c kernel/vm/asm.c kernel/vm/opcodes.c kernel/lib/strutil.c kernel/lib/fmt.c
 
 .DELETE_ON_ERROR:
-.PHONY: all run run-serial run-uefi test test-hw test-ai test-crypto fuzz test-gpu test-virgl clean tools programs usb windows update
+.PHONY: all run run-serial run-uefi test test-hw test-ai test-crypto test-touch fuzz test-gpu test-virgl clean tools programs usb windows update
 all: $(IMAGE)
 
 ESP_LBA     := 8192
@@ -541,7 +541,7 @@ FUZZ_SECONDS ?= 60
 FUZZ_SAN := -fsanitize=address,undefined -fno-sanitize=shift,alignment -fno-sanitize-recover=all -fwrapv
 FUZZ_SRC := tests/fuzz/t_pe.c tests/fuzz/t_lib.c tests/fuzz/t_codecs.c tests/fuzz/t_media.c tests/fuzz/t_doc.c \
 	tests/fuzz/t_archive.c $(addprefix kernel/lib/,picture.c png.c jpeg.c gif.c zip.c inflate.c deflate.c lnk.c lzma.c \
-	strutil.c fmt.c path.c) tests/fuzz/t_aml.c kernel/acpi/aml.c
+	strutil.c fmt.c path.c) tests/fuzz/t_aml.c kernel/acpi/aml.c tests/fuzz/t_hid.c kernel/core/hidmt.c kernel/core/touch.c
 fuzz:
 	@mkdir -p $(BUILD)/fuzz
 	@$(HOSTCC) -O1 -g -Wall -Wextra -Iinclude $(FUZZ_SAN) -c -o $(BUILD)/fuzz/driver.o tests/fuzz/fuzz.c
@@ -556,6 +556,13 @@ test-crypto:
 	@$(HOSTCC) -O2 -Iinclude -o $(BUILD)/tools/cryptotest tests/crypto/driver.c kernel/crypto/hash.c kernel/crypto/blake2s.c kernel/crypto/aes.c \
 	    kernel/crypto/chacha.c kernel/crypto/x25519.c kernel/crypto/pk.c kernel/lib/sha256.c kernel/lib/sha1.c kernel/lib/md5.c
 	@python3 -I tests/crypto/check.py $(BUILD)/tools/cryptotest
+
+# the HID multi-touch parser and the gestures on the host (tests/touch)
+test-touch:
+	@mkdir -p $(BUILD)/tools
+	@$(HOSTCC) -O1 -g -Wall -Wextra -Iinclude -fsanitize=address,undefined -o $(BUILD)/tools/touchtest \
+	    tests/touch/check.c kernel/core/hidmt.c kernel/core/touch.c
+	@$(BUILD)/tools/touchtest
 
 test-hw:
 	@$(MAKE) --no-print-directory SERIAL=1

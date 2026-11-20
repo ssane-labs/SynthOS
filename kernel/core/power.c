@@ -167,6 +167,12 @@ bool power_key_text(int key)
             power_sleep_text();
         return true;
     case KEY_LID_OPEN:
+    case KEY_SWIPE_LEFT:
+    case KEY_SWIPE_RIGHT:
+    case KEY_SWIPE_UP:
+    case KEY_SWIPE_DOWN:
+    case KEY_BRIGHTNESS_UP:
+    case KEY_BRIGHTNESS_DOWN:
         return true;
     default:
         return false;

@@ -204,6 +204,8 @@ void kmain(const struct boot_info *bi)
         if (power)
             boot_step(true, "Power: %s", power);
     }
+    if (!safe_mode())
+        hal_input_init();
     if (con_is_grid())
         boot_step(true, "Display: %s %dx%d, 16-color palette", d->name, d->cols, d->rows);
     else

@@ -60,6 +60,12 @@ static void unclaimed(const struct pci_device *d, void *ctx)
               d->subclass == 0x00 ? "Ethernet" : d->subclass == 0x80 ? "Wi-Fi" : "network");
 }
 
+void hal_input_init(void)
+{
+    virtio_input_init();
+    i2c_hid_init();
+}
+
 void hal_net_init(void)
 {
     e1000_init();

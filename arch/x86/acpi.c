@@ -54,6 +54,12 @@ static int busy;
 
 static struct aml_node *lid, *power_button, *sleep_button, *ec_node;
 static bool lid_dirty, power_note, sleep_note;
+static int brightness_note; /* +1 or -1: a brightness key (ACPI video) */
+/* the built-in panel of ACPI video: the output device with _BCM, and the levels its _BCL offers (0..100) */
+static struct aml_node *video_out;
+static uint8_t video_levels[32];
+static int video_level_count;
+static void video_setup(void);
 static int lid_open = -1;
 static uint32_t battery_changes;
 static int ec_gpe = -1;
@@ -499,6 +505,8 @@ static void notify(struct aml_node *n, uint64_t value)
         sleep_note = true;
     else if (is_battery(n))
         battery_changes++;
+    else if ((value == 0x86 || value == 0x87) && video_out && (n == video_out || n == aml_parent(video_out)))
+        brightness_note = value == 0x86 ? 1 : -1;
 }
 
 /* ---- GPEs and fixed events ---- */
@@ -674,6 +682,11 @@ int acpi_service(void)
         klog("acpi: sleep button");
         push_key(KEY_SLEEP);
     }
+    if (brightness_note) {
+        klog("acpi: brightness %s", brightness_note > 0 ? "up" : "down");
+        push_key(brightness_note > 0 ? KEY_BRIGHTNESS_UP : KEY_BRIGHTNESS_DOWN);
+        brightness_note = 0;
+    }
     if (lid_dirty) {
         lid_dirty = false;
         update_lid();
@@ -808,6 +821,7 @@ const char *hal_power_init(void)
     lid = aml_find_device("PNP0C0D", NULL);
     power_button = aml_find_device("PNP0C0C", NULL);
     sleep_button = aml_find_device("PNP0C0E", NULL);
+    video_setup();
     int gpes = gpe_setup();
     if (!(fadt_flags & FADT_PWR_BUTTON))
         pm1_enabled |= PM1_PWRBTN;
@@ -827,6 +841,57 @@ const char *hal_power_init(void)
               gpes == 1 ? "" : "s", (pm1_enabled & PM1_PWRBTN) || power_button ? ", power button" : "",
               lid ? ", lid" : "", ec_node ? ", embedded controller" : "");
     return summary;
+}
+
+/* ---- the backlight through ACPI video (appendix B of the specification) ---- */
+
+static void video_setup(void)
+{
+    char path[64];
+    for (struct aml_node *n = aml_walk(NULL); n && !video_out; n = aml_walk(n)) {
+        if (aml_node_type(n) != AML_METHOD)
+            continue;
+        aml_path(n, path, sizeof(path));
+        size_t len = strlen(path);
+        struct aml_obj *bcl;
+        if (len < 5 || strcmp(path + len - 5, "._BCM") || !aml_eval(aml_parent(n), "_BCL", NULL, 0, &bcl))
+            continue;
+        /* the levels after the two defaults (on AC power, on battery) */
+        for (uint32_t i = 2; i < aml_pkg_count(bcl) && video_level_count < (int)sizeof(video_levels); i++) {
+            uint64_t v;
+            if (aml_pkg_int(bcl, i, &v) && v <= 100)
+                video_levels[video_level_count++] = (uint8_t)v;
+        }
+        aml_put(bcl);
+        if (video_level_count)
+            video_out = aml_parent(n);
+    }
+    if (!video_out)
+        return;
+    /* _DOS bit 2: the brightness keys only notify; the system sets the level */
+    struct aml_obj *arg = aml_int(4);
+    if (arg && aml_find(aml_parent(video_out), "_DOS"))
+        aml_eval(aml_parent(video_out), "_DOS", &arg, 1, NULL);
+    aml_put(arg);
+    aml_path(video_out, path, sizeof(path));
+    klog("acpi: backlight %s, %d levels", path, video_level_count);
+}
+
+bool acpi_backlight(int percent)
+{
+    if (!video_out || hal_in_interrupt() || __atomic_exchange_n(&busy, 1, __ATOMIC_ACQUIRE))
+        return false;
+    int best = video_levels[0];
+    for (int i = 1; i < video_level_count; i++) {
+        int d = video_levels[i] - percent, b = best - percent;
+        if ((d < 0 ? -d : d) < (b < 0 ? -b : b) || (percent == 0 && video_levels[i] < best))
+            best = video_levels[i];
+    }
+    struct aml_obj *arg = aml_int((uint64_t)best);
+    bool ok = arg && aml_eval(video_out, "_BCM", &arg, 1, NULL);
+    aml_put(arg);
+    __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
+    return ok;
 }
 
 /* ---- sleep in S3: \_S3 gives the sleep types, the FACS holds where the processor starts again ---- */

@@ -35,6 +35,14 @@ static int modifiers(void)
            (super ? KEY_MOD_SUPER : 0);
 }
 
+/* a key from another input device (a touchpad's swipe) */
+void keyboard_inject(int key)
+{
+    uint32_t flags = cpu_irq_save();
+    push(key);
+    cpu_irq_restore(flags);
+}
+
 int keyboard_modifiers(void)
 {
     return modifiers();

@@ -241,6 +241,16 @@ static struct aml_obj *obj_pkg(uint32_t count)
     return o;
 }
 
+struct aml_obj *aml_buf(const void *data, uint32_t len)
+{
+    return obj_bytes(AML_BUF, data, len);
+}
+
+struct aml_obj *aml_pkg(uint32_t count)
+{
+    return obj_pkg(count);
+}
+
 /* what Store puts in its target: strings, buffers and packages are copied, the rest is shared */
 static struct aml_obj *obj_copy(struct aml_obj *v)
 {

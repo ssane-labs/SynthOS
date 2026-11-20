@@ -42,6 +42,14 @@ enum key_code {
     KEY_SLEEP,
     KEY_LID_CLOSE,
     KEY_LID_OPEN,
+    /* three fingers swiped on a touchpad or touch screen */
+    KEY_SWIPE_LEFT,
+    KEY_SWIPE_RIGHT,
+    KEY_SWIPE_UP,
+    KEY_SWIPE_DOWN,
+    /* the brightness keys of a laptop (ACPI video Notify 0x86 and 0x87) */
+    KEY_BRIGHTNESS_UP,
+    KEY_BRIGHTNESS_DOWN,
 };
 
 #define KEY_MOD_SHIFT 0x1000

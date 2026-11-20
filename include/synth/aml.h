@@ -86,6 +86,9 @@ bool aml_hid_is(struct aml_node *dev, const char *id);
 struct aml_node *aml_find_device(const char *id, struct aml_node *after);
 
 struct aml_obj *aml_int(uint64_t v);
+/* a buffer copied from data; a package of count empty elements (arguments for methods such as _DSM) */
+struct aml_obj *aml_buf(const void *data, uint32_t len);
+struct aml_obj *aml_pkg(uint32_t count);
 void aml_put(struct aml_obj *o);
 enum aml_type aml_type_of(const struct aml_obj *o);
 /* an integer, or a buffer or string read as one (as AML converts them) */
