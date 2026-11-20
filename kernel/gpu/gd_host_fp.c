@@ -46,7 +46,7 @@ static struct {
     uint8_t ve_key[sizeof(struct gd_input_layout) + 32 * 4];
     uint8_t ve_slot[16]; /* the vertex buffer slot behind each binding, one binding per shader input */
     int ve_count;
-    bool tess_bound; /* hull and domain shaders bound at the last draw */
+    struct sent *sent; /* each binding as last sent: one the host has already is not sent again */
     struct gd_sampler samp_key[6][16];
     /* occlusion: one query open across draws, read when someone asks */
     uint32_t query, query_buf, *query_mem, drawn_since;
@@ -111,6 +111,56 @@ static void put(uint32_t w)
         H.cmd[H.n++] = w;
 }
 
+/* ---- bindings: built in pend, sent only when they differ from what this context last got under the same key */
+
+enum {
+    K_SHADER = 0, /* + the shader type */
+    K_STENCIL_REF = 6, K_BLEND_COLOR, K_SAMPLE_MASK, K_FRAMEBUFFER, K_VIEWPORT, K_SCISSOR, K_VBS, K_IB,
+    K_STAGE = 14, /* + type * 18: 16 constant buffers, the sampler views, the sampler states */
+    KEYS = K_STAGE + 6 * 18,
+};
+#define KEY_WORDS 64
+
+struct sent {
+    uint32_t n, w[KEY_WORDS];
+};
+
+static uint32_t pend[KEY_WORDS], npend;
+
+static void begin(uint32_t c, uint32_t len)
+{
+    npend = 0;
+    pend[npend++] = c | len << 16;
+}
+
+static void add(uint32_t w)
+{
+    if (npend < KEY_WORDS)
+        pend[npend++] = w;
+}
+
+static void send(int key)
+{
+    struct sent *s = H.sent ? &H.sent[key] : NULL;
+    if (s && s->n == npend && !memcmp(s->w, pend, npend * 4))
+        return;
+    if (s)
+        s->n = npend, memcpy(s->w, pend, npend * 4);
+    if (H.n + npend > STREAM_WORDS)
+        flush(false);
+    for (uint32_t i = 0; i < npend; i++)
+        put(pend[i]);
+}
+
+/* a new context, or a binding changed outside send */
+static void forget_sent(int key)
+{
+    if (H.sent && key < 0)
+        memset(H.sent, 0, sizeof(*H.sent) * KEYS);
+    else if (H.sent)
+        H.sent[key].n = 0;
+}
+
 static uint32_t handle(void)
 {
     return H.next++;
@@ -132,6 +182,7 @@ static bool open_context(void)
         return false;
     H.gen++;
     H.next = 1;
+    forget_sent(-1);
     uint32_t *bufs[3] = {&H.query_buf, &H.so_buf, &H.probe_buf};
     for (int i = 0; i < 3; i++)
         if (!*bufs[i]) {
@@ -167,6 +218,7 @@ static bool ready(void)
     if (H.gpu < 0)
         return false;
     H.cmd = kmalloc_pages(STREAM_WORDS * 4);
+    H.sent = kzalloc(sizeof(*H.sent) * KEYS);
     H.query_mem = kmalloc_pages(4096);
     if (!H.cmd || !H.query_mem)
         return false;
@@ -409,7 +461,6 @@ static bool survived(void)
     H.blend = H.dsa = H.rs = H.ve = H.null_fs = 0;
     memset(H.samplers, 0, sizeof(H.samplers));
     memset(H.samp_key, 0, sizeof(H.samp_key));
-    H.tess_bound = false;
     H.drawn_since = 0;
     return false;
 }
@@ -1007,8 +1058,9 @@ static bool stage_resources(struct gd_context *c, int dstage, uint32_t type, str
             first = size;
         if (len > size - first)
             len = size - first;
-        cmd(C_UNIFORM_BUFFER, 0, 5);
-        put(type), put((uint32_t)i + 1), put(first), put(len), put(res);
+        begin(C_UNIFORM_BUFFER, 5);
+        add(type), add((uint32_t)i + 1), add(first), add(len), add(res);
+        send(K_STAGE + (int)type * 18 + i);
     }
     if (s->icb && sh->icb_vec4) { /* the immediate constant buffer, made once */
         if (!s->icb_buf) {
@@ -1021,8 +1073,9 @@ static bool stage_resources(struct gd_context *c, int dstage, uint32_t type, str
         uint32_t res = s->icb_buf ? to_gpu(s->icb_buf) : 0;
         if (!res)
             return false;
-        cmd(C_UNIFORM_BUFFER, 0, 5);
-        put(type), put(15), put(0), put((uint32_t)sh->icb_vec4 * 16), put(res);
+        begin(C_UNIFORM_BUFFER, 5);
+        add(type), add(15), add(0), add((uint32_t)sh->icb_vec4 * 16), add(res);
+        send(K_STAGE + (int)type * 18 + 15);
     }
     uint32_t views[DXBC_MAX_RES], samps[16];
     int nv = 0, ns = 0;
@@ -1048,16 +1101,18 @@ static bool stage_resources(struct gd_context *c, int dstage, uint32_t type, str
         }
     }
     if (nv) {
-        cmd(C_SAMPLER_VIEWS, 0, (uint32_t)nv + 2);
-        put(type), put(0);
+        begin(C_SAMPLER_VIEWS, (uint32_t)nv + 2);
+        add(type), add(0);
         for (int i = 0; i < nv; i++)
-            put(views[i]);
+            add(views[i]);
+        send(K_STAGE + (int)type * 18 + 16);
     }
     if (ns) {
-        cmd(C_SAMPLER_STATES, 0, (uint32_t)ns + 2);
-        put(type), put(0);
+        begin(C_SAMPLER_STATES, (uint32_t)ns + 2);
+        add(type), add(0);
         for (int i = 0; i < ns; i++)
-            put(samps[i]);
+            add(samps[i]);
+        send(K_STAGE + (int)type * 18 + 17);
     }
     return true;
 }
@@ -1404,37 +1459,35 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     if (indexed && (!c->ib || !(ib = to_gpu(c->ib))))
         goto refused;
     /* everything is on the host: the state, then the draw */
-    cmd(C_BIND_SHADER, 0, 2);
-    put(vsh), put(SH_VERTEX);
-    cmd(C_BIND_SHADER, 0, 2);
-    put(fsh), put(SH_FRAGMENT);
-    cmd(C_BIND_SHADER, 0, 2);
-    put(gsh), put(SH_GEOMETRY);
-    if (tess || H.tess_bound) {
-        cmd(C_BIND_SHADER, 0, 2);
-        put(tcs), put(SH_TESS_CTRL);
-        cmd(C_BIND_SHADER, 0, 2);
-        put(tes), put(SH_TESS_EVAL);
-        H.tess_bound = tess;
+    const uint32_t bound[5][2] = {{vsh, SH_VERTEX}, {fsh, SH_FRAGMENT}, {gsh, SH_GEOMETRY}, {tcs, SH_TESS_CTRL},
+                                  {tes, SH_TESS_EVAL}};
+    for (int i = 0; i < 5; i++) {
+        begin(C_BIND_SHADER, 2);
+        add(bound[i][0]), add(bound[i][1]);
+        send(K_SHADER + (int)bound[i][1]);
     }
     blend_state(c);
     depth_state(c, zsurf != 0);
     raster_state(c, discard, gs ? gs->clip_planes : tess ? ds->clip_planes : vs->clip_planes);
-    cmd(C_STENCIL_REF, 0, 1);
-    put((c->stencil_ref & 0xff) | (c->stencil_ref & 0xff) << 8);
-    cmd(C_BLEND_COLOR, 0, 4);
+    begin(C_STENCIL_REF, 1);
+    add((c->stencil_ref & 0xff) | (c->stencil_ref & 0xff) << 8);
+    send(K_STENCIL_REF);
+    begin(C_BLEND_COLOR, 4);
     for (int i = 0; i < 4; i++)
-        put(fbits(c->blend_factor[i]));
-    cmd(C_SAMPLE_MASK, 0, 1);
-    put(c->sample_mask);
-    cmd(C_FRAMEBUFFER, 0, (uint32_t)ncb + 2);
-    put((uint32_t)ncb), put(zsurf);
+        add(fbits(c->blend_factor[i]));
+    send(K_BLEND_COLOR);
+    begin(C_SAMPLE_MASK, 1);
+    add(c->sample_mask);
+    send(K_SAMPLE_MASK);
+    begin(C_FRAMEBUFFER, (uint32_t)ncb + 2);
+    add((uint32_t)ncb), add(zsurf);
     for (int i = 0; i < ncb; i++)
-        put(cbufs[i]);
+        add(cbufs[i]);
     if (bare_w) {
-        cmd(C_FRAMEBUFFER_NO_ATTACH, 0, 2);
-        put(bare_w | bare_h << 16), put(1); /* one layer, no samples */
+        add(C_FRAMEBUFFER_NO_ATTACH | 2 << 16);
+        add(bare_w | bare_h << 16), add(1); /* one layer, no samples */
     }
+    send(K_FRAMEBUFFER);
     float vx = 0, vy = 0, vw = 0, vh = 0, z0 = 0, z1 = 1;
     struct gd_view *first = c->rtv[0] ? c->rtv[0] : c->dsv;
     for (int i = 0; !first && i < 8; i++)
@@ -1447,25 +1500,29 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         vx = c->viewport.x, vy = c->viewport.y, vw = c->viewport.w, vh = c->viewport.h;
         z0 = c->viewport.min_z, z1 = c->viewport.max_z;
     }
-    cmd(C_VIEWPORT, 0, 7);
-    put(0);
-    put(fbits(vw / 2)), put(fbits(-vh / 2)), put(fbits(z1 - z0));
-    put(fbits(vx + vw / 2)), put(fbits(vy + vh / 2)), put(fbits(z0));
+    begin(C_VIEWPORT, 7);
+    add(0);
+    add(fbits(vw / 2)), add(fbits(-vh / 2)), add(fbits(z1 - z0));
+    add(fbits(vx + vw / 2)), add(fbits(vy + vh / 2)), add(fbits(z0));
+    send(K_VIEWPORT);
     if (c->raster.scissor) {
         int32_t x0 = c->nscissors ? c->scissor.left : 0, y0 = c->nscissors ? c->scissor.top : 0;
         int32_t x1 = c->nscissors ? c->scissor.right : 0, y1 = c->nscissors ? c->scissor.bottom : 0;
         x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 < x0 ? x0 : x1, y1 = y1 < y0 ? y0 : y1;
-        cmd(C_SCISSOR, 0, 3);
-        put(0), put((uint32_t)x0 | (uint32_t)y0 << 16), put((uint32_t)x1 | (uint32_t)y1 << 16);
+        begin(C_SCISSOR, 3);
+        add(0), add((uint32_t)x0 | (uint32_t)y0 << 16), add((uint32_t)x1 | (uint32_t)y1 << 16);
+        send(K_SCISSOR);
     }
     if (nvb) {
-        cmd(C_VERTEX_BUFFERS, 0, (uint32_t)nvb * 3);
+        begin(C_VERTEX_BUFFERS, (uint32_t)nvb * 3);
         for (int i = 0; i < nvb; i++)
-            put(c->vb_stride[H.ve_slot[i]]), put(c->vb_offset[H.ve_slot[i]]), put(vbs[i]);
+            add(c->vb_stride[H.ve_slot[i]]), add(c->vb_offset[H.ve_slot[i]]), add(vbs[i]);
+        send(K_VBS);
     }
     if (indexed) {
-        cmd(C_INDEX_BUFFER, 0, 3);
-        put(ib), put(c->ib_format == GD_R16_UINT ? 2 : 4), put(c->ib_offset);
+        begin(C_INDEX_BUFFER, 3);
+        add(ib), add(c->ib_format == GD_R16_UINT ? 2 : 4), add(c->ib_offset);
+        send(K_IB);
     }
     uint32_t so_targets[GD_SLOTS_SO] = {0};
     int nso = 0;
@@ -1557,6 +1614,7 @@ static bool host_clear(struct gd_view *v, uint32_t buffers, const float color[4]
         put(1), put(0), put(h);
     else
         put(0), put(h);
+    forget_sent(K_FRAMEBUFFER);
     double d = depth;
     uint64_t bits;
     memcpy(&bits, &d, 8);
