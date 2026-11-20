@@ -144,6 +144,8 @@ const char *hal_audio_name(void);
 #define HAL_SIMD_AVX512 0x100u /* F, BW */
 #define HAL_SIMD_AVX512VNNI 0x200u
 uint32_t hal_simd(void);
+/* whether a microphone input can be recorded from (HD Audio); recording: in use now */
+bool hal_audio_record_present(bool *recording);
 int hal_audio_record_open(void);
 int hal_audio_record_read(int16_t *frames, int max);
 void hal_audio_record_close(void);

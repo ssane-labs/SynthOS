@@ -698,6 +698,18 @@ void hda_close(void)
 }
 
 /* Recording: 16-bit stereo frames at the playback rate */
+/* whether there is a microphone (or line) input to record from; recording: whether it is on now */
+bool hda_record_present(bool *recording)
+{
+    if (recording)
+        *recording = hd.in_running;
+    if (!hd.ready)
+        return false;
+    if (!hd.in_found)
+        hd.in_found = setup_input();
+    return hd.in_found;
+}
+
 int hda_record_open(void)
 {
     if (!hd.ready)

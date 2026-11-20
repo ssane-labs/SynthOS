@@ -199,6 +199,13 @@ void hal_audio_close(void)
 }
 
 /* the microphone: 16-bit stereo frames; returns the rate, or an error when there is nothing to record from */
+bool hal_audio_record_present(bool *recording)
+{
+    if (recording)
+        *recording = false;
+    return use_hda(44100) && hda_record_present(recording);
+}
+
 int hal_audio_record_open(void)
 {
     return use_hda(44100) ? hda_record_open() : E_NODEV;

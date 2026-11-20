@@ -60,7 +60,7 @@ int zip_each(const uint8_t *data, size_t len, int (*fn)(const struct zip_entry *
         end--;
     }
     uint32_t count = rd16(data + end + 10), dir = rd32(data + end + 16);
-    size_t pos = dir;
+    uint64_t pos = dir; /* 64-bit: offsets from the file must not wrap on the 32-bit system either */
     for (uint32_t i = 0; i < count; i++) {
         if (pos + 46 > len || rd32(data + pos) != 0x02014b50u)
             return E_INVAL;
@@ -87,13 +87,15 @@ int zip_each(const uint8_t *data, size_t len, int (*fn)(const struct zip_entry *
 int zip_extract(const uint8_t *data, size_t len, const struct zip_entry *e, uint8_t **out)
 {
     *out = NULL;
-    if ((size_t)e->local + 30 > len || rd32(data + e->local) != 0x04034b50u)
+    if ((uint64_t)e->local + 30 > len || rd32(data + e->local) != 0x04034b50u)
         return E_INVAL;
-    size_t start = e->local + 30 + rd16(data + e->local + 26) + rd16(data + e->local + 28);
+    uint64_t start = (uint64_t)e->local + 30 + rd16(data + e->local + 26) + rd16(data + e->local + 28);
     if (start + e->csize > len)
         return E_INVAL;
     uint8_t *buf;
     if (e->method == 0) {
+        if (e->usize != e->csize) /* stored: the data is the file, the sizes say the same */
+            return E_INVAL;
         buf = kmalloc(MAX(e->usize, 1u));
         if (!buf)
             return E_NOMEM;

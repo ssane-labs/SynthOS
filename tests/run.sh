@@ -55,6 +55,17 @@ if command -v xz >/dev/null; then
     (cd "$work/tar" && tar --format=gnu -cf ../t.tar proj && tar -czf ../t.tgz proj && tar -cJf ../t.tar.xz proj &&
         xz -k -c proj/notes.txt > ../notes.txt.xz && xz --format=lzma -k -c proj/notes.txt > ../notes.txt.lzma)
     for a in t.tar t.tgz t.tar.xz notes.txt.xz notes.txt.lzma; do mcopy -i "$work/fat.img" "$work/$a" ::/$a; done
+    # names that leave the folder the Windows way, or name a drive: only ok\inner.txt comes out (as ok/inner.txt)
+    python3 -I - "$work/evil.tar" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], "w", format=tarfile.GNU_FORMAT) as t:
+    for name in ("..\\..\\evil1.txt", "C:evil2.txt", "ok\\inner.txt", "a\\..\\..\\evil3.txt"):
+        data = b"inner ok\n"
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+PY
+    mcopy -i "$work/fat.img" "$work/evil.tar" ::/evil.tar
 fi
 
 # the assistant's engine: a tiny model with random weights in every quantisation, and what it must compute
@@ -1294,6 +1305,10 @@ rm /tmp/notes.txt; tar -C /tmp /mnt/hdb/notes.txt.lzma; sha256sum /tmp/notes.txt
 $(sha256sum "$work/tar/proj/notes.txt" | cut -c1-64)
 tar /mnt/hdb/page.html
 not an archive
+tar -t /mnt/hdb/evil.tar | wc -l
+1
+tar -C /tmp/te/a /mnt/hdb/evil.tar; cat /tmp/te/a/ok/inner.txt
+inner ok
 zip /tmp/z.zip /tmp/tc/proj; unzip -l /tmp/z.zip | grep notes
 proj/notes.txt
 unzip -q -d /tmp/zx /tmp/z.zip; sha256sum /tmp/zx/proj/data.bin

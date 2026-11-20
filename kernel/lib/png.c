@@ -143,7 +143,7 @@ int png_decode(const uint8_t *data, size_t size, struct picture *out)
                 for (int i = 0; i < 3; i++)
                     p.key[i] = (uint16_t)(body[i * 2] << 8 | body[i * 2 + 1]);
             }
-        } else if (!memcmp(type, "IDAT", 4)) {
+        } else if (!memcmp(type, "IDAT", 4) && len) {
             if (zlen + len > zcap) {
                 size_t cap = MAX(zcap * 2, zlen + len + 65536);
                 uint8_t *n = krealloc(z, cap);

@@ -1788,10 +1788,13 @@ static void pane_devices(struct page *p)
     section(p, "Sound");
     const char *dev = hal_audio_name();
     info(p, "Speakers and headphones", dev && *dev ? dev : "None found");
-    info(p, "Microphone", "Recording is not supported yet");
+    bool recording = false, mic = hal_audio_record_present(&recording);
+    info(p, "Microphone", !mic ? "None found (recording works with Intel HD Audio)"
+                          : recording ? "In use now" : "Ready");
     if (link(p, panes[P_SOUND].sym, panes[P_SOUND].color, "Volume and alerts", "Sound & Notifications"))
         go(s, P_SOUND);
-    end(p, "Sound plays through Intel HD Audio (Realtek and other codecs) and AC'97.");
+    end(p, "Sound plays through Intel HD Audio (Realtek and other codecs) and AC'97; the microphone records "
+           "through Intel HD Audio.");
     section(p, "Displays");
     for (int i = 0; i < wm_screen_count(); i++) {
         struct rect a = wm_screen_rect(i);

@@ -253,7 +253,7 @@ static int tga_decode(const uint8_t *d, size_t size, struct picture *out)
         return px ? (picture_free(out), E_INVAL) : E_NOMEM;
     int bytes = (bpp + 7) / 8;
     size_t count = (size_t)w * h;
-    for (size_t i = 0; i < count;) {
+    for (size_t i = 0; i < count && p < size;) { /* a file cut short leaves the rest of the picture empty */
         int run = 1;
         bool repeat = false;
         if (rle) {
@@ -264,13 +264,15 @@ static int tga_decode(const uint8_t *d, size_t size, struct picture *out)
             repeat = hd & 0x80;
         }
         for (int k = 0; k < run && i < count; k++, i++) {
-            if (p + (size_t)bytes > size)
+            if (p + (size_t)bytes > size) {
+                p = size;
                 break;
+            }
             const uint8_t *s = d + p;
             uint32_t c;
             if (base == 1) {
                 size_t e = cmap + (size_t)(s[0] - cmfirst) * (size_t)((cmbits + 7) / 8);
-                c = e + 3 <= size ? argb(cmbits == 32 && e + 4 <= size ? d[e + 3] : 255, d[e + 2], d[e + 1], d[e])
+                c = s[0] >= cmfirst && s[0] - cmfirst < cmlen && e + 3 <= size ? argb(cmbits == 32 && e + 4 <= size ? d[e + 3] : 255, d[e + 2], d[e + 1], d[e])
                                   : 0xff000000;
             } else if (base == 3) {
                 c = argb(255, s[0], s[0], s[0]);
@@ -551,10 +553,12 @@ static bool subframe(struct bits *b, int32_t *s, int n, int bps)
     int type = (int)get(b, 6), wasted = 0;
     if (get(b, 1)) {
         wasted = 1;
-        while (!get(b, 1))
+        while (!get(b, 1) && wasted < 32) /* past the end of the file every bit reads 0 */
             wasted++;
         bps -= wasted;
     }
+    if (bps < 1 || bps > 32)
+        return false;
     if (type == 0) {
         int32_t v = sget(b, bps);
         for (int i = 0; i < n; i++)
@@ -724,9 +728,14 @@ static int aiff_decode(const uint8_t *d, size_t size, int16_t **frames, uint32_t
             sr = exp >= 0 && exp < 32 ? mant >> (31 - exp) : 0;
         } else if (!memcmp(d + p, "SSND", 4) && p + 16 <= size) {
             size_t off = (size_t)d[p + 8] << 24 | (size_t)d[p + 9] << 16 | (size_t)d[p + 10] << 8 | d[p + 11];
-            pcm = d + p + 16 + off;
-            pcm_len = MIN(len - 8 - off, size - (size_t)(pcm - d));
+            /* the samples start off bytes into the chunk: inside the chunk and inside the file, or not at all */
+            if (len >= 8 && off <= len - 8 && off <= size - (p + 16)) {
+                pcm = d + p + 16 + off;
+                pcm_len = MIN(len - 8 - off, size - (size_t)(pcm - d));
+            }
         }
+        if (len > size - p - 8) /* the last chunk (and no wrapping around on the 32-bit system) */
+            break;
         p += 8 + len + (len & 1);
     }
     int bytes = (bits + 7) / 8;
