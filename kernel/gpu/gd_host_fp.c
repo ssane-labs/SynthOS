@@ -1384,7 +1384,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     /* counted by the host: the geometry shader or the tessellation decides how much */
     bool gs_so = ((gs && gs->so) || so_ds) && targets;
     if (so_vs && targets && !so_written(c, so, indexed, count, instances, so_bytes))
-        return refuse("stream output of an indexed strip");
+        gs_so = true; /* an indexed strip: its restarts are in the indices, so the host counts it too */
     if (so_vs && so_vs->so_host < 0 && so_vs->so_vs == vs->serial)
         return refuse(H.why);
     if (ps && ps->sh.stage != DXBC_PS)
@@ -1566,8 +1566,9 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         return false;
     }
     /* vertices a primitive: the geometry shader's points, lines or triangles, or what tessellation makes */
-    uint32_t out = gs ? (gs->sh.gs_out == 1 ? 1 : gs->sh.gs_out == 3 ? 2 : 3)
-                 : hs ? (hs->sh.out_prim == 1 ? 1 : hs->sh.out_prim == 2 ? 2 : 3) : 3;
+    uint32_t t = c->topology, out = gs ? (gs->sh.gs_out == 1 ? 1 : gs->sh.gs_out == 3 ? 2 : 3)
+                                 : hs ? (hs->sh.out_prim == 1 ? 1 : hs->sh.out_prim == 2 ? 2 : 3)
+                                 : t == 1 ? 1 : (t == 2 || t == 3 || t == 10 || t == 11) ? 2 : 3;
     if (gs_so && !so_emitted(out, so, so_bytes)) /* what it wrote is unknown: the buffers count as full */
         for (int b = 0; b < nso; b++)
             so_bytes[b] = c->so[b] && c->so[b]->size > c->so[b]->so_filled

@@ -1060,6 +1060,33 @@ static void draw_tests(void)
         expect(gd_so_filled(sob) == 96 && got[0] == -1 && got[1] == 1 && got[2] == 0.5f && got[3] == 1 && got[4] == 1 &&
                    got[5] == 0 && got[7] == 1 && pixel(60, 4) == 0,
                "stream output writes whole triangles while they fit, and draws nothing");
+        /* an indexed strip with a restart: two strips of four vertices, four triangles */
+        {
+            static uint8_t room[512];
+            struct gd_resource *sob2 = buffer(room, sizeof(room), GD_BIND_STREAM_OUTPUT);
+            struct vert sv2[8];
+            for (int i = 0; i < 8; i++) {
+                sv2[i].p[0] = (float)(i & 1), sv2[i].p[1] = (float)(i >> 1) / 4, sv2[i].p[2] = 0.5f;
+                memcpy(sv2[i].c, red, 16);
+            }
+            static const uint16_t ix2[9] = {0, 1, 2, 3, 0xffff, 4, 5, 6, 7};
+            struct gd_resource *vb2 = buffer(sv2, sizeof(sv2), GD_BIND_VERTEX);
+            struct gd_resource *ib2 = buffer(ix2, sizeof(ix2), GD_BIND_INDEX);
+            gd_set_so_target(ctx, 0, sob2, 0);
+            gd_set_vertex_buffer(ctx, 0, vb2, sizeof(struct vert), 0);
+            gd_set_index_buffer(ctx, ib2, GD_R16_UINT, 0);
+            gd_set_topology(ctx, 5);
+            gd_draw(ctx, true, 9, 0, 0, 1, 0);
+            gd_set_topology(ctx, 4);
+            gd_set_index_buffer(ctx, NULL, GD_R16_UINT, 0);
+            gd_set_so_target(ctx, 0, NULL, 0);
+            expect(gd_so_filled(sob2) == 4 * 3 * 32, "stream output of an indexed strip with a restart");
+            if (gd_so_filled(sob2) != 4 * 3 * 32)
+                printf("  %u bytes\n", gd_so_filled(sob2));
+            gd_resource_unref(sob2);
+            gd_resource_unref(vb2);
+            gd_resource_unref(ib2);
+        }
         gd_set_shader(ctx, 2, NULL);
         gd_set_so_target(ctx, 0, NULL, 0);
         struct gd_input_layout auto_il = {2, {{"POSITION", 0, GD_R32G32B32_FLOAT, 0, 0, 0, 0},
