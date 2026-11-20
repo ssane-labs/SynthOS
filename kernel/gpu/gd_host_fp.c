@@ -20,7 +20,7 @@
 /* virgl's protocol (virgl_protocol.h, virgl_hw.h) */
 enum {
     C_CREATE = 1, C_BIND = 2, C_DESTROY = 3, C_VIEWPORT = 4, C_FRAMEBUFFER = 5, C_VERTEX_BUFFERS = 6, C_CLEAR = 7,
-    C_DRAW = 8, C_SAMPLER_VIEWS = 10, C_INDEX_BUFFER = 11, C_STENCIL_REF = 13, C_BLEND_COLOR = 14, C_SCISSOR = 15,
+    C_DRAW = 8, C_INLINE_WRITE = 9, C_SAMPLER_VIEWS = 10, C_INDEX_BUFFER = 11, C_STENCIL_REF = 13, C_BLEND_COLOR = 14, C_SCISSOR = 15,
     C_SAMPLER_STATES = 18, C_BEGIN_QUERY = 19, C_END_QUERY = 20, C_QUERY_RESULT = 21, C_SAMPLE_MASK = 24,
     C_STREAMOUT_TARGETS = 25,
     C_UNIFORM_BUFFER = 27, C_BIND_SHADER = 31, C_SHADER_BUFFERS = 34, C_SHADER_IMAGES = 35, C_MEMORY_BARRIER = 36,
@@ -32,7 +32,8 @@ enum {
     SH_VERTEX = 0, SH_FRAGMENT = 1, SH_GEOMETRY = 2, SH_TESS_CTRL = 3, SH_TESS_EVAL = 4, SH_COMPUTE = 5,
 };
 
-#define STREAM_WORDS 1024
+#define STREAM_WORDS (16 * 1024) /* 64 KB a submit */
+#define INLINE_BYTES (16 * 1024) /* buffers up to this size are written in the stream */
 
 static struct {
     int state; /* 0 not tried, 1 ready, -1 none */
@@ -437,6 +438,25 @@ static uint32_t to_gpu(struct gd_resource *r)
         if (!r->host)
             return 0;
         r->where = HOST_CPU_NEWER;
+    }
+    if (r->where == HOST_CPU_NEWER && r->d.dim == GD_BUFFER && r->d.width <= INLINE_BYTES) {
+        /* small buffers (constants written before each draw) go in the stream, in order with the draws: no
+           transfer and no wait */
+        const uint8_t *src = (const uint8_t *)r->data + r->off[0];
+        for (uint32_t at = 0, chunk; at < r->d.width; at += chunk) {
+            chunk = MIN(r->d.width - at, 4096u);
+            uint32_t words = (chunk + 3) / 4;
+            cmd(C_INLINE_WRITE, 0, 11 + words);
+            put(r->host), put(0), put(2 /* write */), put(0), put(0);
+            put(at), put(0), put(0), put(chunk), put(1), put(1);
+            uint32_t w = 0;
+            for (uint32_t i = 0; i < chunk; i += 4) {
+                w = 0;
+                memcpy(&w, src + at + i, MIN(4u, chunk - i));
+                put(w);
+            }
+        }
+        r->where = HOST_SAME;
     }
     if (r->where == HOST_CPU_NEWER) {
         flush(false); /* draws sent before see the old contents */

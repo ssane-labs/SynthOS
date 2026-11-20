@@ -306,6 +306,30 @@ int main(int argc, char **argv)
            "get=%d deferred=%d drawn=%06x so=%d newer=%d\n",
            (unsigned)level, name, modes > 0, SUCCEEDED(shaders), mapped, (unsigned long long)samples,
            left & 0xffffff, right & 0xffffff, presented, again == dev && bound == rtv, deferred, after, streamed, newer);
+    /* d3d64 bench: frames of 1000 draws, each after its own constant buffer write, the way games draw; the last
+       frame is read back so the time includes the host's work */
+    if (argc > 1 && !strcmp(argv[1], "bench")) {
+        D3D11_VIEWPORT small = {0, 0, 4, 4, 0, 1};
+        ctx->RSSetViewports(1, &small);
+        DWORD t0 = GetTickCount();
+        int frames = 0;
+        for (; frames < 20; frames++) {
+            ctx->ClearRenderTargetView(rtv, blue);
+            for (int i = 0; i < 1000; i++) {
+                if (SUCCEEDED(ctx->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+                    const float tint[4] = {(float)(i & 255) / 255.0f, 0.5f, 0.25f, 1.0f};
+                    memcpy(m.pData, tint, sizeof(tint));
+                    ctx->Unmap(cb, 0);
+                }
+                ctx->Draw(3, 0);
+            }
+            if (chain)
+                chain->Present(0, 0);
+        }
+        unsigned last = pixel(dev, ctx, back, 1, 1);
+        printf("d3d11 bench %d frames of 1000 draws in %lu ms pixel=%06x\n", frames,
+               (unsigned long)(GetTickCount() - t0), last);
+    }
     /* d3d64 show: the triangle stays on screen, its tint changing every frame; d3d64 full: the same on the whole
        screen for five seconds */
     bool full = chain && argc > 1 && !strcmp(argv[1], "full");

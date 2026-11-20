@@ -16,7 +16,8 @@
 #include "virtio_gpu.h"
 
 #define QSIZE 64
-#define SLOTS (QSIZE / 2 - 1) /* two descriptors each; the last two carry a backing list and its reply */
+#define EXTRA 17                    /* the last descriptors: what follows a request (up to 16 runs of pages), its reply */
+#define SLOTS ((QSIZE - EXTRA) / 2) /* two descriptors each */
 #define SLOT_BYTES 512           /* a request and its reply: 1 KB, never across a page */
 
 enum {
@@ -154,11 +155,23 @@ static int submit(struct vgpu *g, const void *req, uint32_t req_len, const void 
     memcpy(rq, req, MIN(req_len, (uint32_t)SLOT_BYTES));
     memset(rp, 0, SLOT_BYTES);
     uint16_t d0 = (uint16_t)(slot * 2), d1 = (uint16_t)(d0 + 1);
-    if (extra) { /* request, the list after it, reply: the list and the reply take the spare descriptors */
-        uint16_t d2 = (uint16_t)(QSIZE - 2), d3 = (uint16_t)(QSIZE - 1);
-        q->desc[d0] = (struct desc){vmm_phys(rq), req_len, 1, d2};
-        q->desc[d2] = (struct desc){vmm_phys(extra), extra_len, 1, d3};
-        q->desc[d3] = (struct desc){vmm_phys(rp), reply_len, 2, 0};
+    if (extra) { /* request, what follows it (a descriptor for each run of pages), reply: the spare descriptors */
+        uint16_t first = (uint16_t)(QSIZE - EXTRA), d = first, reply_d = (uint16_t)(QSIZE - 1);
+        const uint8_t *e = extra;
+        for (uint32_t off = 0; off < extra_len;) {
+            uint64_t p = vmm_phys(e + off);
+            uint32_t len = MIN(extra_len - off, 4096 - (uint32_t)(p & 4095));
+            if (d > first && q->desc[d - 1].addr + q->desc[d - 1].len == p)
+                q->desc[d - 1].len += len;
+            else if (d < reply_d)
+                q->desc[d] = (struct desc){p, len, 1, (uint16_t)(d + 1)}, d++;
+            else
+                return -1;
+            off += len;
+        }
+        q->desc[d - 1].next = reply_d;
+        q->desc[d0] = (struct desc){vmm_phys(rq), req_len, 1, first};
+        q->desc[reply_d] = (struct desc){vmm_phys(rp), reply_len, 2, 0};
     } else {
         q->desc[d0] = (struct desc){vmm_phys(rq), req_len, 1, d1};
         q->desc[d1] = (struct desc){vmm_phys(rp), reply_len, 2, 0};
@@ -728,7 +741,7 @@ bool virtio_gpu_transfer_box(int gpu, uint32_t ctx, uint32_t id, bool to_host, u
     return call(g, &t, sizeof(t), NULL, 0, NULL, 0, RESP_OK_NODATA);
 }
 
-/* Sends a command stream (virgl's protocol) to the context, from memory in one page; with wait, returns once the
+/* Sends a command stream (virgl's protocol) to the context, at most 64 KB; with wait, returns once the
    host has run it. */
 void virtio_gpu_scanout_3d(struct virtio_screen *vs, uint32_t id, int w, int h)
 {
@@ -762,7 +775,7 @@ void virtio_gpu_scanout_3d(struct virtio_screen *vs, uint32_t id, int w, int h)
 bool virtio_gpu_submit_3d(int gpu, uint32_t ctx, const uint32_t *cmd, uint32_t dwords, bool wait)
 {
     struct vgpu *g = gpu3d(gpu);
-    if (!g || !dwords || dwords > 1024)
+    if (!g || !dwords || dwords > 16 * 1024)
         return false;
     struct {
         struct hdr h;
