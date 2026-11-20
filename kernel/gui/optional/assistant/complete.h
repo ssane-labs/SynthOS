@@ -42,8 +42,11 @@ static bool complete_off(void)
 }
 
 /* the model for a kind of text: loaded the first time it is needed; NULL when it has not been downloaded */
+static char helper_why[160]; /* why the last model could not be read */
+
 static struct helper *helper_for(int kind, const char *forced)
 {
+    helper_why[0] = 0;
     struct helper *h = kind == COMPLETE_CODE ? &code_m : &keys_m;
     char path[200];
     if (forced) {
@@ -68,8 +71,10 @@ static struct helper *helper_for(int kind, const char *forced)
     struct vstat st;
     if (h->failed || vfs_stat(path, &st))
         return NULL;
-    char why[160];
-    if (read_model(&h->m, NULL, path, 1024, why, sizeof(why))) {
+    int err = read_model(&h->m, NULL, path, 1024, helper_why, sizeof(helper_why));
+    if (err == E_NOMEM && free_model_for_room()) /* the assistant's model is read again when it is asked */
+        err = read_model(&h->m, NULL, path, 1024, helper_why, sizeof(helper_why));
+    if (err) {
         h->failed = true;
         return NULL;
     }
@@ -439,7 +444,8 @@ static int complete_command(struct shell *sh, int argc, char **argv)
     if (!complete_plain()) {
         if (!(cq.h = helper_for(kind, forced))) {
             cq.to_shell = false;
-            return sh_error(sh, "ai", "no completion model: run ai get keys (or ai get coder)");
+            return helper_why[0] ? sh_error(sh, "ai", "%s", helper_why)
+                                 : sh_error(sh, "ai", "no completion model: run ai get keys (or ai get coder)");
         }
         if (complete_start())
             while (complete_step())
