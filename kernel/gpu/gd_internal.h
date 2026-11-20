@@ -132,6 +132,11 @@ static inline void gd_host_mapped(struct gd_resource *r)
 {
     (void)r;
 }
+static inline bool gd_host_generate_mips(struct gd_view *v)
+{
+    (void)v;
+    return false;
+}
 static inline void gd_host_user_view(struct gd_resource *r, uintptr_t va)
 {
     (void)r, (void)va;
@@ -198,6 +203,8 @@ void gd_host_cpu(struct gd_resource *r, bool write);
 /* before a program's Map: what it writes there is found from the pages it dirties */
 void gd_host_mapped(struct gd_resource *r);
 void gd_host_user_view(struct gd_resource *r, uintptr_t va);
+/* GenerateMips on the host, when it has the texture */
+bool gd_host_generate_mips(struct gd_view *v);
 bool gd_host_clear_rtv(struct gd_view *v, const float color[4]);
 bool gd_host_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stencil);
 /* a copy done on the host when either resource is there (dsub < 0: every subresource); false: the CPU copies */

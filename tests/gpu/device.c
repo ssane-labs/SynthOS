@@ -337,6 +337,31 @@ static void draw_tests(void)
         gd_resource_unref(copy);
     }
 
+    /* GenerateMips of a texture the host has (copied there): left half red, right half blue, down to one texel */
+    static const uint32_t halves[16] = {0xff0000ffu, 0xff0000ffu, 0xffff0000u, 0xffff0000u, 0xff0000ffu, 0xff0000ffu,
+                                        0xffff0000u, 0xffff0000u, 0xff0000ffu, 0xff0000ffu, 0xffff0000u, 0xffff0000u,
+                                        0xff0000ffu, 0xff0000ffu, 0xffff0000u, 0xffff0000u};
+    struct gd_res_desc mdesc = {.dim = GD_TEX2D, .width = 4, .height = 4, .mips = 3, .array = 1,
+                                .format = GD_R8G8B8A8_UNORM, .bind = GD_BIND_RENDER_TARGET | GD_BIND_SHADER_RESOURCE};
+    struct gd_init minit[3] = {{(uint64_t)(uintptr_t)halves, 16, 64}, {0, 0, 0}, {0, 0, 0}};
+    struct gd_resource *mt = gd_resource_create(&mdesc, minit, &err), *mt2 = gd_resource_create(&mdesc, NULL, &err);
+    struct gd_view *mv = mt ? gd_view_create(mt, &(struct gd_view_desc){.kind = GD_VIEW_SRV}, &err) : NULL;
+    if (mv && mt2) {
+        gd_copy_resource(mt2, mt);
+        gd_generate_mips(mv);
+        struct gd_layout ml;
+        const uint32_t *m1 = (const uint32_t *)gd_subresource(mt, 1, &ml);
+        const uint32_t *m2 = (const uint32_t *)gd_subresource(mt, 2, &ml);
+        uint32_t px = m2 ? *m2 : 0;
+        int r = (int)(px & 255), b = (int)(px >> 16 & 255);
+        expect(m1 && m1[0] == 0xff0000ffu && m1[1] == 0xffff0000u && r >= 126 && r <= 129 && b >= 126 && b <= 129,
+               "mipmaps generated");
+    }
+    if (mv)
+        gd_view_unref(mv);
+    gd_resource_unref(mt);
+    gd_resource_unref(mt2);
+
     /* stencil: mark the top half, then draw only where marked */
     gd_clear_rtv(rtv, (const float[4]){0, 0, 0, 1});
     struct gd_depth sd = {.depth_enable = 0, .stencil_enable = 1, .read_mask = 255, .write_mask_stencil = 255,

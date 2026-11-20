@@ -520,7 +520,7 @@ void gd_clear_dsv(struct gd_view *v, uint32_t flags, float depth, uint32_t stenc
 
 void gd_generate_mips(struct gd_view *v)
 {
-    if (!v || v->r->d.dim == GD_BUFFER || v->r->d.dim == GD_TEX3D)
+    if (!v || v->r->d.dim == GD_BUFFER || v->r->d.dim == GD_TEX3D || gd_host_generate_mips(v))
         return;
     struct gd_resource *r = v->r;
     uint32_t f = v->format, block, bytes = gd_format_bytes(f, &block);

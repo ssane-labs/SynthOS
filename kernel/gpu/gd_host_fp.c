@@ -1787,6 +1787,31 @@ bool gd_host_copy(struct gd_resource *dst, int dsub, uint32_t x, uint32_t y, uin
     return ok;
 }
 
+/* GenerateMips of a texture the host has: each level a linear blit of the one above, slice by slice */
+bool gd_host_generate_mips(struct gd_view *v)
+{
+    struct gd_resource *r = v->r;
+    if (!ready() || !r->host || host_ms(r) || resource_format(r) == 20 || r->d.dim == GD_TEX3D)
+        return false;
+    uint32_t format = view_format(v);
+    if (!format)
+        return false;
+    lock();
+    bool ok = to_gpu(r) != 0;
+    for (uint32_t s = v->d.first_slice; ok && s < v->d.first_slice + v->d.slices; s++)
+        for (uint32_t m = v->d.first_mip; m + 1 < v->d.first_mip + v->d.mips; m++) {
+            const struct gd_layout *a = &r->lay[m + s * r->d.mips], *b = &r->lay[m + 1 + s * r->d.mips];
+            cmd(C_BLIT, 0, 21);
+            put(0xf | 1u << 8 /* linear */), put(0), put(0); /* the colour, no scissor */
+            put(r->host), put(m + 1), put(format), put(0), put(0), put(s), put(b->width), put(b->height), put(1);
+            put(r->host), put(m), put(format), put(0), put(0), put(s), put(a->width), put(a->height), put(1);
+        }
+    if (ok)
+        r->where = HOST_GPU_NEWER;
+    unlock();
+    return ok;
+}
+
 /* UpdateSubresource of a resource the host has written: the box goes up on its own, with no read back first. The
    memory here stays out of date elsewhere, as the host's copy is still the newer one. */
 bool gd_host_can_update(const struct gd_resource *r)
