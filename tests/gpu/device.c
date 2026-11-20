@@ -882,6 +882,30 @@ static void draw_tests(void)
         expect((tris == 16 || tris == 0) && after.shader_faults == before.shader_faults &&
                    pixel(60, 4) == 0x00ff00 && pixel(40, 20) == 0x00ff00 && pixel(4, 60) == 0,
                "a tessellated patch is drawn as 16 triangles");
+        /* stream output after tessellation: the domain shader again, in the geometry slot with a declaration; the
+           host writes its triangles' positions (in software the stream output then stays unwritten) */
+        struct gd_shader *dso = gd_shader_create(blob, (uint32_t)size, terr);
+        struct gd_so_entry tso[1] = {{0, "SV_Position", 0, 0, 4, 0}};
+        uint32_t tstride = 16;
+        static uint8_t tzero[1024];
+        struct gd_resource *tsob = buffer(tzero, sizeof(tzero), GD_BIND_STREAM_OUTPUT);
+        if (dso && tsob && gd_shader_set_so(dso, tso, 1, &tstride, 1, 0)) {
+            uint64_t host_before = gd_host_draws();
+            gd_set_shader(ctx, 2, dso);
+            gd_set_so_target(ctx, 0, tsob, 0);
+            draw_verts(tp, 3);
+            gd_set_so_target(ctx, 0, NULL, 0);
+            gd_set_shader(ctx, 2, NULL);
+            float w[4];
+            memcpy(w, gd_subresource(tsob, 0, NULL) + 16 * 47, 16); /* the last vertex */
+            if (gd_host_draws() > host_before)
+                expect(gd_so_filled(tsob) >= 16 * 3 * 16 && gd_so_filled(tsob) % 48 == 0 && w[3] == 1,
+                       "stream output after tessellation"); /* whole triangles, as many as the host makes */
+        }
+        if (tsob)
+            gd_resource_unref(tsob);
+        if (dso)
+            gd_shader_unref(dso);
         gd_set_shader(ctx, 3, NULL);
         gd_set_shader(ctx, 4, NULL);
         gd_set_topology(ctx, 4);

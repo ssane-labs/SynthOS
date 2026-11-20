@@ -641,16 +641,18 @@ static uint32_t so_shader_for(struct gd_shader *so_shader, struct gd_shader *vs)
     return h;
 }
 
-/* a domain shader as the host takes it after this hull shader */
-static uint32_t tes_for(struct gd_shader *ds, struct gd_shader *hs)
+/* a domain shader as the host takes it after this hull shader, writing the stream output so_shader (a domain shader
+   in the geometry slot) declares, or none */
+static uint32_t tes_for(struct gd_shader *ds, struct gd_shader *hs, struct gd_shader *so_shader)
 {
     shader_now(ds);
-    if (ds->so_host && ds->so_vs == hs->serial)
+    uint32_t key = so_shader ? so_shader->serial : 0;
+    if (ds->so_host && ds->so_vs == hs->serial && ds->so_key == key)
         return ds->so_host > 0 ? (uint32_t)ds->so_host : 0;
     if (ds->so_host > 0)
         destroy(O_SHADER, (uint32_t)ds->so_host);
-    uint32_t h = create_shader(ds, SH_TESS_EVAL, NULL, NULL, hs, 0);
-    ds->so_host = h ? (int32_t)h : -1, ds->so_vs = hs->serial;
+    uint32_t h = create_shader(ds, SH_TESS_EVAL, NULL, so_shader ? so_shader->so : NULL, hs, 0);
+    ds->so_host = h ? (int32_t)h : -1, ds->so_vs = hs->serial, ds->so_key = key;
     if (h)
         suspect(ds, true);
     return h;
@@ -947,7 +949,7 @@ static bool refuse(const char *why)
 
 /* after a draw with a geometry shader's stream output: the bytes it wrote to each bound buffer, from the host's count
    of the primitives written (this waits for the draw) */
-static bool so_emitted(const struct gd_shader *gs, uint32_t *bytes)
+static bool so_emitted(uint32_t verts, const struct so_decl *so, uint32_t *bytes)
 {
     volatile uint32_t *m = H.query_mem + 16; /* its buffer */
     m[0] = 0xffffffffu;
@@ -960,9 +962,8 @@ static bool so_emitted(const struct gd_shader *gs, uint32_t *bytes)
         return false;
     uint64_t n;
     memcpy(&n, (const uint8_t *)H.query_mem + 72, 8);
-    uint32_t verts = gs->sh.gs_out == 1 ? 1 : gs->sh.gs_out == 3 ? 2 : 3; /* points, line or triangle strips */
     for (int b = 0; b < GD_SLOTS_SO; b++)
-        bytes[b] = (uint32_t)(n * verts * gs->so->stride[b]);
+        bytes[b] = (uint32_t)(n * verts * so->stride[b]);
     return true;
 }
 
@@ -1186,22 +1187,25 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         return refuse(H.why);
     /* stream output: declared by the shader in the geometry slot, a geometry shader or a vertex shader made for it
        (then the vertex shader writes it, and nothing runs in between) */
-    struct gd_shader *so_vs = NULL;
+    struct gd_shader *so_vs = NULL, *so_ds = NULL; /* a domain shader in the geometry slot: the same after tessellation */
     if (gs && gs->sh.stage == DXBC_VS)
         so_vs = gs->so ? gs : NULL, gs = NULL;
+    else if (gs && gs->sh.stage == DXBC_DS && tess)
+        so_ds = gs->so ? gs : NULL, gs = NULL;
     bool targets = false;
     for (int i = 0; i < GD_SLOTS_SO; i++)
         targets |= c->so[i] != NULL;
-    const struct so_decl *so = so_vs ? so_vs->so : gs ? gs->so : NULL;
+    const struct so_decl *so = so_vs ? so_vs->so : so_ds ? so_ds->so : gs ? gs->so : NULL;
     bool discard = so && so->rasterized != 0;
-    if (tess && so)
-        return refuse("stream output after tessellation");
+    if (tess && so_vs)
+        return refuse("stream output of a vertex shader with tessellation");
     if (gs && (gs->sh.stage != DXBC_GS || gs->host < 0))
         return gs->sh.stage == DXBC_GS ? refuse(H.why) : false;
     if (!tess && (c->topology >= 14 || prims[c->topology] < 0))
         return refuse("topology");
     uint32_t so_bytes[GD_SLOTS_SO] = {0}; /* what stream output writes to each buffer */
-    bool gs_so = gs && gs->so && targets; /* counted by the host: the geometry shader decides how much */
+    /* counted by the host: the geometry shader or the tessellation decides how much */
+    bool gs_so = ((gs && gs->so) || so_ds) && targets;
     if (so_vs && targets && !so_written(c, so, indexed, count, instances, so_bytes))
         return refuse("stream output of an indexed strip");
     if (so_vs && so_vs->so_host < 0 && so_vs->so_vs == vs->serial)
@@ -1217,7 +1221,7 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
     uint32_t vsh = ok ? (so_vs ? so_shader_for(so_vs, vs) : shader_for(vs, SH_VERTEX, NULL,
                                                                        ms_views(&c->stage[DXBC_VS]))) : 0, fsh = 0;
     uint32_t gsh = ok && gs ? shader_for(gs, SH_GEOMETRY, NULL, ms_views(&c->stage[DXBC_GS])) : 0;
-    uint32_t tcs = ok && tess ? shader(hs, SH_TESS_CTRL) : 0, tes = ok && tess && tcs ? tes_for(ds, hs) : 0;
+    uint32_t tcs = ok && tess ? shader(hs, SH_TESS_CTRL) : 0, tes = ok && tess && tcs ? tes_for(ds, hs, so_ds) : 0;
     uint16_t ps_formats[DXBC_MAX_UAV];
     if (ok && ps) {
         uav_formats(&c->stage[DXBC_PS], &ps->sh, ps_formats);
@@ -1382,7 +1386,10 @@ bool gd_host_draw(struct gd_context *c, bool indexed, uint32_t count, uint32_t s
         unlock();
         return false;
     }
-    if (gs_so && !so_emitted(gs, so_bytes)) /* what it wrote is unknown: the buffers count as full */
+    /* vertices a primitive: the geometry shader's points, lines or triangles, or what tessellation makes */
+    uint32_t out = gs ? (gs->sh.gs_out == 1 ? 1 : gs->sh.gs_out == 3 ? 2 : 3)
+                 : hs ? (hs->sh.out_prim == 1 ? 1 : hs->sh.out_prim == 2 ? 2 : 3) : 3;
+    if (gs_so && !so_emitted(out, so, so_bytes)) /* what it wrote is unknown: the buffers count as full */
         for (int b = 0; b < nso; b++)
             so_bytes[b] = c->so[b] && c->so[b]->size > c->so[b]->so_filled
                               ? (uint32_t)c->so[b]->size - c->so[b]->so_filled : 0;

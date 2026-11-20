@@ -72,6 +72,7 @@ struct gd_shader {
        shader numbered so_vs */
     int32_t so_host;
     uint32_t so_vs;
+    uint32_t so_key; /* a domain shader: the stream output shader its so_host writes for (its serial), or 0 */
 };
 
 struct stage {
