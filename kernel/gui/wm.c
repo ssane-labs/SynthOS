@@ -109,7 +109,7 @@ void wm_set_filter(int f)
 
 void wm_set_tint(int brightness, int warmth)
 {
-    brightness = CLAMP(brightness, 10, 100);
+    brightness = CLAMP(brightness, 0, 100);
     warmth = CLAMP(warmth, 0, 100);
     last_brightness = brightness;
     last_warmth = warmth;

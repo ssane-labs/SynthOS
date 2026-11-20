@@ -1,4 +1,5 @@
 #include <synth/versions.h>
+#include <synth/power.h>
 #include <synth/module.h>
 #include <synth/log.h>
 #include <synth/config.h>
@@ -63,7 +64,7 @@ struct desktop_icon {
     bool selected;
 };
 
-static struct volume known_volumes[8];
+static struct volume *known_volumes; /* 8, on the heap: the kernel image has little room */
 static int known_count = -1;
 
 static struct desktop_icon *icons; /* MAX_ICONS of them, from the heap: the 32-bit kernel image is full */
@@ -434,8 +435,10 @@ static void scan_desktop(void)
                 gui_notify(volumes[i].label, "The drive is connected and ready to use.");
         }
     }
-    memcpy(known_volumes, volumes, sizeof(volumes[0]) * (size_t)volume_count);
-    known_count = volume_count;
+    if (known_volumes || (known_volumes = kmalloc(sizeof(volumes)))) {
+        memcpy(known_volumes, volumes, sizeof(volumes[0]) * (size_t)volume_count);
+        known_count = volume_count;
+    }
     struct vdir d;
     if (vfs_opendir(dir, &d) == 0) {
         struct vfs_dirent ent;
@@ -736,13 +739,15 @@ void desktop_paint(struct canvas *c, int screen, struct rect area)
 static struct program_icon {
     char path[PATH_MAX_LEN];
     struct image img;
-} program_icons[PROGRAM_ICONS];
+} *program_icons; /* PROGRAM_ICONS of them, on the heap: the kernel image has little room */
 static int program_icon_next;
 
 static const struct image *program_icon(const char *path)
 {
     const char *ext = path_ext(path);
     if (!ext || (str_casecmp(ext, ".exe") && str_casecmp(ext, ".lnk")))
+        return NULL;
+    if (!program_icons && !(program_icons = kzalloc(sizeof(*program_icons) * PROGRAM_ICONS)))
         return NULL;
     for (int i = 0; i < PROGRAM_ICONS; i++)
         if (!strcmp(program_icons[i].path, path))
@@ -1867,8 +1872,41 @@ static void cmd_key(int key)
     wm_key(base | mods);
 }
 
+/* the power and sleep buttons and the lid (ACPI), as the "powerbutton" and "lidclose" settings say */
+static bool power_key(int key)
+{
+    switch (key) {
+    case KEY_POWER:
+        if (power_button_action() == POWER_SHUTDOWN)
+            gui_quit(QUIT_POWEROFF);
+        else if (power_button_action() == POWER_ASK)
+            shell_power_menu(false);
+        else if (power_button_action() == POWER_SLEEP)
+            gui_lock();
+        return true;
+    case KEY_SLEEP:
+        gui_lock();
+        return true;
+    case KEY_LID_CLOSE:
+        if (power_lid_locks()) {
+            if (user_current()->has_password && !gui_locked())
+                gui_lock();
+            display_screen(false);
+        }
+        return true;
+    case KEY_LID_OPEN:
+        display_screen(true);
+        last_input = hal_ticks_ms();
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void handle_key(int key)
 {
+    if (power_key(key))
+        return;
     if (KEY_BASE(key) == ' ' && (key & KEY_MOD_SUPER) &&
         ((key & KEY_MOD_SHIFT) || (hal_key_modifiers() & KEY_MOD_SHIFT))) { /* the Assistant, in every key set */
         assistant_toggle();

@@ -1,6 +1,7 @@
 #include <synth/console.h>
 #include <synth/hal.h>
 #include <synth/input.h>
+#include <synth/power.h>
 
 #define QUEUE_SIZE 64
 
@@ -55,6 +56,8 @@ static bool push(int key)
         struct display *d = hal_display();
         con_resize(d->cols, d->rows);
     }
+    if (!pump && power_key_text(key))
+        return false;
     if (break_mode && key == KEY_CTRL('t')) {
         info_flag = true;
         return false;

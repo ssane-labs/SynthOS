@@ -837,17 +837,20 @@ static void cache_relocate(struct image_cache *c, uint32_t page, uint8_t *buf, u
 
 static void *cache_page(struct image_cache *c, uint32_t index)
 {
-    static uint8_t buf[4096 + 16];
     if (index >= c->size / 4096u)
         return NULL;
     if (c->pages[index])
         return c->pages[index];
     cache_trim(4096);
-    uint8_t *page = kmalloc_pages_uninit(4096);
-    if (!page)
+    uint8_t *page = kmalloc_pages_uninit(4096), *buf = page ? kmalloc(4096 + 16) : NULL;
+    if (!buf) {
+        if (page)
+            kfree_pages(page);
         return NULL;
+    }
     uint32_t start = index * 4096u, lo = start >= 8 ? start - 8 : 0, hi = MIN(start + 4096u + 8, c->size);
     if (!cache_raw(c, lo, buf, hi - lo)) {
+        kfree(buf);
         kfree_pages(page);
         return NULL;
     }
@@ -857,6 +860,7 @@ static void *cache_page(struct image_cache *c, uint32_t index)
         cache_relocate(c, index, buf, lo, hi);
     }
     memcpy(page, buf + (start - lo), 4096);
+    kfree(buf);
     c->pages[index] = page;
     c->loaded++;
     return page;

@@ -2,7 +2,7 @@
 #include <synth/string.h>
 
 static uint8_t sbox[256], inv_sbox[256];
-static uint32_t te[4][256];
+static uint32_t te0[256]; /* the other three tables are its byte rotations */
 static bool tables_ready;
 
 static uint8_t xtime(uint8_t x)
@@ -29,11 +29,13 @@ static void build_tables(void)
     for (int i = 0; i < 256; i++) {
         uint8_t s = sbox[i], s2 = xtime(s), s3 = s2 ^ s;
         uint32_t t = (uint32_t)s2 << 24 | (uint32_t)s << 16 | (uint32_t)s << 8 | s3;
-        for (int k = 0; k < 4; k++)
-            te[k][i] = t >> (8 * k) | t << (32 - 8 * k);
+        te0[i] = t;
     }
     tables_ready = true;
 }
+
+#define TE(k, x) (te0[x] >> (8 * (k)) | te0[x] << (32 - 8 * (k)))
+#define TE0(x) te0[x]
 
 static uint32_t be32(const uint8_t *p)
 {
@@ -82,10 +84,10 @@ void aes_encrypt(const struct aes *a, const uint8_t in[16], uint8_t out[16])
     uint32_t s0 = be32(in) ^ rk[0], s1 = be32(in + 4) ^ rk[1], s2 = be32(in + 8) ^ rk[2], s3 = be32(in + 12) ^ rk[3];
     for (int r = 1; r < a->rounds; r++) {
         rk += 4;
-        uint32_t t0 = te[0][s0 >> 24] ^ te[1][(s1 >> 16) & 0xff] ^ te[2][(s2 >> 8) & 0xff] ^ te[3][s3 & 0xff] ^ rk[0];
-        uint32_t t1 = te[0][s1 >> 24] ^ te[1][(s2 >> 16) & 0xff] ^ te[2][(s3 >> 8) & 0xff] ^ te[3][s0 & 0xff] ^ rk[1];
-        uint32_t t2 = te[0][s2 >> 24] ^ te[1][(s3 >> 16) & 0xff] ^ te[2][(s0 >> 8) & 0xff] ^ te[3][s1 & 0xff] ^ rk[2];
-        uint32_t t3 = te[0][s3 >> 24] ^ te[1][(s0 >> 16) & 0xff] ^ te[2][(s1 >> 8) & 0xff] ^ te[3][s2 & 0xff] ^ rk[3];
+        uint32_t t0 = TE0(s0 >> 24) ^ TE(1, (s1 >> 16) & 0xff) ^ TE(2, (s2 >> 8) & 0xff) ^ TE(3, s3 & 0xff) ^ rk[0];
+        uint32_t t1 = TE0(s1 >> 24) ^ TE(1, (s2 >> 16) & 0xff) ^ TE(2, (s3 >> 8) & 0xff) ^ TE(3, s0 & 0xff) ^ rk[1];
+        uint32_t t2 = TE0(s2 >> 24) ^ TE(1, (s3 >> 16) & 0xff) ^ TE(2, (s0 >> 8) & 0xff) ^ TE(3, s1 & 0xff) ^ rk[2];
+        uint32_t t3 = TE0(s3 >> 24) ^ TE(1, (s0 >> 16) & 0xff) ^ TE(2, (s1 >> 8) & 0xff) ^ TE(3, s2 & 0xff) ^ rk[3];
         s0 = t0;
         s1 = t1;
         s2 = t2;

@@ -59,7 +59,7 @@ static const char *const pinned[] = {"Launchpad", "Files", "Chromium", "Terminal
 
 /* What sits in the Dock is the user's: each look keeps its own list in ~/.dock ("dune Files|Browser|/home/a.txt"),
    app names or file paths, rearranged by dragging icons around, onto the Dock from the desktop or off it. */
-static char pins[MAX_PINS][PATH_MAX_LEN];
+static char (*pins)[PATH_MAX_LEN]; /* MAX_PINS, on the heap: the kernel image has little room */
 static int pin_count, pins_look = -1;
 
 static struct {
@@ -124,9 +124,16 @@ static void dock_path(char *out, size_t cap)
     path_join(user_home(), ".dock", out, cap);
 }
 
+static bool pins_alloc(void)
+{
+    return pins || (pins = kzalloc(sizeof(*pins) * MAX_PINS));
+}
+
 static void pins_default(enum dock_kind k)
 {
     pin_count = 0;
+    if (!pins_alloc())
+        return;
     UNUSED(k);
     for (size_t i = 0; i < ARRAY_SIZE(pinned) && pin_count < MAX_PINS; i++) {
         const struct gui_app *web = !strcmp(pinned[i], "Chromium") ? gui_default_browser() : NULL;
@@ -137,6 +144,8 @@ static void pins_default(enum dock_kind k)
 static void pins_parse(const char *p, size_t len)
 {
     pin_count = 0;
+    if (!pins_alloc())
+        return;
     const char *end = p + len;
     while (p < end && pin_count < MAX_PINS) {
         const char *bar = memchr(p, '|', (size_t)(end - p));
@@ -226,7 +235,7 @@ static void pin_remove(int i)
 
 static void pin_insert(int at, const char *entry)
 {
-    if (pin_count >= MAX_PINS)
+    if (pin_count >= MAX_PINS || !pins_alloc())
         return;
     at = CLAMP(at, 0, pin_count);
     memmove(pins[at + 1], pins[at], PATH_MAX_LEN * (size_t)(pin_count - at));

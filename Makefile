@@ -339,7 +339,7 @@ GUI_SMALL := $(addprefix $(OUT)/obj/kernel/gui/,widgets.o widgetkinds.o control.
              dockpeek.o setup.o lock.o spotlight.o picker.o installed.o autostart.o wallnet.o quicklook.o appstate.o \
              sysupdate.o progress.o focus.o session.o aiconf.o)
 CORE_SMALL := $(addprefix $(OUT)/obj/kernel/,core/install.o core/update.o core/recovery.o core/store.o core/rules.o \
-              core/timeline.o core/trash.o fs/versions.o) $(OUT)/obj/arch/x86/e1000.o $(OUT)/obj/arch/x86/realtek.o $(OUT)/obj/arch/x86/acpi.o $(OUT)/obj/arch/x86/virtio_gpu.o
+              core/timeline.o core/trash.o core/power.o acpi/aml.o fs/versions.o) $(OUT)/obj/arch/x86/e1000.o $(OUT)/obj/arch/x86/realtek.o $(OUT)/obj/arch/x86/acpi.o $(OUT)/obj/arch/x86/virtio_gpu.o
 $(OUT)/obj/kernel/gui/apps/%.o $(OUT)/obj/kernel/cmds/%.o $(GUI_SMALL) $(CORE_SMALL): CFLAGS += -Os
 $(OUT)/obj/kernel/win32/crt/%.o: CFLAGS += -O2
 $(OUT)/obj/kernel/win32/thread.o $(OUT)/obj/kernel/win32/process.o $(OUT)/obj/kernel/win32/files.o $(OUT)/obj/kernel/win32/pe.o: CFLAGS += -O2
@@ -512,6 +512,7 @@ run-serial:
 test:
 	@$(MAKE) --no-print-directory SERIAL=1
 	@$(if $(X64),KERNEL64=1 $(if $(filter 1,$(W32)),,NO_WIN32=1) )tests/run.sh $(BUILD)/serial$(SUFFIX)/synthos.img
+	@python3 -I tests/acpi.py $(BUILD)/serial$(SUFFIX)/synthos.img
 
 # 3D through the host's graphics card (virtio-gpu with virgl); llvmpipe in Xvfb when the host has none
 test-virgl:
@@ -540,7 +541,7 @@ FUZZ_SECONDS ?= 60
 FUZZ_SAN := -fsanitize=address,undefined -fno-sanitize=shift,alignment -fno-sanitize-recover=all -fwrapv
 FUZZ_SRC := tests/fuzz/t_pe.c tests/fuzz/t_lib.c tests/fuzz/t_codecs.c tests/fuzz/t_media.c tests/fuzz/t_doc.c \
 	tests/fuzz/t_archive.c $(addprefix kernel/lib/,picture.c png.c jpeg.c gif.c zip.c inflate.c deflate.c lnk.c lzma.c \
-	strutil.c fmt.c path.c)
+	strutil.c fmt.c path.c) tests/fuzz/t_aml.c kernel/acpi/aml.c
 fuzz:
 	@mkdir -p $(BUILD)/fuzz
 	@$(HOSTCC) -O1 -g -Wall -Wextra -Iinclude $(FUZZ_SAN) -c -o $(BUILD)/fuzz/driver.o tests/fuzz/fuzz.c

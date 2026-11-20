@@ -14,9 +14,15 @@ static int brightness = 100, warmth = 50;
 static enum { NIGHT_OFF, NIGHT_ON, NIGHT_AUTO } night;
 static bool warm_now;
 static int backlight = -1; /* the level last given to the panel's backlight, or -1 */
+static bool screen_off;
 
 static void update(void)
 {
+    if (screen_off) {
+        backlight = hal_backlight(0) ? 0 : -1;
+        wm_set_tint(0, 0);
+        return;
+    }
     if (night == NIGHT_AUTO) {
         struct rtc_time t;
         time_local(&t);
@@ -27,6 +33,14 @@ static void update(void)
     if (backlight != brightness)
         backlight = hal_backlight(brightness) ? brightness : -1;
     wm_set_tint(backlight >= 0 ? 100 : brightness, warm_now ? MAX(warmth, 5) : 0);
+}
+
+void display_screen(bool on)
+{
+    if (screen_off == !on)
+        return;
+    screen_off = !on;
+    update();
 }
 
 void display_tick(void)

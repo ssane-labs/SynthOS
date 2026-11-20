@@ -89,7 +89,7 @@ static struct {
     unsigned rirb_rp;
     int codec, afg, rate;
     uint16_t format;
-    struct node nodes[MAX_NODES];
+    struct node *nodes; /* MAX_NODES, on the heap: the kernel image has little room */
     struct output outs[MAX_OUTS];
     int nouts;
     uint8_t *ring;
@@ -429,7 +429,9 @@ static bool setup_codec(int codec)
     power_up(hd.afg);
     uint32_t vendor = param(0, 0x00);
     uint32_t afg_out = param(hd.afg, 0x12), afg_in = param(hd.afg, 0x0d), rates = param(hd.afg, 0x0a);
-    memset(hd.nodes, 0, sizeof(hd.nodes));
+    if (!hd.nodes && !(hd.nodes = kmalloc(sizeof(*hd.nodes) * MAX_NODES)))
+        return false;
+    memset(hd.nodes, 0, sizeof(*hd.nodes) * MAX_NODES);
     sub = param(hd.afg, 0x04);
     start = (int)(sub >> 16 & 0xff);
     count = (int)(sub & 0xff);

@@ -5,12 +5,12 @@
 #include <synth/string.h>
 #include <synth/zip.h>
 
-static uint32_t crc_table[4][256];
+static uint32_t (*crc_table)[256]; /* on the heap when first used: the kernel image has little room */
 
 /* four bytes a step (slicing by 4), with the desktop getting its turns on big buffers */
 uint32_t crc32_update(uint32_t crc, const void *data, size_t n)
 {
-    if (!crc_table[0][1]) {
+    if (!crc_table && (crc_table = kmalloc(sizeof(*crc_table) * 4))) {
         for (uint32_t i = 0; i < 256; i++) {
             uint32_t c = i;
             for (int k = 0; k < 8; k++)
@@ -23,7 +23,7 @@ uint32_t crc32_update(uint32_t crc, const void *data, size_t n)
     }
     const uint8_t *p = data;
     crc = ~crc;
-    while (n >= 4) {
+    while (crc_table && n >= 4) {
         size_t run = MIN(n & ~(size_t)3, (size_t)1 << 20);
         for (const uint8_t *end = p + run; p < end; p += 4) {
             crc ^= (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -34,8 +34,13 @@ uint32_t crc32_update(uint32_t crc, const void *data, size_t n)
         if (n)
             input_yield();
     }
-    while (n--)
+    while (crc_table && n--)
         crc = crc_table[0][(crc ^ *p++) & 0xff] ^ (crc >> 8);
+    for (; !crc_table && n--; p++) {
+        crc ^= *p;
+        for (int k = 0; k < 8; k++)
+            crc = crc & 1 ? 0xedb88320u ^ (crc >> 1) : crc >> 1;
+    }
     return ~crc;
 }
 

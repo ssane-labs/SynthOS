@@ -183,6 +183,8 @@ void app_state_set_on(const char *app, const char *key, bool on);
 bool gui_app_builtin(const struct gui_app *app);
 void display_tick(void);
 int display_brightness(void);
+/* the screen off (a closed lid) or back on */
+void display_screen(bool on);
 bool display_night(void);
 void wm_damage_z(struct rect r, int z);
 void wm_set_cursor_visible(bool on);

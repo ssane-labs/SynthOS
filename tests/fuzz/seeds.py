@@ -120,3 +120,8 @@ def sdata(s):
 
 lnk += sdata('Notepad') + sdata('readme.txt') + b'\0\0\0\0'
 put('lnk', 'a.lnk', lnk)
+
+# AML: the body (without the header) of the table tests/acpi.py gives QEMU
+sys.path.insert(0, os.path.join(root, 'tests'))
+import acpi  # noqa: E402
+put('aml', 'test.aml', acpi.test_table()[36:])

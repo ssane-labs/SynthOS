@@ -91,7 +91,10 @@ int hal_key_read(int timeout_ms)
         usb_service();
         if (idle_hook && !hal_in_interrupt())
             idle_hook();
-        int key = keyboard_read();
+        int key = acpi_service();
+        if (key != KEY_NONE)
+            return key;
+        key = keyboard_read();
         if (key == KEY_NONE)
             key = serial_key();
         if (key != KEY_NONE)

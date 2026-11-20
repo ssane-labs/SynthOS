@@ -37,6 +37,11 @@ enum key_code {
     KEY_EOF,
     KEY_SUPER,
     KEY_PRINT,
+    /* from ACPI: the power and sleep buttons and the lid of a laptop */
+    KEY_POWER,
+    KEY_SLEEP,
+    KEY_LID_CLOSE,
+    KEY_LID_OPEN,
 };
 
 #define KEY_MOD_SHIFT 0x1000

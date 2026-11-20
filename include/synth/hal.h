@@ -78,6 +78,13 @@ bool hal_graphics_enter(struct framebuffer *fb);
 void hal_graphics_leave(void);
 /* the built-in panel's backlight in percent; false when the kernel cannot drive it (dim in software then) */
 bool hal_backlight(int percent);
+/* ACPI at boot: the firmware's AML, the power and sleep buttons and the lid (they arrive as KEY_POWER, KEY_SLEEP,
+   KEY_LID_CLOSE and KEY_LID_OPEN). A line for the boot screen, or NULL without ACPI. */
+const char *hal_power_init(void);
+/* 1 open, 0 closed, -1 when there is no lid */
+int hal_lid_state(void);
+/* the state of the SCI, GPEs and embedded controller, for the acpi command */
+void hal_acpi_info(char *buf, size_t cap);
 
 struct display_mode {
     uint16_t width, height;

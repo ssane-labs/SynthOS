@@ -571,6 +571,8 @@ void net_await_address(void)
 
 void net_init(void)
 {
+    if (!(net_socks = kzalloc(sizeof(*net_socks) * NET_MAX_SOCKETS)))
+        return;
     hal_net_init();
     if (!iface_count)
         return;

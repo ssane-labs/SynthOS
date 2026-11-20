@@ -1087,13 +1087,22 @@ static void pane_datetime(struct page *p)
 
 /* ---- Appearance */
 
-/* Wallpaper previews stay painted between openings of the window. */
-static struct canvas thumbs[WALLS], look_thumbs[8];
+/* Wallpaper previews stay painted between openings of the window, on the heap: the kernel image has little room */
+static struct canvas *thumbs, *look_thumbs;
 static bool thumbs_dark;
 static const struct gui_look *thumbs_look;
 
+static bool thumbs_ready(void)
+{
+    if (!thumbs && (thumbs = kzalloc(sizeof(*thumbs) * (WALLS + 8))))
+        look_thumbs = thumbs + WALLS;
+    return thumbs;
+}
+
 static void make_look_thumbs(struct settings *s)
 {
+    if (!thumbs_ready())
+        return;
     for (int i = 0; i < look_count() && i < 8; i++) {
         if (look_thumbs[i].px || !canvas_alloc(&look_thumbs[i], LOOK_W, LOOK_H))
             continue;
@@ -1147,7 +1156,7 @@ static void pane_appearance(struct page *p)
             const struct gui_look *l = look_get(i);
             struct rect t = {x0 + i * (LOOK_W + gap), r.y + 14, LOOK_W, LOOK_H};
             bool sel = l == look_current();
-            if (p->ui->c && look_thumbs[i].px) {
+            if (p->ui->c && look_thumbs && look_thumbs[i].px) {
                 gfx_blit_round(p->ui->c, t, &look_thumbs[i], 10, false);
                 draw_layout(p->ui->c, t, l);
                 gfx_round_frame(p->ui->c, t, 10, ALPHA(0, 30));
@@ -1500,6 +1509,8 @@ static void pane_displays(struct page *p)
 
 static void make_thumbs(struct settings *s)
 {
+    if (!thumbs_ready())
+        return;
     if (thumbs[0].px && thumbs_dark == style.dark && thumbs_look == look_current())
         return;
     for (int i = 0; i < WALLS; i++) {
@@ -1549,7 +1560,7 @@ static void wallpaper_sections(struct page *p)
             struct rect t = {x0 + (i % cols) * (THUMB_W + 16), r.y + 16 + (i / cols) * (THUMB_H + 34), THUMB_W,
                              THUMB_H};
             bool sel = !strcmp(value, wall_values[i]);
-            if (p->ui->c && thumbs[i].px) {
+            if (p->ui->c && thumbs && thumbs[i].px) {
                 gfx_blit_round(p->ui->c, t, &thumbs[i], 8, false);
                 gfx_round_frame(p->ui->c, t, 8, ALPHA(0, 30));
                 if (sel)

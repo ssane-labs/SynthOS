@@ -57,7 +57,7 @@ static void set_cells(struct widget *w, int cw, int ch)
     w->size = size_class(w->cw, w->ch);
 }
 
-static struct widget ws[MAX_WIDGETS];
+static struct widget *ws; /* MAX_WIDGETS, on the heap once loaded: the kernel image has little room */
 static int loaded_look = -1;
 static bool started, editing;
 static struct spring edit_pop;
@@ -100,6 +100,8 @@ static int kind_named(const char *s, size_t len)
 
 static struct widget *add_widget(int kind)
 {
+    if (!ws)
+        return NULL;
     for (int i = 0; i < MAX_WIDGETS; i++)
         if (!ws[i].used) {
             struct widget *w = &ws[i];
@@ -126,6 +128,8 @@ static void drop_widget(struct widget *w)
 
 static void clear_all(void)
 {
+    if (!ws)
+        return;
     for (int i = 0; i < MAX_WIDGETS; i++)
         if (ws[i].used)
             drop_widget(&ws[i]);
@@ -212,6 +216,8 @@ static bool no_file;
 
 static void load(void)
 {
+    if (!ws && !(ws = kzalloc(sizeof(*ws) * MAX_WIDGETS)))
+        return;
     clear_all();
     loaded_look = look_index();
     const char *look = look_current()->name;
@@ -234,12 +240,14 @@ static void load(void)
 
 static void ensure_loaded(void)
 {
-    if (loaded_look != look_index())
+    if (!ws || loaded_look != look_index())
         load();
 }
 
 static void save(void)
 {
+    if (!ws)
+        return;
     char path[PATH_MAX_LEN], *data = NULL;
     size_t size = 0;
     file_path(path, sizeof(path));
@@ -282,7 +290,7 @@ static void save(void)
 
 struct widget *widget_list(int *n)
 {
-    *n = MAX_WIDGETS;
+    *n = ws ? MAX_WIDGETS : 0;
     return ws;
 }
 
@@ -420,6 +428,8 @@ void widget_damage(const struct widget *w)
 
 void widgets_layout(void)
 {
+    if (!ws)
+        return;
     for (int i = 0; i < MAX_WIDGETS; i++) {
         struct widget *w = &ws[i];
         if (!w->used)
@@ -850,6 +860,8 @@ void widgets_start(void)
     if (started)
         widgets_stop();
     load();
+    if (!ws)
+        return;
     /* a new desktop holds one thing: the clock, top centre */
     if (no_file) {
         struct widget *clock = add_widget(WK_CLOCK);

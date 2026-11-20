@@ -288,6 +288,7 @@ const struct x86_bootinfo *x86_boot_info(void);
 void acpi_init(void);
 void acpi_poweroff(void);
 void acpi_reset(void);
+int acpi_service(void);
 void ata_init(void);
 void *paging_init(uint32_t table_start, uint32_t table_limit, uint32_t start, uint32_t end, size_t *size);
 
